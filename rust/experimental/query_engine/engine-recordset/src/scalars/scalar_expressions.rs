@@ -7,7 +7,7 @@ use data_engine_expressions::*;
 
 use crate::{
     execution_context::*,
-    logical_expressions::execute_logical_expression,
+    logical_expressions::{execute_logical_expression, execute_logical_expression_with_options},
     scalars::{
         execute_collection_scalar_expression, execute_convert_scalar_expression,
         execute_math_scalar_expression, execute_parse_scalar_expression,
@@ -26,6 +26,7 @@ static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
     items
 });
 
+#[derive(Clone)]
 pub struct SelectionOptions {
     selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel,
 }
@@ -198,7 +199,13 @@ where
 
             // Evaluate conditions in order and return first matching result
             for (condition, expression) in expressions_with_conditions {
-                if execute_logical_expression(execution_context, condition)? {
+                if execute_logical_expression_with_options(
+                    execution_context,
+                    condition,
+                    SelectionOptions::new().with_selector_not_found_diagnostic_level(
+                        RecordSetEngineDiagnosticLevel::Info,
+                    ),
+                )? {
                     result = Some(execute_scalar_expression(execution_context, expression)?);
                     break;
                 }

@@ -209,6 +209,7 @@ mod tests {
     use otap_df_telemetry::metrics::MetricSetHandler;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
 
     fn test_context() -> PipelineContext {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -217,8 +218,9 @@ mod tests {
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "node".into(),
-                "urn:test:example:receiver".into(),
+                "urn:test:receiver:example".into(),
                 NodeKind::Receiver,
+                HashMap::new(),
             )
     }
 
@@ -282,7 +284,7 @@ mod tests {
         let (sender, receiver) = mpsc::Channel::new(1);
         let sender = LocalSender::mpsc(sender);
         let channel_entity_key = pipeline_ctx.register_channel_entity(
-            "test:receiver".into(),
+            "receiver:test".into(),
             "input".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,

@@ -31,6 +31,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
+    policy::{ChannelCapacityPolicy, TelemetryPolicy},
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -90,6 +91,12 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -99,6 +106,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }
@@ -122,6 +130,12 @@ pub struct ProcessorFactory<PData> {
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -131,6 +145,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }
@@ -154,6 +169,12 @@ pub struct ExporterFactory<PData> {
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -163,6 +184,7 @@ impl<PData> Clone for ExporterFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }
@@ -374,6 +396,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         self: &PipelineFactory<PData>,
         mut pipeline_ctx: PipelineContext,
         mut config: PipelineConfig,
+        channel_capacity_policy: ChannelCapacityPolicy,
+        telemetry_policy: TelemetryPolicy,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -427,7 +451,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+        let channel_metrics_enabled = telemetry_policy.channel_metrics;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -476,8 +500,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx =
-                pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
+            let base_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.r#type.clone(),
+                node_kind,
+                node_config.identity_attributes(),
+            );
 
             match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
@@ -496,7 +524,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_receiver(&base_ctx, node_id.clone(), node_config.clone()),
+                        || {
+                            self.create_receiver(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     receivers.push(wrapper);
                 }
@@ -507,7 +543,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_processor(&base_ctx, node_id.clone(), node_config.clone()),
+                        || {
+                            self.create_processor(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     processors.push(wrapper);
                 }
@@ -518,11 +562,20 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_exporter(&base_ctx, node_id.clone(), node_config.clone()),
+                        || {
+                            self.create_exporter(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     exporters.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
+                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
                 }
             }
@@ -531,10 +584,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
-        let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
-            .expect("default_pdata_channel_size must be non-zero");
+        let buffer_size = NonZeroUsize::new(channel_capacity_policy.pdata)
+            .expect("channel_capacity.pdata must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
+        let mut pipeline = RuntimePipeline::new(
+            config,
+            receivers,
+            processors,
+            exporters,
+            nodes,
+            telemetry_policy,
+        );
         let wirings = edges
             .into_iter()
             .map(|hyper_edge| {
@@ -1145,6 +1205,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1172,7 +1234,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownReceiver {
                 plugin_urn: normalized,
             })?;
-        let runtime_config = ReceiverConfig::new(name.clone());
+        let runtime_config = ReceiverConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let receiver = create(
@@ -1200,6 +1266,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ProcessorWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1227,7 +1295,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownProcessor {
                 plugin_urn: normalized,
             })?;
-        let processor_config = ProcessorConfig::new(name.clone());
+        let processor_config = ProcessorConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let processor = create(
@@ -1255,6 +1327,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1282,7 +1356,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownExporter {
                 plugin_urn: normalized,
             })?;
-        let exporter_config = ExporterConfig::new(name.clone());
+        let exporter_config = ExporterConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let exporter = create(

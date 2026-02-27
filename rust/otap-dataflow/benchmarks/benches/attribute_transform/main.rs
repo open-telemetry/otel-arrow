@@ -501,6 +501,31 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
     for dict_encoded_keys in [false, true] {
         for num_rows in [128, 1536, 8092] {
             let benchmark_id_param =
+                format!("num_rows={num_rows},dict_keys={dict_encoded_keys},delete,no_encode");
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys, false);
+
+            let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
+                b.iter_batched(
+                    || {
+                        let transform = AttributesTransform::default().with_delete(
+                            DeleteTransform::new([("key_2".into())].into_iter().collect()),
+                        );
+
+                        (input, transform)
+                    },
+                    |(input, transform)| {
+                        let result = transform_attributes(input, &transform).expect("no error");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8092] {
+            let benchmark_id_param =
                 format!("num_rows={num_rows},dict_keys={dict_encoded_keys},rename,no_encode,stat");
             let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys, false);
 

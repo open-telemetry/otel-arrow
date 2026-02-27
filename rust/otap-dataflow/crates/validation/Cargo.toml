@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
 portpicker = { workspace = true }
+humantime-serde = { workspace = true }
 
 minijinja = "1"
 reqwest = { version = "0.12", features = ["json"] }
@@ -39,6 +40,7 @@ otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
 otap-df-controller = { path = "../controller" }
+prost = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

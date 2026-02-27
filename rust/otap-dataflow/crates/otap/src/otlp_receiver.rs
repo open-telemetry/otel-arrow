@@ -61,7 +61,7 @@ use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::util::Either;
 
 /// URN for the OTLP Receiver
-pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
 
 /// Interval for periodic telemetry collection.
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -208,6 +208,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTLPReceiver {

@@ -45,7 +45,7 @@ pub mod semconv_signal;
 pub mod static_signal;
 
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:traffic_generator:receiver";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_generator";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -75,6 +75,7 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactor
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl FakeGeneratorReceiver {

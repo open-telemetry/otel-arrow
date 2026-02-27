@@ -1,9 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module defines structs to describe the traffic being created and captured for validation
+//! Traffic configuration helpers for validation scenarios. `Generator` describes
+//! the synthetic signals to emit, and `Capture` describes how they are received
+//! and validated.
 
+use crate::ValidationInstructions;
 use serde::{Deserialize, Serialize};
+use serde_yaml;
 
 const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
 const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";
@@ -15,13 +19,13 @@ const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
 const DEFAULT_WEIGHT_ZERO: u32 = 0;
 const DEFAULT_LOG_WEIGHT: u32 = 100;
 
-/// Helps distinguish between the message types
+/// Protocols supported by generators and receivers.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageType {
-    /// otlp type
+    /// OTLP type
     Otlp,
-    /// otap type
+    /// OTAP type
     Otap,
 }
 
@@ -29,34 +33,36 @@ pub enum MessageType {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Generator {
     /// Type to use for the system-under-validation exporter.
-    pub suv_exporter_type: MessageType,
+    pub(crate) suv_exporter_type: MessageType,
     /// Endpoint the system-under-validation exporter should target.
-    pub suv_endpoint: String,
+    pub(crate) suv_endpoint: String,
     /// Endpoint the control exporter should target.
-    pub control_endpoint: String,
+    pub(crate) control_endpoint: String,
     /// Maximum number of signals the load generator should emit.
-    pub max_signal_count: usize,
+    pub(crate) max_signal_count: usize,
     /// Maximum batch size emitted by the load generator.
-    pub max_batch_size: usize,
+    pub(crate) max_batch_size: usize,
     /// Signal emission rate (per second) for the load generator.
-    pub signals_per_second: usize,
+    pub(crate) signals_per_second: usize,
     /// Weight for metrics generation (0-100).
-    pub metric_weight: u32,
+    pub(crate) metric_weight: u32,
     /// Weight for trace generation (0-100).
-    pub trace_weight: u32,
+    pub(crate) trace_weight: u32,
     /// Weight for log generation (0-100).
-    pub log_weight: u32,
+    pub(crate) log_weight: u32,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
-    pub suv_receiver_type: MessageType,
+    pub(crate) suv_receiver_type: MessageType,
     /// Listening address for the system-under-validation receiver.
-    pub suv_listening_addr: String,
+    pub(crate) suv_listening_addr: String,
     /// Listening address for the control receiver.
-    pub control_listening_addr: String,
+    pub(crate) control_listening_addr: String,
+    /// List of validations to make with the captured data
+    pub(crate) validate: Vec<ValidationInstructions>,
 }
 
 impl Generator {
@@ -97,6 +103,13 @@ impl Generator {
     #[must_use]
     pub fn fixed_count(mut self, count: usize) -> Self {
         self.max_signal_count = count;
+        self
+    }
+
+    /// Set the maximum batch size for emitted signals.
+    #[must_use]
+    pub fn max_batch_size(mut self, batch_size: usize) -> Self {
+        self.max_batch_size = batch_size;
         self
     }
 
@@ -145,6 +158,19 @@ impl Capture {
         self.suv_receiver_type = MessageType::Otap;
         self
     }
+
+    /// Set the validations to perform on captured data.
+    #[must_use]
+    pub fn validate(mut self, validations: Vec<ValidationInstructions>) -> Self {
+        self.validate = validations;
+        self
+    }
+
+    /// Serialize the configured validations as JSON (for template contexts).
+    #[must_use]
+    pub fn validations_config(&self) -> String {
+        serde_yaml::to_string(&self.validate).unwrap_or_else(|_| "".to_string())
+    }
 }
 
 impl Default for Capture {
@@ -153,6 +179,7 @@ impl Default for Capture {
             suv_receiver_type: MessageType::Otlp,
             suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
             control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
+            validate: vec![ValidationInstructions::Equivalence],
         }
     }
 }

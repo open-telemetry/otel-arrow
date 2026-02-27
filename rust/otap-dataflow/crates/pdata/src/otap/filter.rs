@@ -64,8 +64,10 @@ pub enum AnyValue {
 /// struct that represents attributes and other key value pairs
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct KeyValue {
-    key: String,
-    value: AnyValue,
+    /// Attribute key.
+    pub key: String,
+    /// Attribute value.
+    pub value: AnyValue,
 }
 
 impl KeyValue {

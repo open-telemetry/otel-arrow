@@ -8,11 +8,13 @@
 //!
 //! A node can expose multiple named output ports.
 
+use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 /// User configuration for a node in the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -21,8 +23,8 @@ pub struct NodeUserConfig {
     /// The node type URN identifying the plugin (factory) to use for this node.
     ///
     /// Expected format:
-    /// - `urn:<namespace>:<id>:<kind>`
-    /// - `<id>:<kind>` (shortcut form for the `otel` namespace)
+    /// - `urn:<namespace>:<kind>:<id>`
+    /// - `<kind>:<id>` (shortcut form for the `otel` namespace)
     ///
     /// The node kind is inferred from the `<kind>` segment.
     pub r#type: NodeUrn,
@@ -55,6 +57,24 @@ pub struct NodeUserConfig {
     // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
+
+    /// Entity configuration for the node.
+    ///
+    /// Currently, we support entity::extend::identity_attributes, for example:
+    ///
+    /// ```yaml
+    /// config:
+    ///   ...
+    /// entity:
+    ///   extend:
+    ///     identity_attributes:
+    ///       region: "us-west"
+    ///       team:
+    ///         value: "platform"
+    ///         brief: "team name"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<NodeEntity>,
 }
 
 /// Node kinds
@@ -99,6 +119,7 @@ impl NodeUserConfig {
             description: None,
             outputs: Vec::new(),
             default_output: None,
+            entity: None,
             config: Value::Null,
         }
     }
@@ -112,6 +133,7 @@ impl NodeUserConfig {
             )
             .expect("invalid exporter node type"),
             description: None,
+            entity: None,
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
@@ -127,6 +149,7 @@ impl NodeUserConfig {
             )
             .expect("invalid processor node type"),
             description: None,
+            entity: None,
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
@@ -139,10 +162,22 @@ impl NodeUserConfig {
         Self {
             r#type: node_type,
             description: None,
+            entity: None,
             outputs: Vec::new(),
             default_output: None,
             config: user_config,
         }
+    }
+
+    /// Returns the identity attributes from the entity configuration, or an empty map if none.
+    #[must_use]
+    pub fn identity_attributes(&self) -> HashMap<String, TelemetryAttribute> {
+        self.entity
+            .as_ref()
+            .and_then(|e| e.extend.as_ref())
+            .map(|ext| &ext.identity_attributes)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Adds an output port to this node declaration.
@@ -165,14 +200,59 @@ impl NodeUserConfig {
     }
 }
 
+/// Entity configuration for a node, aligned with the semantic conventions model.
+/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeEntity {
+    /// Extensions to the entity's attribute sets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend: Option<ExtendedNodeEntity>,
+}
+
+/// Node entity extensions, including user-provided identifying attributes.
+/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtendedNodeEntity {
+    /// Attributes that identify this node in telemetry emitted
+    /// from the dataflow engine.
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_identity_attributes"
+    )]
+    pub identity_attributes: HashMap<String, TelemetryAttribute>,
+}
+
+/// Deserializes `identity_attributes` and rejects any attribute with an `Array` value,
+/// which is not supported for log record attributes.
+fn deserialize_identity_attributes<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, TelemetryAttribute>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attrs: HashMap<String, TelemetryAttribute> = HashMap::deserialize(deserializer)?;
+    for (key, attr) in &attrs {
+        if matches!(attr.value(), AttributeValue::Array(_)) {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported identity attribute type for `{key}`: array attributes are not supported"
+            )));
+        }
+    }
+    Ok(attrs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
-            "type": "urn:example:demo:receiver"
+            "type": "urn:example:receiver:demo"
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
@@ -182,7 +262,7 @@ mod tests {
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"
-type: "urn:otel:type_router:processor"
+type: "urn:otel:processor:type_router"
 outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
@@ -194,7 +274,7 @@ config: {}
     #[test]
     fn test_yaml_node_outputs() {
         let yaml = r#"
-type: "debug:processor"
+type: "processor:debug"
 outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
@@ -205,5 +285,105 @@ config: {}
             .map(Into::into)
             .collect();
         assert_eq!(cfg.outputs, expected);
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attributes_valid() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "attr1": "value1",
+                        "attr2": 123,
+                        "attr3": true
+                    }
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let identity_attrs = cfg.identity_attributes();
+        assert_eq!(
+            identity_attrs.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "attr1".to_string(),
+                "attr2".to_string(),
+                "attr3".to_string(),
+            ])
+        );
+        // Bare values have no brief
+        assert!(identity_attrs.get("attr1").unwrap().brief().is_none());
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attributes_extended_form() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "region": {"value": "us-west", "brief": "Deployment region"},
+                        "count": 42,
+                        "team": {"value": "platform"}
+                    }
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let identity_attrs = cfg.identity_attributes();
+        let region = identity_attrs.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), Some("Deployment region"));
+
+        let count = identity_attrs.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert!(count.brief().is_none());
+
+        let team = identity_attrs.get("team").unwrap();
+        assert_eq!(
+            *team.value(),
+            AttributeValue::String("platform".to_string())
+        );
+        assert!(team.brief().is_none());
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attribute_array_expects_error() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "attr1": "value1",
+                        "attr2": [1, 2, 3]
+                    }
+                }
+            }
+        }"#;
+        let cfg: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        assert!(cfg.is_err());
+    }
+
+    #[test]
+    fn node_user_config_no_entity_returns_empty_identity_attributes() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo"
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.identity_attributes().is_empty());
+    }
+
+    #[test]
+    fn node_user_config_entity_without_extend_returns_empty_identity_attributes() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {}
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.entity.is_some());
+        assert!(cfg.identity_attributes().is_empty());
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
 /// This iterator avoids heap allocations and can leverage unsafe optimizations when enabled.
@@ -151,6 +152,8 @@ pub enum AttributeValue {
     Double(f64),
     /// Boolean attribute value
     Boolean(bool),
+    /// Map of key:value
+    Map(BTreeMap<String, AttributeValue>),
 }
 
 impl AttributeValue {
@@ -164,6 +167,7 @@ impl AttributeValue {
             AttributeValue::UInt(_) => AttributeValueType::Int,
             AttributeValue::Double(_) => AttributeValueType::Double,
             AttributeValue::Boolean(_) => AttributeValueType::Boolean,
+            AttributeValue::Map(_) => AttributeValueType::Map,
         }
     }
 
@@ -176,6 +180,13 @@ impl AttributeValue {
             AttributeValue::UInt(u) => u.to_string(),
             AttributeValue::Double(f) => f.to_string(),
             AttributeValue::Boolean(b) => b.to_string(),
+            AttributeValue::Map(m) => {
+                let entries: Vec<String> = m
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
+                    .collect();
+                format!("{{{}}}", entries.join(", "))
+            }
         }
     }
 }

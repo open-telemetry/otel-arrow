@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
-pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
+pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
 
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
@@ -324,6 +324,7 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff
