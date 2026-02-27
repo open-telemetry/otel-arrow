@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn test_dict_16_u32() {
         let rb = record_batch!(
-            ("parent_id", (UInt8, UInt32), ([1, 0, 1, 0], [10, 20])),
+            ("parent_id", (UInt16, UInt32), ([1, 0, 1, 0], [10, 20])),
             ("id", UInt16, [4, 3, 2, 1])
         )
         .unwrap();
