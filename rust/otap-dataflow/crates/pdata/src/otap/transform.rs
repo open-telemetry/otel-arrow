@@ -37,7 +37,7 @@ use crate::schema::{get_field_metadata, update_field_metadata};
 pub mod concatenate;
 pub mod reindex;
 pub mod split;
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 pub(crate) mod testing;
 pub mod transport_optimize;
 pub mod util;
