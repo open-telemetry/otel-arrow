@@ -86,7 +86,7 @@ tries formats in this order:
 | 22 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|=``` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
 | 23 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|===value``` | Succeeds, 0 extensions | Empty key skipped |
 | 24 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\``` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
-| 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = ```name\|10```, severity = empty |
+| 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | ```name = name\|10```, severity = empty |
 
 <!-- markdownlint-enable MD013 -->
 
