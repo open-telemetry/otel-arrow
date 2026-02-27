@@ -470,7 +470,7 @@ properties for the `resource` column's `id` field.
 | Name | Native Type | Optimized Encodings | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | No | [DELTA](#642-delta-encoding) | encoding | Event identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#643-quasi-delta-encoding) (name) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
+| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#643-quasi-delta-encoding) (`name`) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Event timestamp in Unix nanoseconds |
 | name | Utf8 | — | No | Yes | — | — | Event name |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped event attributes |
@@ -480,7 +480,7 @@ properties for the `resource` column's `id` field.
 | Name | Native Type | Optimized Encodings | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | No | [DELTA](#642-delta-encoding) | encoding | Link identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#643-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
+| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#643-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
 | trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
 | span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
 | trace_state | Utf8 | — | Yes | No | — | — | Linked trace state |
@@ -582,7 +582,7 @@ Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPL
 | Name | Native Type | Optimized Encodings | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | - | Yes | No | [DELTA](#642-delta-encoding) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [COLUMNAR QUASI-DELTA](#643-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS `id` column |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#643-quasi-delta-encoding) (`int_value`, `double_value`) | encoding | Foreign key to the corresponding \*_DATA_POINTS `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | - | Yes | No | - | - | Timestamp in Unix nanoseconds |
 | int_value | Int64 | Dict(u8), Dict(u16) | Yes | No | - | - | Integer exemplar value |
 | double_value | Float64 | - | Yes | No | - | - | Double exemplar value |
@@ -601,7 +601,7 @@ HISTOGRAM_DP_ATTRS / EXP_HISTOGRAM_DP_ATTRS / NUMBER_DP_EXEMPLAR_ATTRS / HISTOGR
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS `id` column |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| type | UInt8 | — | No | Yes | — | — | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
@@ -617,7 +617,7 @@ Applies to: RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id`, `scope.id`, or `id` column |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| type | UInt8 | — | No | Yes | — | — | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
@@ -673,11 +673,6 @@ equivalent to a `type` of `0`.
 
 If the column for the Active Field is not present, or the `type` falls outside 
 of the allowed range, then the value for the key is also interpreted as empty.
-
-#### 5.5.2 Exemplar Value Fields
-
-// TODO: I am not sure how to interpret the int and double value fields of an
-exemplar.
 
 ---
 
@@ -745,111 +740,115 @@ during network transport.
 
 Id columns often exhibit strong sequential patterns:
 
-- Primary IDs are often sequential (0, 1, 2, 3...)
+- Primary IDs are usually sequential (0, 1, 2, 3...)
 - Foreign keys (`parent_id`) are often clustered (many attributes reference the
   same parent item)
 - When sorted by `parent_id`, related records appear together
 
-By encoding these patterns explicitly (e.g., storing deltas between values 
-rather than absolute values), we create long runs of small integers and repeated
-values that compress extremely well.
+By encoding these patterns explicitly we create long runs of small integers 
+and repeated values that compress extremely well.
 
-Id columns, including `id`, `parent_id`, `resource.id`, and `scope.id`, are by
-default encoded using one of the delta encoding techniques listed below unless
-their field metadata has `"encoding": "plain"` explicitly set.
-
-Which fields use which encodings are listed in section 6.4.5. The encoding will
-be indicated in the field's metadata with one of the following values:
+The encoding MAY be indicated explicitly in the field's metadata with one of 
+the following values:
 
 | Key | Values | Meaning |
 |-----|--------|---------|
-| `encoding` | `"plain"`, `"delta"`, `"quasidelta"` | Transport encoding applied |
+| `encoding` | `"plain"`, `"delta"`, `"quasidelta"` | Indicated encoding applied |
 
+If there is no value listed, the column is by default encoded using the 
+appropriate delta encoding type for that column.Which fields use which encodings
+are listed in summarized in 6.4.3, but also listed completely in the Payload 
+Specifications in section 5.
 
-#### 6.4.1 PLAIN Encoding
+#### 6.4.1 Plain Encoding
 
-**Encoding identifier**: `"plain"`
+The column contains literal values. No decoding needed.
 
-No transformation applied. Values are stored as-is in the Arrow array.
+#### 6.4.2 Delta Encoding
 
-**Applicability**: All id columns
+The entire column is delta-encoded. Decode by computing a prefix sum - each 
+decoded value equals the previous decoded value plus the current encoded value.
+This is used on `id` columns and on `parent_id` columns of data point batches 
+(where the parent IDs are already sorted).
 
-#### 6.4.2 DELTA Encoding
+### Example
 
-**Encoding identifier**: `"delta"`
-
-Stores the difference between consecutive values instead of absolute values. 
-Used for columns that are sorted and contain sequential or near-sequential
-values.
-
-**Applicability**: Primary `id` columns
-
-#### 6.4.3 QUASI-DELTA Encoding
-
-**Encoding identifier**: `"quasidelta"`
-
-A hybrid encoding that applies delta encoding selectively. Parent IDs are 
-delta-encoded only within "runs" of rows that share the same attribute 
-key/value or other identifying columns.
-
-**Applicability**: `parent_id` columns in attribute and related tables
-
-#### 6.4.4 Field Metadata
-
-// TODO: What do we want to spec out as the requirement here? Delta encoded by
-default unless plain is specified is the current behavior.
-
-Producers SHOULD include field metadata to indicate encoding:
-```json
-{
-  "encoding": "delta" | "plain" | "quasidelta"
-}
+```
+| encoded | decoded |
+|---------|---------|
+|    0    |    0    |  <- first value is always absolute
+|    0    |    0    |  <- 0 + 0 = 0
+|    1    |    1    |  <- 0 + 1 = 1
+|    0    |    1    |  <- 1 + 0 = 1
+|    0    |    1    |  <- 1 + 0 = 1
+|    1    |    2    |  <- 1 + 1 = 2
+|    1    |    3    |  <- 2 + 1 = 3
 ```
 
-If metadata is absent, consumers SHOULD assume the column is encoded according
-to the tables in section 6.4.5. Consumers MUST handle both presence and 
-absence of metadata.
+#### 6.4.3 Quasi-delta Encoding
 
-#### 6.4.5 Encoding Application by Payload Type
+Each value is *either* a delta from the previous row or an absolute value, 
+depending on whether certain "equality columns" in the same batch match the 
+previous row.
 
-The following table specifies encodings per payload type:
+Record batches are sorted by all three equality columns in order. When they 
+match, accumulate the delta. When they differ, reset to the absolute value.
 
-| Payload Type | Column | Encoding | Data Type |
-|--------------|--------|----------|-----------|
-| LOGS | id | DELTA (remapped) | UInt16 |
-| LOGS | resource.id | DELTA (remapped) | UInt16 |
-| LOGS | scope.id | DELTA (remapped) | UInt16 |
-| UNIVARIATE_METRICS | id | DELTA (remapped) | UInt16 |
-| UNIVARIATE_METRICS | resource.id | DELTA (remapped) | UInt16 |
-| UNIVARIATE_METRICS | scope.id | DELTA (remapped) | UInt16 |
-| SPANS | id | DELTA (remapped) | UInt16 |
-| SPANS | resource.id | DELTA (remapped) | UInt16 |
-| SPANS | scope.id | DELTA (remapped) | UInt16 |
-| RESOURCE_ATTRS | parent_id | QUASI-DELTA | UInt16 |
-| SCOPE_ATTRS | parent_id | QUASI-DELTA | UInt16 |
-| LOG_ATTRS | parent_id | QUASI-DELTA | UInt16 |
-| SPAN_ATTRS | parent_id | QUASI-DELTA | UInt16 |
-| METRIC_ATTRS | parent_id | QUASI-DELTA | UInt16 |
-| NUMBER_DATA_POINTS | id | DELTA (remapped) | UInt32 |
-| NUMBER_DATA_POINTS | parent_id | DELTA | UInt16 |
-| SUMMARY_DATA_POINTS | id | DELTA (remapped) | UInt32 |
-| SUMMARY_DATA_POINTS | parent_id | DELTA | UInt16 |
-| HISTOGRAM_DATA_POINTS | id | DELTA (remapped) | UInt32 |
-| HISTOGRAM_DATA_POINTS | parent_id | DELTA | UInt16 |
-| EXP_HISTOGRAM_DATA_POINTS | id | DELTA (remapped) | UInt32 |
-| EXP_HISTOGRAM_DATA_POINTS | parent_id | DELTA | UInt16 |
-| SPAN_EVENTS | id | DELTA (remapped) | UInt32 |
-| SPAN_EVENTS | parent_id | COLUMNAR QUASI-DELTA (name) | UInt16 |
-| SPAN_LINKS | id | DELTA (remapped) | UInt32 |
-| SPAN_LINKS | parent_id | COLUMNAR QUASI-DELTA (trace_id) | UInt16 |
-| {TYPE}_DP_ATTRS | parent_id | QUASI-DELTA | UInt32 |
-| NUMBER_DP_EXEMPLARS | id | DELTA (remapped) | UInt32 |
-| NUMBER_DP_EXEMPLARS | parent_id | COLUMNAR QUASI-DELTA (int_value, double_value) | UInt32 |
-| HISTOGRAM_DP_EXEMPLARS | id | DELTA (remapped) | UInt32 |
-| HISTOGRAM_DP_EXEMPLARS | parent_id | COLUMNAR QUASI-DELTA (int_value, double_value) | UInt32 |
-| EXP_HISTOGRAM_DP_EXEMPLARS | id | DELTA (remapped) | UInt32 |
-| EXP_HISTOGRAM_DP_EXEMPLARS | parent_id | COLUMNAR QUASI-DELTA (int_value, double_value) | UInt32 |
+The quasi-delta columns for each Payload Type are defined by the OTAP 
+specification and are always the same. The columns are summarized in the below
+table and also indicated in the Payload Specifications in section 5.
 
+| Payload types | Equality columns |
+|---|---|
+| All `*Attrs` batches | `type`, `key`, the "Active Field" |
+| `SpanEvents` | `name` |
+| `SpanLinks` | `trace_id` |
+| `*DpExemplars` | `int_value`, `double_value` |
+
+#### Attribute Quasidelta Encoding
+
+The attribute batch has one value column per attribute type and the`type` 
+column identifies which value column holds the attribute value for a given row.
+See 5.5.1 "Any Value". Delta encoding is applied to runs of rows where type, 
+key, and value all match, with two exceptions: Map and Slice types are never 
+delta encoded, and neither are rows with null values.
+
+```
+ type      | key    | str  | int  | encoded parent_id | decoded parent_id
+-----------|--------|------|------|---------|---------
+ 1 (str)   | "k1"   | "v1" | null |  1      |  1      <- absolute
+ 1 (str)   | "k1"   | "v1" | null |  1      |  2      <- type,key,val match prev -> delta: 1 + 1 = 2
+ 1 (str)   | "k1"   | "v1" | null |  1      |  3      <- type,key,val match prev -> delta: 2 + 1 = 3
+ 1 (str)   | "k1"   | "v2" | null |  1      |  1      <- val changed -> reset to absolute: 1
+ 1 (str)   | "k1"   | "v2" | null |  1      |  2      <- type,key,val match prev -> delta: 1 + 1 = 2
+ 1 (str)   | "k2"   | "v2" | null |  1      |  1      <- key changed -> reset to absolute: 1
+ 1 (str)   | "k2"   | "v2" | null |  1      |  2      <- type,key,val match prev -> delta: 1 + 1 = 2
+ 1 (str)   | "k2"   | "v2" | null |  1      |  3      <- type,key,val match prev -> delta: 2 + 1 = 3
+ 2 (int)   | "k2"   | "v2" | 1    |  1      |  1      <- type changed -> reset to absolute: 1
+ 2 (int)   | "k2"   | "v2" | 1    |  1      |  2      <- type,key,val match prev -> delta: 1 + 1 = 2
+ ...
+ 0 (empty) | null   | null | null |  1      |  1      <- type = empty -> never delta encoded
+ ...
+ 5 (map)   | null   | null | null |  1      |  1      <- type = map -> never delta encoded
+ ...
+ 6 (slice) | null   | null | null |  1      |  1      <- type = slice -> never delta encoded
+```
+
+### Non-attribute Quasidelta Encoding
+
+For non-attributes tables, equality columns are defined per table. For example,
+SPAN_EVENTS uses a quasidelta encoding with just its `name` column.
+
+```
+| name | encoded parent_id | decoded parent_id |
+|------|-------------------:|------------------:|
+| "a"  |                 0  |                0  | <- first value is always absolute
+| "a"  |                 1  |                1  | <- name matches prev -> delta: 0 + 1 = 1
+| "a"  |                 1  |                2  | <- name matches prev -> delta: 1 + 1 = 2
+| "a"  |                 2  |                4  | <- name matches prev -> delta: 2 + 2 = 4
+| "b"  |                 0  |                0  | <- name differs -> reset to absolute: 0
+| "b"  |                 3  |                3  | <- name matches prev -> delta: 0 + 3 = 3
+```
 ---
 
 ## 7. Error Handling
