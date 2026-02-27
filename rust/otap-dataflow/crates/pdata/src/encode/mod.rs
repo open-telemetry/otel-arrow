@@ -33,12 +33,12 @@ use crate::{
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
-use otap_pdata_views::views::common::{
+use otap_df_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
-use otap_pdata_views::views::resource::ResourceView;
-use otap_pdata_views::views::trace::{
+use otap_df_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::resource::ResourceView;
+use otap_df_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 

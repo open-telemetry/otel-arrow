@@ -46,7 +46,7 @@ use crate::views::otlp::bytes::decode::{
     read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use otap_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::common::Str;
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {

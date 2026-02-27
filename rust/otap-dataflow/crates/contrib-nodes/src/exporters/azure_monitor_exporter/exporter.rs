@@ -16,7 +16,7 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_pdata_views::views::logs::LogsDataView;
+use otap_df_pdata_views::views::logs::LogsDataView;
 
 use super::auth::Auth;
 use super::client::LogsIngestionClientPool;

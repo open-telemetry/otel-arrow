@@ -14,8 +14,8 @@ use crate::views::{
     otlp::proto::resource::ObjResource,
     otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
-use otap_pdata_views::views::common::Str;
-use otap_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 

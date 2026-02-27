@@ -19,7 +19,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-otap = { path = "../otap" }
 otap-df-pdata = { path = "../pdata" }
-otap-pdata-views = { workspace = true }
+otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-channel = { path = "../channel" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }

@@ -28,7 +28,7 @@ use crate::views::otlp::bytes::decode::{
     to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use otap_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 
 /// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
 ///
@@ -350,7 +350,7 @@ impl ResourceLogsView for RawResourceLogs<'_> {
     }
 
     #[inline]
-    fn schema_url(&self) -> Option<otap_pdata_views::views::common::Str<'_>> {
+    fn schema_url(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.byte_parser
             .advance_to_find_field(RESOURCE_LOGS_SCHEMA_URL)
     }
@@ -393,7 +393,7 @@ impl ScopeLogsView for RawScopeLogs<'_> {
     }
 
     #[inline]
-    fn schema_url(&self) -> Option<otap_pdata_views::views::common::Str<'_>> {
+    fn schema_url(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.byte_parser
             .advance_to_find_field(SCOPE_LOGS_SCHEMA_URL)
     }
@@ -471,7 +471,7 @@ impl LogRecordView for RawLogRecord<'_> {
     }
 
     #[inline]
-    fn severity_text(&self) -> Option<otap_pdata_views::views::common::Str<'_>> {
+    fn severity_text(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_SEVERITY_TEXT)
     }
@@ -500,7 +500,7 @@ impl LogRecordView for RawLogRecord<'_> {
     }
 
     #[inline]
-    fn event_name(&self) -> Option<otap_pdata_views::views::common::Str<'_>> {
+    fn event_name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_EVENT_NAME)
     }

@@ -267,7 +267,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
-                use otap_pdata_views::views::logs::{
+                use otap_df_pdata_views::views::logs::{
                     LogsDataView, ResourceLogsView, ScopeLogsView,
                 };
                 logs_data_view
@@ -281,7 +281,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes.as_ref());
-                use otap_pdata_views::views::trace::{
+                use otap_df_pdata_views::views::trace::{
                     ResourceSpansView, ScopeSpansView, TracesView,
                 };
                 traces_data_view

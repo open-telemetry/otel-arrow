@@ -17,7 +17,7 @@ use crate::views::otlp::bytes::{
         from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
     },
 };
-use otap_pdata_views::views::resource::ResourceView;
+use otap_df_pdata_views::views::resource::ResourceView;
 
 /// Implementation of `ResourceView` backed by protobuf serialized `Resource` message
 pub struct RawResource<'a> {

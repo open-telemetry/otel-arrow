@@ -21,7 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
-otap-pdata-views = { workspace = true }
+otap-df-pdata-views = { workspace = true }
 
 axum = { workspace = true }
 bytes = { workspace = true }

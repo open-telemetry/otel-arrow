@@ -25,7 +25,7 @@ otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
-otap-pdata-views = { workspace = true }
+otap-df-pdata-views = { workspace = true }
 
 smallvec.workspace = true
 tracing.workspace = true
