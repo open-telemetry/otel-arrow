@@ -63,12 +63,12 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
 
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};

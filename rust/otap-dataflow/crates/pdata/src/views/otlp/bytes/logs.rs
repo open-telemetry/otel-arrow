@@ -28,7 +28,9 @@ use crate::views::otlp::bytes::decode::{
     to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use otap_df_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
 
 /// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
 ///

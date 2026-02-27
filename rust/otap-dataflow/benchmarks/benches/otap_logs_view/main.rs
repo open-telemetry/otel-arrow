@@ -23,7 +23,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata_views::views::common::AttributeView;
-use otap_df_pdata_views::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
 use prost::Message;
 
 use arrow::array::Array;
