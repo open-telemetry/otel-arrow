@@ -32,12 +32,12 @@ tries formats in this order:
 | 7 | `<34>Oct 11 22:14:15 host sshd[5678]: content` | `Rfc3164` | priority, timestamp, hostname, tag, app_name, proc_id, content | No | TAG with numeric PID extracted |
 | 8 | `<34>hostname tag: message` | `Rfc3164` | priority, hostname, tag, app_name, content | No | No timestamp |
 | 9 | `<34>This is just content` | `Rfc3164` | priority, content | No | No colon → entire remainder is content |
-| 10 | `CEF:0\|Vendor\|Product\|1.0\|100\|name\|10\|src=1.2.3.4` | `Cef` | All 7 CEF headers + extensions | No | Pure CEF, no syslog wrapper |
-| 11 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|` | `Cef` | All 7 CEF headers, empty extensions | No | Trailing pipe, no extensions |
-| 12 | `CEF:0\|V\|P\|1.0\|100\|name\|10` | `Cef` | All 7 CEF headers, no extensions | No | No trailing pipe |
-| 13 | `<134>1 2024-... host CEF - - CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v` | `CefWithRfc5424` | RFC 5424 fields + CEF fields + extensions | No | CEF embedded in RFC 5424 message |
-| 14 | `<34>Oct 11 22:14:15 fw CEF: CEF:0\|V\|P\|1.0\|100\|name\|10\|` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | CEF embedded in RFC 3164 content |
-| 15 | `<34>Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | Special case: TAG=`CEF`, parser reconstructs full CEF from input |
+| 10 | ```CEF:0\|Vendor\|Product\|1.0\|100\|name\|10\|src=1.2.3.4``` | `Cef` | All 7 CEF headers + extensions | No | Pure CEF, no syslog wrapper |
+| 11 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|``` | `Cef` | All 7 CEF headers, empty extensions | No | Trailing pipe, no extensions |
+| 12 | ```CEF:0\|V\|P\|1.0\|100\|name\|10``` | `Cef` | All 7 CEF headers, no extensions | No | No trailing pipe |
+| 13 | ```<134>1 2024-... host CEF - - CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v``` | `CefWithRfc5424` | RFC 5424 fields + CEF fields + extensions | No | CEF embedded in RFC 5424 message |
+| 14 | ```<34>Oct 11 22:14:15 fw CEF: CEF:0\|V\|P\|1.0\|100\|name\|10\|``` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | CEF embedded in RFC 3164 content |
+| 15 | ```<34>Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|``` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | Special case: TAG=`CEF`, parser reconstructs full CEF from input |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -65,7 +65,7 @@ tries formats in this order:
 | 7 | `<> Test message` (empty PRI) | `Rfc3164` | PRI parse fails → priority=None; entire input is `content` | **Yes** | `false` |
 | 8 | `<192>1 - - - - - - msg` (PRI > 191) | `Rfc3164` | RFC 5424 PRI validation fails; RFC 3164 also treats PRI as invalid → content-only | **Yes** | `false` |
 | 9 | `Oct 11 22:14:15 host su: msg` (no PRI, has structure) | `Rfc3164` | No priority but timestamp/hostname/tag/content parsed | **Yes** | `false` |
-| 10 | `Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v` (CEF+3164 no PRI) | `CefWithRfc3164` | Both 3164 & CEF parsed, but no priority | **Yes** | `false` |
+| 10 | ```Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v``` (CEF+3164 no PRI) | `CefWithRfc3164` | Both 3164 & CEF parsed, but no priority | **Yes** | `false` |
 <!-- markdownlint-disable-next-line MD038 -->
 | 11 | `<34>1 - - - - - [id@123 key="value" ` (unclosed SD) | `Rfc5424` | Unclosed structured data → entire remainder captured as SD; message=None | No | `true` |
 | 12 | `<34>1 - - - - - [ Message` (single open bracket) | `Rfc5424` | Unclosed bracket → everything after `[` treated as SD; message=None | No | `true` |
@@ -79,14 +79,14 @@ tries formats in this order:
 
 | # | Input Example | Error / Outcome | Notes |
 |---|---|---|---|
-| 18 | `CEF:0\|vendor\|product\|version\|id` (only 4 pipes) | `InvalidCef` → falls to RFC 3164 | Fewer than 7 required fields |
-| 19 | `CEF:0\|vendor\|product\|version\|id\|name` (only 5 pipes) | `InvalidCef` → falls to RFC 3164 | Missing severity field |
-| 20 | `CEF:2.0\|V\|P\|1.0\|100\|name\|10\|` | `InvalidCef` → falls to RFC 3164 | CEF version must be 0 or 1 |
+| 18 | ```CEF:0\|vendor\|product\|version\|id``` (only 4 pipes) | `InvalidCef` → falls to RFC 3164 | Fewer than 7 required fields |
+| 19 | ```CEF:0\|vendor\|product\|version\|id\|name``` (only 5 pipes) | `InvalidCef` → falls to RFC 3164 | Missing severity field |
+| 20 | ```CEF:2.0\|V\|P\|1.0\|100\|name\|10\|``` | `InvalidCef` → falls to RFC 3164 | CEF version must be 0 or 1 |
 | 21 | ```CEF:0\|\|\|\|\|\|\|``` (all empty fields) | **Succeeds** as `Cef` | All 7 header fields present but empty; valid per parser |
-| 22 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|=` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
-| 23 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|===value` | Succeeds, 0 extensions | Empty key skipped |
-| 24 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
-| 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = `name\|10`, severity = empty |
+| 22 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|=``` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
+| 23 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|===value``` | Succeeds, 0 extensions | Empty key skipped |
+| 24 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\``` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
+| 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = ```name\|10```, severity = empty |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -132,6 +132,8 @@ tries formats in this order:
 
 ## Key Behavioral Summary
 
+<!-- markdownlint-disable MD038 -->
+
 - **RFC 3164 is the ultimate fallback** — it accepts any
   non-empty input, even completely unstructured text. When
   PRI is missing/invalid, priority is `None`,
@@ -144,10 +146,11 @@ tries formats in this order:
   parsing fails (wrong version, too few pipes), the input
   falls through to RFC 5424 / RFC 3164.
 - **RFC 5424 is strict on PRI+VERSION** — requires valid
-<!-- markdownlint-disable-next-line MD038 -->
   `<PRI>VERSION ` structure; any deviation causes it to
   fall through to RFC 3164.
 - **Structured data is lenient** — unclosed brackets are
   captured as-is rather than causing errors; escaped
   characters (`\"`, `\]`, `\\`) inside quoted values
   are handled correctly.
+
+<!-- markdownlint-enable MD038 -->
