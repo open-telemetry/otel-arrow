@@ -53,7 +53,7 @@ use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
 
-const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
+const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]
@@ -128,6 +128,8 @@ pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTAPReceiver {
@@ -319,6 +321,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 loop {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            otap_df_telemetry::otel_info!("otap.receiver.shutdown");
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));

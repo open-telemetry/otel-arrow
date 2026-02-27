@@ -81,7 +81,7 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         control_rx: SharedReceiver<NodeControlMsg<PData>>,
         pdata_rx: SharedReceiver<PData>,
     ) -> Self {
@@ -218,7 +218,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
     /// exporter.
     #[must_use]
-    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,

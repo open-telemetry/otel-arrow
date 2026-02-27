@@ -10,7 +10,7 @@ use crate::proto::opentelemetry::metrics::v1::{
 };
 use crate::testing::equiv::canonical::{
     assert_equivalent, canonicalize_any_value, canonicalize_resource, canonicalize_scope,
-    canonicalize_vec,
+    canonicalize_vec, validate_equivalent,
 };
 
 /// Split a MetricsData into individual singleton MetricsData messages (one per data point).
@@ -287,6 +287,16 @@ pub fn assert_metrics_equivalent(left: &[MetricsData], right: &[MetricsData]) {
     );
 }
 
+/// Validate that two collections of `MetricsData` instances are equivalent.
+pub fn validate_metrics_equivalent(left: &[MetricsData], right: &[MetricsData]) -> bool {
+    validate_equivalent(
+        left,
+        right,
+        metrics_split_into_singletons,
+        metrics_canonicalize_singleton,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +387,10 @@ mod tests {
             }],
         };
 
+        assert!(validate_metrics_equivalent(
+            std::slice::from_ref(&request1),
+            std::slice::from_ref(&request2)
+        ));
         assert_metrics_equivalent(&[request1], &[request2]);
     }
 }

@@ -913,7 +913,7 @@ impl MetricsConfig {
 
     /// Enable varying attributes on data points
     #[must_use]
-    pub fn with_varying_attributes(mut self, vary: bool) -> Self {
+    pub const fn with_varying_attributes(mut self, vary: bool) -> Self {
         self.vary_attributes = vary;
         self
     }
@@ -929,7 +929,7 @@ impl MetricsConfig {
 
     /// Count total number of metrics
     #[must_use]
-    pub fn metric_count(&self) -> usize {
+    pub const fn metric_count(&self) -> usize {
         self.gauge_points.len()
             + self.sum_points.len()
             + self.histogram_points.len()
@@ -957,7 +957,7 @@ pub struct DataGenerator {
 impl DataGenerator {
     /// Generate N 'limit' number of items
     #[must_use]
-    pub fn new(limit: usize) -> Self {
+    pub const fn new(limit: usize) -> Self {
         Self {
             limit,
             count: 0,
@@ -970,7 +970,7 @@ impl DataGenerator {
 
     /// Create a DataGenerator with a specific metrics configuration
     #[must_use]
-    pub fn with_metrics_config(config: MetricsConfig) -> Self {
+    pub const fn with_metrics_config(config: MetricsConfig) -> Self {
         Self {
             limit: 0,
             count: 0,
@@ -982,7 +982,7 @@ impl DataGenerator {
 
 impl DataGenerator {
     /// Return a unique test timestamp.
-    fn timestamp(&mut self) -> u64 {
+    const fn timestamp(&mut self) -> u64 {
         let val = self.time_value;
         // add one second
         self.time_value += 1_000_000_000;

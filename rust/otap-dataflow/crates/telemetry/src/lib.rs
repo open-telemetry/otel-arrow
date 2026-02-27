@@ -30,7 +30,7 @@ use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
@@ -79,7 +79,7 @@ pub use self_tracing::LogContext;
 
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
@@ -302,7 +302,7 @@ impl InternalTelemetrySystem {
 
     /// Returns the configured log level.
     #[must_use]
-    pub fn log_level(&self) -> LogLevel {
+    pub const fn log_level(&self) -> LogLevel {
         self.log_level
     }
 
@@ -363,7 +363,7 @@ impl Default for InternalTelemetrySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::{
+    use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
     use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};

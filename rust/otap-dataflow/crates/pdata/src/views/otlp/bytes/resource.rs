@@ -29,7 +29,7 @@ pub struct RawResource<'a> {
 impl<'a> RawResource<'a> {
     /// create a new instance of `RawResource`
     #[must_use]
-    pub fn new(bytes_parser: ProtoBytesParser<'a, ResourceFieldOffsets>) -> Self {
+    pub const fn new(bytes_parser: ProtoBytesParser<'a, ResourceFieldOffsets>) -> Self {
         Self { bytes_parser }
     }
 }

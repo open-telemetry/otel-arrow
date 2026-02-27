@@ -50,7 +50,7 @@ pub struct RawTraceData<'a> {
 impl<'a> RawTraceData<'a> {
     /// Create a new [`RawTraceData`] instance
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 }

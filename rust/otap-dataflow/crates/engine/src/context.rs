@@ -4,15 +4,24 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
+    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
+    NodeWithCustomAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
-use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otap_df_config::pipeline::telemetry::TelemetryAttribute;
+use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
+
+/// A shared, immutable mapping from otap_df_config node names
+/// (without index numbers) to their engine-specific pipeline indices.
+pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 // Choose UUID v7 for better sortability in telemetry signals
@@ -103,12 +112,20 @@ pub struct PipelineContext {
     thread_id: usize,
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
-    node_id: NodeId,
+    pipeline_telemetry_attrs: HashMap<String, TelemetryAttribute>,
+    node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
+
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
     internal_telemetry: Option<InternalTelemetrySettings>,
+    /// Shared mapping from node names to pipeline indices for mapping
+    /// node names to the index used to send node control messages by,
+    /// for example to map source-node name to index for inferring
+    /// routes at runtime (e.g., how crates/validation works).
+    node_names: NodeNameIndex,
 }
 
 impl ControllerContext {
@@ -165,7 +182,10 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            node_telemetry_attrs: HashMap::new(),
+            pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
+            node_names: Arc::new(HashMap::new()),
         }
     }
 
@@ -183,7 +203,7 @@ impl PipelineContext {
 
     /// Returns the core ID associated with this pipeline context.
     #[must_use]
-    pub fn core_id(&self) -> usize {
+    pub const fn core_id(&self) -> usize {
         self.core_id
     }
 
@@ -192,7 +212,7 @@ impl PipelineContext {
     /// This is useful for nodes that need to share resources (like disk budgets)
     /// across all cores running the same pipeline.
     #[must_use]
-    pub fn num_cores(&self) -> usize {
+    pub const fn num_cores(&self) -> usize {
         self.num_cores
     }
 
@@ -209,15 +229,26 @@ impl PipelineContext {
     /// Only the Internal Telemetry Receiver factory uses this to obtain the logs
     /// channel and resource bytes it needs for operation.
     #[must_use]
-    pub fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
+    pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
+    }
+
+    /// Sets the shared node-name-to-index mapping for this pipeline context.
+    pub fn set_node_names(&mut self, node_names: NodeNameIndex) {
+        self.node_names = node_names;
+    }
+
+    /// Returns the pipeline index for the given node name, if it exists.
+    #[must_use]
+    pub fn node_by_name(&self, name: &str) -> Option<EngineNodeId> {
+        self.node_names.get(name).cloned()
     }
 
     /// Takes the internal telemetry settings, leaving None in its place.
     ///
     /// Used by the ITR factory to consume the settings during construction.
     #[must_use]
-    pub fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
+    pub const fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
         self.internal_telemetry.take()
     }
 
@@ -253,9 +284,15 @@ impl PipelineContext {
             // following code path is only enabled for test builds.
             #[cfg(feature = "test-utils")]
             {
-                self.controller_context
-                    .telemetry_registry_handle
-                    .register_metric_set::<T>(self.node_attribute_set())
+                if self.node_telemetry_attrs.is_empty() {
+                    self.controller_context
+                        .telemetry_registry_handle
+                        .register_metric_set::<T>(self.node_attribute_set())
+                } else {
+                    self.controller_context
+                        .telemetry_registry_handle
+                        .register_metric_set::<T>(self.node_with_custom_attribute_set())
+                }
             }
             #[cfg(not(feature = "test-utils"))]
             {
@@ -275,11 +312,21 @@ impl PipelineContext {
     }
 
     /// Registers the node entity for this context.
+    ///
+    /// If the node has custom telemetry attributes configured, they are included
+    /// in the entity registration. Otherwise, only the base node attributes are used,
+    /// keeping telemetry output clean for nodes without custom attributes.
     #[must_use]
     pub fn register_node_entity(&self) -> EntityKey {
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(self.node_attribute_set())
+        if self.node_telemetry_attrs.is_empty() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(self.node_attribute_set())
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(self.node_with_custom_attribute_set())
+        }
     }
 
     fn engine_attribute_set(&self) -> EngineAttributeSet {
@@ -312,8 +359,21 @@ impl PipelineContext {
         NodeAttributeSet {
             pipeline_attrs: self.pipeline_attribute_set(),
             node_id: self.node_id.clone(),
-            node_urn: self.node_urn.clone(),
+            node_urn: self.node_urn.clone().into(),
             node_type: self.node_kind.into(),
+        }
+    }
+
+    /// Returns the node attribute set extended with custom telemetry attributes.
+    ///
+    /// Only used when the node has non-empty `entity.extend.identity_attributes` configured.
+    #[must_use]
+    pub fn node_with_custom_attribute_set(&self) -> NodeWithCustomAttributeSet {
+        NodeWithCustomAttributeSet {
+            node_attrs: self.node_attribute_set(),
+            custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+                &self.node_telemetry_attrs,
+            )),
         }
     }
 
@@ -373,9 +433,10 @@ impl PipelineContext {
     #[must_use]
     pub fn with_node_context(
         &self,
-        node_id: NodeId,
+        node_id: ConfigNodeId,
         node_urn: NodeUrn,
         node_kind: NodeKind,
+        node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
@@ -384,10 +445,13 @@ impl PipelineContext {
             thread_id: self.thread_id,
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
+            pipeline_telemetry_attrs: self.pipeline_telemetry_attrs.clone(),
             node_id,
             node_urn,
             node_kind,
+            node_telemetry_attrs,
             internal_telemetry: None,
+            node_names: self.node_names.clone(),
         }
     }
 }

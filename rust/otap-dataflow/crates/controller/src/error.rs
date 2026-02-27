@@ -4,7 +4,7 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
-use otap_df_config::pipeline::CoreAllocation;
+use otap_df_config::policy::CoreAllocation;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]

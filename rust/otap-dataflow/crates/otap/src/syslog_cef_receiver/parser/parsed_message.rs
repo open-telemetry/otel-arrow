@@ -77,7 +77,7 @@ impl ParsedSyslogMessage<'_> {
     }
 
     /// Returns the original input received by the receiver
-    pub(crate) fn input(&self) -> &[u8] {
+    pub(crate) const fn input(&self) -> &[u8] {
         match self {
             ParsedSyslogMessage::Rfc5424(msg) => msg.input,
             ParsedSyslogMessage::Rfc3164(msg) => msg.input,

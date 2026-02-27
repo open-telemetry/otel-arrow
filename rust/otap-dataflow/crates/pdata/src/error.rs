@@ -51,7 +51,7 @@ pub enum Error {
 
     #[error("Cannot recognize metric type: {metric_type}: {error}")]
     UnrecognizedMetricType {
-        metric_type: i32,
+        metric_type: u8,
         error: TryFromPrimitiveError<MetricType>,
     },
 
@@ -106,7 +106,10 @@ pub enum Error {
     #[error("Invalid attribute transform: {}", reason)]
     InvalidAttributeTransform { reason: String },
 
-    #[error("Unsupported parent id type. Expected u16 or u32, got: {}", actual)]
+    #[error(
+        "Unsupported parent id column type. Expected u16 or u32, got: {}",
+        actual
+    )]
     UnsupportedParentIdType { actual: DataType },
 
     #[error("Unsupported payload type, got: {}", actual)]
@@ -180,6 +183,9 @@ pub enum Error {
     )]
     InvalidId { expected: usize, given: usize },
 
+    #[error("Invalid type for an Id column: {}", data_type)]
+    InvalidIdColumnType { data_type: DataType },
+
     #[error(
         "Invalid data type for struct, parent: {}, name: {}, data_type: {}",
         parent,
@@ -194,6 +200,20 @@ pub enum Error {
 
     #[error("Mixed signals")]
     MixedSignals,
+
+    #[error(
+        "Too many items. signal: {:?}, size: {}, max: {}, message: {}",
+        payload_type,
+        count,
+        max,
+        message
+    )]
+    TooManyItems {
+        payload_type: ArrowPayloadType,
+        count: usize,
+        max: u64,
+        message: String,
+    },
 
     #[error("Encoding error: {}", error)]
     Encoding {

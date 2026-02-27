@@ -6,50 +6,44 @@
 //! A node is a fundamental unit in our data processing pipeline, representing either a receiver
 //! (source), processor, exporter (sink), or connector (linking pipelines).
 //!
-//! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
-//! data flows from this node to one or more target nodes.
+//! A node can expose multiple named output ports.
 
-use crate::{Description, NodeId, NodeUrn, PortName};
+use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
+use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// User configuration for a node in the pipeline.
-/// Each node contains its own settings (i.e. user config) and defines how it connects to downstream
-/// nodes via out_ports.
-/// Each out_port is a named output (e.g. "success", "error") that defines a hyper-edge:
-/// - The hyper-edge configuration determines which downstream nodes are connected,
-///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
-    /// The kind of this node, which determines its role in the pipeline.
-    /// 4 kinds are currently specified:
-    /// - `Receiver`: A node that receives data from an external source.
-    /// - `Processor`: A node that processes data, transforming it in some way.
-    /// - `Exporter`: A node that exports data to an external destination.
-    /// - `Connector`: A node that connects 2 pipelines together, allowing data to flow between them.
-    pub kind: NodeKind,
-
-    /// The URN identifying the plugin (factory) to use for this node.
-    /// This determines which implementation is loaded and instantiated.
-    pub plugin_urn: NodeUrn,
+    /// The node type URN identifying the plugin (factory) to use for this node.
+    ///
+    /// Expected format:
+    /// - `urn:<namespace>:<kind>:<id>`
+    /// - `<kind>:<id>` (shortcut form for the `otel` namespace)
+    ///
+    /// The node kind is inferred from the `<kind>` segment.
+    pub r#type: NodeUrn,
 
     /// An optional description of this node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
 
-    /// Outgoing hyper-edges, keyed by port name.
-    /// Each port connects this node to one or more downstream nodes, with a specific dispatch strategy.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub out_ports: HashMap<PortName, HyperEdgeConfig>,
+    /// Declared output ports exposed by this node.
+    ///
+    /// This is primarily used with top-level `connections` wiring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<PortName>,
 
     /// Optional default output port name to use when a node emits pdata without specifying a port.
-    /// If omitted and multiple out ports are configured, the engine will treat the default as
+    /// If omitted and multiple output ports are configured, the engine will treat the default as
     /// ambiguous and require explicit port selection at runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_out_port: Option<PortName>,
+    pub default_output: Option<PortName>,
 
     /// Node-specific configuration.
     ///
@@ -63,34 +57,24 @@ pub struct NodeUserConfig {
     // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
-}
 
-/// Describes a hyper-edge from a node output port to one or more destination nodes,
-/// and defines the dispatching strategy for this port.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HyperEdgeConfig {
-    /// List of downstream node IDs this port connects to.
+    /// Entity configuration for the node.
     ///
-    /// When there is only one target node, the hyper-edge is a simple edge and the dispatch
-    /// strategy is ignored.
-    pub destinations: HashSet<NodeId>,
-
-    /// Dispatch strategy for sending messages (broadcast, round-robin, ...).
-    pub dispatch_strategy: DispatchStrategy,
-}
-
-/// Dispatching strategies for hyper-edges.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DispatchStrategy {
-    /// Broadcast the data to all targeted nodes.
-    Broadcast,
-    /// Round-robin dispatching to the targets.
-    RoundRobin,
-    /// Randomly select a target node to dispatch the data to.
-    Random,
-    /// Dispatch the data to the least loaded target node.
-    LeastLoaded,
+    /// Currently, we support entity::extend::identity_attributes, for example:
+    ///
+    /// ```yaml
+    /// config:
+    ///   ...
+    /// entity:
+    ///   extend:
+    ///     identity_attributes:
+    ///       region: "us-west"
+    ///       team:
+    ///         value: "platform"
+    ///         brief: "team name"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<NodeEntity>,
 }
 
 /// Node kinds
@@ -124,108 +108,282 @@ impl From<NodeKind> for Cow<'static, str> {
 }
 
 impl NodeUserConfig {
-    /// Creates a new Receiver `NodeUserConfig` with the plugin URN.
-    pub fn new_receiver_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Receiver `NodeUserConfig` with the node type URN.
+    pub fn new_receiver_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Receiver,
-            plugin_urn: plugin_urn.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Receiver,
+            )
+            .expect("invalid receiver node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            outputs: Vec::new(),
+            default_output: None,
+            entity: None,
             config: Value::Null,
         }
     }
 
-    /// Creates a new Exporter `NodeUserConfig` with the plugin URN.
-    pub fn new_exporter_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Exporter `NodeUserConfig` with the node type URN.
+    pub fn new_exporter_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Exporter,
-            plugin_urn: plugin_urn.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Exporter,
+            )
+            .expect("invalid exporter node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            entity: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: Value::Null,
         }
     }
 
-    /// Creates a new Processor `NodeUserConfig` with the plugin URN.
-    pub fn new_processor_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Processor `NodeUserConfig` with the node type URN.
+    pub fn new_processor_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Processor,
-            plugin_urn: plugin_urn.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Processor,
+            )
+            .expect("invalid processor node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            entity: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: Value::Null,
         }
     }
 
-    /// Creates a new `NodeUserConfig` with the specified kind, plugin URN, and user configuration.
+    /// Creates a new `NodeUserConfig` with the specified node type URN and user configuration.
     #[must_use]
-    pub fn with_user_config(kind: NodeKind, plugin_urn: NodeUrn, user_config: Value) -> Self {
+    pub fn with_user_config(node_type: NodeUrn, user_config: Value) -> Self {
         Self {
-            kind,
-            plugin_urn,
+            r#type: node_type,
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            entity: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: user_config,
         }
     }
 
-    /// Adds an out port to this node's configuration.
-    pub fn add_out_port(
-        &mut self,
-        port_name: PortName,
-        edge_config: HyperEdgeConfig,
-    ) -> Option<HyperEdgeConfig> {
-        self.out_ports.insert(port_name, edge_config)
+    /// Returns the identity attributes from the entity configuration, or an empty map if none.
+    #[must_use]
+    pub fn identity_attributes(&self) -> HashMap<String, TelemetryAttribute> {
+        self.entity
+            .as_ref()
+            .and_then(|e| e.extend.as_ref())
+            .map(|ext| &ext.identity_attributes)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Adds an output port to this node declaration.
+    pub fn add_output<P: Into<PortName>>(&mut self, port_name: P) {
+        let port_name: PortName = port_name.into();
+        if !self.outputs.iter().any(|output| output == &port_name) {
+            self.outputs.push(port_name);
+        }
     }
 
     /// Sets the default output port name used by this node when no explicit port is specified.
-    pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
-        self.default_out_port = Some(port.into());
+    pub fn set_default_output<P: Into<PortName>>(&mut self, port: P) {
+        self.default_output = Some(port.into());
     }
+
+    /// Returns this node kind from its URN.
+    #[must_use]
+    pub const fn kind(&self) -> NodeKind {
+        self.r#type.kind()
+    }
+}
+
+/// Entity configuration for a node, aligned with the semantic conventions model.
+/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeEntity {
+    /// Extensions to the entity's attribute sets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend: Option<ExtendedNodeEntity>,
+}
+
+/// Node entity extensions, including user-provided identifying attributes.
+/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtendedNodeEntity {
+    /// Attributes that identify this node in telemetry emitted
+    /// from the dataflow engine.
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_identity_attributes"
+    )]
+    pub identity_attributes: HashMap<String, TelemetryAttribute>,
+}
+
+/// Deserializes `identity_attributes` and rejects any attribute with an `Array` value,
+/// which is not supported for log record attributes.
+fn deserialize_identity_attributes<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, TelemetryAttribute>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attrs: HashMap<String, TelemetryAttribute> = HashMap::deserialize(deserializer)?;
+    for (key, attr) in &attrs {
+        if matches!(attr.value(), AttributeValue::Array(_)) {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported identity attribute type for `{key}`: array attributes are not supported"
+            )));
+        }
+    }
+    Ok(attrs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
-            "kind": "receiver",
-            "plugin_urn": "urn:example:demo:receiver",
-            "out_ports": {}
+            "type": "urn:example:receiver:demo"
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        assert!(matches!(cfg.kind, NodeKind::Receiver));
-        assert!(cfg.out_ports.is_empty());
+        assert!(matches!(cfg.kind(), NodeKind::Receiver));
+        assert!(cfg.outputs.is_empty());
     }
 
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"
-kind: processor
-plugin_urn: "urn:otel:type_router:processor"
-out_ports:
-  logs:
-    destinations:
-      - exporter
-    dispatch_strategy: round_robin
-  metrics:
-    destinations:
-      - debug
-    dispatch_strategy: round_robin
-  traces:
-    destinations:
-      - debug
-    dispatch_strategy: round_robin
+type: "urn:otel:processor:type_router"
+outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(cfg.kind, NodeKind::Processor));
-        assert_eq!(cfg.out_ports.len(), 3);
+        assert!(matches!(cfg.kind(), NodeKind::Processor));
+        assert_eq!(cfg.outputs.len(), 3);
+    }
+
+    #[test]
+    fn test_yaml_node_outputs() {
+        let yaml = r#"
+type: "processor:debug"
+outputs: ["logs", "metrics", "traces"]
+config: {}
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(cfg.kind(), NodeKind::Processor));
+        let expected: Vec<PortName> = vec!["logs", "metrics", "traces"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        assert_eq!(cfg.outputs, expected);
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attributes_valid() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "attr1": "value1",
+                        "attr2": 123,
+                        "attr3": true
+                    }
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let identity_attrs = cfg.identity_attributes();
+        assert_eq!(
+            identity_attrs.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "attr1".to_string(),
+                "attr2".to_string(),
+                "attr3".to_string(),
+            ])
+        );
+        // Bare values have no brief
+        assert!(identity_attrs.get("attr1").unwrap().brief().is_none());
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attributes_extended_form() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "region": {"value": "us-west", "brief": "Deployment region"},
+                        "count": 42,
+                        "team": {"value": "platform"}
+                    }
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let identity_attrs = cfg.identity_attributes();
+        let region = identity_attrs.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), Some("Deployment region"));
+
+        let count = identity_attrs.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert!(count.brief().is_none());
+
+        let team = identity_attrs.get("team").unwrap();
+        assert_eq!(
+            *team.value(),
+            AttributeValue::String("platform".to_string())
+        );
+        assert!(team.brief().is_none());
+    }
+
+    #[test]
+    fn node_user_config_with_entity_identity_attribute_array_expects_error() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {
+                "extend": {
+                    "identity_attributes": {
+                        "attr1": "value1",
+                        "attr2": [1, 2, 3]
+                    }
+                }
+            }
+        }"#;
+        let cfg: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        assert!(cfg.is_err());
+    }
+
+    #[test]
+    fn node_user_config_no_entity_returns_empty_identity_attributes() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo"
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.identity_attributes().is_empty());
+    }
+
+    #[test]
+    fn node_user_config_entity_without_extend_returns_empty_identity_attributes() {
+        let json = r#"{
+            "type": "urn:example:receiver:demo",
+            "entity": {}
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.entity.is_some());
+        assert!(cfg.identity_attributes().is_empty());
     }
 }

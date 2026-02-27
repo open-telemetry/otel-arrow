@@ -18,27 +18,27 @@ pub struct Config {
 }
 
 /// create empty log filter as default value
-fn default_log_filter() -> LogFilter {
+const fn default_log_filter() -> LogFilter {
     LogFilter::new(None, None, vec![])
 }
 
 /// create empty trace filter as default value
-fn default_trace_filter() -> TraceFilter {
+const fn default_trace_filter() -> TraceFilter {
     TraceFilter::new(None, None)
 }
 
 impl Config {
-    pub fn new(logs: LogFilter, traces: TraceFilter) -> Self {
+    pub const fn new(logs: LogFilter, traces: TraceFilter) -> Self {
         Self { logs, traces }
     }
 
     #[must_use]
-    pub fn log_filters(&self) -> &LogFilter {
+    pub const fn log_filters(&self) -> &LogFilter {
         &self.logs
     }
 
     #[must_use]
-    pub fn trace_filters(&self) -> &TraceFilter {
+    pub const fn trace_filters(&self) -> &TraceFilter {
         &self.traces
     }
 }

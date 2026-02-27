@@ -44,7 +44,7 @@ use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
 /// The URN for the OTAP exporter
-pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
+pub const OTAP_EXPORTER_URN: &str = "urn:otel:exporter:otap";
 
 pub mod config;
 use config::Config;
@@ -74,6 +74,8 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTAPExporter {

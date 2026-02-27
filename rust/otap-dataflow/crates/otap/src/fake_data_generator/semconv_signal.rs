@@ -300,7 +300,7 @@ fn logs(signal_count: usize, registry: &ResolvedRegistry) -> Vec<LogRecord> {
 
 /// map a SpanKindSpec to a SpanKind
 #[must_use]
-fn otel_span_kind(span_kind: Option<&SpanKindSpec>) -> SpanKind {
+const fn otel_span_kind(span_kind: Option<&SpanKindSpec>) -> SpanKind {
     match span_kind {
         Some(SpanKindSpec::Client) => SpanKind::Client,
         Some(SpanKindSpec::Server) => SpanKind::Server,

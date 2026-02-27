@@ -14,7 +14,8 @@ workspace = true
 
 [features]
 testing = []
-jemalloc-testing = []
+jemalloc = ["dep:tikv-jemalloc-ctl"]
+jemalloc-testing = ["jemalloc"]
 test-utils = []
 
 [dependencies]
@@ -42,13 +43,12 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
-libmimalloc-sys = { workspace = true }
 byte-unit = { workspace = true }
 cpu-time = { workspace = true }
 nix = { workspace = true, features = ["resource"] }
 
 [target.'cfg(not(windows))'.dependencies]
-tikv-jemalloc-ctl = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 [dev-dependencies]
 

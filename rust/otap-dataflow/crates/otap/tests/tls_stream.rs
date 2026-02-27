@@ -7,11 +7,11 @@
 mod tests {
     use futures::StreamExt;
     use otap_df_otap::tls_utils::create_tls_stream;
+    use otap_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs;
     use std::io;
-    use std::process::Command;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -19,89 +19,6 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsAcceptor;
     use tokio_stream::wrappers::TcpListenerStream;
-
-    fn generate_ca(dir: &std::path::Path, name: &str, cn: &str) {
-        let status = Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", name),
-                "-out",
-                &format!("{}.crt", name),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-                "-addext",
-                "keyUsage=critical,keyCertSign,cRLSign",
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to generate CA");
-        if !status.status.success() {
-            panic!("CA gen failed: {}", String::from_utf8_lossy(&status.stderr));
-        }
-    }
-
-    fn generate_server_cert(dir: &std::path::Path, name: &str, ca_name: &str, cn: &str) {
-        let status = Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", name),
-                "-out",
-                &format!("{}.csr", name),
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to generate CSR");
-        if !status.status.success() {
-            panic!(
-                "CSR gen failed: {}",
-                String::from_utf8_lossy(&status.stderr)
-            );
-        }
-
-        let ext_file = dir.join(format!("{}.ext", name));
-        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1")
-            .expect("Failed to write extension file");
-
-        let status = Command::new("openssl")
-            .args([
-                "x509",
-                "-req",
-                "-in",
-                &format!("{}.csr", name),
-                "-CA",
-                &format!("{}.crt", ca_name),
-                "-CAkey",
-                &format!("{}.key", ca_name),
-                "-CAcreateserial",
-                "-out",
-                &format!("{}.crt", name),
-                "-days",
-                "1",
-                "-extfile",
-                ext_file.to_str().expect("Invalid UTF-8 path"),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to sign cert");
-        if !status.status.success() {
-            panic!("Sign failed: {}", String::from_utf8_lossy(&status.stderr));
-        }
-    }
 
     fn load_server_config(
         cert_path: &std::path::Path,
@@ -133,8 +50,15 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
-        generate_ca(path, "ca", "Test CA");
-        generate_server_cert(path, "server", "ca", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca",
+            "Test CA",
+            "server",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
         let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
         let acceptor = TlsAcceptor::from(server_config);
 
@@ -192,8 +116,15 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
-        generate_ca(path, "ca", "Test CA");
-        generate_server_cert(path, "server", "ca", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca",
+            "Test CA",
+            "server",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
         let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
         let acceptor = TlsAcceptor::from(server_config);
 
@@ -255,8 +186,15 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
-        generate_ca(path, "ca", "Test CA");
-        generate_server_cert(path, "server", "ca", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca",
+            "Test CA",
+            "server",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
         let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
         let acceptor = TlsAcceptor::from(server_config);
 
@@ -295,8 +233,15 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
-        generate_ca(path, "ca", "Test CA");
-        generate_server_cert(path, "server", "ca", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca",
+            "Test CA",
+            "server",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
         let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
         let acceptor = TlsAcceptor::from(server_config);
 
@@ -377,8 +322,15 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
-        generate_ca(path, "ca", "Test CA");
-        generate_server_cert(path, "server", "ca", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca",
+            "Test CA",
+            "server",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
         let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
         let acceptor = TlsAcceptor::from(server_config);
 

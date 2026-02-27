@@ -29,7 +29,7 @@ impl RecordBatchPartitionStream {
     /// Create a new instance of [`RecordBatchPartitionStream`]
     // TODO remove allow(unused) eventually this is constructed during planning
     #[allow(unused)]
-    pub fn new(schema: SchemaRef) -> Self {
+    pub const fn new(schema: SchemaRef) -> Self {
         Self {
             schema,
             curr_batch: Mutex::new(None),
@@ -68,7 +68,7 @@ pub struct OneShotRecordBatchStream {
 }
 
 impl OneShotRecordBatchStream {
-    fn new(schema: SchemaRef, record_batch: Option<RecordBatch>) -> Self {
+    const fn new(schema: SchemaRef, record_batch: Option<RecordBatch>) -> Self {
         Self {
             schema,
             record_batch,

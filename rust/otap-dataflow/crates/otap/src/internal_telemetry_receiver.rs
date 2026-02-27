@@ -73,12 +73,14 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl InternalTelemetryReceiver {
     /// Create a new receiver with the given configuration and internal telemetry settings.
     #[must_use]
-    pub fn new_with_telemetry(
+    pub const fn new_with_telemetry(
         config: Config,
         internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
     ) -> Self {

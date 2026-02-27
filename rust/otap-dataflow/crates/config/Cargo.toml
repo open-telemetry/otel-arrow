@@ -18,7 +18,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 miette = { workspace = true }
-urn = { workspace = true }
 schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }

@@ -61,7 +61,7 @@ use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::util::Either;
 
 /// URN for the OTLP Receiver
-pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
+pub const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
 
 /// Interval for periodic telemetry collection.
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -151,14 +151,14 @@ impl Protocols {
     /// Returns `true` if at least one protocol is configured.
     #[inline]
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.grpc.is_some() || self.http.is_some()
     }
 
     /// Returns `true` if both protocols are configured.
     #[inline]
     #[must_use]
-    pub fn has_both(&self) -> bool {
+    pub const fn has_both(&self) -> bool {
         self.grpc.is_some() && self.http.is_some()
     }
 }
@@ -207,6 +207,8 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTLPReceiver {
@@ -383,6 +385,7 @@ impl OTLPReceiver {
     ) -> Result<Option<TerminalState>, Error> {
         match msg {
             NodeControlMsg::Shutdown { deadline, .. } => {
+                otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
                 let snapshot = self.metrics.lock().snapshot();
                 if let Some(handle) = telemetry_cancel_handle.take() {
                     _ = handle.cancel().await;

@@ -73,7 +73,7 @@ pub struct TraceMatchProperties {
 impl TraceFilter {
     /// create a new trace filter
     #[must_use]
-    pub fn new(
+    pub const fn new(
         include: Option<TraceMatchProperties>,
         exclude: Option<TraceMatchProperties>,
     ) -> Self {
@@ -494,7 +494,7 @@ impl TraceFilter {
 impl TraceMatchProperties {
     /// create a new TraceMatchProperties
     #[must_use]
-    pub fn new(
+    pub const fn new(
         match_type: MatchType,
         resource_attributes: Vec<KeyValue>,
         span_attributes: Vec<KeyValue>,

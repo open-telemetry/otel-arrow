@@ -65,6 +65,7 @@ use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
 
+use crate::logging::{otel_error, otel_warn};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 use super::header::WalHeader;
@@ -147,12 +148,12 @@ impl WalReader {
     }
 
     /// Returns the segment configuration hash from the WAL header.
-    pub fn segment_cfg_hash(&self) -> [u8; 16] {
+    pub const fn segment_cfg_hash(&self) -> [u8; 16] {
         self.segment_cfg_hash
     }
 
     /// Returns the header size in bytes for this WAL file.
-    pub fn header_size(&self) -> u64 {
+    pub const fn header_size(&self) -> u64 {
         self.header_size
     }
 
@@ -170,7 +171,7 @@ impl WalReader {
     ///
     /// This is computed from the file length and header, representing the
     /// position where the next entry would start if appended to this file.
-    pub fn wal_position_end(&self) -> WalResult<u64> {
+    pub const fn wal_position_end(&self) -> WalResult<u64> {
         let data_bytes = self.file_len.saturating_sub(self.header_size);
         Ok(self.wal_position_start.saturating_add(data_bytes))
     }
@@ -345,7 +346,7 @@ pub(crate) struct WalEntryIter<'a> {
 }
 
 impl<'a> WalEntryIter<'a> {
-    fn new(
+    const fn new(
         file: &'a mut File,
         offset: u64,
         file_len: u64,
@@ -512,7 +513,7 @@ impl WalConsumerCursor {
     /// This is equivalent to `WalConsumerCursor::default()` followed by
     /// `increment(bundle)`, but clearer when you only need to track a
     /// single entry.
-    pub fn after(bundle: &WalRecordBundle) -> Self {
+    pub const fn after(bundle: &WalRecordBundle) -> Self {
         Self::from_offset(&bundle.offset)
     }
 
@@ -520,7 +521,7 @@ impl WalConsumerCursor {
     ///
     /// This allows tracking progress directly from write operations without
     /// needing to read the entry back.
-    pub fn from_offset(offset: &WalOffset) -> Self {
+    pub const fn from_offset(offset: &WalOffset) -> Self {
         Self {
             safe_offset: offset.next_offset,
             safe_sequence: offset.sequence,
@@ -541,7 +542,7 @@ impl WalConsumerCursor {
     /// }
     /// writer.persist_cursor(&cursor)?;  // persist + cleanup
     /// ```
-    pub fn increment(&mut self, bundle: &WalRecordBundle) {
+    pub const fn increment(&mut self, bundle: &WalRecordBundle) {
         self.safe_offset = bundle.next_offset;
         self.safe_sequence = bundle.sequence;
     }
@@ -775,11 +776,14 @@ impl MultiFileWalReader {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    otel_error!(
+                        "quiver.wal.file.init",
                         path = %path.display(),
                         rotation_id,
                         error = %e,
-                        "failed to open rotated WAL file, skipping"
+                        error_type = "io",
+                        file_type = "rotated",
+                        message = "entries in this file will be lost during replay",
                     );
                 }
             }
@@ -798,10 +802,12 @@ impl MultiFileWalReader {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.wal.file.init",
                         path = %base_path.display(),
                         error = %e,
-                        "failed to open active WAL file"
+                        error_type = "io",
+                        file_type = "active",
                     );
                     // If we have no files at all, return the error
                     if files.is_empty() {
@@ -929,10 +935,13 @@ impl Iterator for MultiFileWalIter {
                         // Seek to appropriate position within this file
                         let seek_pos = self.start_position.max(file_info.wal_position_start);
                         if let Err(e) = reader.seek_to_position(seek_pos) {
-                            tracing::warn!(
+                            otel_error!(
+                                "quiver.wal.file.init",
                                 path = %file_info.path.display(),
                                 error = %e,
-                                "failed to seek in WAL file, skipping"
+                                error_type = "io",
+                                file_type = "iteration",
+                                message = "entries in this file will be lost during replay",
                             );
                             self.current_idx += 1;
                             continue;
@@ -940,10 +949,13 @@ impl Iterator for MultiFileWalIter {
                         self.current_reader = Some(reader);
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        otel_error!(
+                            "quiver.wal.file.init",
                             path = %file_info.path.display(),
                             error = %e,
-                            "failed to open WAL file during iteration, skipping"
+                            error_type = "io",
+                            file_type = "iteration",
+                            message = "entries in this file will be lost during replay",
                         );
                         self.current_idx += 1;
                         continue;

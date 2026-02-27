@@ -56,7 +56,7 @@ pub(crate) struct CursorSidecar {
 pub(crate) const CURSOR_SIDECAR_FILENAME: &str = "quiver.wal.cursor";
 
 impl CursorSidecar {
-    pub fn new(wal_position: u64) -> Self {
+    pub const fn new(wal_position: u64) -> Self {
         Self { wal_position }
     }
 
@@ -71,7 +71,7 @@ impl CursorSidecar {
     }
 
     /// Returns the encoded size for the current version.
-    pub fn encoded_len(&self) -> usize {
+    pub const fn encoded_len(&self) -> usize {
         SIDECAR_V1_LEN
     }
 

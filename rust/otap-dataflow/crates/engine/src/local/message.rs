@@ -41,7 +41,7 @@ impl<T> Clone for LocalSender<T> {
 
 impl<T> LocalSender<T> {
     /// Creates a new local MPSC sender.
-    pub fn mpsc(sender: mpsc::Sender<T>) -> Self {
+    pub const fn mpsc(sender: mpsc::Sender<T>) -> Self {
         Self {
             inner: LocalSenderInner::Mpsc(sender),
             metrics: None,
@@ -62,7 +62,7 @@ impl<T> LocalSender<T> {
     }
 
     /// Creates a new local MPMC sender.
-    pub fn mpmc(sender: mpmc::Sender<T>) -> Self {
+    pub const fn mpmc(sender: mpmc::Sender<T>) -> Self {
         Self {
             inner: LocalSenderInner::Mpmc(sender),
             metrics: None,
@@ -148,7 +148,7 @@ pub struct LocalReceiver<T> {
 impl<T> LocalReceiver<T> {
     /// Creates a new local MPSC receiver.
     #[must_use]
-    pub fn mpsc(receiver: mpsc::Receiver<T>) -> Self {
+    pub const fn mpsc(receiver: mpsc::Receiver<T>) -> Self {
         Self {
             inner: LocalReceiverInner::Mpsc(receiver),
             metrics: None,
@@ -173,7 +173,7 @@ impl<T> LocalReceiver<T> {
 
     /// Creates a new local MPMC receiver.
     #[must_use]
-    pub fn mpmc(receiver: mpmc::Receiver<T>) -> Self {
+    pub const fn mpmc(receiver: mpmc::Receiver<T>) -> Self {
         Self {
             inner: LocalReceiverInner::Mpmc(receiver),
             metrics: None,

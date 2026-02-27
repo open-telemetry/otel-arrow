@@ -96,13 +96,13 @@ impl ReconstructedBundle {
 
     /// Returns the bundle index from the manifest.
     #[must_use]
-    pub fn bundle_index(&self) -> u32 {
+    pub const fn bundle_index(&self) -> u32 {
         self.bundle_index
     }
 
     /// Returns the payload batches by slot ID.
     #[must_use]
-    pub fn payloads(&self) -> &HashMap<SlotId, RecordBatch> {
+    pub const fn payloads(&self) -> &HashMap<SlotId, RecordBatch> {
         &self.payloads
     }
 
@@ -269,7 +269,7 @@ impl StreamDecoder {
     }
 
     /// Returns the number of batches in this stream.
-    fn num_batches(&self) -> usize {
+    const fn num_batches(&self) -> usize {
         self.batches.len()
     }
 
@@ -503,19 +503,19 @@ impl SegmentReader {
 
     /// Returns the number of streams in this segment.
     #[must_use]
-    pub fn stream_count(&self) -> usize {
+    pub const fn stream_count(&self) -> usize {
         self.streams.len()
     }
 
     /// Returns the number of bundles in this segment.
     #[must_use]
-    pub fn bundle_count(&self) -> usize {
+    pub const fn bundle_count(&self) -> usize {
         self.manifest.len()
     }
 
     /// Returns the format version of this segment file.
     #[must_use]
-    pub fn version(&self) -> u16 {
+    pub const fn version(&self) -> u16 {
         self.footer.version
     }
 
@@ -836,6 +836,7 @@ impl SegmentReader {
     /// Arrow IPC file with schema:
     ///
     /// - `bundle_index`: UInt32
+    /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -865,6 +866,10 @@ impl SegmentReader {
         // Parse manifest columns
         let bundle_indices =
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
+
+        // item_count is optional for backward compatibility with legacy segments.
+        let item_counts: Option<Vec<u64>> =
+            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -896,7 +901,8 @@ impl SegmentReader {
 
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
-            let mut entry = ManifestEntry::new(bundle_index);
+            let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
+            let mut entry = ManifestEntry::new(bundle_index, item_count);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
@@ -1073,7 +1079,7 @@ mod tests {
             let stream_count = open_segment.stream_count();
             let bundle_count = open_segment.bundle_count();
 
-            let writer = SegmentWriter::new(SegmentSeq::new(1));
+            let writer = SegmentWriter::new(SegmentSeq::new(1), true);
             let _ = writer
                 .write_segment(&path, open_segment)
                 .await
@@ -1315,7 +1321,7 @@ mod tests {
         let mut open_segment = OpenSegment::new();
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await
@@ -1419,7 +1425,7 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await
@@ -1526,7 +1532,7 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await

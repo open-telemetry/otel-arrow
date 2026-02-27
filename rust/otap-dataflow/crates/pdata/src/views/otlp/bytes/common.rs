@@ -40,7 +40,7 @@ impl<'a> RawKeyValue<'a> {
     /// Create a new RawKeyValue parser from a byte slice containing a KeyValue message.
     #[inline]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             pos: Cell::new(0),
@@ -100,7 +100,7 @@ impl<'a> RawAnyValue<'a> {
     /// create a new instance of RawAnyValue
     #[inline]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             value_offset: Cell::new(None),
@@ -119,7 +119,7 @@ impl<'a> RawInstrumentationScope<'a> {
     /// create a new instance of `RawInstrumentationScope`
     #[inline]
     #[must_use]
-    pub fn new(bytes_parser: ProtoBytesParser<'a, InstrumentationScopeFieldOffsets>) -> Self {
+    pub const fn new(bytes_parser: ProtoBytesParser<'a, InstrumentationScopeFieldOffsets>) -> Self {
         Self { bytes_parser }
     }
 }
@@ -204,7 +204,7 @@ where
 {
     /// Create a new instance of `KeyValueIter`
     #[must_use]
-    pub fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
+    pub const fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
         Self { bytes_parser }
     }
 }

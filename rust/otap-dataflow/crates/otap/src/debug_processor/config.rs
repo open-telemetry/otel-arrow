@@ -57,7 +57,7 @@ pub struct Config {
     sampling: SamplingConfig,
 }
 
-fn default_verbosity() -> Verbosity {
+const fn default_verbosity() -> Verbosity {
     Verbosity::Normal
 }
 
@@ -69,25 +69,25 @@ fn default_active_signal() -> HashSet<SignalActive> {
     ])
 }
 
-fn default_display_mode() -> DisplayMode {
+const fn default_display_mode() -> DisplayMode {
     DisplayMode::Batch
 }
-fn default_filters() -> Vec<FilterRules> {
+const fn default_filters() -> Vec<FilterRules> {
     Vec::new()
 }
 
-fn default_output_mode() -> OutputMode {
+const fn default_output_mode() -> OutputMode {
     OutputMode::Console
 }
 
-fn default_sampling() -> SamplingConfig {
+const fn default_sampling() -> SamplingConfig {
     SamplingConfig::NoSampling
 }
 
 impl Config {
     /// Create a new Config object
     #[must_use]
-    pub fn new(
+    pub const fn new(
         verbosity: Verbosity,
         mode: DisplayMode,
         signals: HashSet<SignalActive>,

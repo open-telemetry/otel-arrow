@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
-pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
+pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
 
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
@@ -266,7 +266,7 @@ pub struct RetryProcessorMetrics {
 
 impl RetryProcessorMetrics {
     /// Increment consumed.items with outcome=success for the given signal by n
-    pub fn add_consumed_success(&mut self, st: SignalType, n: u64) {
+    pub const fn add_consumed_success(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_success.add(n),
             SignalType::Metrics => self.consumed_items_metrics_success.add(n),
@@ -274,7 +274,7 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment consumed.items with outcome=failure for the given signal by n
-    pub fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
+    pub const fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_failure.add(n),
             SignalType::Metrics => self.consumed_items_metrics_failure.add(n),
@@ -282,7 +282,7 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment consumed.items with outcome=refused for the given signal by n
-    pub fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
+    pub const fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.consumed_items_logs_refused.add(n),
             SignalType::Metrics => self.consumed_items_metrics_refused.add(n),
@@ -291,7 +291,7 @@ impl RetryProcessorMetrics {
     }
 
     /// Increment produced.items with outcome=success for the given signal by n
-    pub fn add_produced_success(&mut self, st: SignalType, n: u64) {
+    pub const fn add_produced_success(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.produced_items_logs_success.add(n),
             SignalType::Metrics => self.produced_items_metrics_success.add(n),
@@ -299,7 +299,7 @@ impl RetryProcessorMetrics {
         }
     }
     /// Increment produced.items with outcome=refused for the given signal by n
-    pub fn add_produced_refused(&mut self, st: SignalType, n: u64) {
+    pub const fn add_produced_refused(&mut self, st: SignalType, n: u64) {
         match st {
             SignalType::Logs => self.produced_items_logs_refused.add(n),
             SignalType::Metrics => self.produced_items_metrics_refused.add(n),
@@ -308,7 +308,7 @@ impl RetryProcessorMetrics {
     }
 
     /// Increment retry_attempts for the given signal by 1.
-    pub fn increment_retry_attempts(&mut self, st: SignalType) {
+    pub const fn increment_retry_attempts(&mut self, st: SignalType) {
         match st {
             SignalType::Logs => self.retry_attempts_logs.add(1),
             SignalType::Metrics => self.retry_attempts_metrics.add(1),
@@ -323,6 +323,8 @@ impl RetryProcessorMetrics {
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff
@@ -625,7 +627,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
-                    if let Some(calldata) = data.current_calldata() {
+                    if let Some(calldata) = data.source_calldata() {
                         let rstate: RetryState = calldata.try_into()?;
                         let _ = self
                             .handle_delayed(when, data, effect_handler, rstate.num_items)

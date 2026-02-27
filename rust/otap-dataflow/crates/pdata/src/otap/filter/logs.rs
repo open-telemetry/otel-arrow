@@ -91,7 +91,7 @@ pub struct LogSeverityNumberMatchProperties {
 impl LogFilter {
     /// create a new log filter
     #[must_use]
-    pub fn new(
+    pub const fn new(
         include: Option<LogMatchProperties>,
         exclude: Option<LogMatchProperties>,
         log_record: Vec<String>,
@@ -302,7 +302,7 @@ impl LogFilter {
 impl LogMatchProperties {
     /// create a new LogMatchProperties
     #[must_use]
-    pub fn new(
+    pub const fn new(
         match_type: MatchType,
         resource_attributes: Vec<KeyValue>,
         record_attributes: Vec<KeyValue>,
@@ -535,7 +535,7 @@ impl LogMatchProperties {
 impl LogSeverityNumberMatchProperties {
     /// create a new LogSeverityNumberMatchProperties
     #[must_use]
-    pub fn new(min: i32, match_undefined: bool) -> Self {
+    pub const fn new(min: i32, match_undefined: bool) -> Self {
         Self {
             min,
             match_undefined,

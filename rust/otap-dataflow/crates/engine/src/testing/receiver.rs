@@ -203,7 +203,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns the current receiver configuration.
-    pub fn config(&self) -> &ReceiverConfig {
+    pub const fn config(&self) -> &ReceiverConfig {
         &self.config
     }
 

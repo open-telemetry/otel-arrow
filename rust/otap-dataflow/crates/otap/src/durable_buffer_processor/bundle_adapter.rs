@@ -55,7 +55,7 @@ use otap_df_config::SignalType;
 use otap_df_pdata::otap::schema::SchemaIdBuilder;
 use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 
 use crate::pdata::{Context, OtapPdata};
 
@@ -75,13 +75,13 @@ mod otlp_slots {
 ///
 /// Note: The slot ID is determined solely by the payload type, not the signal type.
 /// Signal type is passed for consistency with the API but is not used in the mapping.
-fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
+const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
     // ArrowPayloadType values are 0-45, which fits directly in the 64-slot limit
     SlotId::new(payload_type as u16)
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
-fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
+const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
     SlotId::new(match signal_type {
         SignalType::Logs => otlp_slots::OTLP_LOGS,
         SignalType::Traces => otlp_slots::OTLP_TRACES,
@@ -90,13 +90,26 @@ fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
 }
 
 /// Check if a slot ID is an OTLP opaque binary slot
-fn is_otlp_slot(slot: SlotId) -> Option<SignalType> {
+const fn is_otlp_slot(slot: SlotId) -> Option<SignalType> {
     match slot.raw() {
         otlp_slots::OTLP_LOGS => Some(SignalType::Logs),
         otlp_slots::OTLP_TRACES => Some(SignalType::Traces),
         otlp_slots::OTLP_METRICS => Some(SignalType::Metrics),
         _ => None,
     }
+}
+
+/// Determine signal type from a slot ID (works for both Arrow and OTLP slots).
+///
+/// Returns `None` for shared slots (RESOURCE_ATTRS, SCOPE_ATTRS) or unknown
+/// slot IDs.
+pub(crate) fn signal_type_from_slot_id(slot: SlotId) -> Option<SignalType> {
+    // Check OTLP opaque slots first
+    if let Some(st) = is_otlp_slot(slot) {
+        return Some(st);
+    }
+    // Fall back to Arrow slot mapping
+    from_slot_id(slot).map(|(st, _)| st)
 }
 
 /// Convert a slot ID back to payload type only (Arrow format only).
@@ -118,7 +131,7 @@ fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
 ///
 /// These slots are used by ALL signal types, so their presence alone cannot
 /// determine the signal type of a bundle.
-fn is_shared_slot(slot: SlotId) -> bool {
+const fn is_shared_slot(slot: SlotId) -> bool {
     matches!(slot.raw(), 1 | 2) // RESOURCE_ATTRS (1), SCOPE_ATTRS (2)
 }
 
@@ -164,7 +177,7 @@ fn slot_label(signal_type: SignalType, payload_type: ArrowPayloadType) -> Cow<'s
 }
 
 /// Get the slot label for an OTLP opaque slot
-fn otlp_slot_label(signal_type: SignalType) -> Cow<'static, str> {
+const fn otlp_slot_label(signal_type: SignalType) -> Cow<'static, str> {
     Cow::Borrowed(match signal_type {
         SignalType::Logs => "OtlpLogs",
         SignalType::Traces => "OtlpTraces",
@@ -290,6 +303,10 @@ impl RecordBundle for OtapRecordBundleAdapter {
             batch,
         })
     }
+
+    fn item_count(&self) -> u64 {
+        self.records.num_items() as u64
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,6 +328,10 @@ pub struct OtlpBytesAdapter {
     descriptor: BundleDescriptor,
     /// Ingestion timestamp
     ingestion_time: SystemTime,
+    /// Cached item count (computed once by scanning the protobuf wire
+    /// format without full deserialization, to avoid repeated O(n) scans
+    /// on the hot path).
+    cached_item_count: u64,
 }
 
 impl OtlpBytesAdapter {
@@ -345,12 +366,19 @@ impl OtlpBytesAdapter {
             otlp_slot_label(signal_type),
         )]);
 
+        // Compute item count once up front. The wire-format scan in
+        // num_items() traverses the protobuf structure without full
+        // deserialization and is O(message_size), so we cache it to
+        // avoid a second scan when Quiver's open_segment calls item_count().
+        let cached_item_count = bytes.num_items() as u64;
+
         Ok(Self {
             bytes,
             signal_type,
             batch,
             descriptor,
             ingestion_time: SystemTime::now(),
+            cached_item_count,
         })
     }
 
@@ -361,6 +389,12 @@ impl OtlpBytesAdapter {
     #[must_use]
     pub fn into_inner(self) -> OtlpProtoBytes {
         self.bytes
+    }
+
+    /// Returns the cached item count (computed once during construction).
+    #[must_use]
+    pub fn cached_item_count(&self) -> u64 {
+        self.cached_item_count
     }
 }
 
@@ -384,6 +418,10 @@ impl RecordBundle for OtlpBytesAdapter {
             schema_fingerprint: otlp_schema_fingerprint(),
             batch: &self.batch,
         })
+    }
+
+    fn item_count(&self) -> u64 {
+        self.cached_item_count
     }
 }
 

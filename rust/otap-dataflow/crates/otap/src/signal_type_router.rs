@@ -4,7 +4,7 @@
 //! Signal type router processor for OTAP pipelines.
 //!
 //! Simplest behavior: pass-through using engine wiring.
-//! All signals are forwarded unchanged via the engine-provided default out port
+//! All signals are forwarded unchanged via the engine-provided default output port
 //! (or error if multiple ports are connected without a default).
 
 use crate::OTAP_PROCESSOR_FACTORIES;
@@ -29,14 +29,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
-pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:type_router:processor";
+pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:processor:type_router";
 
-/// Well-known out port names for type-based routing
-/// Name of the out port used for trace signals
+/// Well-known output port names for type-based routing
+/// Name of the output port used for trace signals
 pub const PORT_TRACES: &str = "traces";
-/// Name of the out port used for metric signals
+/// Name of the output port used for metric signals
 pub const PORT_METRICS: &str = "metrics";
-/// Name of the out port used for log signals
+/// Name of the output port used for log signals
 pub const PORT_LOGS: &str = "logs";
 
 /// Metrics for the SignalTypeRouter processor.
@@ -85,28 +85,28 @@ pub struct SignalTypeRouterMetrics {
 }
 
 impl SignalTypeRouterMetrics {
-    fn inc_received(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_received(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
         }
     }
-    fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
         }
     }
-    fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
         }
     }
-    fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_dropped_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_dropped_metrics.inc(),
@@ -131,7 +131,7 @@ pub struct SignalTypeRouter {
 impl SignalTypeRouter {
     /// Creates a new SignalTypeRouter with the given configuration
     #[must_use]
-    pub fn new(config: SignalTypeRouterConfig) -> Self {
+    pub const fn new(config: SignalTypeRouterConfig) -> Self {
         Self {
             config,
             metrics: None,
@@ -177,7 +177,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     m.inc_received(st);
                 }
 
-                // Determine desired out port by signal type
+                // Determine desired output port by signal type
                 let desired_port = match st {
                     otap_df_config::SignalType::Traces => PORT_TRACES,
                     otap_df_config::SignalType::Metrics => PORT_METRICS,
@@ -277,6 +277,8 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
 
         Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<SignalTypeRouterConfig>,
 };
 
 #[cfg(test)]
@@ -569,7 +571,7 @@ mod tests {
                     SignalTypeRouterConfig::default(),
                 );
 
-                // Only a single out port (non-named for logs); default path should be used
+                // Only a single output port (non-named for logs); default path should be used
                 let (tx_out, rx_out) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
@@ -637,7 +639,7 @@ mod tests {
                     SignalTypeRouterConfig::default(),
                 );
 
-                // Single default out port but drop receiver to force send error
+                // Single default output port but drop receiver to force send error
                 let (tx_out, rx_out) = mpsc::Channel::new(1);
                 drop(rx_out);
                 let mut senders = HashMap::new();

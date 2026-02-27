@@ -4,8 +4,8 @@ The OTLP Receiver ingests telemetry data via the OpenTelemetry Protocol (OTLP)
 and forwards it into the OTAP dataflow pipeline. It supports both gRPC (HTTP/2)
 and HTTP/1.1 protocols with unified concurrency control.
 
-**Plugin URN (full):** `urn:otel:otlp:receiver`
-**Plugin URN (OTel shortcut):** `otlp:receiver`
+**Plugin URN (full):** `urn:otel:receiver:otlp`
+**Plugin URN (OTel shortcut):** `receiver:otlp`
 
 ## Architecture Overview
 
@@ -134,14 +134,15 @@ regardless of which protocol clients use.
 #### Tuning Examples
 
 The `max_concurrent_requests` setting interacts with downstream pipeline capacity
-(configured via `default_pdata_channel_size` in pipeline settings). Here are
+(configured via `policies.channel_capacity.pdata`). Here are
 common scenarios:
 
 ##### Scenario 1: Full Auto-Tuning (Recommended Default)
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100  # Downstream capacity
+policies:
+  channel_capacity:
+      pdata: 100  # Downstream capacity
 
 config:
   protocols:
@@ -162,8 +163,9 @@ Result:
 ##### Scenario 2: Explicit Equal Limits
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -183,8 +185,9 @@ Result:
 ##### Scenario 3: Prioritize gRPC Over HTTP
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -204,8 +207,9 @@ Result:
 ##### Scenario 4: Oversubscribed Limits
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -227,8 +231,9 @@ Result:
 ##### Scenario 5: Single Protocol (gRPC-only)
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -245,8 +250,9 @@ Result:
 ##### Scenario 6: Limit Below Downstream Capacity
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -296,8 +302,7 @@ At least one protocol must be configured.
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:receiver:otlp" # or "receiver:otlp"
     config:
       protocols:
         grpc:
@@ -309,8 +314,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    type: "urn:otel:receiver:otlp"
     config:
       protocols:
         http:
@@ -322,8 +326,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:receiver:otlp" # or "receiver:otlp"
     config:
       protocols:
         # ---------------------------------------------------------

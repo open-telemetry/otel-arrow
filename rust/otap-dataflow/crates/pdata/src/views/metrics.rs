@@ -307,7 +307,7 @@ pub enum Value {
 impl Value {
     /// Fetch a double option.
     #[must_use]
-    pub fn as_double(&self) -> Option<f64> {
+    pub const fn as_double(&self) -> Option<f64> {
         match self {
             Self::Double(x) => Some(*x),
             _ => None,
@@ -316,7 +316,7 @@ impl Value {
 
     /// Fetch an integer option.
     #[must_use]
-    pub fn as_integer(&self) -> Option<i64> {
+    pub const fn as_integer(&self) -> Option<i64> {
         match self {
             Self::Integer(x) => Some(*x),
             _ => None,
@@ -453,7 +453,7 @@ pub struct DataPointFlags(u32);
 impl DataPointFlags {
     /// Make a new instance
     #[must_use]
-    pub fn new(flags: u32) -> DataPointFlags {
+    pub const fn new(flags: u32) -> DataPointFlags {
         DataPointFlags(flags)
     }
 

@@ -139,10 +139,8 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
 
-#[cfg(not(windows))]
-use tikv_jemalloc_ctl::thread;
-#[cfg(not(windows))]
-use tikv_jemalloc_ctl::thread::ThreadLocal;
+#[cfg(all(not(windows), feature = "jemalloc"))]
+use tikv_jemalloc_ctl::{thread, thread::ThreadLocal};
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
 use nix::sys::resource::{UsageWho, getrusage};
@@ -394,16 +392,16 @@ pub struct TokioRuntimeMetrics {
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "jemalloc"))]
     jemalloc_supported: bool,
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "jemalloc"))]
     allocated: Option<ThreadLocal<u64>>,
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "jemalloc"))]
     deallocated: Option<ThreadLocal<u64>>,
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "jemalloc"))]
     last_allocated: u64,
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "jemalloc"))]
     last_deallocated: u64,
 
     rusage_thread_supported: bool,
@@ -422,7 +420,7 @@ impl PipelineMetricsMonitor {
     pub(crate) fn new(pipeline_ctx: PipelineContext) -> Self {
         let now = Instant::now();
 
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), feature = "jemalloc"))]
         let (jemalloc_supported, allocated, deallocated, last_allocated, last_deallocated) = {
             // Try to initialize jemalloc thread-local stats. If the global allocator is not
             // jemalloc, these calls will fail and memory-related metrics will remain unchanged.
@@ -468,15 +466,15 @@ impl PipelineMetricsMonitor {
 
         Self {
             start_time: now,
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "jemalloc"))]
             jemalloc_supported,
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "jemalloc"))]
             allocated,
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "jemalloc"))]
             deallocated,
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "jemalloc"))]
             last_allocated,
-            #[cfg(not(windows))]
+            #[cfg(all(not(windows), feature = "jemalloc"))]
             last_deallocated,
             rusage_thread_supported,
             wall_start: now,
@@ -489,12 +487,12 @@ impl PipelineMetricsMonitor {
     }
 
     /// Returns a mutable reference to the metrics struct.
-    pub fn metrics_mut(&mut self) -> &mut MetricSet<PipelineMetrics> {
+    pub const fn metrics_mut(&mut self) -> &mut MetricSet<PipelineMetrics> {
         &mut self.metrics
     }
 
     /// Returns a mutable reference to the Tokio runtime metrics struct.
-    pub fn tokio_metrics_mut(&mut self) -> &mut MetricSet<TokioRuntimeMetrics> {
+    pub const fn tokio_metrics_mut(&mut self) -> &mut MetricSet<TokioRuntimeMetrics> {
         &mut self.tokio_metrics
     }
 
@@ -511,7 +509,7 @@ impl PipelineMetricsMonitor {
     /// signals and jemalloc-derived heap metrics.
     pub fn update_pipeline_metrics(&mut self) {
         // === Update thread memory allocation metrics (jemalloc only) ===
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), feature = "jemalloc"))]
         if self.jemalloc_supported {
             if let (Some(allocated), Some(deallocated)) =
                 (self.allocated.as_ref(), self.deallocated.as_ref())

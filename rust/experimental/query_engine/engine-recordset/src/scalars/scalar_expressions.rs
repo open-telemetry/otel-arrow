@@ -26,6 +26,26 @@ static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
     items
 });
 
+pub struct SelectionOptions {
+    selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel,
+}
+
+impl SelectionOptions {
+    pub fn new() -> SelectionOptions {
+        Self {
+            selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
+        }
+    }
+
+    pub fn with_selector_not_found_diagnostic_level(
+        mut self,
+        selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel,
+    ) -> SelectionOptions {
+        self.selector_not_found_diagnostic_level = selector_not_found_diagnostic_level;
+        self
+    }
+}
+
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     scalar_expression: &'a ScalarExpression,
@@ -34,10 +54,29 @@ where
     'a: 'c,
     'b: 'c,
 {
+    execute_scalar_expression_with_options(
+        execution_context,
+        scalar_expression,
+        SelectionOptions::new(),
+    )
+}
+
+pub fn execute_scalar_expression_with_options<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    scalar_expression: &'a ScalarExpression,
+    selection_options: SelectionOptions,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
     let value = match scalar_expression {
-        ScalarExpression::Source(s) => {
-            execute_source_scalar_expression(execution_context, scalar_expression, s)?
-        }
+        ScalarExpression::Source(s) => execute_source_scalar_expression(
+            execution_context,
+            scalar_expression,
+            s,
+            &selection_options,
+        )?,
         ScalarExpression::Attached(a) => {
             let name = a.get_name().get_value();
 
@@ -58,6 +97,7 @@ where
                     Value::Map(record),
                     scalar_expression,
                     &mut selectors,
+                    &selection_options,
                 )?
             } else {
                 execution_context.add_diagnostic_if_enabled(
@@ -68,9 +108,12 @@ where
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ScalarExpression::Variable(v) => {
-            execute_variable_scalar_expression(execution_context, scalar_expression, v)?
-        }
+        ScalarExpression::Variable(v) => execute_variable_scalar_expression(
+            execution_context,
+            scalar_expression,
+            v,
+            &selection_options,
+        )?,
         ScalarExpression::Static(s) => ResolvedValue::Value(s.to_value()),
         ScalarExpression::Constant(c) => {
             let constant_id = c.get_constant_id();
@@ -104,6 +147,7 @@ where
                         constant.to_value(),
                         scalar_expression,
                         &mut selectors,
+                        &selection_options,
                     )?
                 }
                 false => ResolvedValue::Value(constant.to_value()),
@@ -124,7 +168,13 @@ where
             let mut value = ResolvedValue::Computed(OwnedValue::Null);
 
             for expression in c.get_expressions() {
-                value = execute_scalar_expression(execution_context, expression)?;
+                value = execute_scalar_expression_with_options(
+                    execution_context,
+                    expression,
+                    SelectionOptions::new().with_selector_not_found_diagnostic_level(
+                        RecordSetEngineDiagnosticLevel::Info,
+                    ),
+                )?;
                 if value.get_value_type() != ValueType::Null {
                     break;
                 }
@@ -437,6 +487,7 @@ pub(crate) fn execute_source_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     source_scalar_expression: &'a SourceScalarExpression,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'a: 'c,
@@ -454,6 +505,7 @@ where
             record.borrow(),
             expression,
             &mut selectors,
+            selection_options,
         )?
     } else {
         execution_context.add_diagnostic_if_enabled(
@@ -469,6 +521,7 @@ pub(crate) fn execute_variable_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     variable_scalar_expression: &'a VariableScalarExpression,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'a: 'c,
@@ -503,6 +556,7 @@ where
                 variable,
                 expression,
                 &mut selectors,
+                selection_options,
             )?
         } else {
             execution_context.add_diagnostic_if_enabled(
@@ -556,6 +610,7 @@ fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
     expression: &'a dyn Expression,
     selectors: &mut Iter<'a, ScalarExpression>,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'b: 'c,
@@ -578,7 +633,7 @@ where
                             }
                             Ok(None) => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    selection_options.selector_not_found_diagnostic_level.clone(),
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -627,7 +682,7 @@ where
                                 }
                                 Ok(None) => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        selection_options.selector_not_found_diagnostic_level.clone(),
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );
@@ -669,6 +724,7 @@ where
                     v,
                     expression,
                     selectors,
+                    selection_options,
                 )
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
@@ -683,6 +739,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
     root: Value<'b>,
     expression: &'a ScalarExpression,
     selectors: &mut Iter<'a, ScalarExpression>,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'b>, ExpressionError> {
     match selectors.next() {
         Some(s) => {
@@ -702,7 +759,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                             }
                             None => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    selection_options.selector_not_found_diagnostic_level.clone(),
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -743,7 +800,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 }
                                 None => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        selection_options.selector_not_found_diagnostic_level.clone(),
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );
@@ -771,7 +828,13 @@ fn select_from_value<'a, 'b, TRecord: Record>(
             };
 
             if let Some(v) = next {
-                select_from_value(execution_context, v, expression, selectors)
+                select_from_value(
+                    execution_context,
+                    v,
+                    expression,
+                    selectors,
+                    selection_options,
+                )
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }

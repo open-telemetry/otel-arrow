@@ -101,7 +101,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
     /// reporter.
     #[must_use]
-    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,

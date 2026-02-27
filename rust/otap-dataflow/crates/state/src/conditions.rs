@@ -22,7 +22,7 @@ pub enum ConditionStatus {
 impl ConditionStatus {
     #[must_use]
     /// Returns the canonical Kubernetes-style string representation.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             ConditionStatus::True => "True",
             ConditionStatus::False => "False",
@@ -54,7 +54,7 @@ pub enum ConditionKind {
 impl ConditionKind {
     #[must_use]
     /// Returns the canonical type identifier used in serialized payloads.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             ConditionKind::Accepted => "Accepted",
             ConditionKind::Ready => "Ready",
@@ -140,7 +140,7 @@ pub enum ConditionReason {
 impl ConditionReason {
     #[must_use]
     /// Returns the canonical string representation used in serialized payloads.
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match self {
             ConditionReason::Pending => "Pending",
             ConditionReason::StartRequested => "StartRequested",

@@ -59,7 +59,7 @@ impl<PData> Clone for TestContext<PData> {
 impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         control_tx: Sender<NodeControlMsg<PData>>,
         pdata_tx: Sender<PData>,
         counters: CtrlMsgCounters,
@@ -80,7 +80,7 @@ impl<PData> TestContext<PData> {
 
     /// Takes the pipeline control message receiver from the context.
     /// Returns None if already taken.
-    pub fn take_pipeline_ctrl_receiver(&mut self) -> Option<PipelineCtrlMsgReceiver<PData>> {
+    pub const fn take_pipeline_ctrl_receiver(&mut self) -> Option<PipelineCtrlMsgReceiver<PData>> {
         self.pipeline_ctrl_msg_receiver.take()
     }
 
@@ -209,7 +209,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns the current exporter configuration.
-    pub fn config(&self) -> &ExporterConfig {
+    pub const fn config(&self) -> &ExporterConfig {
         &self.config
     }
 
@@ -256,6 +256,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             .expect("Failed to set PData receiver");
         let metrics_reporter_start = self.metrics_reporter();
         let metrics_reporter_terminal = self.metrics_reporter();
+        let metrics_collector = self.metrics_system.collector();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
@@ -264,6 +265,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                     for snapshot in terminal_state.into_metrics() {
                         let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
                     }
+                    metrics_collector.collect_pending(); // Collect after sending all the
                 })
         });
         TestPhase {

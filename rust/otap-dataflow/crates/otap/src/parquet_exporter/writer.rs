@@ -55,7 +55,7 @@ pub struct WriteBatch<'a> {
 }
 
 impl<'a> WriteBatch<'a> {
-    pub fn new(
+    pub const fn new(
         batch_id: i64,
         otap_batch: &'a OtapArrowRecords,
         partition_attributes: Option<&'a [PartitionAttribute]>,

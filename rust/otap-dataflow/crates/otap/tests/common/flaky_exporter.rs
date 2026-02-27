@@ -36,7 +36,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// URN for the flaky exporter (NACKs until switched to ACK mode).
-pub const FLAKY_EXPORTER_URN: &str = "urn:otel:flaky:exporter";
+pub const FLAKY_EXPORTER_URN: &str = "urn:otel:exporter:flaky";
 
 /// State for a single flaky exporter instance.
 struct FlakyState {
@@ -126,6 +126,8 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |_| Ok(()),
 };
 
 #[async_trait(?Send)]

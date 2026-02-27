@@ -5,16 +5,26 @@
 
 use crate::error::Error;
 use crate::pipeline::PipelineConfig;
-use crate::{PipelineGroupId, PipelineId};
+use crate::policy::Policies;
+use crate::topic::TopicSpec;
+use crate::{PipelineGroupId, PipelineId, TopicName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Configuration for a single pipeline group.
-/// Contains group-specific settings and all its pipelines.
+/// Contains group-specific policies and all its pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineGroupConfig {
+    /// Optional policy set for this pipeline group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Policies>,
+
+    /// Group-local topic declarations visible only to pipelines in this group.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub topics: HashMap<TopicName, TopicSpec>,
+
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
 }
@@ -24,6 +34,8 @@ impl PipelineGroupConfig {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            policies: None,
+            topics: HashMap::new(),
             pipelines: HashMap::new(),
         }
     }
@@ -45,7 +57,36 @@ impl PipelineGroupConfig {
     pub fn validate(&self, pipeline_group_id: &PipelineGroupId) -> Result<(), Error> {
         let mut errors = Vec::new();
 
+        if let Some(policies) = &self.policies {
+            let path = format!("groups.{pipeline_group_id}.policies");
+            errors.extend(
+                policies
+                    .validation_errors(&path)
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+
+        for (topic_name, topic) in &self.topics {
+            let path = format!("groups.{pipeline_group_id}.topics.{topic_name}");
+            errors.extend(
+                topic
+                    .validation_errors(&path)
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+
         for (pipeline_id, pipeline) in &self.pipelines {
+            if let Some(policies) = pipeline.policies() {
+                let path = format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies");
+                errors.extend(
+                    policies
+                        .validation_errors(&path)
+                        .into_iter()
+                        .map(|error| Error::InvalidUserConfig { error }),
+                );
+            }
             if let Err(e) = pipeline.validate(pipeline_group_id, pipeline_id) {
                 errors.push(e);
             }

@@ -35,7 +35,7 @@ impl PipelineStatus {
 
     /// Returns the current per-core status map.
     #[must_use]
-    pub fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
+    pub const fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
         &self.cores
     }
 
@@ -149,7 +149,8 @@ impl PipelineStatus {
             status: ConditionStatus::True,
             reason: Some(ConditionReason::ConfigValid),
             message: Some(
-                "Pipeline configuration validated and resources quota is not exceeded.".to_string(),
+                "Pipeline configuration validated and resource policy constraints are satisfied."
+                    .to_string(),
             ),
             last_transition_time: latest_true_time,
         }

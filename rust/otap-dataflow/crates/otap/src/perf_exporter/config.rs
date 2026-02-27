@@ -34,36 +34,36 @@ pub struct Config {
     io_usage: bool,
 }
 
-fn default_frequency() -> u64 {
+const fn default_frequency() -> u64 {
     1000
 }
 
-fn default_self_usage() -> bool {
+const fn default_self_usage() -> bool {
     true
 }
 
-fn default_cpu_usage() -> bool {
+const fn default_cpu_usage() -> bool {
     true
 }
 
-fn default_mem_usage() -> bool {
+const fn default_mem_usage() -> bool {
     true
 }
-fn default_disk_usage() -> bool {
+const fn default_disk_usage() -> bool {
     true
 }
-fn default_io_usage() -> bool {
+const fn default_io_usage() -> bool {
     true
 }
 
-fn default_smoothing_factor() -> f32 {
+const fn default_smoothing_factor() -> f32 {
     0.3
 }
 
 impl Config {
     /// Create a new Config object
     #[must_use]
-    pub fn new(
+    pub const fn new(
         frequency: u64,
         smoothing_factor: f32,
         self_usage: bool,

@@ -39,7 +39,7 @@ impl<T> Clone for SharedSender<T> {
 
 impl<T> SharedSender<T> {
     /// Creates a new shared MPSC sender.
-    pub fn mpsc(sender: tokio::sync::mpsc::Sender<T>) -> Self {
+    pub const fn mpsc(sender: tokio::sync::mpsc::Sender<T>) -> Self {
         Self {
             inner: SharedSenderInner::Mpsc(sender),
             metrics: None,
@@ -60,7 +60,7 @@ impl<T> SharedSender<T> {
     }
 
     /// Creates a new shared MPMC sender.
-    pub fn mpmc(sender: flume::Sender<T>) -> Self {
+    pub const fn mpmc(sender: flume::Sender<T>) -> Self {
         Self {
             inner: SharedSenderInner::Mpmc(sender),
             metrics: None,
@@ -154,7 +154,7 @@ pub struct SharedReceiver<T> {
 impl<T> SharedReceiver<T> {
     /// Creates a new shared MPSC receiver.
     #[must_use]
-    pub fn mpsc(receiver: tokio::sync::mpsc::Receiver<T>) -> Self {
+    pub const fn mpsc(receiver: tokio::sync::mpsc::Receiver<T>) -> Self {
         Self {
             inner: SharedReceiverInner::Mpsc(receiver),
             metrics: None,
@@ -179,7 +179,7 @@ impl<T> SharedReceiver<T> {
 
     /// Creates a new shared MPMC receiver.
     #[must_use]
-    pub fn mpmc(receiver: flume::Receiver<T>) -> Self {
+    pub const fn mpmc(receiver: flume::Receiver<T>) -> Self {
         Self {
             inner: SharedReceiverInner::Mpmc(receiver),
             metrics: None,

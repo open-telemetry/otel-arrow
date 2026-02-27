@@ -21,7 +21,7 @@ impl MetricsReporter {
     /// This is primarily used for testing purposes or when you need to create
     /// a reporter independently of the `MetricsSystem`.
     #[must_use]
-    pub fn new(metrics_sender: flume::Sender<MetricSetSnapshot>) -> Self {
+    pub const fn new(metrics_sender: flume::Sender<MetricSetSnapshot>) -> Self {
         Self { metrics_sender }
     }
 

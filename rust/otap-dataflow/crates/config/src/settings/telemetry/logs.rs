@@ -139,7 +139,7 @@ const fn default_admin_provider() -> ProviderMode {
     ProviderMode::ConsoleDirect
 }
 
-fn default_providers() -> LoggingProviders {
+const fn default_providers() -> LoggingProviders {
     LoggingProviders {
         global: default_global_provider(),
         engine: default_engine_provider(),

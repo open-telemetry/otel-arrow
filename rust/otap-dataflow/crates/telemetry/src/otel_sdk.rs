@@ -7,9 +7,7 @@ pub mod meter_provider;
 
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
-use otap_df_config::pipeline::service::telemetry::{
-    AttributeValue, AttributeValueArray, TelemetryConfig,
-};
+use otap_df_config::pipeline::telemetry::{AttributeValue, AttributeValueArray, TelemetryConfig};
 
 use crate::{error::Error, otel_sdk::meter_provider::MeterProvider};
 
@@ -84,7 +82,7 @@ impl OpentelemetryClient {
 
     /// Get a reference to the meter provider.
     #[must_use]
-    pub fn meter_provider(&self) -> &SdkMeterProvider {
+    pub const fn meter_provider(&self) -> &SdkMeterProvider {
         &self.meter_provider
     }
 
@@ -124,7 +122,7 @@ pub fn encode_resource_bytes(
 #[cfg(test)]
 mod tests {
     use opentelemetry::global;
-    use otap_df_config::pipeline::service::telemetry::{
+    use otap_df_config::pipeline::telemetry::{
         AttributeValue,
         metrics::{
             MetricsConfig,

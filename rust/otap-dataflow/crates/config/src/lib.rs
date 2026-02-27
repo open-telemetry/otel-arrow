@@ -21,14 +21,20 @@ pub mod engine;
 pub mod error;
 pub mod health;
 pub mod node;
+/// Node type URN value object.
+pub mod node_urn;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
-/// Pipeline and engine settings.
+pub mod policy;
+/// Engine telemetry settings.
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
-pub mod urn;
+pub mod topic;
+pub use topic::{SubscriptionGroupName, TopicName};
+/// Validation helpers for node configuration.
+pub mod validation;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,9 +68,9 @@ pub type PipelineId = Cow<'static, str>;
 pub type NodeId = Cow<'static, str>;
 
 /// The URN of a node type.
-pub type NodeUrn = Cow<'static, str>;
+pub use node_urn::NodeUrn;
 
-/// The name of a node out port in the pipeline.
+/// The name of a node output port in the pipeline.
 pub type PortName = Cow<'static, str>;
 
 /// The description of a pipeline or a node.
@@ -84,7 +90,7 @@ pub struct PipelineKey {
 impl PipelineKey {
     /// Construct a new PipelineKey from group and pipeline ids.
     #[must_use]
-    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
+    pub const fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
             pipeline_group_id,
             pipeline_id,
@@ -93,13 +99,13 @@ impl PipelineKey {
 
     /// Returns the pipeline group identifier.
     #[must_use]
-    pub fn pipeline_group_id(&self) -> &PipelineGroupId {
+    pub const fn pipeline_group_id(&self) -> &PipelineGroupId {
         &self.pipeline_group_id
     }
 
     /// Returns the pipeline identifier.
     #[must_use]
-    pub fn pipeline_id(&self) -> &PipelineId {
+    pub const fn pipeline_id(&self) -> &PipelineId {
         &self.pipeline_id
     }
 

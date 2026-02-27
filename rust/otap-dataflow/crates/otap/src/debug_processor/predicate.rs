@@ -44,7 +44,7 @@ pub struct KeyValue {
 }
 
 impl KeyValue {
-    pub fn new(key: String, value: MatchValue) -> Self {
+    pub const fn new(key: String, value: MatchValue) -> Self {
         Self { key, value }
     }
 }
@@ -75,7 +75,7 @@ impl Predicate {
             .collect()
     }
 
-    pub fn new(field: SignalField, value: MatchValue) -> Self {
+    pub const fn new(field: SignalField, value: MatchValue) -> Self {
         Self { field, value }
     }
 
