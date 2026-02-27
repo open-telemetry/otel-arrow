@@ -72,7 +72,9 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
-use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic, root_field_type};
+use crate::pipeline::expr::types::{
+    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -226,7 +228,7 @@ impl ExprLogicalPlanner {
                     }
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
                         let field_type =
-                            root_field_type(&struct_field_name).ok_or_else(|| Error::InvalidPipelineError {
+                            nested_struct_field_type(&struct_field_name).ok_or_else(|| Error::InvalidPipelineError {
                                 cause: format!("unknown field {struct_field_name} on {column_name} struct column"),
                                 query_location: Some(
                                     source_scalar_expr.get_query_location().clone(),
@@ -1837,7 +1839,7 @@ mod test {
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                 StaticScalarExpression::String(StringScalarExpression::new(
                     QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
+                    consts::DROPPED_ATTRIBUTES_COUNT,
                 )),
             )]),
         ));
@@ -1864,11 +1866,11 @@ mod test {
 
         let logs = to_logs_data(vec![
             LogRecord::build()
-                .severity_number(10)
+                .dropped_attributes_count(10u32)
                 .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
                 .finish(),
             LogRecord::build()
-                .severity_number(20)
+                .dropped_attributes_count(20u32)
                 .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
                 .finish(),
         ]);
@@ -1886,12 +1888,12 @@ mod test {
         let logs = to_logs_data(vec![
             LogRecord::build()
                 .severity_text("info")
-                .severity_number(30)
+                .dropped_attributes_count(30u32)
                 .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
                 .finish(),
             LogRecord::build()
                 .severity_text("debug")
-                .severity_number(40)
+                .dropped_attributes_count(40u32)
                 .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
                 .finish(),
         ]);
@@ -1899,14 +1901,14 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let logs_input_2 = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         // ensure the column isn't in the same location
-        assert_eq!(
+        assert_ne!(
             logs_input_1
                 .schema()
-                .index_of(consts::SEVERITY_NUMBER)
+                .index_of(consts::DROPPED_ATTRIBUTES_COUNT)
                 .unwrap(),
             logs_input_2
                 .schema()
-                .index_of(consts::SEVERITY_NUMBER)
+                .index_of(consts::DROPPED_ATTRIBUTES_COUNT)
                 .unwrap()
         );
 
