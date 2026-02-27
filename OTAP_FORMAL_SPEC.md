@@ -461,8 +461,9 @@ properties for the `resource` column's `id` field.
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped span attributes |
 | dropped_events_count | UInt32 | — | Yes | No | — | — | Number of dropped events |
 | dropped_links_count | UInt32 | — | Yes | No | — | — | Number of dropped links |
-| status_code | Int32 | — | Yes | No | — | — | Span status code |
-| status_status_message | Utf8 | — | Yes | No | — | — | Status message |
+| status | Struct | - | Yes | No | - | - | Span status |
+| status.code | Int32 | Dict(u8), Dict(u16) | Yes | No | — | — | Span status code |
+| status.status_message | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Status message |
 
 #### 5.2.2 SPAN_EVENTS
 
