@@ -534,7 +534,7 @@ pub fn find_parent_id_size<S: OtapBatchStore>(
 }
 
 /// Utility for pretty printing a bunch of otap batches, nice for debugging
-#[allow(dead_code)]
+#[allow(unused)]
 pub fn pretty_print_otap_batches<const N: usize>(batches: &[[Option<RecordBatch>; N]]) {
     for (idx, b) in batches.iter().enumerate() {
         use arrow::util::pretty;

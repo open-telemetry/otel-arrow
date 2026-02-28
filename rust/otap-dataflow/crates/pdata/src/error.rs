@@ -112,6 +112,9 @@ pub enum Error {
     )]
     UnsupportedParentIdType { actual: DataType },
 
+    #[error("parent_id column must not contain nulls")]
+    NullParentId,
+
     #[error("Unsupported payload type, got: {}", actual)]
     UnsupportedPayloadType { actual: i32 },
 
