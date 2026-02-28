@@ -12,8 +12,12 @@
 //! are supported.
 
 use crate::context::PipelineContext;
-use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{
+    ControlSenders, ExtensionControlMsg, NodeControlMsg, PipelineControlMsg,
+    PipelineCtrlMsgReceiver,
+};
 use crate::error::Error;
+use crate::message::Sender;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::policy::TelemetryPolicy;
@@ -183,6 +187,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
     control_senders: ControlSenders<PData>,
+    /// Control message senders for extensions (shutdown after pipeline draining).
+    extension_senders: Vec<Sender<ExtensionControlMsg>>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
@@ -208,6 +214,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
+        extension_senders: Vec<Sender<ExtensionControlMsg>>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         telemetry_policy: TelemetryPolicy,
@@ -218,6 +225,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             pipeline_context,
             pipeline_ctrl_msg_receiver,
             control_senders,
+            extension_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
             delayed_data: BinaryHeap::new(),
@@ -461,6 +469,17 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
             }
         }
+
+        // Shut down extensions after the data-plane has drained.
+        for sender in &self.extension_senders {
+            let _ = sender
+                .send(ExtensionControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Pipeline draining complete".to_owned(),
+                })
+                .await;
+        }
+
         Ok(())
     }
 
@@ -597,6 +616,7 @@ mod tests {
             pipeline_context,
             pipeline_rx,
             control_senders,
+            Vec::new(),
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
             TelemetryPolicy::default(),
@@ -1041,6 +1061,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
+                    Vec::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetryPolicy::default(),

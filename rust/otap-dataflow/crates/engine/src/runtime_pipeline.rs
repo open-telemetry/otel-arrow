@@ -149,8 +149,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut control_senders = ControlSenders::default();
 
         // Spawn extension tasks first so services are available before pipeline nodes start.
+        // Clone each extension's control sender so the PipelineCtrlMsgManager can
+        // deliver shutdown (and future control) messages after pipeline draining.
+        let mut extension_senders = Vec::with_capacity(extensions.len());
         for extension in extensions {
             let mut extension = extension;
+            extension_senders.push(extension.control_sender());
             let metrics_reporter = metrics_reporter.clone();
             let telemetry_guard = extension.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
@@ -300,6 +304,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 pipeline_context,
                 pipeline_ctrl_msg_rx,
                 control_senders,
+                extension_senders,
                 event_reporter,
                 metrics_reporter,
                 telemetry_policy,

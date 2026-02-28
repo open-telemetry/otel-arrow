@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::extensions::ExtensionHandles;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::Sender;
 use crate::node::NodeId;
 use crate::shared::extension as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -280,6 +281,20 @@ impl ExtensionWrapper {
         }
     }
 
+    /// Returns a clone of the control message sender for this extension.
+    ///
+    /// This must be called **before** [`start`](Self::start), which consumes `self`.
+    /// The returned sender is held by the [`PipelineCtrlMsgManager`](crate::pipeline_ctrl::PipelineCtrlMsgManager)
+    /// so the extension can receive shutdown and other control messages.
+    pub fn control_sender(&self) -> Sender<ExtensionControlMsg> {
+        match self {
+            ExtensionWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ExtensionWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
+        }
+    }
+
     /// Starts the extension's background work.
     ///
     /// The extension task runs independently, processing only control messages.
@@ -308,5 +323,111 @@ impl ExtensionWrapper {
                 extension.start(ctrl_chan, effect_handler).await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ExtensionConfig;
+    use crate::control::ExtensionControlMsg;
+    use crate::extensions::ExtensionHandles;
+    use crate::local::extension as local;
+    use crate::testing::test_node;
+    use async_trait::async_trait;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_telemetry::reporter::MetricsReporter;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// A minimal extension that loops on its control channel and sets a flag
+    /// when it receives a Shutdown message.
+    struct ShutdownTracker {
+        received: Arc<AtomicBool>,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Extension for ShutdownTracker {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_chan: local::ControlChannel,
+            _effect_handler: local::EffectHandler,
+        ) -> Result<(), Error> {
+            loop {
+                match ctrl_chan.recv().await {
+                    Ok(ExtensionControlMsg::Shutdown { .. }) => {
+                        self.received.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    Ok(_) => {} // ignore other messages
+                    Err(_) => break,
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Verifies that a Shutdown message sent through the cloned control_sender
+    /// is received by the extension's start() loop.
+    #[test]
+    fn test_extension_receives_shutdown_via_control_sender() {
+        let shutdown_received = Arc::new(AtomicBool::new(false));
+        let tracker = ShutdownTracker {
+            received: shutdown_received.clone(),
+        };
+
+        let config = ExtensionConfig::new("shutdown_ext");
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("test_ext"));
+        let ext = ExtensionWrapper::local(
+            tracker,
+            ExtensionHandles::new(),
+            test_node("shutdown_ext"),
+            user_config,
+            &config,
+        );
+
+        // Clone the sender BEFORE start() consumes the wrapper.
+        let sender = ext.control_sender();
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let local = tokio::task::LocalSet::new();
+            local
+                .run_until(async {
+                    let handle = tokio::task::spawn_local(async move {
+                        ext.start(metrics_reporter).await.expect("extension failed");
+                    });
+
+                    // Give the extension a moment to start its recv loop.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+
+                    // Send shutdown through the cloned sender.
+                    sender
+                        .send(ExtensionControlMsg::Shutdown {
+                            deadline: Instant::now(),
+                            reason: "test shutdown".to_owned(),
+                        })
+                        .await
+                        .expect("send failed");
+
+                    tokio::time::timeout(Duration::from_secs(2), handle)
+                        .await
+                        .expect("extension did not shut down in time")
+                        .expect("join error");
+                })
+                .await;
+        });
+
+        assert!(
+            shutdown_received.load(Ordering::SeqCst),
+            "extension should have received the Shutdown message"
+        );
     }
 }
