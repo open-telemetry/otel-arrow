@@ -23,7 +23,7 @@ use otap_df_engine::control::{
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests,
     MessageSourceLocalEffectHandlerExtension,
-    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension, ReceivedAtNode,
+    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -389,17 +389,6 @@ impl OtapPdata {
     #[must_use]
     pub fn get_source_node(&self) -> Option<usize> {
         self.context.source_node()
-    }
-}
-
-impl ReceivedAtNode for OtapPdata {
-    fn received_at_node(
-        &mut self,
-        node_id: usize,
-        node_interests: Interests,
-    ) {
-        self.context
-            .push_entry_frame(node_id, node_interests);
     }
 }
 

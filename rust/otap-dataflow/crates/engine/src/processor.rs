@@ -19,7 +19,7 @@ use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
-use crate::{Interests, ReceivedAtNode};
+use crate::{Interests, };
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -394,8 +394,6 @@ impl<PData> ProcessorWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Result<(), Error>
-    where
-        PData: ReceivedAtNode,
     {
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 

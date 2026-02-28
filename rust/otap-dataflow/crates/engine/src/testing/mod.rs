@@ -32,16 +32,6 @@ pub use node::{test_node, test_nodes};
 #[derive(Debug, PartialEq, Clone)]
 pub struct TestMsg(pub String);
 
-impl crate::ReceivedAtNode for TestMsg {
-    fn received_at_node(
-        &mut self,
-        _node_id: usize,
-        _node_interests: crate::Interests,
-    ) {
-        // No-op for test messages.
-    }
-}
-
 impl TestMsg {
     /// Creates a new test message with the given content.
     pub fn new<S: Into<String>>(content: S) -> Self {

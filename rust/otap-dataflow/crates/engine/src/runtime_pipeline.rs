@@ -14,7 +14,6 @@ use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeW
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-use crate::ReceivedAtNode;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
@@ -105,7 +104,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(

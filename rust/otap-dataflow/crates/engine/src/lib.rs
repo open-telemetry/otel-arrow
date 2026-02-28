@@ -264,20 +264,6 @@ pub trait ProducerEffectHandlerExtension<PData> {
     fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut PData);
 }
 
-/// Called when PData arrives at a queue-consumer node (processor or exporter).
-/// Pushes an entry frame whose interests and timestamp depend on the
-/// engine-computed `node_interests`.
-pub trait ReceivedAtNode {
-    /// Record that this PData was received at the given node.
-    ///
-    /// `node_interests` is computed by the engine from the current `MetricLevel`:
-    /// - `None`     → empty (no frame pushed)
-    /// - `Basic`    → `PIPELINE_METRICS`
-    /// - `Normal`   → `PIPELINE_METRICS`
-    /// - `Detailed` → `PIPELINE_METRICS | ENTRY_TIMESTAMP`
-    fn received_at_node(&mut self, node_id: usize, node_interests: Interests);
-}
-
 /// Effect handler extensions for consumers specific to data type.
 #[async_trait(?Send)]
 pub trait ConsumerEffectHandlerExtension<PData> {
