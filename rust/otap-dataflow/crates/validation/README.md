@@ -233,3 +233,20 @@ connect the generator(s) -> capture(s) if needed
 your system-under-validation pipeline, the node names must match
 - **Invalid Validation**: Ensure generator and capture pipelines are connected to
 allow the validation instructions to have control signals to validate against
+
+## New Feature Update
+
+### Support multiple input/output connections
+
+- You can define multiple Generator(s)/Capture(s) and add them to your Scenario
+  - call add_generator("label1", Generator)/add_capture("label2", Generator)
+    - labels for each generator/capture should be unique
+  - one Generator/Capture per receiver/exporter node in suv pipeline
+- You can make multiple connections between Generator and Capture
+  - make connections to control the flow of control signals
+  - call connect("label1", "label2") to connect a Generator to Capture
+    - you can make multiple connections per Generator/Capture
+
+### Test containers
+
+**WIP**
