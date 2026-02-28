@@ -998,7 +998,7 @@ impl StampPdataReceived for otap_df_engine::shared::exporter::EffectHandler<Otap
 /// Callback function for stamping entry frames on received PData messages.
 ///
 /// This is the `on_pdata_received` hook for OtapPdata pipelines. It should be
-/// passed to [`RuntimePipeline::set_on_pdata_received`] so that processors
+/// passed to [`RuntimePipeline::set_on_pdata_received`] so that nodes
 /// automatically push entry frames (for metrics instrumentation) when
 /// receiving PData from their input channel.
 ///

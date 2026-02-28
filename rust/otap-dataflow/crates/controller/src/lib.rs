@@ -88,9 +88,9 @@ pub mod thread_task;
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
-    /// Optional callback invoked for each PData message received by processors.
+    /// Callback invoked for each PData message received by nodes.
     /// Enables data-type-specific instrumentation (e.g., entry frame stamping).
-    on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
+    on_pdata_received: fn(&mut PData, usize, Interests),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,15 +115,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self {
             pipeline_factory,
-            on_pdata_received: None,
+            on_pdata_received: |_, _, _| {},
         }
     }
 
-    /// Sets a callback invoked for each PData message received by processors.
+    /// Sets a callback invoked for each PData message received by nodes.
     ///
     /// The callback receives:
     /// - A mutable reference to the PData message
-    /// - The node ID (index) of the receiving processor
+    /// - The node ID (index) of the receiving node
     /// - The node's computed interests
     ///
     /// This enables data-type-specific instrumentation (e.g., entry frame stamping
@@ -133,7 +133,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         mut self,
         hook: fn(&mut PData, usize, Interests),
     ) -> Self {
-        self.on_pdata_received = Some(hook);
+        self.on_pdata_received = hook;
         self
     }
 
@@ -616,7 +616,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         observability_pipeline: Option<ResolvedPipelineConfig>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
-        on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
+        on_pdata_received: fn(&mut PData, usize, Interests),
         controller_ctx: &ControllerContext,
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
@@ -732,7 +732,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         pipeline_factory: &'static PipelineFactory<PData>,
-        on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
+        on_pdata_received: fn(&mut PData, usize, Interests),
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
@@ -795,10 +795,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     }
                 })?;
 
-            // Set the on_pdata_received hook if one was configured.
-            if let Some(hook) = on_pdata_received {
-                runtime_pipeline.set_on_pdata_received(hook);
-            }
+            // Set the on_pdata_received hook.
+            runtime_pipeline.set_on_pdata_received(on_pdata_received);
 
             obs_evt_reporter.report(EngineEvent::ready(
                 pipeline_key.clone(),

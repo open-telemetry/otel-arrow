@@ -316,6 +316,8 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
+        on_pdata_received: fn(&mut PData, usize, Interests),
+        node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
@@ -336,6 +338,9 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
+                    on_pdata_received,
+                    node_id.index,
+                    node_interests,
                 );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = local::EffectHandler::new(
@@ -369,6 +374,9 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
+                    on_pdata_received,
+                    node_id.index,
+                    node_interests,
                 );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = shared::EffectHandler::new(
@@ -389,7 +397,7 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Start the processor and run the message processing loop.
     ///
-    /// The optional `on_pdata_received` callback is invoked for each PData message
+    /// The `on_pdata_received` callback is invoked for each PData message
     /// after it is received from the channel but before it is passed to `process()`.
     /// This enables data-type-specific instrumentation (e.g., entry frame stamping)
     /// without adding trait bounds to PData.
@@ -400,10 +408,10 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
-        on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
+        on_pdata_received: fn(&mut PData, usize, Interests),
     ) -> Result<(), Error>
     {
-        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
+        let runtime = self.prepare_runtime(metrics_reporter.clone(), on_pdata_received, node_interests).await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -426,12 +434,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                let node_id = effect_handler.processor_id().index;
-                while let Ok(msg) = message_channel.recv_with(|pdata| {
-                    if let Some(hook) = on_pdata_received {
-                        hook(pdata, node_id, node_interests);
-                    }
-                }).await {
+                while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -464,12 +467,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                let node_id = effect_handler.processor_id().index;
-                while let Ok(msg) = message_channel.recv_with(|pdata| {
-                    if let Some(hook) = on_pdata_received {
-                        hook(pdata, node_id, node_interests);
-                    }
-                }).await {
+                while let Ok(msg) = message_channel.recv().await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

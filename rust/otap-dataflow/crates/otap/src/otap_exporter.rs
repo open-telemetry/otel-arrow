@@ -846,7 +846,7 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {}).await;
             Ok(())
         }
 

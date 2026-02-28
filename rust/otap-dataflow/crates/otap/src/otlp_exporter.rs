@@ -1093,7 +1093,7 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {})
                 .await
                 .map(|_| ())
         }

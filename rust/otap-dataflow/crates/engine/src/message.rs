@@ -7,6 +7,7 @@ use crate::channel_metrics::OutputChannelSenderMetrics;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::Interests;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::ops::Add;
@@ -203,20 +204,32 @@ pub struct MessageChannel<PData> {
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
     pending_shutdown: Option<NodeControlMsg<PData>>,
+    /// Callback invoked for each PData message received.
+    on_pdata_received: fn(&mut PData, usize, Interests),
+    /// Node ID passed to on_pdata_received.
+    node_id: usize,
+    /// Node interests passed to on_pdata_received.
+    interests: Interests,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         control_rx: Receiver<NodeControlMsg<PData>>,
         pdata_rx: Receiver<PData>,
+        on_pdata_received: fn(&mut PData, usize, Interests),
+        node_id: usize,
+        interests: Interests,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
+            on_pdata_received,
+            node_id,
+            interests,
         }
     }
 
@@ -282,7 +295,10 @@ impl<PData> MessageChannel<PData> {
 
                     // 2) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Ok(mut pdata) => {
+                            (self.on_pdata_received)(&mut pdata, self.node_id, self.interests);
+                            return Ok(Message::PData(pdata));
+                        }
                         Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
@@ -324,7 +340,8 @@ impl<PData> MessageChannel<PData> {
                 // B) Then pdata
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
-                        Ok(pdata) => {
+                        Ok(mut pdata) => {
+                            (self.on_pdata_received)(&mut pdata, self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
                         }
                         Err(RecvError::Closed) => {
@@ -342,25 +359,6 @@ impl<PData> MessageChannel<PData> {
                 }
             }
         }
-    }
-
-    /// Receives the next message, applying a hook to any PData message before returning.
-    ///
-    /// This allows the caller to inject processing (e.g., entry frame stamping) at receive time
-    /// without modifying the internal recv() logic.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RecvError`] if the channel is closed or the shutdown deadline has passed.
-    pub async fn recv_with<F>(&mut self, mut hook: F) -> Result<Message<PData>, RecvError>
-    where
-        F: FnMut(&mut PData),
-    {
-        let mut msg = self.recv().await?;
-        if let Message::PData(ref mut pdata) = msg {
-            hook(pdata);
-        }
-        Ok(msg)
     }
 
     fn shutdown(&mut self) {

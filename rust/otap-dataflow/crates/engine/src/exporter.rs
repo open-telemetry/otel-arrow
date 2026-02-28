@@ -274,6 +274,7 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
+        on_pdata_received: fn(&mut PData, usize, Interests),
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -286,7 +287,7 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler = local::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -303,7 +304,13 @@ impl<PData> ExporterWrapper<PData> {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
                 let message_channel =
-                    message::MessageChannel::new(Receiver::Local(control_receiver), pdata_rx);
+                    message::MessageChannel::new(
+                        Receiver::Local(control_receiver),
+                        pdata_rx,
+                        on_pdata_received,
+                        node_id.index,
+                        node_interests,
+                    );
                 exporter.start(message_channel, effect_handler).await
             }
             (
@@ -316,7 +323,7 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler = shared::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -332,7 +339,13 @@ impl<PData> ExporterWrapper<PData> {
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
-                let message_channel = shared::MessageChannel::new(control_receiver, pdata_rx);
+                let message_channel = shared::MessageChannel::new(
+                    control_receiver,
+                    pdata_rx,
+                    on_pdata_received,
+                    node_id.index,
+                    node_interests,
+                );
                 exporter.start(message_channel, effect_handler).await
             }
         }
@@ -419,6 +432,7 @@ mod tests {
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
+    use crate::Interests;
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
@@ -617,6 +631,9 @@ mod tests {
             message::MessageChannel::new(
                 message::Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 message::Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                |_, _, _| {},
+                0,
+                Interests::empty(),
             ),
         )
     }
