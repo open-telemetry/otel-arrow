@@ -7,6 +7,8 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
+use crate::Interests;
+use crate::ReceivedAtNode;
 use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
@@ -21,7 +23,6 @@ use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
-use crate::Interests;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -316,7 +317,6 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
-        on_pdata_received: fn(&mut PData, usize, Interests),
         node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
@@ -338,7 +338,6 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
-                    on_pdata_received,
                     node_id.index,
                     node_interests,
                 );
@@ -374,7 +373,6 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
-                    on_pdata_received,
                     node_id.index,
                     node_interests,
                 );
@@ -396,22 +394,19 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
-    ///
-    /// The `on_pdata_received` callback is invoked for each PData message
-    /// after it is received from the channel but before it is passed to `process()`.
-    /// This enables data-type-specific instrumentation (e.g., entry frame stamping)
-    /// without adding trait bounds to PData.
-    #[doc(hidden)]
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
-        on_pdata_received: fn(&mut PData, usize, Interests),
     ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
     {
-        let runtime = self.prepare_runtime(metrics_reporter.clone(), on_pdata_received, node_interests).await?;
+        let runtime = self
+            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {

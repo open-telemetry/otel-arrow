@@ -25,7 +25,9 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UserCallData};
+use otap_df_engine::control::{
+    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UserCallData,
+};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;

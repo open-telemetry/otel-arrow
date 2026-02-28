@@ -33,6 +33,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::Interests;
 use crate::channel_metrics::{LocalChannelReceiverMetricsHandle, RequestOutcome};
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
@@ -44,7 +45,6 @@ use async_trait::async_trait;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
-use crate::Interests;
 use std::marker::PhantomData;
 use std::time::Duration;
 

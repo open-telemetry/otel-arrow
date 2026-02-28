@@ -25,10 +25,10 @@ use crate::{
     shared::message::{SharedReceiver, SharedSender},
 };
 use async_trait::async_trait;
+pub use channel_metrics::RequestOutcome;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
-pub use channel_metrics::RequestOutcome;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
@@ -256,6 +256,28 @@ impl Interests {
             MetricLevel::Detailed => Self::PIPELINE_METRICS | Self::ENTRY_TIMESTAMP,
         }
     }
+}
+
+/// Trait for entry-frame stamping when PData is received by a consuming node.
+///
+/// Implementing this trait allows the engine to automatically invoke
+/// data-type-specific instrumentation (e.g., pushing an entry frame for
+/// duration metrics) inside `MessageChannel::recv()` without requiring
+/// a function pointer callback threaded through the entire start chain.
+pub trait ReceivedAtNode {
+    /// Called automatically when a PData message is received from the input channel.
+    ///
+    /// - `node_id`: The receiving node's index.
+    /// - `node_interests`: Precomputed interests (derived from `MetricLevel`).
+    fn received_at_node(&mut self, node_id: usize, node_interests: Interests);
+}
+
+// No-op implementations for types used as PData in tests.
+impl ReceivedAtNode for () {
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
+}
+impl ReceivedAtNode for String {
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
 /// Effect handler extensions for producers specific to data type.

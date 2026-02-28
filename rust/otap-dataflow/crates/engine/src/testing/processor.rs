@@ -6,6 +6,7 @@
 //! These utilities are designed to make testing processors simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::Interests;
 use crate::config::ProcessorConfig;
 use crate::control::pipeline_ctrl_msg_channel;
 use crate::effect_handler::SourceTagging;
@@ -16,7 +17,6 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
-use crate::Interests;
 use otap_df_telemetry::InternalTelemetrySystem;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -287,7 +287,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         self.rt.block_on(async move {
             let mut runtime = self
                 .processor
-                .prepare_runtime(metrics_reporter, |_, _, _| {}, Interests::empty())
+                .prepare_runtime(metrics_reporter, Interests::empty())
                 .await
                 .expect("Failed to prepare runtime");
 

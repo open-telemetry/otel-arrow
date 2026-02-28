@@ -962,7 +962,8 @@ mod test {
                         );
                         assert_eq!(node_id, 4444);
 
-                        let ackdata: TestCallData = ack.calldata.user.try_into().expect("my calldata");
+                        let ackdata: TestCallData =
+                            ack.calldata.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), ackdata);
 
                         // Requested RETURN_DATA, check item count match
@@ -975,7 +976,8 @@ mod test {
                         );
                         assert_eq!(node_id, 4444);
 
-                        let nackdata: TestCallData = nack.calldata.user.try_into().expect("my calldata");
+                        let nackdata: TestCallData =
+                            nack.calldata.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), nackdata);
 
                         // Requested RETURN_DATA, check item count match

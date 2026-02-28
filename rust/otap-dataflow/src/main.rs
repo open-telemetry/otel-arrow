@@ -21,7 +21,6 @@ use otap_df_contrib_nodes as _;
 use otap_df_contrib_nodes as _;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_otap::pdata::stamp_pdata_entry_frame;
 use std::path::PathBuf;
 use sysinfo::System;
 
@@ -281,8 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    let controller = Controller::new(&OTAP_PIPELINE_FACTORY)
-        .with_on_pdata_received(stamp_pdata_entry_frame);
+    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {

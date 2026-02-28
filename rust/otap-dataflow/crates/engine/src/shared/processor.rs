@@ -31,7 +31,10 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::channel_metrics::{RequestOutcome, SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle};
+use crate::Interests;
+use crate::channel_metrics::{
+    RequestOutcome, SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
+};
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -40,7 +43,6 @@ use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedSender;
-use crate::Interests;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -127,7 +129,10 @@ impl<PData> EffectHandler<PData> {
 
         // Determine and cache the default sender
         let (default_sender, default_port_index) = if let Some(ref port) = default_port {
-            (msg_senders.get(port).cloned(), port_indices.get(port).copied().unwrap_or(0))
+            (
+                msg_senders.get(port).cloned(),
+                port_indices.get(port).copied().unwrap_or(0),
+            )
         } else if msg_senders.len() == 1 {
             (msg_senders.values().next().cloned(), 0)
         } else {
@@ -235,7 +240,11 @@ impl<PData> EffectHandler<PData> {
         senders: &HashMap<PortName, SharedSender<PData>>,
         port_indices: &HashMap<PortName, u16>,
     ) -> Vec<Option<SharedChannelSenderMetricsHandle>> {
-        let len = port_indices.values().map(|i| *i as usize + 1).max().unwrap_or(0);
+        let len = port_indices
+            .values()
+            .map(|i| *i as usize + 1)
+            .max()
+            .unwrap_or(0);
         let mut vec = vec![None; len];
         for (name, idx) in port_indices {
             if let Some(sender) = senders.get(name) {

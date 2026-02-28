@@ -6,8 +6,8 @@
 use crate::channel_metrics::{
     ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    OutputChannelSenderMetrics,
-    SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
+    OutputChannelSenderMetrics, SharedChannelReceiverMetricsHandle,
+    SharedChannelSenderMetricsHandle,
 };
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_telemetry::metrics::MetricSet;

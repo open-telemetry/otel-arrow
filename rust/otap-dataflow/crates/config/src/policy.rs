@@ -65,11 +65,11 @@ pub enum MetricLevel {
     /// No instrumentation — zero overhead.
     #[default]
     None,
-    /// Outcome counts only (auto-subscribe to ACKS|NACKS).
+    /// Outcome counts.
     Basic,
-    /// Outcome counts + forward-path byte counting.
+    /// Not used presently, same as Basic.
     Normal,
-    /// Outcome counts + bytes + receive timestamp and duration histogram.
+    /// Adds pipeline latency measurement.
     Detailed,
 }
 

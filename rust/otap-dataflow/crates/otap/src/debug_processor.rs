@@ -1441,7 +1441,8 @@ mod tests {
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = ack.calldata.user.try_into().unwrap();
+                            let received_calldata: TestCallData =
+                                ack.calldata.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "ACK should contain subscriber's calldata"
@@ -1492,7 +1493,8 @@ mod tests {
                                 node_id, upstream_node_id,
                                 "NACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = nack.calldata.user.try_into().unwrap();
+                            let received_calldata: TestCallData =
+                                nack.calldata.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "NACK should contain subscriber's calldata"

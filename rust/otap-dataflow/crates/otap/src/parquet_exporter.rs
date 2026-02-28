@@ -921,7 +921,12 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {})
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                    None,
+                )
                 .await
                 .map(|_| ())
         }
@@ -1071,7 +1076,12 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {})
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                    None,
+                )
                 .await
                 .map(|_| ())
         }
@@ -1219,7 +1229,12 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {})
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                    None,
+                )
                 .await
                 .map(|_| ())
         }
@@ -1462,7 +1477,12 @@ mod test {
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None, |_, _, _| {})
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                    None,
+                )
                 .await
                 .map(|_| ())
         }

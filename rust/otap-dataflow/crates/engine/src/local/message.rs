@@ -6,8 +6,7 @@
 use crate::channel_metrics::{
     ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle,
-    OutputChannelSenderMetrics,
+    LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle, OutputChannelSenderMetrics,
 };
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::{mpmc, mpsc};

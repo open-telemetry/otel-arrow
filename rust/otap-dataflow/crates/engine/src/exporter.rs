@@ -7,6 +7,7 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
+use crate::Interests;
 use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
@@ -14,7 +15,6 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
-use crate::Interests;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -267,14 +267,12 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    #[doc(hidden)]
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
-        on_pdata_received: fn(&mut PData, usize, Interests),
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -287,7 +285,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id.clone(), metrics_reporter);
+                let mut effect_handler =
+                    local::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -303,14 +302,12 @@ impl<PData> ExporterWrapper<PData> {
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
-                let message_channel =
-                    message::MessageChannel::new(
-                        Receiver::Local(control_receiver),
-                        pdata_rx,
-                        on_pdata_received,
-                        node_id.index,
-                        node_interests,
-                    );
+                let message_channel = message::MessageChannel::new(
+                    Receiver::Local(control_receiver),
+                    pdata_rx,
+                    node_id.index,
+                    node_interests,
+                );
                 exporter.start(message_channel, effect_handler).await
             }
             (
@@ -323,7 +320,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id.clone(), metrics_reporter);
+                let mut effect_handler =
+                    shared::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -342,7 +340,6 @@ impl<PData> ExporterWrapper<PData> {
                 let message_channel = shared::MessageChannel::new(
                     control_receiver,
                     pdata_rx,
-                    on_pdata_received,
                     node_id.index,
                     node_interests,
                 );
@@ -420,6 +417,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Interests;
     use crate::control::{AckMsg, NodeControlMsg};
     use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
@@ -432,7 +430,6 @@ mod tests {
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
-    use crate::Interests;
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
@@ -631,7 +628,6 @@ mod tests {
             message::MessageChannel::new(
                 message::Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 message::Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
-                |_, _, _| {},
                 0,
                 Interests::empty(),
             ),

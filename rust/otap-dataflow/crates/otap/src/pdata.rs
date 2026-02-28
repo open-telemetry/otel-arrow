@@ -16,14 +16,11 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::control::{AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch};
 use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::control::{
-    AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch,
-};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, RequestOutcome,
-    MessageSourceLocalEffectHandlerExtension,
-    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
+    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension, RequestOutcome,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -187,11 +184,7 @@ impl Context {
     ///
     /// If the component later calls `subscribe_to`, the same-node merge
     /// will fold interests into this frame while preserving `time_ns`.
-    pub(crate) fn push_entry_frame(
-        &mut self,
-        node_id: usize,
-        node_interests: Interests,
-    ) {
+    pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
         // No frame needed when the engine has no metrics interest.
         if !node_interests.intersects(Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP) {
             return;
@@ -561,11 +554,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             |d| self.record_consumed_duration(d),
             |o| self.record_consumed(o),
         );
-        record_producer_ack_metrics(
-            &ack.accepted.context,
-            interests,
-            |port, o| self.record_produced(port, o),
-        );
+        record_producer_ack_metrics(&ack.accepted.context, interests, |port, o| {
+            self.record_produced(port, o)
+        });
         self.route_ack(ack, Context::next_ack).await
     }
 
@@ -626,11 +617,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             |d| self.record_consumed_duration(d),
             |o| self.record_consumed(o),
         );
-        record_producer_ack_metrics(
-            &ack.accepted.context,
-            interests,
-            |port, o| self.record_produced(port, o),
-        );
+        record_producer_ack_metrics(&ack.accepted.context, interests, |port, o| {
+            self.record_produced(port, o)
+        });
         self.route_ack(ack, Context::next_ack).await
     }
 
@@ -694,7 +683,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.send_message(data).await
     }
 
@@ -707,7 +697,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.try_send_message(data)
     }
 
@@ -725,7 +716,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.send_message_to(port_name, data).await
     }
 
@@ -743,7 +735,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.try_send_message_to(port_name, data)
     }
 }
@@ -761,7 +754,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.send_message(data).await
     }
 
@@ -774,7 +768,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.try_send_message(data)
     }
 
@@ -792,7 +787,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.send_message_to(port_name, data).await
     }
 
@@ -810,7 +806,8 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.try_send_message_to(port_name, data)
     }
 }
@@ -828,7 +825,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.send_message(data).await
     }
 
@@ -841,7 +839,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.try_send_message(data)
     }
 
@@ -859,7 +858,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.send_message_to(port_name, data).await
     }
 
@@ -877,7 +877,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.try_send_message_to(port_name, data)
     }
 }
@@ -895,7 +896,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.send_message(data).await
     }
 
@@ -908,7 +910,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.default_output_port_index());
+        data.context
+            .stamp_output_port_index(self.default_output_port_index());
         self.try_send_message(data)
     }
 
@@ -926,7 +929,8 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.send_message_to(port_name, data).await
     }
 
@@ -944,69 +948,18 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         } else {
             data
         };
-        data.context.stamp_output_port_index(self.output_port_index(&port_name));
+        data.context
+            .stamp_output_port_index(self.output_port_index(&port_name));
         self.try_send_message_to(port_name, data)
     }
 }
 
-/* -------- Entry frame stamping for consumer nodes -------- */
+/* -------- ReceivedAtNode implementation -------- */
 
-/// Extension trait for stamping entry frames when PData is received at a consuming node.
-///
-/// Processors and exporters should call `stamp_pdata_received` at the start of handling
-/// a PData message to capture the receive timestamp for duration metrics.
-pub trait StampPdataReceived {
-    /// Stamp the entry frame on received pdata for duration tracking.
-    ///
-    /// This pushes an entry frame with the current timestamp so that
-    /// `consumed.duration_ns` can be calculated when ack/nack arrives.
-    fn stamp_pdata_received(&self, pdata: &mut OtapPdata);
-}
-
-impl StampPdataReceived for otap_df_engine::local::processor::EffectHandler<OtapPdata> {
-    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
-        pdata
-            .context
-            .push_entry_frame(self.processor_id().index, self.node_interests());
+impl otap_df_engine::ReceivedAtNode for OtapPdata {
+    fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
+        self.context.push_entry_frame(node_id, node_interests);
     }
-}
-
-impl StampPdataReceived for otap_df_engine::shared::processor::EffectHandler<OtapPdata> {
-    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
-        pdata
-            .context
-            .push_entry_frame(self.processor_id().index, self.node_interests());
-    }
-}
-
-impl StampPdataReceived for otap_df_engine::local::exporter::EffectHandler<OtapPdata> {
-    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
-        pdata
-            .context
-            .push_entry_frame(self.exporter_id().index, self.node_interests());
-    }
-}
-
-impl StampPdataReceived for otap_df_engine::shared::exporter::EffectHandler<OtapPdata> {
-    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
-        pdata
-            .context
-            .push_entry_frame(self.exporter_id().index, self.node_interests());
-    }
-}
-
-/// Callback function for stamping entry frames on received PData messages.
-///
-/// This is the `on_pdata_received` hook for OtapPdata pipelines. It should be
-/// passed to [`RuntimePipeline::set_on_pdata_received`] so that nodes
-/// automatically push entry frames (for metrics instrumentation) when
-/// receiving PData from their input channel.
-///
-/// The entry frame captures the receive timestamp (when interests include
-/// `ENTRY_TIMESTAMP`) and enables consumer-side metrics (duration, outcome
-/// counts) at ack/nack time.
-pub fn stamp_pdata_entry_frame(pdata: &mut OtapPdata, node_id: usize, interests: Interests) {
-    pdata.context.push_entry_frame(node_id, interests);
 }
 
 #[cfg(test)]
@@ -1857,7 +1810,10 @@ mod test {
             frames[0].interests.contains(Interests::NACKS),
             "PIPELINE_METRICS should auto-subscribe NACKS"
         );
-        assert_eq!(frames[0].calldata.time_ns, 0, "PIPELINE_METRICS alone should not stamp time");
+        assert_eq!(
+            frames[0].calldata.time_ns, 0,
+            "PIPELINE_METRICS alone should not stamp time"
+        );
     }
 
     #[test]
@@ -1902,9 +1858,7 @@ mod test {
         let frames = ctx.frames();
         assert_eq!(frames.len(), 2);
         assert!(
-            frames[1]
-                .interests
-                .contains(Interests::RETURN_DATA),
+            frames[1].interests.contains(Interests::RETURN_DATA),
             "entry frame should inherit RETURN_DATA"
         );
         assert!(frames[1].interests.contains(Interests::ACKS));
@@ -1920,7 +1874,11 @@ mod test {
 
         // Component subscribes on the same node — should merge, preserving time_ns.
         let user = TestCallData::default();
-        ctx.subscribe_to(Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA, user.into(), 1);
+        ctx.subscribe_to(
+            Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+            user.into(),
+            1,
+        );
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1, "same-node subscribe should merge");
         assert!(frames[0].interests.contains(Interests::ACKS));
@@ -1968,10 +1926,15 @@ mod test {
         // to the entry frame even without explicit subscribe_to.
         let (test_data, mut pdata) = create_test();
         pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
-        pdata.context.push_entry_frame(1, Interests::PIPELINE_METRICS);
+        pdata
+            .context
+            .push_entry_frame(1, Interests::PIPELINE_METRICS);
 
         let ack = AckMsg::new(pdata);
         let (node_id, _) = Context::next_ack(ack).expect("should find node 1");
-        assert_eq!(node_id, 1, "PIPELINE_METRICS entry frame should be routable via next_ack");
+        assert_eq!(
+            node_id, 1,
+            "PIPELINE_METRICS entry frame should be routable via next_ack"
+        );
     }
 }

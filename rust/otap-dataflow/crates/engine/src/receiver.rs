@@ -7,6 +7,7 @@
 //! For more details on the `!Send` implementation of a receiver, see [`local::Receiver`].
 //! See [`shared::Receiver`] for the Send implementation.
 
+use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ReceiverConfig;
@@ -14,7 +15,6 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
-use crate::Interests;
 use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -329,7 +329,8 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders
                 };
                 let default_port = user_config.default_output.clone();
-                let mut ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
+                let mut ctrl_msg_chan =
+                    local::ControlChannel::new(Receiver::Local(control_receiver));
                 let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,

@@ -7,7 +7,7 @@ use crate::channel_metrics::OutputChannelSenderMetrics;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::Interests;
+use crate::{Interests, ReceivedAtNode};
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::ops::Add;
@@ -204,11 +204,9 @@ pub struct MessageChannel<PData> {
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
     pending_shutdown: Option<NodeControlMsg<PData>>,
-    /// Callback invoked for each PData message received.
-    on_pdata_received: fn(&mut PData, usize, Interests),
-    /// Node ID passed to on_pdata_received.
+    /// Node ID for entry-frame stamping via `ReceivedAtNode`.
     node_id: usize,
-    /// Node interests passed to on_pdata_received.
+    /// Node interests for entry-frame stamping via `ReceivedAtNode`.
     interests: Interests,
 }
 
@@ -218,7 +216,6 @@ impl<PData> MessageChannel<PData> {
     pub fn new(
         control_rx: Receiver<NodeControlMsg<PData>>,
         pdata_rx: Receiver<PData>,
-        on_pdata_received: fn(&mut PData, usize, Interests),
         node_id: usize,
         interests: Interests,
     ) -> Self {
@@ -227,12 +224,13 @@ impl<PData> MessageChannel<PData> {
             pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
-            on_pdata_received,
             node_id,
             interests,
         }
     }
+}
 
+impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// Asynchronously receives the next message to process.
     ///
     /// Order of precedence:
@@ -296,7 +294,7 @@ impl<PData> MessageChannel<PData> {
                     // 2) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
                         Ok(mut pdata) => {
-                            (self.on_pdata_received)(&mut pdata, self.node_id, self.interests);
+                            pdata.received_at_node(self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
                         }
                         Err(_) => {
@@ -341,7 +339,7 @@ impl<PData> MessageChannel<PData> {
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
                         Ok(mut pdata) => {
-                            (self.on_pdata_received)(&mut pdata, self.node_id, self.interests);
+                            pdata.received_at_node(self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
                         }
                         Err(RecvError::Closed) => {

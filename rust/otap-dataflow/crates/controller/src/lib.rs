@@ -52,7 +52,7 @@ use otap_df_config::engine::{
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
-use otap_df_engine::Interests;
+use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
@@ -88,9 +88,6 @@ pub mod thread_task;
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
-    /// Callback invoked for each PData message received by nodes.
-    /// Enables data-type-specific instrumentation (e.g., entry frame stamping).
-    on_pdata_received: fn(&mut PData, usize, Interests),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,31 +107,10 @@ fn engine_context() -> LogContext {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode> Controller<PData> {
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
-        Self {
-            pipeline_factory,
-            on_pdata_received: |_, _, _| {},
-        }
-    }
-
-    /// Sets a callback invoked for each PData message received by nodes.
-    ///
-    /// The callback receives:
-    /// - A mutable reference to the PData message
-    /// - The node ID (index) of the receiving node
-    /// - The node's computed interests
-    ///
-    /// This enables data-type-specific instrumentation (e.g., entry frame stamping
-    /// for OtapPdata) without adding trait bounds to PData.
-    #[must_use]
-    pub const fn with_on_pdata_received(
-        mut self,
-        hook: fn(&mut PData, usize, Interests),
-    ) -> Self {
-        self.on_pdata_received = hook;
-        self
+        Self { pipeline_factory }
     }
 
     /// Starts the controller with the given engine configurations.
@@ -239,7 +215,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             observability_pipeline,
             &telemetry_system,
             self.pipeline_factory,
-            self.on_pdata_received,
             &controller_ctx,
             &engine_evt_reporter,
             &metrics_reporter,
@@ -329,7 +304,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                 let pipeline_config = pipeline.clone();
                 let pipeline_factory = self.pipeline_factory;
-                let on_pdata_received = self.on_pdata_received;
                 let thread_id = next_thread_id;
                 next_thread_id += 1;
                 let pipeline_handle = controller_ctx.pipeline_context_with(
@@ -363,7 +337,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             effective_channel_capacity_policy,
                             effective_telemetry_policy,
                             pipeline_factory,
-                            on_pdata_received,
                             pipeline_handle,
                             engine_evt_reporter,
                             metrics_reporter,
@@ -616,7 +589,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         observability_pipeline: Option<ResolvedPipelineConfig>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
-        on_pdata_received: fn(&mut PData, usize, Interests),
         controller_ctx: &ControllerContext,
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
@@ -684,7 +656,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     internal_channel_capacity_policy,
                     internal_telemetry_policy,
                     pipeline_factory,
-                    on_pdata_received,
                     internal_pipeline_ctx,
                     internal_evt_reporter,
                     internal_metrics_reporter,
@@ -732,7 +703,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         pipeline_factory: &'static PipelineFactory<PData>,
-        on_pdata_received: fn(&mut PData, usize, Interests),
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
@@ -776,7 +746,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
             // Build the runtime pipeline from the configuration
             let its_settings = internal_telemetry.as_ref().map(|(s, _)| s).cloned();
-            let mut runtime_pipeline = pipeline_factory
+            let runtime_pipeline = pipeline_factory
                 .build(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
@@ -794,9 +764,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         source: Box::new(e),
                     }
                 })?;
-
-            // Set the on_pdata_received hook.
-            runtime_pipeline.set_on_pdata_received(on_pdata_received);
 
             obs_evt_reporter.report(EngineEvent::ready(
                 pipeline_key.clone(),

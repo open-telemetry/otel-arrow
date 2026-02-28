@@ -3,6 +3,8 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
+use crate::Interests;
+use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::{
@@ -10,7 +12,6 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
-use crate::Interests;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
@@ -45,10 +46,6 @@ pub struct RuntimePipeline<PData: Debug> {
     channel_metrics: Vec<ChannelMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
-    /// Callback invoked for each PData message received by nodes.
-    /// Enables data-type-specific instrumentation (e.g., entry frame stamping)
-    /// without adding trait bounds to PData.
-    on_pdata_received: fn(&mut PData, usize, Interests),
 }
 
 fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
@@ -89,21 +86,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
-            on_pdata_received: |_, _, _| {},
         }
-    }
-
-    /// Sets a callback invoked for each PData message received by nodes.
-    ///
-    /// The callback receives:
-    /// - A mutable reference to the PData message
-    /// - The node ID (index) of the receiving node
-    /// - The node's computed interests
-    ///
-    /// This enables data-type-specific instrumentation (e.g., entry frame stamping
-    /// for OtapPdata) without adding trait bounds to PData.
-    pub fn set_on_pdata_received(&mut self, hook: fn(&mut PData, usize, Interests)) {
-        self.on_pdata_received = hook;
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
@@ -123,7 +106,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -145,7 +128,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
-            on_pdata_received,
         } = self;
 
         let metric_level = telemetry_policy.component_metrics;
@@ -181,7 +163,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter, node_interests, input_channel_receiver_metrics, on_pdata_received)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        effect_metrics_reporter,
+                        node_interests,
+                        input_channel_receiver_metrics,
+                    )
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -220,7 +207,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests, input_channel_receiver_metrics, on_pdata_received)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        metrics_reporter,
+                        node_interests,
+                        input_channel_receiver_metrics,
+                    )
                     .await;
                 drop(telemetry_guard);
                 result
@@ -254,7 +246,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = receiver
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter, node_interests)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        effect_metrics_reporter,
+                        node_interests,
+                    )
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
