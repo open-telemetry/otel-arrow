@@ -41,10 +41,9 @@
 //!   overhead than `RwLock`.
 //! - **Bitmask indexing**: `(seq - 1) & mask` instead of modulo. Capacity is
 //!   always rounded up to the next power of two.
-//! - **Two publish methods**: `publish()` auto-assigns IDs (used by
-//!   `BroadcastOnlyTopic`), `publish_with_id()` accepts caller-provided IDs
-//!   (used by `MixedTopic` which shares a single ID sequence across both
-//!   balanced channels and the broadcast ring).
+//! - **Single sequence source (BroadcastOnly)**: `FastBroadcastRing` owns the
+//!   publish sequence counter for `BroadcastOnlyTopic`, avoiding a second
+//!   per-topic atomic increment on that publish hot path.
 //! - **Lag detection**: `try_read()` compares the subscriber's `read_seq`
 //!   against `write_seq` to detect when the subscriber has fallen behind by
 //!   more than the buffer capacity. It returns `Lagged { missed, new_read_seq }`
@@ -264,10 +263,10 @@ impl PublisherRegistry {
 /// with a `parking_lot::Mutex` -- readers hold the lock only long enough to
 /// `Arc::clone` the payload.
 ///
-/// Two publish methods exist:
-/// - `publish()`: auto-assigns sequential IDs (used by `BroadcastOnlyTopic`).
-/// - `publish_with_id()`: accepts caller-provided IDs (used by `MixedTopic`
-///   which shares a single ID sequence across balanced channels and the ring).
+/// The ring owns the write sequence used for slot placement and lag detection.
+/// It supports two explicit publish forms:
+/// - `publish_and_encode_id()`: encodes ID from `(publisher_id, ring_seq)`.
+/// - `publish_with_preencoded_id()`: stores a caller-provided pre-encoded message ID.
 ///
 /// Lag detection: `try_read()` compares the subscriber's `read_seq` against
 /// `write_seq - capacity` to detect overwritten slots.
@@ -279,7 +278,6 @@ pub(crate) struct FastBroadcastRing<T: Send + Sync + 'static> {
     /// Bitmask for power-of-two indexing: `seq & mask` instead of `seq % capacity`.
     mask: usize,
     /// Current write sequence (0 = no messages yet, 1 = first message written).
-    /// Also serves as the message ID, eliminating a separate atomic.
     write_seq: AtomicU64,
     /// WakerSet-based wakeup — atomic fast-check avoids Mutex when no waiters.
     waker_set: WakerSet,
@@ -306,9 +304,20 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         }
     }
 
-    /// Write a message with a caller-provided ID (for MixedTopic which shares
-    /// IDs across balanced channels and the broadcast ring).
-    pub(crate) fn publish_with_id(&self, id: u64, payload: Arc<T>) {
+    /// Publish one message and return its encoded message ID.
+    ///
+    /// The message ID is encoded from `(publisher_id, ring_seq)`.
+    pub(crate) fn publish_and_encode_id(&self, publisher_id: u16, payload: Arc<T>) -> u64 {
+        let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
+        let id = message_id::encode(publisher_id, seq);
+        let idx = ((seq - 1) as usize) & self.mask;
+        *self.slots[idx].lock() = Some((seq, id, payload));
+        self.waker_set.wake_all();
+        id
+    }
+
+    /// Publish one message with a caller-provided pre-encoded message ID.
+    pub(crate) fn publish_with_preencoded_id(&self, id: u64, payload: Arc<T>) {
         let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
         let idx = ((seq - 1) as usize) & self.mask;
         *self.slots[idx].lock() = Some((seq, id, payload));
@@ -583,7 +592,6 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 /// and no per-group channel overhead.
 pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     name: TopicName,
-    next_id: AtomicU64,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     registry: Arc<PublisherRegistry>,
     closed: AtomicBool,
@@ -594,7 +602,6 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
-            next_id: AtomicU64::new(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(opts.broadcast_capacity)),
             registry,
             closed: AtomicBool::new(false),
@@ -606,9 +613,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             return Err(TopicClosed);
         }
 
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let id = message_id::encode(publisher_id, seq);
-        self.broadcast_ring.publish_with_id(id, msg);
+        _ = self.broadcast_ring.publish_and_encode_id(publisher_id, msg);
 
         Ok(())
     }
@@ -687,7 +692,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
         // 1) Write to broadcast ring buffer first (non-blocking, overwrites oldest).
         //    This keeps broadcast delivery independent from balanced backpressure.
-        self.broadcast_ring.publish_with_id(id, Arc::clone(&msg));
+        self.broadcast_ring
+            .publish_with_preencoded_id(id, Arc::clone(&msg));
 
         // 2) Deliver to balanced consumer groups only if any exist.
         //    Clone a cached sender snapshot (`Arc<[Sender]>`) under a short lock,
