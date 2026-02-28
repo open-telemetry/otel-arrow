@@ -7,13 +7,16 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
-use crate::channel_metrics::ChannelMetricsRegistry;
+use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::NodeTelemetryGuard;
+use crate::entity_context::{
+    current_input_channel_receiver_metrics, current_metric_level, NodeTelemetryGuard,
+};
 use crate::error::{Error, ExporterErrorKind};
+use crate::Interests;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -292,6 +295,14 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                let node_interests =
+                    Interests::from_metric_level(current_metric_level());
+                effect_handler.core.set_node_interests(node_interests);
+                if let Some(InputChannelReceiverMetrics::Local(handle)) =
+                    current_input_channel_receiver_metrics()
+                {
+                    effect_handler.set_input_channel_receiver_metrics(handle);
+                }
                 let message_channel =
                     message::MessageChannel::new(Receiver::Local(control_receiver), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
@@ -316,6 +327,14 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                let node_interests =
+                    Interests::from_metric_level(current_metric_level());
+                effect_handler.core.set_node_interests(node_interests);
+                if let Some(InputChannelReceiverMetrics::Shared(handle)) =
+                    current_input_channel_receiver_metrics()
+                {
+                    effect_handler.set_input_channel_receiver_metrics(handle);
+                }
                 let message_channel = shared::MessageChannel::new(control_receiver, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }

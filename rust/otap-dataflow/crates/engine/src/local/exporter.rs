@@ -33,6 +33,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::channel_metrics::LocalChannelReceiverMetricsHandle;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -43,6 +44,7 @@ use async_trait::async_trait;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
+use crate::Interests;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -95,16 +97,19 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
+    /// Channel receiver metrics handle for recording consumed.duration_ns.
+    input_channel_receiver_metrics: Option<LocalChannelReceiverMetricsHandle>,
 }
 
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
     /// reporter.
     #[must_use]
-    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
+            input_channel_receiver_metrics: None,
         }
     }
 
@@ -112,6 +117,60 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
+    /// Records consumed duration (ns) to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_duration(&self, duration_ns: u64) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_borrow_mut() {
+                state.record_consumed_duration(duration_ns);
+            }
+        }
+    }
+
+    /// Records a successful consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_success(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_borrow_mut() {
+                state.record_consumed_success();
+            }
+        }
+    }
+
+    /// Records a failed consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_failure(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_borrow_mut() {
+                state.record_consumed_failure();
+            }
+        }
+    }
+
+    /// Records a refused consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_refused(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_borrow_mut() {
+                state.record_consumed_refused();
+            }
+        }
+    }
+
+    /// Sets the input channel receiver metrics handle.
+    pub(crate) fn set_input_channel_receiver_metrics(
+        &mut self,
+        handle: LocalChannelReceiverMetricsHandle,
+    ) {
+        self.input_channel_receiver_metrics = Some(handle);
     }
 
     /// Print an info message to stdout.

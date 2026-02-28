@@ -31,6 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::channel_metrics::SharedChannelReceiverMetricsHandle;
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -39,6 +40,7 @@ use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedSender;
+use crate::Interests;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -98,6 +100,12 @@ pub struct EffectHandler<PData> {
     msg_senders: HashMap<PortName, SharedSender<PData>>,
     /// Cached default sender for fast access in the hot path
     default_sender: Option<SharedSender<PData>>,
+    /// Stable output port index for the default port.
+    default_port_index: u16,
+    /// Mapping from port name to stable output port index.
+    port_indices: HashMap<PortName, u16>,
+    /// Channel receiver metrics handle for recording consumed.duration_ns.
+    input_channel_receiver_metrics: Option<SharedChannelReceiverMetricsHandle>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -112,19 +120,25 @@ impl<PData> EffectHandler<PData> {
     ) -> Self {
         let core = EffectHandlerCore::new(node_id, metrics_reporter);
 
+        // Build stable port-name → index mapping (sorted alphabetically).
+        let port_indices = Self::build_port_indices(&msg_senders);
+
         // Determine and cache the default sender
-        let default_sender = if let Some(ref port) = default_port {
-            msg_senders.get(port).cloned()
+        let (default_sender, default_port_index) = if let Some(ref port) = default_port {
+            (msg_senders.get(port).cloned(), port_indices.get(port).copied().unwrap_or(0))
         } else if msg_senders.len() == 1 {
-            msg_senders.values().next().cloned()
+            (msg_senders.values().next().cloned(), 0)
         } else {
-            None
+            (None, 0)
         };
 
         EffectHandler {
             core,
             msg_senders,
             default_sender,
+            default_port_index,
+            port_indices,
+            input_channel_receiver_metrics: None,
         }
     }
 
@@ -146,10 +160,87 @@ impl<PData> EffectHandler<PData> {
         self.core.source_tagging()
     }
 
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
+    /// Records consumed duration (ns) to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_duration(&self, duration_ns: u64) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_duration(duration_ns);
+            }
+        }
+    }
+
+    /// Records a successful consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_success(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_success();
+            }
+        }
+    }
+
+    /// Records a failed consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_failure(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_failure();
+            }
+        }
+    }
+
+    /// Records a refused consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_refused(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_refused();
+            }
+        }
+    }
+
+    /// Sets the input channel receiver metrics handle.
+    pub(crate) fn set_input_channel_receiver_metrics(
+        &mut self,
+        handle: SharedChannelReceiverMetricsHandle,
+    ) {
+        self.input_channel_receiver_metrics = Some(handle);
+    }
+
     /// Returns the list of connected output ports for this processor.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
+    }
+
+    /// Returns the stable output port index for the default port.
+    #[must_use]
+    pub fn default_output_port_index(&self) -> u16 {
+        self.default_port_index
+    }
+
+    /// Returns the stable output port index for a named port.
+    #[must_use]
+    pub fn output_port_index(&self, port: &PortName) -> u16 {
+        self.port_indices.get(port).copied().unwrap_or(0)
+    }
+
+    /// Build a stable port-name → u16 mapping by sorting names alphabetically.
+    fn build_port_indices<V>(senders: &HashMap<PortName, V>) -> HashMap<PortName, u16> {
+        let mut names: Vec<&PortName> = senders.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i as u16))
+            .collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline.

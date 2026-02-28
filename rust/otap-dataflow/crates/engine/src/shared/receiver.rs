@@ -33,6 +33,7 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::Interests;
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -89,7 +90,6 @@ impl<PData> ControlChannel<PData> {
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
         let msg = self.rx.recv().await?;
-        crate::component_metrics::record_produced_for_control_msg(&msg);
         Ok(msg)
     }
 }
@@ -97,13 +97,17 @@ impl<PData> ControlChannel<PData> {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore<PData>,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
     msg_senders: HashMap<PortName, SharedSender<PData>>,
     /// Cached default sender for fast access in the hot path
     default_sender: Option<SharedSender<PData>>,
+    /// Stable output port index for the default port.
+    default_port_index: u16,
+    /// Mapping from port name to stable output port index.
+    port_indices: HashMap<PortName, u16>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -123,19 +127,24 @@ impl<PData> EffectHandler<PData> {
         let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
 
+        // Build stable port-name → index mapping (sorted alphabetically).
+        let port_indices = Self::build_port_indices(&msg_senders);
+
         // Determine and cache the default sender
-        let default_sender = if let Some(ref port) = default_port {
-            msg_senders.get(port).cloned()
+        let (default_sender, default_port_index) = if let Some(ref port) = default_port {
+            (msg_senders.get(port).cloned(), port_indices.get(port).copied().unwrap_or(0))
         } else if msg_senders.len() == 1 {
-            msg_senders.values().next().cloned()
+            (msg_senders.values().next().cloned(), 0)
         } else {
-            None
+            (None, 0)
         };
 
         EffectHandler {
             core,
             msg_senders,
             default_sender,
+            default_port_index,
+            port_indices,
         }
     }
 
@@ -157,10 +166,39 @@ impl<PData> EffectHandler<PData> {
         self.core.source_tagging()
     }
 
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
     /// Returns the list of connected output ports for this receiver.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
+    }
+
+    /// Returns the stable output port index for the default port.
+    #[must_use]
+    pub fn default_output_port_index(&self) -> u16 {
+        self.default_port_index
+    }
+
+    /// Returns the stable output port index for a named port.
+    #[must_use]
+    pub fn output_port_index(&self, port: &PortName) -> u16 {
+        self.port_indices.get(port).copied().unwrap_or(0)
+    }
+
+    /// Build a stable port-name → u16 mapping by sorting names alphabetically.
+    fn build_port_indices<V>(senders: &HashMap<PortName, V>) -> HashMap<PortName, u16> {
+        let mut names: Vec<&PortName> = senders.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i as u16))
+            .collect()
     }
 
     /// Sends a message to the next node(s) in the pipeline.

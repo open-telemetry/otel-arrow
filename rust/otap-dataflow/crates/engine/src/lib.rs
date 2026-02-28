@@ -10,7 +10,6 @@ use crate::{
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
         InputChannelReceiverMetrics,
     },
-    component_metrics::ComponentMetricsHandle,
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, MetricLevel, NackMsg, UserCallData},
     effect_handler::SourceTagging,
@@ -56,7 +55,6 @@ pub mod receiver;
 mod attributes;
 mod channel_metrics;
 mod channel_mode;
-pub mod component_metrics;
 pub mod config;
 pub mod context;
 pub mod control;
@@ -240,6 +238,23 @@ pub struct Interests: u8 {
     /// auto-subscribes to ACKS_OR_NACKS for outcome counting.
     const PIPELINE_METRICS = 1 << 4;
 }
+}
+
+impl Interests {
+    /// Derive `Interests` from a `MetricLevel`.
+    ///
+    /// - `None`     → empty
+    /// - `Basic`    → `PIPELINE_METRICS`
+    /// - `Normal`   → `PIPELINE_METRICS`
+    /// - `Detailed` → `PIPELINE_METRICS | ENTRY_TIMESTAMP`
+    #[must_use]
+    pub fn from_metric_level(level: MetricLevel) -> Self {
+        match level {
+            MetricLevel::None => Self::empty(),
+            MetricLevel::Basic | MetricLevel::Normal => Self::PIPELINE_METRICS,
+            MetricLevel::Detailed => Self::PIPELINE_METRICS | Self::ENTRY_TIMESTAMP,
+        }
+    }
 }
 
 /// Effect handler extensions for producers specific to data type.
@@ -477,7 +492,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         self.validate_connection_wiring_contracts(&config)?;
 
         let channel_metrics_enabled = telemetry_policy.channel_metrics;
-        let component_metric_level = telemetry_policy.component_metrics;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -550,7 +564,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        component_metric_level,
                         || {
                             self.create_receiver(
                                 &base_ctx,
@@ -570,7 +583,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        component_metric_level,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -590,7 +602,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        component_metric_level,
                         || {
                             self.create_exporter(
                                 &base_ctx,
@@ -645,7 +656,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
-        pipeline.set_component_metrics(build_state.component_metrics);
 
         Ok(pipeline)
     }
@@ -748,7 +758,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_type: NodeType,
         node_id: NodeId,
         channel_metrics_enabled: bool,
-        metric_level: MetricLevel,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -758,12 +767,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_entity_key = base_ctx.register_node_entity();
         let node_telemetry_handle =
             NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-        // Register component metrics (consumed/produced) and collect the handle for reporting.
-        if let Some(component_metrics_handle) =
-            node_telemetry_handle.register_component_metrics(metric_level)
-        {
-            build_state.component_metrics.push(component_metrics_handle);
-        }
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
         build_state.register_node(
@@ -1521,7 +1524,6 @@ struct BuildState<PData> {
     nodes: NodeDefs<PData, PipeNode>,
     registry: HashMap<NodeName, NodeRegistration>,
     channel_metrics: ChannelMetricsRegistry,
-    component_metrics: Vec<ComponentMetricsHandle>,
 }
 
 impl<PData> BuildState<PData> {
@@ -1530,7 +1532,6 @@ impl<PData> BuildState<PData> {
             nodes: NodeDefs::default(),
             registry: HashMap::new(),
             channel_metrics: ChannelMetricsRegistry::default(),
-            component_metrics: Vec::new(),
         }
     }
 

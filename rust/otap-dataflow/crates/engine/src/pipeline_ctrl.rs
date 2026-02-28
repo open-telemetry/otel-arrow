@@ -195,8 +195,6 @@ pub struct PipelineCtrlMsgManager<PData> {
     metrics_reporter: MetricsReporter,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
-    /// Component metrics handles for periodic reporting.
-    component_metrics: Vec<crate::component_metrics::ComponentMetricsHandle>,
 
     /// Flags controlling capture of internal engine metrics.
     telemetry: TelemetryPolicy,
@@ -214,7 +212,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         metrics_reporter: MetricsReporter,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
-        component_metrics: Vec<crate::component_metrics::ComponentMetricsHandle>,
     ) -> Self {
         Self {
             pipeline_key,
@@ -227,7 +224,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             event_reporter,
             metrics_reporter,
             channel_metrics,
-            component_metrics,
             telemetry: telemetry_policy,
         }
     }
@@ -456,11 +452,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                             }
                         }
-                        for metrics in &self.component_metrics {
-                            if let Err(err) = metrics.report(&mut self.metrics_reporter) {
-                                otel_warn!("component.metrics.reporting.fail", error = err.to_string());
-                            }
-                        }
                     }
 
                     // Deliver all accumulated control messages (best-effort)
@@ -609,7 +600,6 @@ mod tests {
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
             TelemetryPolicy::default(),
-            Vec::new(),
             Vec::new(),
         );
         (
@@ -1054,7 +1044,6 @@ mod tests {
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetryPolicy::default(),
-                    Vec::new(),
                     Vec::new(),
                 );
                 let duration = Duration::from_millis(50);

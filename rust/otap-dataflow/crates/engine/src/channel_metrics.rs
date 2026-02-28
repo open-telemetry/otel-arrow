@@ -31,10 +31,15 @@ pub struct ChannelSenderMetrics {
     /// Count of send failures due to a closed channel.
     #[metric(name = "send.error_closed", unit = "{1}")]
     pub send_error_closed: Counter<u64>,
-    // Total bytes successfully sent (when message size is known).
-    // TODO: Populate this at normal MetricLevel.
-    // #[metric(name = "send.bytes", unit = "{By}")]
-    // pub send_bytes: Counter<u64>,
+    /// Produced requests acknowledged by downstream.
+    #[metric(name = "produced.success", unit = "{requests}")]
+    pub produced_success: Counter<u64>,
+    /// Produced requests that failed downstream (transient / retryable, non-permanent nack).
+    #[metric(name = "produced.failure", unit = "{requests}")]
+    pub produced_failure: Counter<u64>,
+    /// Produced requests permanently refused by downstream (permanent nack).
+    #[metric(name = "produced.refused", unit = "{requests}")]
+    pub produced_refused: Counter<u64>,
 }
 
 #[metric_set(name = "channel.receiver")]
@@ -49,14 +54,6 @@ pub struct ChannelReceiverMetrics {
     /// Count of receive attempts after the channel was closed.
     #[metric(name = "recv.error_closed", unit = "{1}")]
     pub recv_error_closed: Counter<u64>,
-    // Total bytes successfully received (when message size is known).
-    // TODO: Populate this at normal MetricLevel.
-    // #[metric(name = "recv.bytes", unit = "{By}")]
-    // pub recv_bytes: Counter<u64>,
-    // Current number of buffered messages.
-    // TODO: Populate in a future PR when queue depth is tracked.
-    // #[metric(name = "queue.depth", unit = "{message}")]
-    // pub queue_depth: UpDownCounter<u64>,
     /// Maximum channel capacity (buffer size).
     /// TODO: UpDownCounter
     #[metric(name = "capacity", unit = "{message}")]
@@ -66,6 +63,15 @@ pub struct ChannelReceiverMetrics {
     /// Only populated at `MetricLevel::Detailed`.
     #[metric(name = "consumed.duration_ns", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
+    /// Consumed requests successfully processed (ack received).
+    #[metric(name = "consumed.success", unit = "{requests}")]
+    pub consumed_success: Counter<u64>,
+    /// Consumed requests that failed (transient / retryable, non-permanent nack).
+    #[metric(name = "consumed.failure", unit = "{requests}")]
+    pub consumed_failure: Counter<u64>,
+    /// Consumed requests permanently refused (permanent nack).
+    #[metric(name = "consumed.refused", unit = "{requests}")]
+    pub consumed_refused: Counter<u64>,
 }
 
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";
@@ -107,6 +113,21 @@ impl ChannelSenderMetricsState {
     }
 
     #[inline]
+    pub(crate) fn record_produced_success(&mut self) {
+        self.metrics.produced_success.inc();
+    }
+
+    #[inline]
+    pub(crate) fn record_produced_failure(&mut self) {
+        self.metrics.produced_failure.inc();
+    }
+
+    #[inline]
+    pub(crate) fn record_produced_refused(&mut self) {
+        self.metrics.produced_refused.inc();
+    }
+
+    #[inline]
     pub(crate) fn report(
         &mut self,
         metrics_reporter: &mut MetricsReporter,
@@ -143,6 +164,21 @@ impl ChannelReceiverMetricsState {
     #[inline]
     pub(crate) fn record_consumed_duration(&mut self, duration_ns: u64) {
         self.metrics.consumed_duration_ns.record(duration_ns as f64);
+    }
+
+    #[inline]
+    pub(crate) fn record_consumed_success(&mut self) {
+        self.metrics.consumed_success.inc();
+    }
+
+    #[inline]
+    pub(crate) fn record_consumed_failure(&mut self) {
+        self.metrics.consumed_failure.inc();
+    }
+
+    #[inline]
+    pub(crate) fn record_consumed_refused(&mut self) {
+        self.metrics.consumed_refused.inc();
     }
 
     #[inline]

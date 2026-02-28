@@ -6,6 +6,7 @@
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
+use crate::Interests;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -48,6 +49,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) metrics_reporter: MetricsReporter,
     /// The outgoing message source tagging mode.
     pub(crate) source_tag: SourceTagging,
+    /// Precomputed node interests derived from the engine metric level.
+    node_interests: Interests,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -58,6 +61,7 @@ impl<PData> EffectHandlerCore<PData> {
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
             source_tag: SourceTagging::Disabled,
+            node_interests: Interests::empty(),
         }
     }
 
@@ -78,6 +82,17 @@ impl<PData> EffectHandlerCore<PData> {
     #[must_use]
     pub const fn source_tagging(&self) -> SourceTagging {
         self.source_tag
+    }
+
+    /// Sets the precomputed node interests for this effect handler.
+    pub fn set_node_interests(&mut self, interests: Interests) {
+        self.node_interests = interests;
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.node_interests
     }
 
     /// Returns the id of the node associated with this effect handler.

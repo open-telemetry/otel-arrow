@@ -6,12 +6,6 @@
 //! input/output channel entities.
 
 use crate::channel_metrics::InputChannelReceiverMetrics;
-use crate::component_metrics::{
-    BasicComponentMetrics, ComponentMetricsHandle, ComponentMetricsState,
-    ConsumedRequestMetrics, DetailedComponentMetrics,
-    LocalComponentMetricsHandle, NormalComponentMetrics,
-    ProducedRequestMetrics,
-};
 use crate::control::MetricLevel;
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -75,8 +69,6 @@ pub(crate) struct NodeTaskContext {
     entity_key: Option<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
-    /// Per-node component metrics handle (consumed/produced counters).
-    component_metrics: Option<ComponentMetricsHandle>,
     /// Channel receiver metrics handle for recording consumed.duration_ns.
     input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     /// Engine-wide metric level for this node.
@@ -91,9 +83,6 @@ impl NodeTaskContext {
         output_channel_keys: Vec<(PortName, EntityKey)>,
         metric_level: MetricLevel,
     ) -> Self {
-        let component_metrics = telemetry_handle
-            .as_ref()
-            .and_then(|h| h.component_metrics());
         let input_channel_receiver_metrics = telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_receiver_metrics());
@@ -102,7 +91,6 @@ impl NodeTaskContext {
             telemetry_handle,
             input_channel_key,
             output_channel_keys,
-            component_metrics,
             input_channel_receiver_metrics,
             metric_level,
         }
@@ -150,16 +138,6 @@ pub fn node_output_channel_key(port: &str) -> Option<EntityKey> {
         .flatten()
 }
 
-/// Returns the component metrics handle for the current task, if registered.
-#[inline]
-#[must_use]
-pub fn current_component_metrics() -> Option<ComponentMetricsHandle> {
-    NODE_TASK_CONTEXT
-        .try_with(|ctx| ctx.component_metrics.clone())
-        .ok()
-        .flatten()
-}
-
 /// Returns the metric level for the current task.
 /// Returns `MetricLevel::None` if no task context is set.
 #[inline]
@@ -168,6 +146,16 @@ pub fn current_metric_level() -> MetricLevel {
     NODE_TASK_CONTEXT
         .try_with(|ctx| ctx.metric_level)
         .unwrap_or_default()
+}
+
+/// Returns the input channel receiver metrics handle for the current task, if set.
+#[inline]
+#[must_use]
+pub(crate) fn current_input_channel_receiver_metrics() -> Option<InputChannelReceiverMetrics> {
+    NODE_TASK_CONTEXT
+        .try_with(|ctx| ctx.input_channel_receiver_metrics.clone())
+        .ok()
+        .flatten()
 }
 
 /// Record consumed duration (ns) to the input channel's receiver metrics.
@@ -241,7 +229,6 @@ struct NodeTelemetryState {
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
-    component_metrics: Option<ComponentMetricsHandle>,
     input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     cleaned: bool,
 }
@@ -257,7 +244,6 @@ impl NodeTelemetryHandle {
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
-                component_metrics: None,
                 input_channel_receiver_metrics: None,
                 cleaned: false,
             })),
@@ -284,46 +270,6 @@ impl NodeTelemetryHandle {
     /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
-    }
-
-    /// Register level-gated component metric sets for this node and store the handle.
-    /// Only metric sets appropriate for the given `MetricLevel` are registered.
-    /// Returns `None` at `MetricLevel::None`; otherwise returns a handle for
-    /// centralized reporting.
-    pub(crate) fn register_component_metrics(
-        &self,
-        level: MetricLevel,
-    ) -> Option<ComponentMetricsHandle> {
-        let state = match level {
-            MetricLevel::None => return None,
-            MetricLevel::Basic => {
-                ComponentMetricsState::Basic(BasicComponentMetrics {
-                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
-                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                })
-            }
-            MetricLevel::Normal => {
-                ComponentMetricsState::Normal(NormalComponentMetrics {
-                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
-                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                })
-            }
-            MetricLevel::Detailed => {
-                ComponentMetricsState::Detailed(DetailedComponentMetrics {
-                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
-                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                })
-            }
-        };
-        let handle: LocalComponentMetricsHandle = Rc::new(RefCell::new(state));
-        let handle = ComponentMetricsHandle::Local(handle);
-        self.state.borrow_mut().component_metrics = Some(handle.clone());
-        Some(handle)
-    }
-
-    /// Return the component metrics handle, if registered.
-    pub(crate) fn component_metrics(&self) -> Option<ComponentMetricsHandle> {
-        self.state.borrow().component_metrics.clone()
     }
 
     /// Store the input channel's receiver metrics handle for task-local access.

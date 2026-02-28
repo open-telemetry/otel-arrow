@@ -117,6 +117,10 @@ pub struct CallData {
     /// Receive timestamp (monotonic nanos since process epoch).
     /// Only populated when `MetricLevel >= Detailed`; 0 otherwise.
     pub time_ns: u64,
+    /// Producer's output port index, stamped at send time.
+    /// Used on the return path to attribute produced metrics to the
+    /// correct output channel.
+    pub output_port_index: u16,
 }
 
 /// The ACK message.

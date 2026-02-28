@@ -32,7 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::component_metrics::record_produced_for_control_msg;
+use crate::channel_metrics::SharedChannelReceiverMetricsHandle;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -40,6 +40,7 @@ use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
+use crate::Interests;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -183,7 +184,6 @@ impl<PData> MessageChannel<PData> {
                         continue; // re-enter the loop into draining mode
                     }
                     Ok(msg) => {
-                        record_produced_for_control_msg(&msg);
                         return Ok(Message::Control(msg));
                     }
                     Err(e)  => return Err(e),
@@ -216,16 +216,19 @@ impl<PData> MessageChannel<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
+    /// Channel receiver metrics handle for recording consumed.duration_ns.
+    input_channel_receiver_metrics: Option<SharedChannelReceiverMetricsHandle>,
 }
 
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
     /// exporter.
     #[must_use]
-    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
+            input_channel_receiver_metrics: None,
         }
     }
 
@@ -233,6 +236,60 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
+    /// Records consumed duration (ns) to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_duration(&self, duration_ns: u64) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_duration(duration_ns);
+            }
+        }
+    }
+
+    /// Records a successful consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_success(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_success();
+            }
+        }
+    }
+
+    /// Records a failed consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_failure(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_failure();
+            }
+        }
+    }
+
+    /// Records a refused consumed request to the input channel's receiver metrics.
+    #[inline]
+    pub fn record_consumed_refused(&self) {
+        if let Some(ref h) = self.input_channel_receiver_metrics {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_consumed_refused();
+            }
+        }
+    }
+
+    /// Sets the input channel receiver metrics handle.
+    pub(crate) fn set_input_channel_receiver_metrics(
+        &mut self,
+        handle: SharedChannelReceiverMetricsHandle,
+    ) {
+        self.input_channel_receiver_metrics = Some(handle);
     }
 
     /// Print an info message to stdout.

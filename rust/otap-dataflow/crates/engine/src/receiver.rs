@@ -13,7 +13,8 @@ use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
-use crate::entity_context::NodeTelemetryGuard;
+use crate::entity_context::{current_metric_level, NodeTelemetryGuard};
+use crate::Interests;
 use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -335,6 +336,9 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_node_interests(
+                    Interests::from_metric_level(current_metric_level()),
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
@@ -369,6 +373,9 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_node_interests(
+                    Interests::from_metric_level(current_metric_level()),
+                );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }

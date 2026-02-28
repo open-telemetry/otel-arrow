@@ -7,12 +7,12 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
-use crate::channel_metrics::ChannelMetricsRegistry;
+use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::current_metric_level;
+use crate::entity_context::{current_input_channel_receiver_metrics, current_metric_level};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
@@ -400,16 +400,7 @@ impl<PData> ProcessorWrapper<PData> {
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         // Derive node_interests from the engine's metric level.
-        let metric_level = current_metric_level();
-        let node_interests = match metric_level {
-            crate::control::MetricLevel::None => Interests::empty(),
-            crate::control::MetricLevel::Basic | crate::control::MetricLevel::Normal => {
-                Interests::PIPELINE_METRICS
-            }
-            crate::control::MetricLevel::Detailed => {
-                Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP
-            }
-        };
+        let node_interests = Interests::from_metric_level(current_metric_level());
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -420,6 +411,12 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
+                if let Some(InputChannelReceiverMetrics::Local(handle)) =
+                    current_input_channel_receiver_metrics()
+                {
+                    effect_handler.set_input_channel_receiver_metrics(handle);
+                }
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -453,6 +450,12 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
+                if let Some(InputChannelReceiverMetrics::Shared(handle)) =
+                    current_input_channel_receiver_metrics()
+                {
+                    effect_handler.set_input_channel_receiver_metrics(handle);
+                }
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
