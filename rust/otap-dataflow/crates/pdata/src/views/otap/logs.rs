@@ -21,9 +21,13 @@ use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType};
-use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
-use crate::views::resource::ResourceView;
+use otap_df_pdata_views::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
+};
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::resource::ResourceView;
 
 use std::ops::Range;
 
