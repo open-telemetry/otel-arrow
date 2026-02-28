@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::channel_metrics::OutputChannelSenderMetrics;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::Interests;
 use crate::effect_handler::{
@@ -104,24 +105,58 @@ pub trait Receiver<PData> {
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel<PData> {
     rx: crate::message::Receiver<NodeControlMsg<PData>>,
+    /// Sender metrics handles for recording produced outcomes on ack/nack.
+    output_channel_sender_metrics: Vec<Option<OutputChannelSenderMetrics>>,
 }
 
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub const fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
-        Self { rx }
+    pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
+        Self {
+            rx,
+            output_channel_sender_metrics: Vec::new(),
+        }
+    }
+
+    /// Sets the output channel sender metrics for produced outcome recording.
+    pub(crate) fn set_output_channel_sender_metrics(
+        &mut self,
+        metrics: Vec<Option<OutputChannelSenderMetrics>>,
+    ) {
+        self.output_channel_sender_metrics = metrics;
     }
 
     /// Asynchronously receives the next control message.
     ///
-    /// Records producer-side component metrics for Ack/Nack messages.
+    /// Automatically records produced outcome metrics for Ack/Nack messages.
     ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
         let msg = self.rx.recv().await?;
+        match &msg {
+            NodeControlMsg::Ack(ack) => {
+                if let Some(Some(m)) = self
+                    .output_channel_sender_metrics
+                    .get(ack.calldata.output_port_index as usize)
+                {
+                    m.record_produced_success();
+                }
+            }
+            NodeControlMsg::Nack(nack) => {
+                let idx = nack.calldata.output_port_index as usize;
+                if let Some(Some(m)) = self.output_channel_sender_metrics.get(idx) {
+                    if nack.permanent {
+                        m.record_produced_refused();
+                    } else {
+                        m.record_produced_failure();
+                    }
+                }
+            }
+            _ => {}
+        }
         Ok(msg)
     }
 }
@@ -140,6 +175,8 @@ pub struct EffectHandler<PData> {
     default_port_index: u16,
     /// Mapping from port name to stable output port index.
     port_indices: HashMap<PortName, u16>,
+    /// Sender metrics handles indexed by output port index, for produced outcome recording.
+    output_channel_sender_metrics: Vec<Option<OutputChannelSenderMetrics>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -168,12 +205,17 @@ impl<PData> EffectHandler<PData> {
             (None, 0)
         };
 
+        // Build output channel sender metrics vec indexed by port index.
+        let output_channel_sender_metrics =
+            Self::build_output_channel_sender_metrics(&msg_senders, &port_indices);
+
         EffectHandler {
             core,
             msg_senders,
             default_sender,
             default_port_index,
             port_indices,
+            output_channel_sender_metrics,
         }
     }
 
@@ -219,6 +261,11 @@ impl<PData> EffectHandler<PData> {
         self.port_indices.get(port).copied().unwrap_or(0)
     }
 
+    /// Returns a clone of the output channel sender metrics vec for use by ControlChannel.
+    pub(crate) fn output_channel_sender_metrics(&self) -> Vec<Option<OutputChannelSenderMetrics>> {
+        self.output_channel_sender_metrics.clone()
+    }
+
     /// Build a stable port-name → u16 mapping by sorting names alphabetically.
     fn build_port_indices<V>(senders: &HashMap<PortName, V>) -> HashMap<PortName, u16> {
         let mut names: Vec<&PortName> = senders.keys().collect();
@@ -228,6 +275,45 @@ impl<PData> EffectHandler<PData> {
             .enumerate()
             .map(|(i, name)| (name.clone(), i as u16))
             .collect()
+    }
+
+    /// Build a Vec of sender metrics handles indexed by port index.
+    fn build_output_channel_sender_metrics(
+        senders: &HashMap<PortName, Sender<PData>>,
+        port_indices: &HashMap<PortName, u16>,
+    ) -> Vec<Option<OutputChannelSenderMetrics>> {
+        let len = port_indices.values().map(|i| *i as usize + 1).max().unwrap_or(0);
+        let mut vec = vec![None; len];
+        for (name, idx) in port_indices {
+            if let Some(sender) = senders.get(name) {
+                vec[*idx as usize] = sender.sender_metrics_handle();
+            }
+        }
+        vec
+    }
+
+    /// Records a successful produced request for the given output port.
+    #[inline]
+    pub fn record_produced_success(&self, port_index: u16) {
+        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            m.record_produced_success();
+        }
+    }
+
+    /// Records a failed produced request for the given output port.
+    #[inline]
+    pub fn record_produced_failure(&self, port_index: u16) {
+        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            m.record_produced_failure();
+        }
+    }
+
+    /// Records a refused produced request for the given output port.
+    #[inline]
+    pub fn record_produced_refused(&self, port_index: u16) {
+        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            m.record_produced_refused();
+        }
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.

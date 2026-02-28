@@ -268,6 +268,78 @@ impl InputChannelReceiverMetrics {
     }
 }
 
+/// Handle to a pdata channel's sender metrics, supporting both local and shared modes.
+/// Stored in producer effect handlers so that ack/nack processing can record
+/// `produced.success`, `produced.failure`, and `produced.refused` on the correct
+/// output channel's metrics.
+#[derive(Clone)]
+pub(crate) enum OutputChannelSenderMetrics {
+    Local(LocalChannelSenderMetricsHandle),
+    Shared(SharedChannelSenderMetricsHandle),
+}
+
+impl fmt::Debug for OutputChannelSenderMetrics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(_) => f.debug_tuple("Local").field(&"...").finish(),
+            Self::Shared(_) => f.debug_tuple("Shared").field(&"...").finish(),
+        }
+    }
+}
+
+impl OutputChannelSenderMetrics {
+    /// Record a successful produced request.
+    #[inline]
+    pub(crate) fn record_produced_success(&self) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_produced_success();
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_produced_success();
+                }
+            }
+        }
+    }
+
+    /// Record a failed produced request (transient / retryable).
+    #[inline]
+    pub(crate) fn record_produced_failure(&self) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_produced_failure();
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_produced_failure();
+                }
+            }
+        }
+    }
+
+    /// Record a permanently refused produced request.
+    #[inline]
+    pub(crate) fn record_produced_refused(&self) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_produced_refused();
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_produced_refused();
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ChannelMetricsRegistry {
     handles: Vec<ChannelMetricsHandle>,

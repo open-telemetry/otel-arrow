@@ -527,28 +527,75 @@ fn record_consumer_nack_metrics(
     }
 }
 
+/// Level-gated producer metric recording for ack.
+/// The output_port_index in the top frame's calldata identifies which output channel to attribute.
+fn record_producer_ack_metrics(
+    context: &Context,
+    interests: Interests,
+    record_produced_success: impl Fn(u16),
+) {
+    if interests.contains(Interests::PIPELINE_METRICS) {
+        if let Some(frame) = context.peek_top() {
+            record_produced_success(frame.calldata.output_port_index);
+        }
+    }
+}
+
+/// Level-gated producer metric recording for nack.
+fn record_producer_nack_metrics(
+    context: &Context,
+    permanent: bool,
+    interests: Interests,
+    record_produced_refused: impl Fn(u16),
+    record_produced_failure: impl Fn(u16),
+) {
+    if interests.contains(Interests::PIPELINE_METRICS) {
+        if let Some(frame) = context.peek_top() {
+            if permanent {
+                record_produced_refused(frame.calldata.output_port_index);
+            } else {
+                record_produced_failure(frame.calldata.output_port_index);
+            }
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        let interests = self.node_interests();
         record_consumer_ack_metrics(
             &ack.accepted.context,
-            self.node_interests(),
+            interests,
             |d| self.record_consumed_duration(d),
             || self.record_consumed_success(),
+        );
+        record_producer_ack_metrics(
+            &ack.accepted.context,
+            interests,
+            |port| self.record_produced_success(port),
         );
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        let interests = self.node_interests();
         record_consumer_nack_metrics(
             &nack.refused.context,
             nack.permanent,
-            self.node_interests(),
+            interests,
             |d| self.record_consumed_duration(d),
             || self.record_consumed_refused(),
             || self.record_consumed_failure(),
+        );
+        record_producer_nack_metrics(
+            &nack.refused.context,
+            nack.permanent,
+            interests,
+            |port| self.record_produced_refused(port),
+            |port| self.record_produced_failure(port),
         );
         self.route_nack(nack, Context::next_nack).await
     }
@@ -586,23 +633,37 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        let interests = self.node_interests();
         record_consumer_ack_metrics(
             &ack.accepted.context,
-            self.node_interests(),
+            interests,
             |d| self.record_consumed_duration(d),
             || self.record_consumed_success(),
+        );
+        record_producer_ack_metrics(
+            &ack.accepted.context,
+            interests,
+            |port| self.record_produced_success(port),
         );
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        let interests = self.node_interests();
         record_consumer_nack_metrics(
             &nack.refused.context,
             nack.permanent,
-            self.node_interests(),
+            interests,
             |d| self.record_consumed_duration(d),
             || self.record_consumed_refused(),
             || self.record_consumed_failure(),
+        );
+        record_producer_nack_metrics(
+            &nack.refused.context,
+            nack.permanent,
+            interests,
+            |port| self.record_produced_refused(port),
+            |port| self.record_produced_failure(port),
         );
         self.route_nack(nack, Context::next_nack).await
     }

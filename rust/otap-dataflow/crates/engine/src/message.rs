@@ -3,6 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
+use crate::channel_metrics::OutputChannelSenderMetrics;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -130,6 +131,14 @@ impl<T> Sender<T> {
         match self {
             Sender::Local(sender) => sender.try_send(msg),
             Sender::Shared(sender) => sender.try_send(msg),
+        }
+    }
+
+    /// Returns the sender metrics handle, if present.
+    pub(crate) fn sender_metrics_handle(&self) -> Option<OutputChannelSenderMetrics> {
+        match self {
+            Sender::Local(sender) => sender.sender_metrics_handle(),
+            Sender::Shared(sender) => sender.sender_metrics_handle(),
         }
     }
 }

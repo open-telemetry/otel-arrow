@@ -31,7 +31,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::channel_metrics::SharedChannelReceiverMetricsHandle;
+use crate::channel_metrics::{SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle};
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -106,6 +106,8 @@ pub struct EffectHandler<PData> {
     port_indices: HashMap<PortName, u16>,
     /// Channel receiver metrics handle for recording consumed.duration_ns.
     input_channel_receiver_metrics: Option<SharedChannelReceiverMetricsHandle>,
+    /// Sender metrics handles indexed by output port index, for produced outcome recording.
+    output_channel_sender_metrics: Vec<Option<SharedChannelSenderMetricsHandle>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -132,6 +134,10 @@ impl<PData> EffectHandler<PData> {
             (None, 0)
         };
 
+        // Build output channel sender metrics vec indexed by port index.
+        let output_channel_sender_metrics =
+            Self::build_output_channel_sender_metrics(&msg_senders, &port_indices);
+
         EffectHandler {
             core,
             msg_senders,
@@ -139,6 +145,7 @@ impl<PData> EffectHandler<PData> {
             default_port_index,
             port_indices,
             input_channel_receiver_metrics: None,
+            output_channel_sender_metrics,
         }
     }
 
@@ -241,6 +248,51 @@ impl<PData> EffectHandler<PData> {
             .enumerate()
             .map(|(i, name)| (name.clone(), i as u16))
             .collect()
+    }
+
+    /// Build a Vec of sender metrics handles indexed by port index.
+    fn build_output_channel_sender_metrics(
+        senders: &HashMap<PortName, SharedSender<PData>>,
+        port_indices: &HashMap<PortName, u16>,
+    ) -> Vec<Option<SharedChannelSenderMetricsHandle>> {
+        let len = port_indices.values().map(|i| *i as usize + 1).max().unwrap_or(0);
+        let mut vec = vec![None; len];
+        for (name, idx) in port_indices {
+            if let Some(sender) = senders.get(name) {
+                vec[*idx as usize] = sender.shared_sender_metrics_handle();
+            }
+        }
+        vec
+    }
+
+    /// Records a successful produced request for the given output port.
+    #[inline]
+    pub fn record_produced_success(&self, port_index: u16) {
+        if let Some(Some(h)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_produced_success();
+            }
+        }
+    }
+
+    /// Records a failed produced request for the given output port.
+    #[inline]
+    pub fn record_produced_failure(&self, port_index: u16) {
+        if let Some(Some(h)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_produced_failure();
+            }
+        }
+    }
+
+    /// Records a refused produced request for the given output port.
+    #[inline]
+    pub fn record_produced_refused(&self, port_index: u16) {
+        if let Some(Some(h)) = self.output_channel_sender_metrics.get(port_index as usize) {
+            if let Ok(mut state) = h.try_lock() {
+                state.record_produced_refused();
+            }
+        }
     }
 
     /// Sends a message to the next node(s) in the pipeline.

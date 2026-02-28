@@ -327,7 +327,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders
                 };
                 let default_port = user_config.default_output.clone();
-                let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
+                let mut ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
@@ -338,6 +338,9 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_node_interests(
                     Interests::from_metric_level(current_metric_level()),
+                );
+                ctrl_msg_chan.set_output_channel_sender_metrics(
+                    effect_handler.output_channel_sender_metrics(),
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -364,7 +367,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders
                 };
                 let default_port = user_config.default_output.clone();
-                let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
+                let mut ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
@@ -375,6 +378,9 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_node_interests(
                     Interests::from_metric_level(current_metric_level()),
+                );
+                ctrl_msg_chan.set_output_channel_sender_metrics(
+                    effect_handler.output_channel_sender_metrics(),
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
