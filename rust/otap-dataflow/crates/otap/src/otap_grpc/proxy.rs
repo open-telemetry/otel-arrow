@@ -235,7 +235,7 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host, port) {
-            otel_debug!("otap.grpc.proxy.bypass", host = host, port = port);
+            otel_debug!("otap_grpc_exporter.proxy.bypass", host = host, port = port);
             return None;
         }
 
@@ -247,12 +247,12 @@ impl ProxyConfig {
 
         if let Some(url) = proxy {
             otel_debug!(
-                "otap.grpc.proxy.using",
+                "otap_grpc_exporter.proxy.using",
                 proxy = url.to_string(),
                 target = uri.to_string(),
             );
         } else {
-            otel_debug!("otap.grpc.proxy.none", target = uri.to_string());
+            otel_debug!("otap_grpc_exporter.proxy.none", target = uri.to_string());
         }
 
         proxy.map(|u| u.expose())
@@ -356,7 +356,7 @@ impl ProxyConfig {
                     }
                 } else {
                     otap_df_telemetry::otel_warn!(
-                        "otap.grpc.proxy.invalid_cidr",
+                        "otap_grpc_exporter.proxy.invalid_cidr",
                         pattern = pattern_host
                     );
                 }
@@ -487,7 +487,7 @@ async fn http_connect_tunnel_on_stream(
 
     // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
     otel_debug!(
-        "otap.grpc.proxy.connect_request",
+        "otap_grpc_exporter.proxy.connect_request",
         target = format!("{formatted_target}:{target_port}"),
         has_auth = proxy_auth.is_some()
     );
@@ -505,7 +505,7 @@ async fn http_connect_tunnel_on_stream(
     }
 
     otel_debug!(
-        "otap.grpc.proxy.connect_response",
+        "otap_grpc_exporter.proxy.connect_response",
         status_line = status_line.trim()
     );
 
@@ -625,7 +625,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
         let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
         otel_debug!(
-            "otap.grpc.proxy.connecting",
+            "otap_grpc_exporter.proxy.connecting",
             host = proxy_host,
             port = proxy_port
         );
@@ -633,7 +633,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
             .await
             .map_err(|e| {
                 otel_warn!(
-                    "otap.grpc.proxy.connect_failed",
+                    "otap_grpc_exporter.proxy.connect_failed",
                     host = proxy_host,
                     port = proxy_port,
                     error_kind = format!("{:?}", e.kind()),
@@ -642,7 +642,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 ProxyError::ProxyConnectionFailed(e)
             })?;
         otel_debug!(
-            "otap.grpc.proxy.connected",
+            "otap_grpc_exporter.proxy.connected",
             host = proxy_host,
             port = proxy_port
         );
