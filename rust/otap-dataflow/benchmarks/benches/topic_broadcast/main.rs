@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
-    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicMode, TopicOptions,
+    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
 };
 use tokio::runtime::Runtime;
 
@@ -30,17 +30,10 @@ struct BenchCase {
     num_subs: usize,
 }
 
-async fn run_topic_broadcast_case(case: BenchCase, mode: TopicMode) {
+async fn run_topic_broadcast_case(case: BenchCase, opts: TopicOptions) {
     let broker = TopicBroker::new();
     let topic = broker
-        .create_in_memory_topic(
-            "bench-broadcast",
-            TopicOptions {
-                broadcast_capacity: BROADCAST_CAPACITY,
-                mode,
-                ..Default::default()
-            },
-        )
+        .create_in_memory_topic("bench-broadcast", opts)
         .expect("benchmark topic creation failed");
 
     let mut subs: Vec<_> = (0..case.num_subs)
@@ -128,10 +121,8 @@ async fn run_topic_broadcast_lag_case(msg_size: usize) {
     let topic = broker
         .create_in_memory_topic(
             "bench-broadcast-lag",
-            TopicOptions {
-                broadcast_capacity: LAG_CAPACITY,
-                mode: TopicMode::BroadcastOnly,
-                ..Default::default()
+            TopicOptions::BroadcastOnly {
+                capacity: LAG_CAPACITY,
             },
         )
         .expect("benchmark topic creation failed");
@@ -205,7 +196,7 @@ async fn run_tokio_broadcast_lag_case(msg_size: usize) {
     _ = black_box((received, lagged));
 }
 
-/// Compare TopicMode::BroadcastOnly against tokio::sync::broadcast.
+/// Compare broadcast-only topic mode against tokio::sync::broadcast.
 fn bench_topic_broadcast_vs_tokio(c: &mut Criterion) {
     for &msg_size in &MSG_SIZES {
         let mut group = c.benchmark_group(format!("topic_broadcast_vs_tokio/{}B", msg_size));
@@ -216,8 +207,14 @@ fn bench_topic_broadcast_vs_tokio(c: &mut Criterion) {
 
             _ = group.bench_with_input(BenchmarkId::new("broker", num_subs), &case, |b, case| {
                 let rt = Runtime::new().expect("tokio runtime creation failed");
-                b.to_async(&rt)
-                    .iter(|| run_topic_broadcast_case(*case, TopicMode::BroadcastOnly));
+                b.to_async(&rt).iter(|| {
+                    run_topic_broadcast_case(
+                        *case,
+                        TopicOptions::BroadcastOnly {
+                            capacity: BROADCAST_CAPACITY,
+                        },
+                    )
+                });
             });
 
             _ = group.bench_with_input(BenchmarkId::new("tokio", num_subs), &case, |b, case| {
@@ -230,7 +227,7 @@ fn bench_topic_broadcast_vs_tokio(c: &mut Criterion) {
     }
 }
 
-/// Compare TopicMode::Mixed broadcast path against tokio::sync::broadcast.
+/// Compare mixed topic broadcast path against tokio::sync::broadcast.
 fn bench_topic_mixed_broadcast_vs_tokio(c: &mut Criterion) {
     for &msg_size in &MSG_SIZES {
         let mut group = c.benchmark_group(format!("topic_mixed_broadcast_vs_tokio/{}B", msg_size));
@@ -241,8 +238,15 @@ fn bench_topic_mixed_broadcast_vs_tokio(c: &mut Criterion) {
 
             _ = group.bench_with_input(BenchmarkId::new("mixed", num_subs), &case, |b, case| {
                 let rt = Runtime::new().expect("tokio runtime creation failed");
-                b.to_async(&rt)
-                    .iter(|| run_topic_broadcast_case(*case, TopicMode::Mixed));
+                b.to_async(&rt).iter(|| {
+                    run_topic_broadcast_case(
+                        *case,
+                        TopicOptions::Mixed {
+                            balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
+                            broadcast_capacity: BROADCAST_CAPACITY,
+                        },
+                    )
+                });
             });
 
             _ = group.bench_with_input(BenchmarkId::new("tokio", num_subs), &case, |b, case| {

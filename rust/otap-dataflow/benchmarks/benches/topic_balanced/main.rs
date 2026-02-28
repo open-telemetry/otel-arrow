@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
-    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicMode, TopicOptions,
+    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
 };
 use tokio::runtime::Runtime;
 
@@ -29,14 +29,7 @@ struct BenchCase {
 async fn run_broker_case(case: BenchCase) {
     let broker = TopicBroker::new();
     let topic = broker
-        .create_in_memory_topic(
-            "bench",
-            TopicOptions {
-                balanced_capacity: 4096,
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
-            },
-        )
+        .create_in_memory_topic("bench", TopicOptions::BalancedOnly { capacity: 4096 })
         .expect("benchmark topic creation failed");
 
     // Create subscribers.

@@ -15,12 +15,13 @@
 //! the correct channel. Publisher_id 0 means "no ack sender registered"
 //! (returns `NotEnabled`).
 //!
-//! # TopicMode
+//! # TopicOptions
 //!
 //! Chosen at topic creation time and immutable. Controls which `TopicInner`
-//! variant is instantiated (see `topic.rs`). The three modes (`BalancedOnly`,
-//! `BroadcastOnly`, `Mixed`) exist to avoid paying for unused delivery
-//! mechanisms -- e.g., `BalancedOnly` never allocates a broadcast ring buffer.
+//! variant is instantiated (see `topic.rs`). `TopicOptions` is an enum with
+//! mode-specific variants so invalid combinations are unrepresentable.
+//! For example, `BalancedOnly` exposes only balanced capacity, and
+//! `BroadcastOnly` exposes only broadcast capacity.
 
 use otap_df_config::TopicName;
 use std::sync::Arc;
@@ -115,35 +116,40 @@ pub(crate) mod message_id {
     }
 }
 
-/// The mode a topic operates in, chosen at creation time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TopicMode {
-    /// Only balanced (consumer-group) subscriptions. No broadcast ring buffer overhead.
-    BalancedOnly,
-    /// Only broadcast subscriptions. No consumer-group channel overhead.
-    BroadcastOnly,
-    /// Both balanced and broadcast subscriptions (default).
-    #[default]
-    Mixed,
+/// Options for creating/opening a topic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicOptions {
+    /// Only balanced (consumer-group) subscriptions.
+    BalancedOnly {
+        /// Capacity for balanced consumer-group channels.
+        capacity: usize,
+    },
+    /// Only broadcast subscriptions.
+    BroadcastOnly {
+        /// Ring-buffer capacity for broadcast subscribers.
+        capacity: usize,
+    },
+    /// Both balanced and broadcast subscriptions.
+    Mixed {
+        /// Capacity for balanced consumer-group channels.
+        balanced_capacity: usize,
+        /// Ring-buffer capacity for broadcast subscribers.
+        broadcast_capacity: usize,
+    },
 }
 
-/// Options for creating/opening a topic.
-#[derive(Debug, Clone)]
-pub struct TopicOptions {
-    /// Capacity for balanced consumer-group channels.
-    pub balanced_capacity: usize,
-    /// Ring-buffer capacity for broadcast subscribers.
-    pub broadcast_capacity: usize,
-    /// Topic mode — controls which subscription types are supported.
-    pub mode: TopicMode,
+impl TopicOptions {
+    /// Default balanced channel capacity.
+    pub const DEFAULT_BALANCED_CAPACITY: usize = 1024;
+    /// Default broadcast ring-buffer capacity.
+    pub const DEFAULT_BROADCAST_CAPACITY: usize = 1024;
 }
 
 impl Default for TopicOptions {
     fn default() -> Self {
-        Self {
-            balanced_capacity: 1024,
-            broadcast_capacity: 1024,
-            mode: TopicMode::Mixed,
+        Self::Mixed {
+            balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
+            broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
         }
     }
 }

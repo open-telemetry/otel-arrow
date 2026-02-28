@@ -9,7 +9,7 @@
 //! # TopicInner -- Enum Dispatch
 //!
 //! `TopicInner<T>` is an enum over three specialized topic implementations,
-//! selected at creation time by `TopicMode`. Enum dispatch (not `dyn Trait`)
+//! selected at creation time by `TopicOptions`. Enum dispatch (not `dyn Trait`)
 //! is used because `publish()` is async -- a trait object would require
 //! `Box<dyn Future>` per call, adding an allocation on the hottest path. The
 //! enum keeps future sizes known at compile time and enables inlining.
@@ -83,7 +83,7 @@ use crate::error::Error::{
 };
 use crate::topic::backend::{PublishFuture, SubscriptionBackend, TopicState};
 use crate::topic::types::{
-    AckEvent, AckStatus, Envelope, RecvItem, SubscriberOptions, TopicMode, TopicOptions, message_id,
+    AckEvent, AckStatus, Envelope, RecvItem, SubscriberOptions, TopicOptions, message_id,
 };
 use futures_core::Stream;
 use otap_df_config::TopicName;
@@ -395,7 +395,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
 // TopicInner — enum-dispatched topic implementations
 // ---------------------------------------------------------------------------
 
-/// The core topic type, dispatched by `TopicMode`. All methods delegate to
+/// The core topic type, dispatched by `TopicOptions`. All methods delegate to
 /// the active variant. The enum match arms are trivial forwarding -- the real
 /// logic lives in each variant struct below.
 pub(crate) enum TopicInner<T: Send + Sync + 'static> {
@@ -406,12 +406,17 @@ pub(crate) enum TopicInner<T: Send + Sync + 'static> {
 
 impl<T: Send + Sync + 'static> TopicInner<T> {
     pub(crate) fn new(name: TopicName, opts: TopicOptions) -> Self {
-        match opts.mode {
-            TopicMode::BalancedOnly => TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, opts)),
-            TopicMode::BroadcastOnly => {
-                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, opts))
+        match opts {
+            TopicOptions::BalancedOnly { capacity } => {
+                TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
-            TopicMode::Mixed => TopicInner::Mixed(MixedTopic::new(name, opts)),
+            TopicOptions::BroadcastOnly { capacity } => {
+                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity))
+            }
+            TopicOptions::Mixed {
+                balanced_capacity,
+                broadcast_capacity,
+            } => TopicInner::Mixed(MixedTopic::new(name, balanced_capacity, broadcast_capacity)),
         }
     }
 
@@ -510,13 +515,13 @@ pub(crate) struct BalancedOnlyTopic<T: Send + Sync + 'static> {
 }
 
 impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
-    fn new(name: TopicName, opts: TopicOptions) -> Self {
+    fn new(name: TopicName, balanced_capacity: usize) -> Self {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
             next_id: AtomicU64::new(1),
             group: OnceLock::new(),
-            balanced_capacity: opts.balanced_capacity.max(1),
+            balanced_capacity: balanced_capacity.max(1),
             registry,
             closed: AtomicBool::new(false),
         }
@@ -598,11 +603,11 @@ pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
 }
 
 impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
-    fn new(name: TopicName, opts: TopicOptions) -> Self {
+    fn new(name: TopicName, broadcast_capacity: usize) -> Self {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
-            broadcast_ring: Arc::new(FastBroadcastRing::new(opts.broadcast_capacity)),
+            broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             registry,
             closed: AtomicBool::new(false),
         }
@@ -667,7 +672,7 @@ pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
 }
 
 impl<T: Send + Sync + 'static> MixedTopic<T> {
-    fn new(name: TopicName, opts: TopicOptions) -> Self {
+    fn new(name: TopicName, balanced_capacity: usize, broadcast_capacity: usize) -> Self {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
@@ -675,8 +680,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             groups: RwLock::new(Vec::new()),
             group_senders: RwLock::new(Arc::from(Vec::new())),
             has_balanced_groups: AtomicBool::new(false),
-            balanced_capacity: opts.balanced_capacity.max(1),
-            broadcast_ring: Arc::new(FastBroadcastRing::new(opts.broadcast_capacity)),
+            balanced_capacity: balanced_capacity.max(1),
+            broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             registry,
             closed: AtomicBool::new(false),
         }

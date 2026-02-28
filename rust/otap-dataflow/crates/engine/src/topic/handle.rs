@@ -90,7 +90,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     /// - `opts`: subscriber options.
     ///
     /// Returns an error if the subscription mode is incompatible with the topic's
-    /// `TopicMode` or if the topic is already closed.
+    /// configured `TopicOptions` variant or if the topic is already closed.
     pub fn subscribe(
         &self,
         mode: SubscriptionMode,

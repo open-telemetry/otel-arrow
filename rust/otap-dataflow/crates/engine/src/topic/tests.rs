@@ -26,7 +26,7 @@
 use crate::error::Error;
 use crate::topic::backend::InMemoryBackend;
 use crate::topic::types::{
-    AckEvent, AckStatus, RecvItem, SubscriberOptions, SubscriptionMode, TopicMode, TopicOptions,
+    AckEvent, AckStatus, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
 };
 use crate::topic::{TopicBroker, TopicSet};
 use std::collections::HashSet;
@@ -288,9 +288,9 @@ async fn broadcast_all_subscribers_see_all_messages_in_order() {
     let topic = broker
         .create_in_memory_topic(
             "broadcast-test",
-            TopicOptions {
+            TopicOptions::Mixed {
+                balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 1024,
-                ..Default::default()
             },
         )
         .unwrap();
@@ -332,9 +332,9 @@ async fn broadcast_lag_reported_on_slow_subscriber() {
     let topic = broker
         .create_in_memory_topic(
             "broadcast-lag",
-            TopicOptions {
+            TopicOptions::Mixed {
+                balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 8,
-                ..Default::default()
             },
         )
         .unwrap();
@@ -382,9 +382,9 @@ async fn broadcast_slow_subscriber_does_not_block_fast_subscriber() {
     let topic = broker
         .create_in_memory_topic(
             "broadcast-no-block",
-            TopicOptions {
+            TopicOptions::Mixed {
+                balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 4,
-                ..Default::default()
             },
         )
         .unwrap();
@@ -416,8 +416,7 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
     let topic = broker
         .create_topic(
             "mixed-bcast-priority",
-            TopicOptions {
-                mode: TopicMode::Mixed,
+            TopicOptions::Mixed {
                 balanced_capacity: 1,
                 broadcast_capacity: 16,
             },
@@ -653,9 +652,9 @@ async fn balanced_backpressure_blocks_publisher() {
     let topic = broker
         .create_topic(
             "backpressure",
-            TopicOptions {
+            TopicOptions::Mixed {
                 balanced_capacity: 2,
-                ..Default::default()
+                broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -757,9 +756,9 @@ async fn broadcast_multi_threaded_all_receive() {
     let topic = broker
         .create_topic(
             "mt-broadcast",
-            TopicOptions {
+            TopicOptions::Mixed {
+                balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 2048,
-                ..Default::default()
             },
             InMemoryBackend,
         )
@@ -886,9 +885,8 @@ async fn balanced_only_basic_delivery() {
     let topic = broker
         .create_topic(
             "bo-basic",
-            TopicOptions {
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
+            TopicOptions::BalancedOnly {
+                capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -925,9 +923,8 @@ async fn balanced_only_rejects_broadcast() {
     let topic = broker
         .create_topic(
             "bo-no-bcast",
-            TopicOptions {
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
+            TopicOptions::BalancedOnly {
+                capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -948,9 +945,8 @@ async fn balanced_only_rejects_second_group() {
     let topic = broker
         .create_topic(
             "bo-single-group",
-            TopicOptions {
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
+            TopicOptions::BalancedOnly {
+                capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -990,9 +986,8 @@ async fn balanced_only_rejects_balanced_subscribe_after_close() {
     let topic = broker
         .create_topic(
             "bo-closed-subscribe",
-            TopicOptions {
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
+            TopicOptions::BalancedOnly {
+                capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -1016,9 +1011,9 @@ async fn mixed_rejects_balanced_subscribe_after_close() {
     let topic = broker
         .create_topic(
             "mixed-closed-subscribe",
-            TopicOptions {
-                mode: TopicMode::Mixed,
-                ..Default::default()
+            TopicOptions::Mixed {
+                balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
+                broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -1043,9 +1038,8 @@ async fn balanced_only_no_messages_lost() {
     let topic = broker
         .create_topic(
             "bo-no-loss",
-            TopicOptions {
-                mode: TopicMode::BalancedOnly,
-                ..Default::default()
+            TopicOptions::BalancedOnly {
+                capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -1092,11 +1086,7 @@ async fn broadcast_only_basic_delivery() {
     let topic = broker
         .create_topic(
             "bro-basic",
-            TopicOptions {
-                mode: TopicMode::BroadcastOnly,
-                broadcast_capacity: 1024,
-                ..Default::default()
-            },
+            TopicOptions::BroadcastOnly { capacity: 1024 },
             InMemoryBackend,
         )
         .unwrap();
@@ -1134,9 +1124,8 @@ async fn broadcast_only_rejects_balanced() {
     let topic = broker
         .create_topic(
             "bro-no-balanced",
-            TopicOptions {
-                mode: TopicMode::BroadcastOnly,
-                ..Default::default()
+            TopicOptions::BroadcastOnly {
+                capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
             },
             InMemoryBackend,
         )
@@ -1160,11 +1149,7 @@ async fn broadcast_only_lag_reported() {
     let topic = broker
         .create_topic(
             "bro-lag",
-            TopicOptions {
-                mode: TopicMode::BroadcastOnly,
-                broadcast_capacity: 8,
-                ..Default::default()
-            },
+            TopicOptions::BroadcastOnly { capacity: 8 },
             InMemoryBackend,
         )
         .unwrap();
@@ -1268,11 +1253,7 @@ async fn per_publisher_ack_broadcast_mode() {
     let base = broker
         .create_topic(
             "per-pub-bcast",
-            TopicOptions {
-                mode: TopicMode::BroadcastOnly,
-                broadcast_capacity: 1024,
-                ..Default::default()
-            },
+            TopicOptions::BroadcastOnly { capacity: 1024 },
             InMemoryBackend,
         )
         .unwrap();
