@@ -10,6 +10,7 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::Interests;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
@@ -44,6 +45,10 @@ pub struct RuntimePipeline<PData: Debug> {
     channel_metrics: Vec<ChannelMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Optional callback invoked for each PData message received by processors.
+    /// Enables data-type-specific instrumentation (e.g., entry frame stamping)
+    /// without adding trait bounds to PData.
+    on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
 }
 
 fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
@@ -84,7 +89,21 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
+            on_pdata_received: None,
         }
+    }
+
+    /// Sets an optional callback invoked for each PData message received by processors.
+    ///
+    /// The callback receives:
+    /// - A mutable reference to the PData message
+    /// - The node ID (index) of the receiving processor
+    /// - The node's computed interests
+    ///
+    /// This enables data-type-specific instrumentation (e.g., entry frame stamping
+    /// for OtapPdata) without adding trait bounds to PData.
+    pub fn set_on_pdata_received(&mut self, hook: fn(&mut PData, usize, Interests)) {
+        self.on_pdata_received = Some(hook);
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
@@ -126,9 +145,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
+            on_pdata_received,
         } = self;
 
         let metric_level = telemetry_policy.component_metrics;
+        let node_interests = Interests::from_metric_level(metric_level);
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
@@ -152,12 +173,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let input_channel_receiver_metrics = telemetry_handle
+                .as_ref()
+                .and_then(|h| h.input_channel_receiver_metrics());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter, node_interests, input_channel_receiver_metrics)
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -169,10 +193,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, metric_level);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), metric_level);
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
@@ -189,11 +213,14 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let input_channel_receiver_metrics = telemetry_handle
+                .as_ref()
+                .and_then(|h| h.input_channel_receiver_metrics());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests, input_channel_receiver_metrics, on_pdata_received)
                     .await;
                 drop(telemetry_guard);
                 result
@@ -202,10 +229,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, metric_level);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), metric_level);
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
@@ -227,7 +254,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = receiver
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter, node_interests)
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -239,10 +266,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, metric_level);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), metric_level);
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));

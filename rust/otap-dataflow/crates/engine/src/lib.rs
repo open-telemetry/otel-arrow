@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
+pub use channel_metrics::RequestOutcome;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
@@ -323,6 +324,7 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     where
         P: Into<PortName> + Send + 'static;
 }
+
 /// Builds a pipeline factory for initialization.
 ///
 /// This function is used as a placeholder when declaring a pipeline factory with the

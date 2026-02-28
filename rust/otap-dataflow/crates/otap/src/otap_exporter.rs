@@ -468,6 +468,7 @@ mod tests {
 
     use crate::compression::CompressionMethod;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
@@ -845,7 +846,7 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None).await;
             Ok(())
         }
 

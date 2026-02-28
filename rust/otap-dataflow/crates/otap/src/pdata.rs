@@ -21,7 +21,7 @@ use otap_df_engine::control::{
     AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch,
 };
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests,
+    ConsumerEffectHandlerExtension, Interests, RequestOutcome,
     MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
@@ -479,11 +479,11 @@ fn record_consumer_ack_metrics(
     context: &Context,
     interests: Interests,
     record_duration: impl Fn(u64),
-    record_success: impl Fn(),
+    record_consumed: impl Fn(RequestOutcome),
 ) {
     if interests.contains(Interests::PIPELINE_METRICS) {
         if let Some(frame) = context.peek_top() {
-            record_success();
+            record_consumed(RequestOutcome::Success);
             if interests.contains(Interests::ENTRY_TIMESTAMP) {
                 let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
                 record_duration(duration_ns);
@@ -498,16 +498,16 @@ fn record_consumer_nack_metrics(
     permanent: bool,
     interests: Interests,
     record_duration: impl Fn(u64),
-    record_refused: impl Fn(),
-    record_failure: impl Fn(),
+    record_consumed: impl Fn(RequestOutcome),
 ) {
     if interests.contains(Interests::PIPELINE_METRICS) {
         if let Some(frame) = context.peek_top() {
-            if permanent {
-                record_refused();
+            let outcome = if permanent {
+                RequestOutcome::Refused
             } else {
-                record_failure();
-            }
+                RequestOutcome::Failure
+            };
+            record_consumed(outcome);
             if interests.contains(Interests::ENTRY_TIMESTAMP) {
                 let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
                 record_duration(duration_ns);
@@ -521,11 +521,11 @@ fn record_consumer_nack_metrics(
 fn record_producer_ack_metrics(
     context: &Context,
     interests: Interests,
-    record_produced_success: impl Fn(u16),
+    record_produced: impl Fn(u16, RequestOutcome),
 ) {
     if interests.contains(Interests::PIPELINE_METRICS) {
         if let Some(frame) = context.peek_top() {
-            record_produced_success(frame.calldata.output_port_index);
+            record_produced(frame.calldata.output_port_index, RequestOutcome::Success);
         }
     }
 }
@@ -535,16 +535,16 @@ fn record_producer_nack_metrics(
     context: &Context,
     permanent: bool,
     interests: Interests,
-    record_produced_refused: impl Fn(u16),
-    record_produced_failure: impl Fn(u16),
+    record_produced: impl Fn(u16, RequestOutcome),
 ) {
     if interests.contains(Interests::PIPELINE_METRICS) {
         if let Some(frame) = context.peek_top() {
-            if permanent {
-                record_produced_refused(frame.calldata.output_port_index);
+            let outcome = if permanent {
+                RequestOutcome::Refused
             } else {
-                record_produced_failure(frame.calldata.output_port_index);
-            }
+                RequestOutcome::Failure
+            };
+            record_produced(frame.calldata.output_port_index, outcome);
         }
     }
 }
@@ -559,12 +559,12 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             &ack.accepted.context,
             interests,
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_success(),
+            |o| self.record_consumed(o),
         );
         record_producer_ack_metrics(
             &ack.accepted.context,
             interests,
-            |port| self.record_produced_success(port),
+            |port, o| self.record_produced(port, o),
         );
         self.route_ack(ack, Context::next_ack).await
     }
@@ -576,15 +576,13 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             nack.permanent,
             interests,
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_refused(),
-            || self.record_consumed_failure(),
+            |o| self.record_consumed(o),
         );
         record_producer_nack_metrics(
             &nack.refused.context,
             nack.permanent,
             interests,
-            |port| self.record_produced_refused(port),
-            |port| self.record_produced_failure(port),
+            |port, o| self.record_produced(port, o),
         );
         self.route_nack(nack, Context::next_nack).await
     }
@@ -599,7 +597,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             &ack.accepted.context,
             self.node_interests(),
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_success(),
+            |o| self.record_consumed(o),
         );
         self.route_ack(ack, Context::next_ack).await
     }
@@ -610,8 +608,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             nack.permanent,
             self.node_interests(),
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_refused(),
-            || self.record_consumed_failure(),
+            |o| self.record_consumed(o),
         );
         self.route_nack(nack, Context::next_nack).await
     }
@@ -627,12 +624,12 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             &ack.accepted.context,
             interests,
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_success(),
+            |o| self.record_consumed(o),
         );
         record_producer_ack_metrics(
             &ack.accepted.context,
             interests,
-            |port| self.record_produced_success(port),
+            |port, o| self.record_produced(port, o),
         );
         self.route_ack(ack, Context::next_ack).await
     }
@@ -644,15 +641,13 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             nack.permanent,
             interests,
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_refused(),
-            || self.record_consumed_failure(),
+            |o| self.record_consumed(o),
         );
         record_producer_nack_metrics(
             &nack.refused.context,
             nack.permanent,
             interests,
-            |port| self.record_produced_refused(port),
-            |port| self.record_produced_failure(port),
+            |port, o| self.record_produced(port, o),
         );
         self.route_nack(nack, Context::next_nack).await
     }
@@ -667,7 +662,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             &ack.accepted.context,
             self.node_interests(),
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_success(),
+            |o| self.record_consumed(o),
         );
         self.route_ack(ack, Context::next_ack).await
     }
@@ -678,8 +673,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
             nack.permanent,
             self.node_interests(),
             |d| self.record_consumed_duration(d),
-            || self.record_consumed_refused(),
-            || self.record_consumed_failure(),
+            |o| self.record_consumed(o),
         );
         self.route_nack(nack, Context::next_nack).await
     }
@@ -953,6 +947,66 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         data.context.stamp_output_port_index(self.output_port_index(&port_name));
         self.try_send_message_to(port_name, data)
     }
+}
+
+/* -------- Entry frame stamping for consumer nodes -------- */
+
+/// Extension trait for stamping entry frames when PData is received at a consuming node.
+///
+/// Processors and exporters should call `stamp_pdata_received` at the start of handling
+/// a PData message to capture the receive timestamp for duration metrics.
+pub trait StampPdataReceived {
+    /// Stamp the entry frame on received pdata for duration tracking.
+    ///
+    /// This pushes an entry frame with the current timestamp so that
+    /// `consumed.duration_ns` can be calculated when ack/nack arrives.
+    fn stamp_pdata_received(&self, pdata: &mut OtapPdata);
+}
+
+impl StampPdataReceived for otap_df_engine::local::processor::EffectHandler<OtapPdata> {
+    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
+        pdata
+            .context
+            .push_entry_frame(self.processor_id().index, self.node_interests());
+    }
+}
+
+impl StampPdataReceived for otap_df_engine::shared::processor::EffectHandler<OtapPdata> {
+    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
+        pdata
+            .context
+            .push_entry_frame(self.processor_id().index, self.node_interests());
+    }
+}
+
+impl StampPdataReceived for otap_df_engine::local::exporter::EffectHandler<OtapPdata> {
+    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
+        pdata
+            .context
+            .push_entry_frame(self.exporter_id().index, self.node_interests());
+    }
+}
+
+impl StampPdataReceived for otap_df_engine::shared::exporter::EffectHandler<OtapPdata> {
+    fn stamp_pdata_received(&self, pdata: &mut OtapPdata) {
+        pdata
+            .context
+            .push_entry_frame(self.exporter_id().index, self.node_interests());
+    }
+}
+
+/// Callback function for stamping entry frames on received PData messages.
+///
+/// This is the `on_pdata_received` hook for OtapPdata pipelines. It should be
+/// passed to [`RuntimePipeline::set_on_pdata_received`] so that processors
+/// automatically push entry frames (for metrics instrumentation) when
+/// receiving PData from their input channel.
+///
+/// The entry frame captures the receive timestamp (when interests include
+/// `ENTRY_TIMESTAMP`) and enables consumer-side metrics (duration, outcome
+/// counts) at ack/nack time.
+pub fn stamp_pdata_entry_frame(pdata: &mut OtapPdata, node_id: usize, interests: Interests) {
+    pdata.context.push_entry_frame(node_id, interests);
 }
 
 #[cfg(test)]

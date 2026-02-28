@@ -5,8 +5,7 @@
 //! to associate metrics and events with the correct pipeline entity, node entity or the correct
 //! input/output channel entities.
 
-use crate::channel_metrics::InputChannelReceiverMetrics;
-use crate::control::MetricLevel;
+use crate::InputChannelReceiverMetrics;
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
@@ -69,10 +68,6 @@ pub(crate) struct NodeTaskContext {
     entity_key: Option<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
-    /// Channel receiver metrics handle for recording consumed.duration_ns.
-    input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
-    /// Engine-wide metric level for this node.
-    metric_level: MetricLevel,
 }
 
 impl NodeTaskContext {
@@ -81,18 +76,12 @@ impl NodeTaskContext {
         telemetry_handle: Option<NodeTelemetryHandle>,
         input_channel_key: Option<EntityKey>,
         output_channel_keys: Vec<(PortName, EntityKey)>,
-        metric_level: MetricLevel,
     ) -> Self {
-        let input_channel_receiver_metrics = telemetry_handle
-            .as_ref()
-            .and_then(|h| h.input_channel_receiver_metrics());
         Self {
             entity_key,
             telemetry_handle,
             input_channel_key,
             output_channel_keys,
-            input_channel_receiver_metrics,
-            metric_level,
         }
     }
 }
@@ -136,37 +125,6 @@ pub fn node_output_channel_key(port: &str) -> Option<EntityKey> {
         })
         .ok()
         .flatten()
-}
-
-/// Returns the metric level for the current task.
-/// Returns `MetricLevel::None` if no task context is set.
-#[inline]
-#[must_use]
-pub fn current_metric_level() -> MetricLevel {
-    NODE_TASK_CONTEXT
-        .try_with(|ctx| ctx.metric_level)
-        .unwrap_or_default()
-}
-
-/// Returns the input channel receiver metrics handle for the current task, if set.
-#[inline]
-#[must_use]
-pub(crate) fn current_input_channel_receiver_metrics() -> Option<InputChannelReceiverMetrics> {
-    NODE_TASK_CONTEXT
-        .try_with(|ctx| ctx.input_channel_receiver_metrics.clone())
-        .ok()
-        .flatten()
-}
-
-/// Record consumed duration (ns) to the input channel's receiver metrics.
-/// No-op if no channel receiver metrics handle is present in the current task context.
-#[inline]
-pub fn record_consumed_duration(duration_ns: u64) {
-    let _ = NODE_TASK_CONTEXT.try_with(|ctx| {
-        if let Some(ref handle) = ctx.input_channel_receiver_metrics {
-            handle.record_consumed_duration(duration_ns);
-        }
-    });
 }
 
 /// Runs the given future with the provided node task context in task-local storage.

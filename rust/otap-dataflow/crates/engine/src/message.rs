@@ -344,6 +344,25 @@ impl<PData> MessageChannel<PData> {
         }
     }
 
+    /// Receives the next message, applying a hook to any PData message before returning.
+    ///
+    /// This allows the caller to inject processing (e.g., entry frame stamping) at receive time
+    /// without modifying the internal recv() logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RecvError`] if the channel is closed or the shutdown deadline has passed.
+    pub async fn recv_with<F>(&mut self, mut hook: F) -> Result<Message<PData>, RecvError>
+    where
+        F: FnMut(&mut PData),
+    {
+        let mut msg = self.recv().await?;
+        if let Message::PData(ref mut pdata) = msg {
+            hook(pdata);
+        }
+        Ok(msg)
+    }
+
     fn shutdown(&mut self) {
         self.shutting_down_deadline = None;
         drop(self.control_rx.take().expect("control_rx must exist"));

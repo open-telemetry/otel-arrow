@@ -32,7 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::channel_metrics::SharedChannelReceiverMetricsHandle;
+use crate::channel_metrics::{RequestOutcome, SharedChannelReceiverMetricsHandle};
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -204,6 +204,25 @@ impl<PData> MessageChannel<PData> {
         }
     }
 
+    /// Receives the next message, applying a hook to any PData message before returning.
+    ///
+    /// This allows the caller to inject processing (e.g., entry frame stamping) at receive time
+    /// without modifying the internal recv() logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RecvError`] if the channel is closed or the shutdown deadline has passed.
+    pub async fn recv_with<F>(&mut self, mut hook: F) -> Result<Message<PData>, RecvError>
+    where
+        F: FnMut(&mut PData),
+    {
+        let mut msg = self.recv().await?;
+        if let Message::PData(ref mut pdata) = msg {
+            hook(pdata);
+        }
+        Ok(msg)
+    }
+
     fn shutdown(&mut self) {
         self.shutting_down_deadline = None;
         drop(self.control_rx.take().expect("control_rx must exist"));
@@ -254,32 +273,12 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
-    /// Records a successful consumed request to the input channel's receiver metrics.
+    /// Records a consumed request outcome to the input channel's receiver metrics.
     #[inline]
-    pub fn record_consumed_success(&self) {
+    pub fn record_consumed(&self, outcome: RequestOutcome) {
         if let Some(ref h) = self.input_channel_receiver_metrics {
             if let Ok(mut state) = h.try_lock() {
-                state.record_consumed_success();
-            }
-        }
-    }
-
-    /// Records a failed consumed request to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_failure(&self) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_lock() {
-                state.record_consumed_failure();
-            }
-        }
-    }
-
-    /// Records a refused consumed request to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_refused(&self) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_lock() {
-                state.record_consumed_refused();
+                state.record_consumed(outcome);
             }
         }
     }

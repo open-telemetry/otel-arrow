@@ -12,9 +12,7 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::{
-    current_input_channel_receiver_metrics, current_metric_level, NodeTelemetryGuard,
-};
+use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::Interests;
 use crate::local::exporter as local;
@@ -269,10 +267,13 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
+    #[doc(hidden)]
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -295,11 +296,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-                let node_interests =
-                    Interests::from_metric_level(current_metric_level());
                 effect_handler.core.set_node_interests(node_interests);
                 if let Some(InputChannelReceiverMetrics::Local(handle)) =
-                    current_input_channel_receiver_metrics()
+                    input_channel_receiver_metrics
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
@@ -327,11 +326,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-                let node_interests =
-                    Interests::from_metric_level(current_metric_level());
                 effect_handler.core.set_node_interests(node_interests);
                 if let Some(InputChannelReceiverMetrics::Shared(handle)) =
-                    current_input_channel_receiver_metrics()
+                    input_channel_receiver_metrics
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }

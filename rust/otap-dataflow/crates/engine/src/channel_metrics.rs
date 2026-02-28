@@ -19,6 +19,20 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+/// Represents the outcome of a request for metrics recording.
+///
+/// Used to consolidate success/failure/refused counter updates into a single
+/// method call, reducing code duplication in both producer and consumer metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestOutcome {
+    /// Request completed successfully (ack received).
+    Success,
+    /// Request failed but may be retried (transient / retryable, non-permanent nack).
+    Failure,
+    /// Request was permanently refused (permanent nack).
+    Refused,
+}
+
 #[metric_set(name = "channel.sender")]
 #[derive(Debug, Default, Clone)]
 pub struct ChannelSenderMetrics {
@@ -112,19 +126,14 @@ impl ChannelSenderMetricsState {
         self.metrics.send_error_closed.inc();
     }
 
+    /// Record a produced request outcome (success, failure, or refused).
     #[inline]
-    pub(crate) fn record_produced_success(&mut self) {
-        self.metrics.produced_success.inc();
-    }
-
-    #[inline]
-    pub(crate) fn record_produced_failure(&mut self) {
-        self.metrics.produced_failure.inc();
-    }
-
-    #[inline]
-    pub(crate) fn record_produced_refused(&mut self) {
-        self.metrics.produced_refused.inc();
+    pub(crate) fn record_produced(&mut self, outcome: RequestOutcome) {
+        match outcome {
+            RequestOutcome::Success => self.metrics.produced_success.inc(),
+            RequestOutcome::Failure => self.metrics.produced_failure.inc(),
+            RequestOutcome::Refused => self.metrics.produced_refused.inc(),
+        }
     }
 
     #[inline]
@@ -166,19 +175,14 @@ impl ChannelReceiverMetricsState {
         self.metrics.consumed_duration_ns.record(duration_ns as f64);
     }
 
+    /// Record a consumed request outcome (success, failure, or refused).
     #[inline]
-    pub(crate) fn record_consumed_success(&mut self) {
-        self.metrics.consumed_success.inc();
-    }
-
-    #[inline]
-    pub(crate) fn record_consumed_failure(&mut self) {
-        self.metrics.consumed_failure.inc();
-    }
-
-    #[inline]
-    pub(crate) fn record_consumed_refused(&mut self) {
-        self.metrics.consumed_refused.inc();
+    pub(crate) fn record_consumed(&mut self, outcome: RequestOutcome) {
+        match outcome {
+            RequestOutcome::Success => self.metrics.consumed_success.inc(),
+            RequestOutcome::Failure => self.metrics.consumed_failure.inc(),
+            RequestOutcome::Refused => self.metrics.consumed_refused.inc(),
+        }
     }
 
     #[inline]
@@ -234,8 +238,10 @@ impl ChannelMetricsHandle {
 /// Handle to a pdata channel's receiver metrics, supporting both local and shared modes.
 /// Stored in the node task context so that ack/nack processing can record
 /// `consumed.duration_ns` back to the input channel's metrics.
+#[doc(hidden)]
 #[derive(Clone)]
-pub(crate) enum InputChannelReceiverMetrics {
+#[allow(private_interfaces)]
+pub enum InputChannelReceiverMetrics {
     Local(LocalChannelReceiverMetricsHandle),
     Shared(SharedChannelReceiverMetricsHandle),
 }
@@ -245,25 +251,6 @@ impl fmt::Debug for InputChannelReceiverMetrics {
         match self {
             Self::Local(_) => f.debug_tuple("Local").field(&"...").finish(),
             Self::Shared(_) => f.debug_tuple("Shared").field(&"...").finish(),
-        }
-    }
-}
-
-impl InputChannelReceiverMetrics {
-    /// Record consumed duration (ns) to the channel receiver metrics.
-    #[inline]
-    pub(crate) fn record_consumed_duration(&self, duration_ns: u64) {
-        match self {
-            Self::Local(h) => {
-                if let Ok(mut state) = h.try_borrow_mut() {
-                    state.record_consumed_duration(duration_ns);
-                }
-            }
-            Self::Shared(h) => {
-                if let Ok(mut state) = h.try_lock() {
-                    state.record_consumed_duration(duration_ns);
-                }
-            }
         }
     }
 }
@@ -288,52 +275,18 @@ impl fmt::Debug for OutputChannelSenderMetrics {
 }
 
 impl OutputChannelSenderMetrics {
-    /// Record a successful produced request.
+    /// Record a produced request outcome (success, failure, or refused).
     #[inline]
-    pub(crate) fn record_produced_success(&self) {
+    pub(crate) fn record_produced(&self, outcome: RequestOutcome) {
         match self {
             Self::Local(h) => {
                 if let Ok(mut state) = h.try_borrow_mut() {
-                    state.record_produced_success();
+                    state.record_produced(outcome);
                 }
             }
             Self::Shared(h) => {
                 if let Ok(mut state) = h.try_lock() {
-                    state.record_produced_success();
-                }
-            }
-        }
-    }
-
-    /// Record a failed produced request (transient / retryable).
-    #[inline]
-    pub(crate) fn record_produced_failure(&self) {
-        match self {
-            Self::Local(h) => {
-                if let Ok(mut state) = h.try_borrow_mut() {
-                    state.record_produced_failure();
-                }
-            }
-            Self::Shared(h) => {
-                if let Ok(mut state) = h.try_lock() {
-                    state.record_produced_failure();
-                }
-            }
-        }
-    }
-
-    /// Record a permanently refused produced request.
-    #[inline]
-    pub(crate) fn record_produced_refused(&self) {
-        match self {
-            Self::Local(h) => {
-                if let Ok(mut state) = h.try_borrow_mut() {
-                    state.record_produced_refused();
-                }
-            }
-            Self::Shared(h) => {
-                if let Ok(mut state) = h.try_lock() {
-                    state.record_produced_refused();
+                    state.record_produced(outcome);
                 }
             }
         }

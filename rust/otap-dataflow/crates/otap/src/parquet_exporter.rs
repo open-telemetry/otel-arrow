@@ -427,6 +427,7 @@ mod test {
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
     use otap_df_engine::control::{
         Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
         pipeline_ctrl_msg_channel,
@@ -920,7 +921,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None)
                 .await
                 .map(|_| ())
         }
@@ -1070,7 +1071,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None)
                 .await
                 .map(|_| ())
         }
@@ -1218,7 +1219,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None)
                 .await
                 .map(|_| ())
         }
@@ -1461,7 +1462,7 @@ mod test {
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty(), None)
                 .await
                 .map(|_| ())
         }

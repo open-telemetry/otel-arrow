@@ -33,7 +33,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::channel_metrics::LocalChannelReceiverMetricsHandle;
+use crate::channel_metrics::{LocalChannelReceiverMetricsHandle, RequestOutcome};
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -135,32 +135,12 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
-    /// Records a successful consumed request to the input channel's receiver metrics.
+    /// Records a consumed request outcome to the input channel's receiver metrics.
     #[inline]
-    pub fn record_consumed_success(&self) {
+    pub fn record_consumed(&self, outcome: RequestOutcome) {
         if let Some(ref h) = self.input_channel_receiver_metrics {
             if let Ok(mut state) = h.try_borrow_mut() {
-                state.record_consumed_success();
-            }
-        }
-    }
-
-    /// Records a failed consumed request to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_failure(&self) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_borrow_mut() {
-                state.record_consumed_failure();
-            }
-        }
-    }
-
-    /// Records a refused consumed request to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_refused(&self) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_borrow_mut() {
-                state.record_consumed_refused();
+                state.record_consumed(outcome);
             }
         }
     }

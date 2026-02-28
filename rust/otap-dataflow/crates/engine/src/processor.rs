@@ -12,17 +12,16 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::{current_input_channel_receiver_metrics, current_metric_level};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
-use crate::{Interests, };
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::Interests;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -389,16 +388,22 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Start the processor and run the message processing loop.
+    ///
+    /// The optional `on_pdata_received` callback is invoked for each PData message
+    /// after it is received from the channel but before it is passed to `process()`.
+    /// This enables data-type-specific instrumentation (e.g., entry frame stamping)
+    /// without adding trait bounds to PData.
+    #[doc(hidden)]
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
+        on_pdata_received: Option<fn(&mut PData, usize, Interests)>,
     ) -> Result<(), Error>
     {
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
-
-        // Derive node_interests from the engine's metric level.
-        let node_interests = Interests::from_metric_level(current_metric_level());
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -411,7 +416,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 if let Some(InputChannelReceiverMetrics::Local(handle)) =
-                    current_input_channel_receiver_metrics()
+                    input_channel_receiver_metrics
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
@@ -421,13 +426,12 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(mut msg) = message_channel.recv().await {
-                    if let Message::PData(ref mut pdata) = msg {
-                        pdata.received_at_node(
-                            effect_handler.processor_id().index,
-                            node_interests,
-                        );
+                let node_id = effect_handler.processor_id().index;
+                while let Ok(msg) = message_channel.recv_with(|pdata| {
+                    if let Some(hook) = on_pdata_received {
+                        hook(pdata, node_id, node_interests);
                     }
+                }).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -450,7 +454,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 if let Some(InputChannelReceiverMetrics::Shared(handle)) =
-                    current_input_channel_receiver_metrics()
+                    input_channel_receiver_metrics
                 {
                     effect_handler.set_input_channel_receiver_metrics(handle);
                 }
@@ -460,13 +464,12 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(mut msg) = message_channel.recv().await {
-                    if let Message::PData(ref mut pdata) = msg {
-                        pdata.received_at_node(
-                            effect_handler.processor_id().index,
-                            node_interests,
-                        );
+                let node_id = effect_handler.processor_id().index;
+                while let Ok(msg) = message_channel.recv_with(|pdata| {
+                    if let Some(hook) = on_pdata_received {
+                        hook(pdata, node_id, node_interests);
                     }
+                }).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

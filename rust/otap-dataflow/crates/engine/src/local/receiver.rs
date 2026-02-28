@@ -32,7 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
-use crate::channel_metrics::OutputChannelSenderMetrics;
+use crate::channel_metrics::{OutputChannelSenderMetrics, RequestOutcome};
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::Interests;
 use crate::effect_handler::{
@@ -142,17 +142,18 @@ impl<PData> ControlChannel<PData> {
                     .output_channel_sender_metrics
                     .get(ack.calldata.output_port_index as usize)
                 {
-                    m.record_produced_success();
+                    m.record_produced(RequestOutcome::Success);
                 }
             }
             NodeControlMsg::Nack(nack) => {
                 let idx = nack.calldata.output_port_index as usize;
                 if let Some(Some(m)) = self.output_channel_sender_metrics.get(idx) {
-                    if nack.permanent {
-                        m.record_produced_refused();
+                    let outcome = if nack.permanent {
+                        RequestOutcome::Refused
                     } else {
-                        m.record_produced_failure();
-                    }
+                        RequestOutcome::Failure
+                    };
+                    m.record_produced(outcome);
                 }
             }
             _ => {}
@@ -292,27 +293,11 @@ impl<PData> EffectHandler<PData> {
         vec
     }
 
-    /// Records a successful produced request for the given output port.
+    /// Records a produced request outcome for the given output port.
     #[inline]
-    pub fn record_produced_success(&self, port_index: u16) {
+    pub fn record_produced(&self, port_index: u16, outcome: RequestOutcome) {
         if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
-            m.record_produced_success();
-        }
-    }
-
-    /// Records a failed produced request for the given output port.
-    #[inline]
-    pub fn record_produced_failure(&self, port_index: u16) {
-        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
-            m.record_produced_failure();
-        }
-    }
-
-    /// Records a refused produced request for the given output port.
-    #[inline]
-    pub fn record_produced_refused(&self, port_index: u16) {
-        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
-            m.record_produced_refused();
+            m.record_produced(outcome);
         }
     }
 
