@@ -452,7 +452,7 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
-    use crate::{pdata::OtapPdata, testing::TestCallData};
+    use crate::{pdata::{Context, OtapPdata}, testing::TestCallData};
 
     /// Helper to create test log records with specific severity levels
     fn create_log_records(severities: &[&str]) -> Vec<LogRecord> {
@@ -1164,7 +1164,8 @@ mod test {
                 // now we've ack'd all three outbound, so it should emit an Ack message
                 let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match ack_msg {
-                    PipelineControlMsg::DeliverAck { node_id, .. } => {
+                    PipelineControlMsg::DeliverAck { ack } => {
+                        let (node_id, _ack) = Context::next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                     }
                     other => {
@@ -1241,7 +1242,8 @@ mod test {
                 // routed messages was Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
                     }
@@ -1319,7 +1321,8 @@ mod test {
                 // messages sent on the default output port were Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
                     }
@@ -1395,7 +1398,8 @@ mod test {
 
                 let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
                     }

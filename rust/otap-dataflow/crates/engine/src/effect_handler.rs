@@ -281,54 +281,39 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
-    /// Send an AckMsg using a context-transfer function that drains the
-    /// context stack to find the next subscriber node.
-    pub async fn route_ack<Transfer>(
+    /// Send an AckMsg to the pipeline controller for context unwinding.
+    /// The controller pops frames from the context stack, records any
+    /// metrics stops, and delivers the ack to the next subscriber node.
+    pub async fn route_ack(
         &self,
-        ack_in: AckMsg<PData>,
-        transfer: Transfer,
+        ack: AckMsg<PData>,
     ) -> Result<(), Error>
-    where
-        Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
-        if let Some((node_id, ack)) = transfer(ack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck {
-                node_id,
-                ack,
-            })
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
-        } else {
-            Ok(())
-        }
+        self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck {
+            ack,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::PipelineControlMsgError {
+            error: e.to_string(),
+        })
     }
 
-    /// Send a NackMsg using a context-transfer function.  Same drain
-    /// semantics as `route_ack()`.
-    pub async fn route_nack<Transfer>(
+    /// Send a NackMsg to the pipeline controller for context unwinding.
+    /// Same semantics as `route_ack()`.
+    pub async fn route_nack(
         &self,
-        nack_in: NackMsg<PData>,
-        transfer: Transfer,
+        nack: NackMsg<PData>,
     ) -> Result<(), Error>
-    where
-        Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
-        if let Some((node_id, nack)) = transfer(nack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack {
-                node_id,
-                nack,
-            })
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
-        } else {
-            Ok(())
-        }
+        self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack {
+            nack,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::PipelineControlMsgError {
+            error: e.to_string(),
+        })
     }
 
     /// Delay a message.

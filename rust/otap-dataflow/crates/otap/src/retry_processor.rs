@@ -955,7 +955,8 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineControlMsg::DeliverAck { node_id, ack, .. } => {
+                    PipelineControlMsg::DeliverAck { ack } => {
+                        let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -969,7 +970,8 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineControlMsg::DeliverNack { node_id, nack, .. } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))

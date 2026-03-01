@@ -124,6 +124,21 @@ pub struct CallData {
     pub output_port_index: u16,
 }
 
+/// Per-node interests, context, and identity.
+///
+/// A frame lives on the context stack carried inside PData. Each node
+/// that subscribes (or has metrics interests) pushes one frame. During
+/// ack/nack unwinding the controller pops frames one at a time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    /// Declares the set of interests this node has (Acks, Nacks, ...)
+    pub interests: crate::Interests,
+    /// The caller's data returns via AckMsg.calldata or NackMsg.calldata.
+    pub calldata: CallData,
+    /// The caller's node_id for routing.
+    pub node_id: usize,
+}
+
 /// A context frame for a non-subscribing node encountered during
 /// context unwinding. The pipeline controller uses this to record
 /// consumed/produced metrics on behalf of nodes that did not
@@ -303,16 +318,14 @@ pub enum PipelineControlMsg<PData> {
         data: Box<PData>,
     },
     /// Deliver an Ack to the preceding subscriber in the pipeline.
+    /// The controller unwinds the context stack to find the recipient.
     DeliverAck {
-        /// The recipient node_id
-        node_id: usize,
         /// The Ack
         ack: AckMsg<PData>,
     },
     /// Deliver a Nack to the preceding subscriber in the pipeline.
+    /// The controller unwinds the context stack to find the recipient.
     DeliverNack {
-        /// The recipient node_id
-        node_id: usize,
         /// The Nack
         nack: NackMsg<PData>,
     },

@@ -266,6 +266,35 @@ impl Interests {
     }
 }
 
+/// Trait for context-stack unwinding during ack/nack delivery.
+///
+/// The pipeline controller calls these methods to pop frames from the
+/// PData's context stack and to drop retained payloads. This keeps all
+/// unwinding logic in the controller without requiring PData-specific
+/// knowledge in the engine crate.
+pub trait Unwindable {
+    /// Pop the top frame from the context stack.
+    fn pop_frame(&mut self) -> Option<control::Frame>;
+
+    /// Drop the retained payload (called when `RETURN_DATA` is not set
+    /// on the destination frame).
+    fn drop_payload(&mut self);
+}
+
+// No-op implementations for types used as PData in tests.
+impl Unwindable for () {
+    fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn drop_payload(&mut self) {}
+}
+impl Unwindable for String {
+    fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn drop_payload(&mut self) {}
+}
+
 /// Trait for entry-frame stamping when PData is received by a consuming node.
 ///
 /// Implementing this trait allows the engine to automatically invoke

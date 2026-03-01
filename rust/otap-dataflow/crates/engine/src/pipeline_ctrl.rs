@@ -14,12 +14,12 @@
 use crate::channel_metrics::{InputChannelReceiverMetrics, OutputChannelSenderMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, MetricsStop, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
-    nanos_since_epoch,
+    AckMsg, ControlSenders, MetricsStop, NackMsg, NodeControlMsg, PipelineControlMsg,
+    PipelineCtrlMsgReceiver, nanos_since_epoch,
 };
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
-use crate::{Interests, RequestOutcome};
+use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
@@ -276,7 +276,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// timeout fires, avoiding a race where both expire simultaneously.
     ///
     /// This allows nodes to send cleanup messages during their shutdown sequence.
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error>
+    where
+        PData: Unwindable,
+    {
         let internal_telemetry_enabled =
             self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
         let mut pipeline_metrics_monitor = internal_telemetry_enabled
@@ -399,16 +402,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             }
                         }
                         PipelineControlMsg::DeliverAck {
-                            node_id,
                             ack,
                         } => {
-                            self.send(node_id, NodeControlMsg::Ack(ack)).await;
+                            self.unwind_ack(ack).await;
                         }
                         PipelineControlMsg::DeliverNack {
-                            node_id,
                             nack,
                         } => {
-                            self.send(node_id, NodeControlMsg::Nack(nack)).await;
+                            self.unwind_nack(nack).await;
                         }
                     }
                 }
@@ -540,6 +541,53 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
                 Err(otap_df_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
+                }
+            }
+        }
+    }
+}
+
+/// Context-unwinding methods. These require `PData: Unwindable` so the
+/// controller can pop frames from the context stack carried inside the
+/// ack/nack payload.
+impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
+    /// Unwind the context stack for an ack, recording metrics at each
+    /// intermediate frame, then deliver to the first subscriber with ACKS.
+    async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
+        loop {
+            match ack.accepted.pop_frame() {
+                None => return, // no more subscribers
+                Some(frame) => {
+                    // TODO: record CONSUMER_METRICS / PRODUCER_METRICS here
+                    if frame.interests.contains(Interests::ACKS) {
+                        if !frame.interests.contains(Interests::RETURN_DATA) {
+                            ack.accepted.drop_payload();
+                        }
+                        ack.calldata = frame.calldata;
+                        self.send(frame.node_id, NodeControlMsg::Ack(ack)).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unwind the context stack for a nack, recording metrics at each
+    /// intermediate frame, then deliver to the first subscriber with NACKS.
+    async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
+        loop {
+            match nack.refused.pop_frame() {
+                None => return, // no more subscribers
+                Some(frame) => {
+                    // TODO: record CONSUMER_METRICS / PRODUCER_METRICS here
+                    if frame.interests.contains(Interests::NACKS) {
+                        if !frame.interests.contains(Interests::RETURN_DATA) {
+                            nack.refused.drop_payload();
+                        }
+                        nack.calldata = frame.calldata;
+                        self.send(frame.node_id, NodeControlMsg::Nack(nack)).await;
+                        return;
+                    }
                 }
             }
         }
@@ -1612,10 +1660,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -1632,27 +1678,17 @@ mod tests {
                 // Small delay to ensure shutdown is processed and we're in draining mode
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send DeliverAck during draining - should be delivered
+                // Send DeliverAck during draining - should be processed
                 let ack = AckMsg::new("ack_data".to_owned());
                 pipeline_tx
                     .send(PipelineControlMsg::DeliverAck {
-                        node_id: node.index,
                         ack,
                     })
                     .await
                     .unwrap();
 
-                // Verify the ack was delivered to the node
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
-
-                assert!(received.is_ok(), "Should receive message within timeout");
-                match received.unwrap() {
-                    Ok(NodeControlMsg::Ack(ack_msg)) => {
-                        assert_eq!(*ack_msg.accepted, "ack_data");
-                    }
-                    other => panic!("Expected Ack message, got {:?}", other),
-                }
+                // String PData has no context stack, so unwind_ack is a no-op.
+                // Just verify the controller processes it without crashing.
 
                 // Drop the sender to let the manager exit draining mode
                 drop(pipeline_tx);
@@ -1676,10 +1712,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -1696,28 +1730,17 @@ mod tests {
                 // Small delay to ensure shutdown is processed and we're in draining mode
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send DeliverNack during draining - should be delivered
+                // Send DeliverNack during draining - should be processed
                 let nack = NackMsg::new("test failure", "nack_data".to_owned());
                 pipeline_tx
                     .send(PipelineControlMsg::DeliverNack {
-                        node_id: node.index,
                         nack,
                     })
                     .await
                     .unwrap();
 
-                // Verify the nack was delivered to the node
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
-
-                assert!(received.is_ok(), "Should receive message within timeout");
-                match received.unwrap() {
-                    Ok(NodeControlMsg::Nack(nack_msg)) => {
-                        assert_eq!(*nack_msg.refused, "nack_data");
-                        assert_eq!(nack_msg.reason, "test failure");
-                    }
-                    other => panic!("Expected Nack message, got {:?}", other),
-                }
+                // String PData has no context stack, so unwind_nack is a no-op.
+                // Just verify the controller processes it without crashing.
 
                 // Drop the sender to let the manager exit draining mode
                 drop(pipeline_tx);

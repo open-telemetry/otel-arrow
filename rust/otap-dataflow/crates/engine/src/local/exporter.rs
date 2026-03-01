@@ -180,20 +180,14 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to a node of known-interest.
-    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
-    where
-        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
-    {
-        self.core.route_ack(ack, cxf).await
+    /// Send an Ack to the pipeline controller for context unwinding.
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
-    where
-        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
-    {
-        self.core.route_nack(nack, cxf).await
+    /// Send a Nack to the pipeline controller for context unwinding.
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
     }
 
     /// Reports metrics collected by the exporter.

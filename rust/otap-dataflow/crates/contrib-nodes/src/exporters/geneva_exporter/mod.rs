@@ -588,6 +588,7 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineControlMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
+    use otap_df_otap::pdata::Context;
     use otap_df_otap::testing::TestCallData;
     use std::time::{Duration, Instant};
 
@@ -740,7 +741,8 @@ mod tests {
 
                 let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
                 match pipeline_rx.recv().await.unwrap() {
-                    PipelineControlMsg::DeliverAck { ack, node_id } => {
+                    PipelineControlMsg::DeliverAck { ack } => {
+                        let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, 4242);
                         let got: TestCallData = ack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
@@ -777,7 +779,8 @@ mod tests {
 
                 let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
                 match pipeline_rx.recv().await.unwrap() {
-                    PipelineControlMsg::DeliverNack { nack, node_id } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         let got: TestCallData = nack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);

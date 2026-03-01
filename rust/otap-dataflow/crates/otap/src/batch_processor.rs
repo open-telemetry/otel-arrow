@@ -1765,15 +1765,19 @@ mod tests {
                                 }
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
                                     looped += 1;
-                                    let calldata: TestCallData =
-                                        ack.calldata.user.try_into().expect("calldata");
-                                    received_acks.push(calldata);
+                                    if let Some((_node_id, ack)) = Context::next_ack(ack) {
+                                        let calldata: TestCallData =
+                                            ack.calldata.user.try_into().expect("calldata");
+                                        received_acks.push(calldata);
+                                    }
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
-                                    let calldata: TestCallData =
-                                        nack.calldata.user.try_into().expect("calldata");
-                                    received_nacks.push(calldata);
+                                    if let Some((_node_id, nack)) = Context::next_nack(nack) {
+                                        let calldata: TestCallData =
+                                            nack.calldata.user.try_into().expect("calldata");
+                                        received_nacks.push(calldata);
+                                    }
                                 }
                                 Ok(_) => {
                                     panic!("unexpected case");

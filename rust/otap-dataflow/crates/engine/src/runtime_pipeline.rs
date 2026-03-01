@@ -5,6 +5,7 @@
 
 use crate::Interests;
 use crate::ReceivedAtNode;
+use crate::Unwindable;
 use crate::channel_metrics::ChannelMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::{
@@ -106,7 +107,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(

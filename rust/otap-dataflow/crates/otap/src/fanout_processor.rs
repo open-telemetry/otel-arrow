@@ -2362,7 +2362,8 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
         {
-            if let PipelineControlMsg::DeliverAck { node_id, ack } = msg {
+            if let PipelineControlMsg::DeliverAck { ack } = msg {
+                let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     // Also verify calldata matches the upstream receiver's calldata
                     let received_calldata: Result<TestCallData, _> = ack.calldata.user.try_into();
@@ -2430,7 +2431,8 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
         {
-            if let PipelineControlMsg::DeliverNack { node_id, nack } = msg {
+            if let PipelineControlMsg::DeliverNack { nack } = msg {
+                let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     let received_calldata: Result<TestCallData, _> = nack.calldata.user.try_into();
                     assert_eq!(

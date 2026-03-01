@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::control::{AckMsg, CallData, MetricsStop, NackMsg, UserCallData, nanos_since_epoch};
+use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, UserCallData, nanos_since_epoch};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
@@ -126,6 +126,11 @@ impl Context {
         None
     }
 
+    /// Pop the top frame from the context stack.
+    pub fn pop_frame(&mut self) -> Option<Frame> {
+        self.stack.pop()
+    }
+
     /// Determine whether the context is requesting payload returned.
     #[must_use]
     pub fn may_return_payload(&self) -> bool {
@@ -150,6 +155,13 @@ impl Context {
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
         self.stack.iter().any(|f| !f.interests.is_empty())
+    }
+
+    /// Returns true if the context stack has any frames at all.
+    /// Used to decide whether an ack/nack should be sent to the controller.
+    #[must_use]
+    pub fn has_context_frames(&self) -> bool {
+        !self.stack.is_empty()
     }
 
     /// Set the source node for this context.
@@ -253,15 +265,16 @@ impl Context {
     }
 }
 
-/// Per-node interests, context, and identity.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Frame {
-    /// Declares the set of interests this node has (Acks, Nacks, ...)
-    pub interests: Interests,
-    /// The caller's data returns via AckMsg.context or Ack.context.
-    pub calldata: CallData,
-    /// The caller's node_id for routing.
-    pub node_id: usize,
+// Frame is defined in otap_df_engine::control (imported above).
+
+impl otap_df_engine::Unwindable for OtapPdata {
+    fn pop_frame(&mut self) -> Option<Frame> {
+        self.context.pop_frame()
+    }
+
+    fn drop_payload(&mut self) {
+        let _ = self.take_payload();
+    }
 }
 
 /// Context + container for telemetry data
@@ -375,6 +388,13 @@ impl OtapPdata {
         self.context.has_subscribers()
     }
 
+    /// Returns true if the context stack has any frames at all.
+    /// Used by notify_ack/notify_nack to decide whether to send to the controller.
+    #[must_use]
+    pub fn has_context_frames(&self) -> bool {
+        self.context.has_context_frames()
+    }
+
     /// Return the source's calldata. Note that after a subscribe_to()
     /// has been called, the current node becomes the source.
     ///
@@ -486,19 +506,28 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
 // All metric recording (consumer and producer) is handled by the pipeline
-// controller via MetricsStop entries collected during context unwinding.
-// notify_ack/notify_nack simply route the ack/nack to the next subscriber.
+// controller during context unwinding. notify_ack/notify_nack forward the
+// ack/nack to the controller only when context frames exist; if the stack
+// is empty there is nothing to unwind and the message is silently dropped.
 
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
+        if ack.accepted.has_context_frames() {
+            self.route_ack(ack).await
+        } else {
+            Ok(())
+        }
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
+        if nack.refused.has_context_frames() {
+            self.route_nack(nack).await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -507,11 +536,19 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
+        if ack.accepted.has_context_frames() {
+            self.route_ack(ack).await
+        } else {
+            Ok(())
+        }
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
+        if nack.refused.has_context_frames() {
+            self.route_nack(nack).await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -520,11 +557,19 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
+        if ack.accepted.has_context_frames() {
+            self.route_ack(ack).await
+        } else {
+            Ok(())
+        }
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
+        if nack.refused.has_context_frames() {
+            self.route_nack(nack).await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -533,11 +578,19 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
+        if ack.accepted.has_context_frames() {
+            self.route_ack(ack).await
+        } else {
+            Ok(())
+        }
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
+        if nack.refused.has_context_frames() {
+            self.route_nack(nack).await
+        } else {
+            Ok(())
+        }
     }
 }
 
