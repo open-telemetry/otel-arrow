@@ -851,7 +851,6 @@ mod tests {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
-                    None,
                 )
                 .await;
             Ok(())

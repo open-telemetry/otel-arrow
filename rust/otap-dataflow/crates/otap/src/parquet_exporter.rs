@@ -925,7 +925,6 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
-                    None,
                 )
                 .await
                 .map(|_| ())
@@ -1080,7 +1079,6 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
-                    None,
                 )
                 .await
                 .map(|_| ())
@@ -1233,7 +1231,6 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
-                    None,
                 )
                 .await
                 .map(|_| ())
@@ -1481,7 +1478,6 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
-                    None,
                 )
                 .await
                 .map(|_| ())

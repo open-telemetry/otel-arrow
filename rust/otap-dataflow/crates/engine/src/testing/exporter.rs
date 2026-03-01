@@ -264,7 +264,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter_start,
                     Interests::empty(),
-                    None,
                 )
                 .await
                 .map(|terminal_state| {

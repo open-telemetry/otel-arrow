@@ -32,7 +32,6 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::channel_metrics::{RequestOutcome, SharedChannelReceiverMetricsHandle};
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -230,8 +229,6 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Channel receiver metrics handle for recording consumed.duration_ns.
-    input_channel_receiver_metrics: Option<SharedChannelReceiverMetricsHandle>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -242,7 +239,6 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
-            input_channel_receiver_metrics: None,
         }
     }
 
@@ -256,34 +252,6 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
-    }
-
-    /// Records consumed duration (ns) to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_duration(&self, duration_ns: u64) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_lock() {
-                state.record_consumed_duration(duration_ns);
-            }
-        }
-    }
-
-    /// Records a consumed request outcome to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed(&self, outcome: RequestOutcome) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_lock() {
-                state.record_consumed(outcome);
-            }
-        }
-    }
-
-    /// Sets the input channel receiver metrics handle.
-    pub(crate) fn set_input_channel_receiver_metrics(
-        &mut self,
-        handle: SharedChannelReceiverMetricsHandle,
-    ) {
-        self.input_channel_receiver_metrics = Some(handle);
     }
 
     /// Print an info message to stdout.

@@ -9,7 +9,6 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
-use crate::RequestOutcome;
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;

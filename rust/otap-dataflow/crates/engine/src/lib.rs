@@ -8,7 +8,6 @@ use crate::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
-        InputChannelReceiverMetrics,
     },
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, MetricLevel, NackMsg, UserCallData},
@@ -931,11 +930,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 receiver_metrics,
                                 capacity,
                             );
-                            if let Some(h) = receiver.receiver_metrics_handle() {
-                                telemetry.set_input_channel_receiver_metrics(
-                                    InputChannelReceiverMetrics::Shared(h),
-                                );
-                            }
                             Receiver::Shared(receiver)
                         })
                         .collect::<Vec<_>>();
@@ -996,11 +990,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         receiver_metrics,
                         capacity,
                     );
-                    if let Some(h) = pdata_receiver.receiver_metrics_handle() {
-                        telemetry.set_input_channel_receiver_metrics(
-                            InputChannelReceiverMetrics::Shared(h),
-                        );
-                    }
                     Ok((pdata_senders, vec![Receiver::Shared(pdata_receiver)]))
                 }
                 (false, true) => {
@@ -1061,11 +1050,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 receiver_metrics,
                                 capacity,
                             );
-                            if let Some(h) = receiver.receiver_metrics_handle() {
-                                telemetry.set_input_channel_receiver_metrics(
-                                    InputChannelReceiverMetrics::Local(h),
-                                );
-                            }
                             Receiver::Local(receiver)
                         })
                         .collect::<Vec<_>>();
@@ -1127,11 +1111,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         receiver_metrics,
                         capacity,
                     );
-                    if let Some(h) = pdata_receiver.receiver_metrics_handle() {
-                        telemetry.set_input_channel_receiver_metrics(
-                            InputChannelReceiverMetrics::Local(h),
-                        );
-                    }
                     Ok((pdata_senders, vec![Receiver::Local(pdata_receiver)]))
                 }
             }

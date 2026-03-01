@@ -495,6 +495,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
             }
         }
+        // Unregister all consumed/produced metric sets from the telemetry registry
+        // so that the metric set count returns to zero after shutdown.
+        self.unregister_node_metrics();
         Ok(())
     }
 
@@ -552,6 +555,23 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             }
         }
         Ok(())
+    }
+
+    /// Unregister all consumed/produced metric sets from the telemetry registry.
+    fn unregister_node_metrics(&mut self) {
+        let registry = self.pipeline_context.metrics_registry();
+        for entry in &mut self.node_metric_handles {
+            if let Some(handles) = entry.take() {
+                if let Some(input) = handles.input {
+                    registry.unregister_metric_set(input.metric_set_key());
+                }
+                for output in handles.outputs {
+                    if let Some(output) = output {
+                        registry.unregister_metric_set(output.metric_set_key());
+                    }
+                }
+            }
+        }
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {

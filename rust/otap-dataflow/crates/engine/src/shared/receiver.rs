@@ -33,7 +33,6 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
-use crate::channel_metrics::{RequestOutcome, SharedChannelSenderMetricsHandle};
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -73,8 +72,6 @@ pub trait Receiver<PData> {
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel<PData> {
     rx: SharedReceiver<NodeControlMsg<PData>>,
-    /// Sender metrics handles for recording produced outcomes on ack/nack.
-    output_channel_sender_metrics: Vec<Option<SharedChannelSenderMetricsHandle>>,
 }
 
 impl<PData> ControlChannel<PData> {
@@ -83,16 +80,7 @@ impl<PData> ControlChannel<PData> {
     pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
         Self {
             rx,
-            output_channel_sender_metrics: Vec::new(),
         }
-    }
-
-    /// Sets the output channel sender metrics for produced outcome recording.
-    pub(crate) fn set_output_channel_sender_metrics(
-        &mut self,
-        metrics: Vec<Option<SharedChannelSenderMetricsHandle>>,
-    ) {
-        self.output_channel_sender_metrics = metrics;
     }
 
     /// Asynchronously receives the next control message.
@@ -123,8 +111,6 @@ pub struct EffectHandler<PData> {
     default_port_index: u16,
     /// Mapping from port name to stable output port index.
     port_indices: HashMap<PortName, u16>,
-    /// Sender metrics handles indexed by output port index, for produced outcome recording.
-    output_channel_sender_metrics: Vec<Option<SharedChannelSenderMetricsHandle>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -159,17 +145,12 @@ impl<PData> EffectHandler<PData> {
             (None, 0)
         };
 
-        // Build output channel sender metrics vec indexed by port index.
-        let output_channel_sender_metrics =
-            Self::build_output_channel_sender_metrics(&msg_senders, &port_indices);
-
         EffectHandler {
             core,
             msg_senders,
             default_sender,
             default_port_index,
             port_indices,
-            output_channel_sender_metrics,
         }
     }
 
@@ -215,13 +196,6 @@ impl<PData> EffectHandler<PData> {
         self.port_indices.get(port).copied().unwrap_or(0)
     }
 
-    /// Returns a clone of the output channel sender metrics vec for use by ControlChannel.
-    pub(crate) fn output_channel_sender_metrics(
-        &self,
-    ) -> Vec<Option<SharedChannelSenderMetricsHandle>> {
-        self.output_channel_sender_metrics.clone()
-    }
-
     /// Build a stable port-name → u16 mapping by sorting names alphabetically.
     fn build_port_indices<V>(senders: &HashMap<PortName, V>) -> HashMap<PortName, u16> {
         let mut names: Vec<&PortName> = senders.keys().collect();
@@ -231,35 +205,6 @@ impl<PData> EffectHandler<PData> {
             .enumerate()
             .map(|(i, name)| (name.clone(), i as u16))
             .collect()
-    }
-
-    /// Build a Vec of sender metrics handles indexed by port index.
-    fn build_output_channel_sender_metrics(
-        senders: &HashMap<PortName, SharedSender<PData>>,
-        port_indices: &HashMap<PortName, u16>,
-    ) -> Vec<Option<SharedChannelSenderMetricsHandle>> {
-        let len = port_indices
-            .values()
-            .map(|i| *i as usize + 1)
-            .max()
-            .unwrap_or(0);
-        let mut vec = vec![None; len];
-        for (name, idx) in port_indices {
-            if let Some(sender) = senders.get(name) {
-                vec[*idx as usize] = sender.shared_sender_metrics_handle();
-            }
-        }
-        vec
-    }
-
-    /// Records a produced request outcome for the given output port.
-    #[inline]
-    pub fn record_produced(&self, port_index: u16, outcome: RequestOutcome) {
-        if let Some(Some(h)) = self.output_channel_sender_metrics.get(port_index as usize) {
-            if let Ok(mut state) = h.try_lock() {
-                state.record_produced(outcome);
-            }
-        }
     }
 
     /// Sends a message to the next node(s) in the pipeline.

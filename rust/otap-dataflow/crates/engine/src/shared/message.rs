@@ -6,8 +6,7 @@
 use crate::channel_metrics::{
     ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    OutputChannelSenderMetrics, SharedChannelReceiverMetricsHandle,
-    SharedChannelSenderMetricsHandle,
+    SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
 };
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_telemetry::metrics::MetricSet;
@@ -79,16 +78,6 @@ impl<T> SharedSender<T> {
         let mut sender = Self::mpmc(sender);
         sender.metrics = Some(handle);
         sender
-    }
-
-    /// Returns a clone of the sender metrics handle, if present.
-    pub(crate) fn sender_metrics_handle(&self) -> Option<OutputChannelSenderMetrics> {
-        self.metrics.clone().map(OutputChannelSenderMetrics::Shared)
-    }
-
-    /// Returns a clone of the shared sender metrics handle directly (Send-safe).
-    pub(crate) fn shared_sender_metrics_handle(&self) -> Option<SharedChannelSenderMetricsHandle> {
-        self.metrics.clone()
     }
 
     pub(crate) fn into_mpsc(self) -> Result<tokio::sync::mpsc::Sender<T>, Self> {
@@ -222,11 +211,6 @@ impl<T> SharedReceiver<T> {
                 metrics,
             }),
         }
-    }
-
-    /// Returns a clone of the receiver metrics handle, if present.
-    pub(crate) fn receiver_metrics_handle(&self) -> Option<SharedChannelReceiverMetricsHandle> {
-        self.metrics.clone()
     }
 
     /// Receives a message from the channel.
