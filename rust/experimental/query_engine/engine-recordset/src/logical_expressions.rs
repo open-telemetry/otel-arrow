@@ -88,19 +88,37 @@ pub fn execute_logical_expression_with_options<'a, TRecord: Record>(
 
             Value::compare_values(g.get_query_location(), &left.to_value(), &right.to_value())? >= 0
         }
-        LogicalExpression::Not(n) => {
-            !execute_logical_expression(execution_context, n.get_inner_expression())?
-        }
+        LogicalExpression::Not(n) => !execute_logical_expression_with_options(
+            execution_context,
+            n.get_inner_expression(),
+            selection_options,
+        )?,
         LogicalExpression::And(a) => {
-            match execute_logical_expression(execution_context, a.get_left())? {
+            match execute_logical_expression_with_options(
+                execution_context,
+                a.get_left(),
+                selection_options.clone(),
+            )? {
                 false => false,
-                true => execute_logical_expression(execution_context, a.get_right())?,
+                true => execute_logical_expression_with_options(
+                    execution_context,
+                    a.get_right(),
+                    selection_options,
+                )?,
             }
         }
         LogicalExpression::Or(o) => {
-            match execute_logical_expression(execution_context, o.get_left())? {
+            match execute_logical_expression_with_options(
+                execution_context,
+                o.get_left(),
+                selection_options.clone(),
+            )? {
                 true => true,
-                false => execute_logical_expression(execution_context, o.get_right())?,
+                false => execute_logical_expression_with_options(
+                    execution_context,
+                    o.get_right(),
+                    selection_options,
+                )?,
             }
         }
         LogicalExpression::Contains(c) => {

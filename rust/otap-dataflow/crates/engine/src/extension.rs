@@ -497,12 +497,9 @@ mod tests {
             _effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, crate::error::Error> {
             loop {
-                match msg_chan.recv().await? {
-                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                        self.counter.increment_shutdown();
-                        break;
-                    }
-                    _ => {}
+                if let Message::Control(NodeControlMsg::Shutdown { .. }) = msg_chan.recv().await? {
+                    self.counter.increment_shutdown();
+                    break;
                 }
             }
             Ok(TerminalState::default())

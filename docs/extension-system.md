@@ -2,8 +2,8 @@
 
 This document describes the extension system architecture for the OTAP dataflow
 engine. Extensions are standalone components (configured as a sibling to
-`nodes`, not as a node) that provide shared capabilities — such as
-authentication, service discovery, or health checking — to other pipeline
+`nodes`, not as a node) that provide shared capabilities -- such as
+authentication, service discovery, or health checking -- to other pipeline
 components.
 
 ## Motivation
@@ -25,26 +25,26 @@ well-defined traits through a type-safe registry.
 ## Architecture Overview
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                     Pipeline Engine                         │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │  Extension A  │  │  Extension B  │  │     ...      │      │
-│  │  (auth)       │  │  (discovery)  │  │              │      │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────┘      │
-│         │                 │                                  │
-│         ▼                 ▼                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              ExtensionRegistry                       │    │
-│  │  get::<dyn BearerTokenProvider>("auth") → Box<dyn T> │    │
-│  └─────────────────────┬───────────────────────────────┘    │
-│                        │                                     │
-│         ┌──────────────┴──────────────┐                      │
-│         ▼                             ▼                      │
-│  ┌──────────┐                  ┌──────────┐                │
-│  │ Receiver │                  │ Exporter │                │
-│  └──────────┘                  └──────────┘                │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                     Pipeline Engine                         |
+|                                                             |
+|  +--------------+  +--------------+  +--------------+      |
+|  |  Extension A  |  |  Extension B  |  |     ...      |      |
+|  |  (auth)       |  |  (discovery)  |  |              |      |
+|  +------+-------+  +------+-------+  +--------------+      |
+|         |                 |                                  |
+|         v                 v                                  |
+|  +-----------------------------------------------------+    |
+|  |              ExtensionRegistry                       |    |
+|  |  get::<dyn BearerTokenProvider>("auth") -> Box<dyn T> |    |
+|  +---------------------+-------------------------------+    |
+|                        |                                     |
+|         +--------------+--------------+                      |
+|         v                             v                      |
+|  +----------+                  +----------+                |
+|  | Receiver |                  | Exporter |                |
+|  +----------+                  +----------+                |
++-------------------------------------------------------------+
 ```
 
 ### Key Design Decisions
@@ -79,11 +79,11 @@ well-defined traits through a type-safe registry.
 The lifecycle trait every extension implements. Two variants exist, following
 the same pattern as receivers and exporters:
 
-**Local variant** — `engine/src/local/extension.rs`:
+**Local variant** -- `engine/src/local/extension.rs`:
 
 ```rust
 #[async_trait(?Send)]
-pub trait Extension<PData>: Send {
+pub trait Extension<PData> {
     async fn start(
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
@@ -96,7 +96,7 @@ pub trait Extension<PData>: Send {
 }
 ```
 
-**Shared variant** — `engine/src/shared/extension.rs`:
+**Shared variant** -- `engine/src/shared/extension.rs`:
 
 ```rust
 #[async_trait]
@@ -185,10 +185,10 @@ trait types.
 Convenience macro with two forms:
 
 ```rust
-// Convenience form — inside impl Extension<PData>:
+// Convenience form -- inside impl Extension<PData>:
 otap_df_engine::extension_traits!(BearerTokenProvider);
 
-// Explicit form — returns Vec<TraitRegistration>:
+// Explicit form -- returns Vec<TraitRegistration>:
 fn extension_traits(&self) -> Vec<TraitRegistration> {
     extension_traits!(self => BearerTokenProvider)
 }
@@ -218,52 +218,54 @@ pub trait BearerTokenProvider: Send {
 - `get_token()` returns a `BearerToken` (wrapping a `Secret` value and
   UNIX-timestamp expiry)
 - `subscribe_token_refresh()` returns a `tokio::sync::watch::Receiver` for
-  reactive notification when tokens are refreshed — useful for updating HTTP
+  reactive notification when tokens are refreshed -- useful for updating HTTP
   headers without polling
 
 ## Extension Writer Contract
 
 Extensions that publish traits must satisfy:
 
-| Requirement               | Reason                                          |
-|---------------------------|--------------------------------------------------|
-| `Clone`                   | Registry stores clones; `get()` returns clones  |
-| `Send`                    | Registry is `Send`; extensions may cross threads |
-| `'static`                 | Required for `Any`-based type erasure            |
-| Shared state via `Arc`    | Clones must observe the same state               |
+| Requirement            | Reason                                           |
+|------------------------|--------------------------------------------------|
+| `Clone`                | Registry stores clones; `get()` returns clones   |
+| `Send`                 | Registry is `Send`; extensions may cross threads |
+| `'static`              | Required for `Any`-based type erasure            |
+| Shared state via `Arc` | Clones must observe the same state               |
 
-Pure background-task extensions (no published traits) only need `Send`.
+Pure background-task extensions (no published traits) have no special
+requirements beyond implementing the `Extension<PData>` trait. Local
+extensions can even use `!Send` futures.
 
 ## Pipeline Lifecycle
 
 ```text
 1. Config parsing
-   ├─ Extensions parsed from the `extensions` section (sibling to `nodes`)
-   ├─ NodeKind::Extension recognized in node_urn.rs
-   ├─ Extensions excluded from PData wiring (no connections)
-   └─ Placing an extension URN in `nodes` is rejected with an error
+   +- Extensions parsed from the `extensions` section (sibling to `nodes`)
+   +- NodeKind::Extension recognized in node_urn.rs
+   +- Extensions excluded from PData wiring (no connections)
+   +- Placing an extension URN in `nodes` is rejected with an error
 
 2. Pipeline build (PipelineFactory)
-   ├─ Allocate node IDs for data-path nodes, then for extensions
-   ├─ Create data-path runtime nodes (receivers, processors, exporters)
-   ├─ create_extension() — factory lookup by URN, config parsing
-   ├─ ExtensionWrapper::local() / ::shared() — control channel setup
-   ├─ register_traits() — collect TraitRegistration, insert into ExtensionRegistry
-   └─ build_node_wrapper() — telemetry, channel metrics
+   +- Allocate node IDs for data-path nodes, then for extensions
+   +- Create data-path runtime nodes (receivers, processors, exporters)
+   +- create_extension() -- factory lookup by URN, config parsing
+   +- ExtensionWrapper::local() / ::shared() -- control channel setup
+   +- register_traits() -- collect TraitRegistration, insert into ExtensionRegistry
+   +- build_node_wrapper() -- telemetry, channel metrics
 
 3. Pipeline start (RuntimePipeline::run)
-   ├─ Spawn extension tasks FIRST (FuturesUnordered)
-   ├─ Spawn exporter tasks (with extension_registry.clone())
-   ├─ Spawn processor tasks
-   └─ Spawn receiver tasks (with extension_registry.clone())
+   +- Spawn extension tasks FIRST (FuturesUnordered)
+   +- Spawn exporter tasks (with extension_registry.clone())
+   +- Spawn processor tasks
+   +- Spawn receiver tasks (with extension_registry.clone())
 
 4. Steady state
-   ├─ Extensions run their event loops (e.g., token refresh)
-   ├─ Data-path components use registry lookups as needed
-   └─ Control messages flow normally (shutdown, timer, config)
+   +- Extensions run their event loops (e.g., token refresh)
+   +- Data-path components use registry lookups as needed
+   +- Control messages flow normally (shutdown, timer, config)
 
 5. Shutdown
-   └─ Extensions receive Shutdown control message and terminate
+   +- Extensions receive Shutdown control message and terminate
 ```
 
 ## Concrete Implementation: Azure Identity Auth Extension
@@ -297,9 +299,9 @@ pub struct AzureIdentityAuthExtension {
 
 It implements both:
 
-- **`Extension<OtapPdata>`** — drives the proactive token refresh loop via
+- **`Extension<OtapPdata>`** -- drives the proactive token refresh loop via
   `tokio::select!`, broadcasting new tokens to all subscribers
-- **`BearerTokenProvider`** — allows consumers to call `get_token()` or
+- **`BearerTokenProvider`** -- allows consumers to call `get_token()` or
   `subscribe_token_refresh()`
 
 ### Consumer Integration (Azure Monitor Exporter)
@@ -349,10 +351,12 @@ nodes:
 
 1. Create the trait file in `engine/src/extension/` (e.g., `health_check.rs`)
 2. In that file, add self-registering sealed impls:
+
    ```rust
    impl super::registry::private::Sealed for dyn HealthCheck {}
    impl super::registry::ExtensionTrait for dyn HealthCheck {}
    ```
+
 3. Add `pub mod health_check;` in `engine/src/extension.rs`
 4. Extension implementors use `extension_traits!(HealthCheck)` in their
    `impl Extension<PData>` block
@@ -368,7 +372,7 @@ nodes:
 ## Files Changed in This PR
 
 | File | Change |
-|------|--------|
+| ---- | ------ |
 | `engine/src/extension.rs` | `ExtensionWrapper` enum (Local/Shared), `pub mod` declarations, `Node` impl, telemetry integration |
 | `engine/src/extension/registry.rs` | `ExtensionRegistry`, `TraitRegistration`, `extension_traits!` macro, sealed `ExtensionTrait` + `Error` type |
 | `engine/src/extension/bearer_token_provider.rs` | `BearerTokenProvider` trait, `BearerToken`, `Secret`, self-registering sealed impls |
@@ -387,6 +391,6 @@ nodes:
 | `config/src/node.rs` | `NodeKind::Extension` variant |
 | `config/src/node_urn.rs` | Parse/validate `extension` kind in URNs |
 | `config/src/pipeline.rs` | Sibling `extensions` section in `PipelineConfig`, excluded from dead-node pruning |
-| `contrib-nodes/src/extensions/` | New — `azure_identity_auth_extension` module |
+| `contrib-nodes/src/extensions/` | New -- `azure_identity_auth_extension` module |
 | `contrib-nodes/src/exporters/azure_monitor_exporter/` | Auth extracted to extension; `config.auth` is now a `String` name |
 | All existing exporters/receivers | `extension_registry` param added to `start()` |

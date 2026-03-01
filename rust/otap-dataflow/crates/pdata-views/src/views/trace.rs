@@ -21,9 +21,10 @@
 //! ```
 
 use crate::views::{
-    common::{AttributeView, InstrumentationScopeView, SpanId, Str, TraceId},
+    common::{AttributeView, InstrumentationScopeView, Str},
     resource::ResourceView,
 };
+use crate::{SpanId, TraceId};
 
 /// View for top level TracesData
 pub trait TracesView {

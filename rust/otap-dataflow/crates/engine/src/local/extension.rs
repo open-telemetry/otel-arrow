@@ -74,7 +74,7 @@ use std::time::Duration;
 /// }
 /// ```
 #[async_trait(?Send)]
-pub trait Extension<PData>: Send {
+pub trait Extension<PData> {
     /// Starts the extension.
     ///
     /// The pipeline engine calls this to start the extension in a dedicated task.
@@ -88,7 +88,7 @@ pub trait Extension<PData>: Send {
     /// # Parameters
     ///
     /// - `msg_chan`: A channel to receive control messages. Extensions do not
-    ///   receive PData messages — only control messages (shutdown, timer, config).
+    ///   receive PData messages -- only control messages (shutdown, timer, config).
     /// - `effect_handler`: A handler to perform side effects such as
     ///   timers and info logging.
     ///
