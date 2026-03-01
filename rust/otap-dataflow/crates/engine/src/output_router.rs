@@ -26,27 +26,30 @@ pub(crate) trait OutputSend: Clone {
     /// The data type carried by this sender.
     type Data;
     /// Asynchronously send a message.
-    fn send(&self, msg: Self::Data) -> impl Future<Output = Result<(), SendError<Self::Data>>>;
+    fn output_send(
+        &self,
+        msg: Self::Data,
+    ) -> impl Future<Output = Result<(), SendError<Self::Data>>>;
     /// Try to send without blocking.
-    fn try_send(&self, msg: Self::Data) -> Result<(), SendError<Self::Data>>;
+    fn try_output_send(&self, msg: Self::Data) -> Result<(), SendError<Self::Data>>;
 }
 
 impl<T> OutputSend for crate::message::Sender<T> {
     type Data = T;
-    async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+    async fn output_send(&self, msg: T) -> Result<(), SendError<T>> {
         self.send(msg).await
     }
-    fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+    fn try_output_send(&self, msg: T) -> Result<(), SendError<T>> {
         self.try_send(msg)
     }
 }
 
 impl<T> OutputSend for crate::shared::message::SharedSender<T> {
     type Data = T;
-    async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+    async fn output_send(&self, msg: T) -> Result<(), SendError<T>> {
         self.send(msg).await
     }
-    fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+    fn try_output_send(&self, msg: T) -> Result<(), SendError<T>> {
         self.try_send(msg)
     }
 }
@@ -131,7 +134,7 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub async fn send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default_sender {
-            Some(sender) => sender.send(data).await.map_err(TypedError::ChannelSendError),
+            Some(sender) => sender.output_send(data).await.map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.node_id.clone(),
             })),
@@ -142,7 +145,7 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub fn try_send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default_sender {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
+            Some(sender) => sender.try_output_send(data).map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.node_id.clone(),
             })),
@@ -154,7 +157,7 @@ impl<S: OutputSend> OutputRouter<S> {
     pub async fn send_to<P: Into<PortName>>(&self, port: P, data: S::Data) -> Result<(), TypedError<S::Data>> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.send(data).await.map_err(TypedError::ChannelSendError),
+            Some(sender) => sender.output_send(data).await.map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.node_id.clone(),
                 port: port_name,
@@ -167,7 +170,7 @@ impl<S: OutputSend> OutputRouter<S> {
     pub fn try_send_to<P: Into<PortName>>(&self, port: P, data: S::Data) -> Result<(), TypedError<S::Data>> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
+            Some(sender) => sender.try_output_send(data).map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.node_id.clone(),
                 port: port_name,
