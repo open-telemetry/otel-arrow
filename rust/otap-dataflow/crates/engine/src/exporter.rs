@@ -8,7 +8,7 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::Interests;
-use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
+use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
@@ -272,7 +272,6 @@ impl<PData> ExporterWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
-        input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -297,11 +296,6 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                if let Some(InputChannelReceiverMetrics::Local(handle)) =
-                    input_channel_receiver_metrics
-                {
-                    effect_handler.set_input_channel_receiver_metrics(handle);
-                }
                 let message_channel = message::MessageChannel::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
@@ -332,11 +326,6 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                if let Some(InputChannelReceiverMetrics::Shared(handle)) =
-                    input_channel_receiver_metrics
-                {
-                    effect_handler.set_input_channel_receiver_metrics(handle);
-                }
                 let message_channel = shared::MessageChannel::new(
                     control_receiver,
                     pdata_rx,

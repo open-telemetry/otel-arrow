@@ -9,7 +9,7 @@
 
 use crate::Interests;
 use crate::ReceivedAtNode;
-use crate::channel_metrics::{ChannelMetricsRegistry, InputChannelReceiverMetrics};
+use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
@@ -230,37 +230,6 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Extract output-channel sender metrics handles indexed by sorted port name.
-    /// The returned Vec is indexed by the same `output_port_index` used in `CallData`.
-    pub(crate) fn output_sender_metrics_handles(
-        &self,
-    ) -> Vec<Option<crate::channel_metrics::OutputChannelSenderMetrics>> {
-        match self {
-            ProcessorWrapper::Local { pdata_senders, .. } => {
-                let mut names: Vec<&PortName> = pdata_senders.keys().collect();
-                names.sort();
-                let mut vec = vec![None; names.len()];
-                for (i, name) in names.into_iter().enumerate() {
-                    if let Some(sender) = pdata_senders.get(name) {
-                        vec[i] = sender.sender_metrics_handle();
-                    }
-                }
-                vec
-            }
-            ProcessorWrapper::Shared { pdata_senders, .. } => {
-                let mut names: Vec<&PortName> = pdata_senders.keys().collect();
-                names.sort();
-                let mut vec = vec![None; names.len()];
-                for (i, name) in names.into_iter().enumerate() {
-                    if let Some(sender) = pdata_senders.get(name) {
-                        vec[i] = sender.sender_metrics_handle();
-                    }
-                }
-                vec
-            }
-        }
-    }
-
     pub(crate) fn with_control_channel_metrics(
         self,
         pipeline_ctx: &PipelineContext,
@@ -430,7 +399,6 @@ impl<PData> ProcessorWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
-        input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -449,11 +417,6 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                if let Some(InputChannelReceiverMetrics::Local(handle)) =
-                    input_channel_receiver_metrics
-                {
-                    effect_handler.set_input_channel_receiver_metrics(handle);
-                }
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -482,11 +445,6 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                if let Some(InputChannelReceiverMetrics::Shared(handle)) =
-                    input_channel_receiver_metrics
-                {
-                    effect_handler.set_input_channel_receiver_metrics(handle);
-                }
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler

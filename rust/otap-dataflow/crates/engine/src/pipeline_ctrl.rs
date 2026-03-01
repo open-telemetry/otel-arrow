@@ -11,10 +11,10 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::channel_metrics::{InputChannelReceiverMetrics, OutputChannelSenderMetrics};
+use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
-    AckMsg, ControlSenders, MetricsStop, NackMsg, NodeControlMsg, PipelineControlMsg,
+    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg,
     PipelineCtrlMsgReceiver, nanos_since_epoch,
 };
 use crate::error::Error;
@@ -22,7 +22,9 @@ use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
 use std::cmp::Reverse;
@@ -176,15 +178,13 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 
 /// Per-node metrics handles for recording consumed/produced outcomes.
 ///
-/// The pipeline controller uses these to process `MetricsStop` entries
-/// collected during context unwinding, recording metrics on behalf of
-/// all pipeline nodes (including those that did not subscribe to
-/// ack/nack delivery).
+/// Owned exclusively by the pipeline controller — no `Arc` or `Mutex`
+/// is needed because only the controller records ack/nack metrics.
 pub(crate) struct NodeMetricHandles {
-    /// Input channel receiver metrics (for consumed outcomes + duration).
-    pub input: Option<InputChannelReceiverMetrics>,
-    /// Output channel sender metrics indexed by output port (for produced outcomes).
-    pub outputs: Vec<Option<OutputChannelSenderMetrics>>,
+    /// Consumed-request metrics for the node's input channel.
+    pub input: Option<MetricSet<ConsumedMetrics>>,
+    /// Produced-request metrics indexed by output port.
+    pub outputs: Vec<Option<MetricSet<ProducedMetrics>>>,
 }
 
 /// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
@@ -483,6 +483,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                             }
                         }
+                        if let Err(err) = self.report_node_metrics() {
+                            otel_warn!("node.metrics.reporting.fail", error = err.to_string());
+                        }
                     }
 
                     // Deliver all accumulated control messages (best-effort)
@@ -495,35 +498,60 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         Ok(())
     }
 
-    /// Record metrics for all `MetricsStop` entries collected during
-    /// context unwinding.  For each stop, the controller records
-    /// consumed metrics (via `CONSUMER_METRICS`) and produced metrics
-    /// (via `PRODUCER_METRICS`) using the per-node handles.
-    fn process_metrics_stops(&self, stops: &[MetricsStop], outcome: RequestOutcome) {
-        for stop in stops {
-            if let Some(Some(handles)) = self.node_metric_handles.get(stop.node_id) {
-                // Record consumed metrics on the node's input channel.
-                if stop.interests.contains(Interests::CONSUMER_METRICS) {
-                    if let Some(input) = &handles.input {
-                        input.record_consumed(outcome);
-                        if stop.interests.contains(Interests::ENTRY_TIMESTAMP)
-                            && stop.calldata.time_ns > 0
-                        {
-                            let duration_ns =
-                                nanos_since_epoch().saturating_sub(stop.calldata.time_ns);
-                            input.record_consumed_duration(duration_ns);
-                        }
+    /// Record consumed/produced metrics for a single unwound frame.
+    #[inline]
+    fn record_frame_metrics(
+        &mut self,
+        node_id: usize,
+        interests: Interests,
+        calldata: &crate::control::CallData,
+        outcome: RequestOutcome,
+    ) {
+        if let Some(Some(handles)) = self.node_metric_handles.get_mut(node_id) {
+            // Record consumed metrics on the node's input channel.
+            if interests.contains(Interests::CONSUMER_METRICS) {
+                if let Some(input) = &mut handles.input {
+                    match outcome {
+                        RequestOutcome::Success => input.consumed_success.inc(),
+                        RequestOutcome::Failure => input.consumed_failure.inc(),
+                        RequestOutcome::Refused => input.consumed_refused.inc(),
+                    }
+                    if interests.contains(Interests::ENTRY_TIMESTAMP) && calldata.time_ns > 0 {
+                        let duration_ns =
+                            nanos_since_epoch().saturating_sub(calldata.time_ns);
+                        input.consumed_duration_ns.record(duration_ns as f64);
                     }
                 }
-                // Record produced metrics on the node's output channel.
-                if stop.interests.contains(Interests::PRODUCER_METRICS) {
-                    let port = stop.calldata.output_port_index as usize;
-                    if let Some(Some(output)) = handles.outputs.get(port) {
-                        output.record_produced(outcome);
+            }
+            // Record produced metrics on the node's output channel.
+            if interests.contains(Interests::PRODUCER_METRICS) {
+                let port = calldata.output_port_index as usize;
+                if let Some(Some(output)) = handles.outputs.get_mut(port) {
+                    match outcome {
+                        RequestOutcome::Success => output.produced_success.inc(),
+                        RequestOutcome::Failure => output.produced_failure.inc(),
+                        RequestOutcome::Refused => output.produced_refused.inc(),
                     }
                 }
             }
         }
+    }
+
+    /// Report all per-node consumed/produced metric sets.
+    fn report_node_metrics(&mut self) -> Result<(), TelemetryError> {
+        for entry in &mut self.node_metric_handles {
+            if let Some(handles) = entry {
+                if let Some(input) = &mut handles.input {
+                    self.metrics_reporter.report(input)?;
+                }
+                for output in &mut handles.outputs {
+                    if let Some(output) = output {
+                        self.metrics_reporter.report(output)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
@@ -558,7 +586,14 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
             match ack.accepted.pop_frame() {
                 None => return, // no more subscribers
                 Some(frame) => {
-                    // TODO: record CONSUMER_METRICS / PRODUCER_METRICS here
+                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+                        self.record_frame_metrics(
+                            frame.node_id,
+                            frame.interests,
+                            &frame.calldata,
+                            RequestOutcome::Success,
+                        );
+                    }
                     if frame.interests.contains(Interests::ACKS) {
                         if !frame.interests.contains(Interests::RETURN_DATA) {
                             ack.accepted.drop_payload();
@@ -575,11 +610,23 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     /// Unwind the context stack for a nack, recording metrics at each
     /// intermediate frame, then deliver to the first subscriber with NACKS.
     async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
+        let outcome = if nack.permanent {
+            RequestOutcome::Refused
+        } else {
+            RequestOutcome::Failure
+        };
         loop {
             match nack.refused.pop_frame() {
                 None => return, // no more subscribers
                 Some(frame) => {
-                    // TODO: record CONSUMER_METRICS / PRODUCER_METRICS here
+                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+                        self.record_frame_metrics(
+                            frame.node_id,
+                            frame.interests,
+                            &frame.calldata,
+                            outcome,
+                        );
+                    }
                     if frame.interests.contains(Interests::NACKS) {
                         if !frame.interests.contains(Interests::RETURN_DATA) {
                             nack.refused.drop_payload();

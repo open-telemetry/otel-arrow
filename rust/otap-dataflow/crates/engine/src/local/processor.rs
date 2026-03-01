@@ -33,9 +33,6 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::channel_metrics::{
-    LocalChannelReceiverMetricsHandle, OutputChannelSenderMetrics, RequestOutcome,
-};
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -106,10 +103,6 @@ pub struct EffectHandler<PData> {
     default_port_index: u16,
     /// Mapping from port name to stable output port index.
     port_indices: HashMap<PortName, u16>,
-    /// Channel receiver metrics handle for recording consumed.duration_ns.
-    input_channel_receiver_metrics: Option<LocalChannelReceiverMetricsHandle>,
-    /// Sender metrics handles indexed by output port index, for produced outcome recording.
-    output_channel_sender_metrics: Vec<Option<OutputChannelSenderMetrics>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -139,18 +132,12 @@ impl<PData> EffectHandler<PData> {
             (None, 0)
         };
 
-        // Build output channel sender metrics vec indexed by port index.
-        let output_channel_sender_metrics =
-            Self::build_output_channel_sender_metrics(&msg_senders, &port_indices);
-
         EffectHandler {
             core,
             msg_senders,
             default_sender,
             default_port_index,
             port_indices,
-            input_channel_receiver_metrics: None,
-            output_channel_sender_metrics,
         }
     }
 
@@ -176,34 +163,6 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
-    }
-
-    /// Records consumed duration (ns) to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed_duration(&self, duration_ns: u64) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_borrow_mut() {
-                state.record_consumed_duration(duration_ns);
-            }
-        }
-    }
-
-    /// Records a consumed request outcome to the input channel's receiver metrics.
-    #[inline]
-    pub fn record_consumed(&self, outcome: RequestOutcome) {
-        if let Some(ref h) = self.input_channel_receiver_metrics {
-            if let Ok(mut state) = h.try_borrow_mut() {
-                state.record_consumed(outcome);
-            }
-        }
-    }
-
-    /// Sets the input channel receiver metrics handle.
-    pub(crate) fn set_input_channel_receiver_metrics(
-        &mut self,
-        handle: LocalChannelReceiverMetricsHandle,
-    ) {
-        self.input_channel_receiver_metrics = Some(handle);
     }
 
     /// Returns the list of connected output ports for this processor.
@@ -233,33 +192,6 @@ impl<PData> EffectHandler<PData> {
             .enumerate()
             .map(|(i, name)| (name.clone(), i as u16))
             .collect()
-    }
-
-    /// Build a Vec of sender metrics handles indexed by port index.
-    fn build_output_channel_sender_metrics(
-        senders: &HashMap<PortName, Sender<PData>>,
-        port_indices: &HashMap<PortName, u16>,
-    ) -> Vec<Option<OutputChannelSenderMetrics>> {
-        let len = port_indices
-            .values()
-            .map(|i| *i as usize + 1)
-            .max()
-            .unwrap_or(0);
-        let mut vec = vec![None; len];
-        for (name, idx) in port_indices {
-            if let Some(sender) = senders.get(name) {
-                vec[*idx as usize] = sender.sender_metrics_handle();
-            }
-        }
-        vec
-    }
-
-    /// Records a produced request outcome for the given output port.
-    #[inline]
-    pub fn record_produced(&self, port_index: u16, outcome: RequestOutcome) {
-        if let Some(Some(m)) = self.output_channel_sender_metrics.get(port_index as usize) {
-            m.record_produced(outcome);
-        }
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.

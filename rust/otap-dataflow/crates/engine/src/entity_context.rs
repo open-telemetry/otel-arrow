@@ -5,7 +5,6 @@
 //! to associate metrics and events with the correct pipeline entity, node entity or the correct
 //! input/output channel entities.
 
-use crate::InputChannelReceiverMetrics;
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
@@ -187,7 +186,6 @@ struct NodeTelemetryState {
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
-    input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     cleaned: bool,
 }
 
@@ -202,7 +200,6 @@ impl NodeTelemetryHandle {
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
-                input_channel_receiver_metrics: None,
                 cleaned: false,
             })),
         }
@@ -228,16 +225,6 @@ impl NodeTelemetryHandle {
     /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
-    }
-
-    /// Store the input channel's receiver metrics handle for task-local access.
-    pub(crate) fn set_input_channel_receiver_metrics(&self, handle: InputChannelReceiverMetrics) {
-        self.state.borrow_mut().input_channel_receiver_metrics = Some(handle);
-    }
-
-    /// Return the input channel receiver metrics handle, if set.
-    pub(crate) fn input_channel_receiver_metrics(&self) -> Option<InputChannelReceiverMetrics> {
-        self.state.borrow().input_channel_receiver_metrics.clone()
     }
 
     /// Associate the inbound channel entity key with this node for task-local scoping.
