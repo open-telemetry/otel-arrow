@@ -228,6 +228,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();

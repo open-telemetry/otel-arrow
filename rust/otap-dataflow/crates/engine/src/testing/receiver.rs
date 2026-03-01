@@ -11,6 +11,7 @@ use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
+use crate::extension::registry::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
@@ -281,7 +282,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             let terminal_state = self
                 .receiver
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    ExtensionRegistry::new(),
+                )
                 .await
                 .expect("Receiver event loop failed");
 

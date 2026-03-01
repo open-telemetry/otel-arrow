@@ -219,6 +219,9 @@ experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib extensions (opt-in) - now in contrib-nodes
+contrib-extensions = ["otap-df-contrib-nodes/contrib-extensions"]
+azure-identity-auth-extension = ["otap-df-contrib-nodes/azure-identity-auth-extension"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
@@ -281,6 +284,14 @@ module_name_repetitions = "allow"
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 missing_crate_level_docs = "deny"
+
+# Optimize third-party dependencies even in debug builds.
+# Without this, pure-Rust implementations of compression (miniz_oxide/flate2),
+# serialization (serde_json), and protobuf decoding (prost) run at opt-level 0,
+# which can be 100-500x slower than optimized code — making debug builds
+# unusable for any real workload testing.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling

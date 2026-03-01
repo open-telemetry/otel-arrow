@@ -106,6 +106,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         let internal = self.internal_telemetry.clone();
         let logs_receiver = internal.logs_receiver;

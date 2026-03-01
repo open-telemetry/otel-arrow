@@ -53,6 +53,14 @@ contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
 ]
+contrib-extensions = [
+    "azure-identity-auth-extension",
+]
+azure-identity-auth-extension = [
+    "dep:azure_identity",
+    "dep:azure_core",
+    "dep:rand",
+]
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",

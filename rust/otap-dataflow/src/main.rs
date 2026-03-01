@@ -195,6 +195,17 @@ fn validate_pipeline_components(
                 .get_exporter_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::Extension => {
+                return Err(std::io::Error::other(format!(
+                    "Extension `{}` was placed in `nodes` but belongs in the `extensions` section \
+                     (pipeline_group={} pipeline={} node={})",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref()
+                ))
+                .into());
+            }
         };
 
         match validate_config_fn {
@@ -203,6 +214,7 @@ fn validate_pipeline_components(
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
+                    NodeKind::Extension => unreachable!("rejected above"),
                 };
                 return Err(std::io::Error::other(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
@@ -222,6 +234,40 @@ fn validate_pipeline_components(
                         pipeline_group_id.as_ref(),
                         pipeline_id.as_ref(),
                         node_id.as_ref(),
+                        e
+                    ))
+                })?;
+            }
+        }
+    }
+
+    // Validate extensions from the dedicated `extensions` section.
+    for (ext_id, ext_cfg) in pipeline_cfg.extension_iter() {
+        let urn_str = ext_cfg.r#type.as_str();
+        let validate_config_fn = OTAP_PIPELINE_FACTORY
+            .get_extension_factory_map()
+            .get(urn_str)
+            .map(|f| f.validate_config);
+
+        match validate_config_fn {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown extension component `{}` in pipeline_group={} pipeline={} extension={}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    ext_id.as_ref()
+                ))
+                .into());
+            }
+            Some(validate_fn) => {
+                validate_fn(&ext_cfg.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for extension `{}` in pipeline_group={} pipeline={} extension={}: {}",
+                        urn_str,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        ext_id.as_ref(),
                         e
                     ))
                 })?;

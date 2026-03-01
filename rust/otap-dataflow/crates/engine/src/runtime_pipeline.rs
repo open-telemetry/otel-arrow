@@ -10,6 +10,8 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::extension::ExtensionWrapper;
+use crate::extension::registry::ExtensionRegistry;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
@@ -36,6 +38,10 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
+    /// Extension runtime nodes.
+    extensions: Vec<ExtensionWrapper<PData>>,
+    /// Extension registry for passing to receivers and exporters at start.
+    extension_registry: ExtensionRegistry,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
@@ -73,6 +79,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
+        extensions: Vec<ExtensionWrapper<PData>>,
+        extension_registry: ExtensionRegistry,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -81,6 +89,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
+            extension_registry,
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
@@ -94,7 +104,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Returns the number of nodes in the pipeline.
     #[must_use]
     pub const fn node_count(&self) -> usize {
-        self.receivers.len() + self.processors.len() + self.exporters.len()
+        self.receivers.len() + self.processors.len() + self.exporters.len() + self.extensions.len()
     }
 
     /// Returns a reference to the pipeline configuration.
@@ -121,6 +131,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
+            extension_registry,
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
@@ -135,6 +147,45 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
+
+        // Spawn extension tasks first so they are ready before other components.
+        for extension in extensions {
+            let mut extension = extension;
+            let node_id = extension.node_id();
+            control_senders.register(
+                node_id.clone(),
+                NodeType::Extension,
+                extension.control_sender(),
+            );
+            let telemetry_guard = extension.take_telemetry_guard();
+            let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
+            let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
+            let fut = async move {
+                let result = extension
+                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    });
+                drop(telemetry_guard);
+                result
+            };
+            if let Some(handle) = telemetry_handle {
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else if let Some(key) = node_entity_key {
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else {
+                futures.push(local_tasks.spawn_local(fut));
+            }
+        }
 
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
@@ -151,9 +202,14 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = exporter
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        effect_metrics_reporter,
+                        extension_registry,
+                    )
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -221,9 +277,14 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = receiver
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        effect_metrics_reporter,
+                        extension_registry,
+                    )
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -311,6 +372,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get(ndef.inner.index)
                 .map(|e| e as &dyn Node<PData>),
+            NodeType::Extension => self
+                .extensions
+                .get(ndef.inner.index)
+                .map(|e| e as &dyn Node<PData>),
         }
     }
 
@@ -332,6 +397,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .get_mut(ndef.inner.index)
                 .map(|p| p as &mut dyn NodeWithPDataSender<PData>),
             NodeType::Exporter => None,
+            NodeType::Extension => None,
         }
     }
 
@@ -353,6 +419,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get_mut(ndef.inner.index)
                 .map(|e| e as &mut dyn NodeWithPDataReceiver<PData>),
+            NodeType::Extension => None,
         }
     }
 
@@ -380,6 +447,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 }
                 NodeType::Exporter => {
                     self.exporters
+                        .get(ndef.inner.index)
+                        .expect("precomputed")
+                        .send_control_msg(ctrl_msg)
+                        .await
+                }
+                NodeType::Extension => {
+                    self.extensions
                         .get(ndef.inner.index)
                         .expect("precomputed")
                         .send_control_msg(ctrl_msg)

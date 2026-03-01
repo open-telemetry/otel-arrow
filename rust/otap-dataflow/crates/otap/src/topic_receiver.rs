@@ -101,6 +101,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         _effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match ctrl_msg_recv.recv().await {

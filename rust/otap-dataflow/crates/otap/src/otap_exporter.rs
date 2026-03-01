@@ -110,6 +110,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "exporter.start",
@@ -845,7 +846,13 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
+            _ = exporter
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                )
+                .await;
             Ok(())
         }
 

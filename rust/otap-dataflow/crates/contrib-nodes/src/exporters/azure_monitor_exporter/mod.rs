@@ -18,7 +18,6 @@ use std::sync::Arc;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 
-mod auth;
 mod client;
 mod config;
 mod error;

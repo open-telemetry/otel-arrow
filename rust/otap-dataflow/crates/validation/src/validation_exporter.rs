@@ -158,6 +158,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, EngineError> {
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))

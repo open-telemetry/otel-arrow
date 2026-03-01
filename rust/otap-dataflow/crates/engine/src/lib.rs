@@ -9,12 +9,13 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
+    extension::ExtensionWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -47,6 +48,7 @@ use std::{
 
 pub mod error;
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -195,6 +197,45 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
     }
 }
 
+/// A factory for creating extensions.
+///
+/// Extension factories are NOT generic over PData from the user's perspective,
+/// but the wrapper carries PData for control message compatibility.
+pub struct ExtensionFactory<PData> {
+    /// The name of the extension.
+    pub name: &'static str,
+    /// A function that creates a new extension instance.
+    pub create: fn(
+        pipeline: PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        extension_config: &ExtensionConfig,
+    ) -> Result<ExtensionWrapper<PData>, otap_df_config::error::Error>,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+}
+
+// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
+impl<PData> Clone for ExtensionFactory<PData> {
+    fn clone(&self) -> Self {
+        ExtensionFactory {
+            name: self.name,
+            create: self.create,
+            validate_config: self.validate_config,
+        }
+    }
+}
+
+impl<PData> NamedFactory for ExtensionFactory<PData> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
 /// Returns a map of factory names to factory instances.
 pub fn get_factory_map<T>(
     factory_map: &'static OnceLock<HashMap<&'static str, T>>,
@@ -319,15 +360,18 @@ pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
 
 /// A pipeline factory.
 ///
-/// This factory contains a registry of all the micro-factories for receivers, processors, and
-/// exporters, as well as the logic for creating pipelines based on a given configuration.
+/// This factory contains a registry of all the micro-factories for receivers, processors,
+/// exporters, and extensions, as well as the logic for creating pipelines based on a given
+/// configuration.
 pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory<PData>>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
+    extension_factories: &'static [ExtensionFactory<PData>],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -342,9 +386,31 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
             receiver_factories,
             processor_factories,
             exporter_factories,
+            extension_factories: &[],
+        }
+    }
+
+    /// Creates a new factory registry with the given factory slices, including extensions.
+    #[must_use]
+    pub const fn with_extensions(
+        receiver_factories: &'static [ReceiverFactory<PData>],
+        processor_factories: &'static [ProcessorFactory<PData>],
+        exporter_factories: &'static [ExporterFactory<PData>],
+        extension_factories: &'static [ExtensionFactory<PData>],
+    ) -> Self {
+        Self {
+            receiver_factory_map: OnceLock::new(),
+            processor_factory_map: OnceLock::new(),
+            exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
+            receiver_factories,
+            processor_factories,
+            exporter_factories,
+            extension_factories,
         }
     }
 
@@ -378,16 +444,28 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         })
     }
 
+    /// Gets the extension factory map, initializing it if necessary.
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory<PData>> {
+        self.extension_factory_map.get_or_init(|| {
+            self.extension_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExtensionFactory<PData>>>()
+        })
+    }
+
     /// Builds a runtime pipeline from the given pipeline configuration.
     ///
     /// Main phases:
-    /// 1) Create runtime nodes and register telemetry.
-    /// 2) Plan hyper edge wiring: resolve destinations, pick channel type (shared/local,
+    /// 1) Create runtime nodes (receivers, processors, exporters) and extensions,
+    ///    then register telemetry.
+    /// 2) Build the extension registry from trait registrations.
+    /// 3) Plan hyper-edge wiring: resolve destinations, pick channel type (shared/local,
     ///    MPSC/MPMC), create channel endpoints, and register channel metrics.
-    /// 3) Apply wiring: attach senders to source ports and receivers to destination nodes,
+    /// 4) Apply wiring: attach senders to source ports and receivers to destination nodes,
     ///    then publish collected channel metrics on the pipeline.
     ///
-    /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
+    /// [config] -> [nodes + extensions] -> [extension registry] -> [hyper-edges] -> [wiring plan] -> [pipeline]
     ///
     /// The `internal_telemetry` settings are injected into any receiver with the
     /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs
@@ -403,6 +481,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
+        let mut extensions = Vec::new();
         let mut build_state = BuildState::new();
 
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -457,6 +536,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut receiver_count = 0usize;
         let mut processor_count = 0usize;
         let mut exporter_count = 0usize;
+        let mut extension_count = 0usize;
         let mut node_ids: HashMap<NodeName, NodeId> = HashMap::new();
 
         for (name, node_config) in config.node_iter() {
@@ -476,6 +556,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     exporter_count += 1;
                     (NodeType::Exporter, pn)
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
@@ -483,6 +566,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
+            let _ = node_ids.insert(name.clone(), node_id);
+        }
+
+        // Allocate node IDs for extensions from the dedicated `extensions` section.
+        for (name, _ext_config) in config.extension_iter() {
+            let pn = PipeNode::new(extension_count);
+            extension_count += 1;
+            let node_id = build_state.next_node_id(name.clone(), NodeType::Extension, pn)?;
             let _ = node_ids.insert(name.clone(), node_id);
         }
 
@@ -574,11 +665,49 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     )?;
                     exporters.push(wrapper);
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    // Rejected in first pass — extensions must be in the `extensions` section.
+                    unreachable!("rejected in first pass");
+                }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
                 }
             }
+        }
+
+        // Create extension runtime nodes from the dedicated `extensions` section.
+        for (name, node_config) in config.extension_iter() {
+            let node_id = node_ids.get(name).expect("allocated in first pass").clone();
+            let base_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.r#type.clone(),
+                otap_df_config::node::NodeKind::Extension,
+                node_config.identity_attributes(),
+            );
+            let wrapper = self.build_node_wrapper(
+                &mut build_state,
+                &base_ctx,
+                NodeType::Extension,
+                node_id.clone(),
+                channel_metrics_enabled,
+                || {
+                    self.create_extension(
+                        &base_ctx,
+                        node_id.clone(),
+                        node_config.clone(),
+                        channel_capacity_policy.control.node,
+                    )
+                },
+            )?;
+            extensions.push(wrapper);
+        }
+
+        // Build extension registry from trait registrations.
+        let mut extension_registry = extension::registry::ExtensionRegistry::new();
+        for ext in &extensions {
+            let name = ext.node_id().name.as_ref().to_string();
+            ext.register_traits(&mut extension_registry, &name);
         }
 
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
@@ -592,6 +721,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
+            extension_registry,
             nodes,
             telemetry_policy,
         );
@@ -669,6 +800,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
+                }
+                otap_df_config::node::NodeKind::Extension => {
+                    // Extensions are in the `extensions` section and don't participate
+                    // in pdata wiring; skip if somehow encountered.
+                    continue;
                 }
             };
 
@@ -1381,6 +1517,63 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         Ok(exporter)
     }
+
+    /// Creates an extension node.
+    fn create_extension(
+        &self,
+        pipeline_ctx: &PipelineContext,
+        node_id: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+    ) -> Result<ExtensionWrapper<PData>, Error> {
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+        let name = node_id.name.clone();
+
+        otel_debug!(
+            "extension.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
+        // Validate plugin URN structure during registration
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+            node_config.r#type.as_ref(),
+            otap_df_config::node::NodeKind::Extension,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
+        let factory = self
+            .get_extension_factory_map()
+            .get(normalized.as_str())
+            .ok_or(Error::UnknownExtension {
+                plugin_urn: normalized,
+            })?;
+        let extension_config =
+            ExtensionConfig::with_control_channel_capacity(name.clone(), control_channel_capacity);
+        let create = factory.create;
+
+        let extension = create(
+            (*pipeline_ctx).clone(),
+            node_id.clone(),
+            node_config,
+            &extension_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
+        otel_debug!(
+            "extension.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
+        Ok(extension)
+    }
 }
 
 trait TelemetryWrapped: Sized {
@@ -1496,6 +1689,7 @@ impl<PData> BuildState<PData> {
                 NodeType::Receiver => Error::ReceiverAlreadyExists { receiver: node_id },
                 NodeType::Processor => Error::ProcessorAlreadyExists { processor: node_id },
                 NodeType::Exporter => Error::ExporterAlreadyExists { exporter: node_id },
+                NodeType::Extension => Error::ExtensionAlreadyExists { extension: node_id },
             });
         }
 
@@ -1529,7 +1723,9 @@ impl<PData> BuildState<PData> {
         let registration = self.registration(name)?;
         match registration.node_type {
             NodeType::Processor | NodeType::Exporter => Ok(registration.node_id.clone()),
-            NodeType::Receiver => Err(Error::UnknownNode { node: name.clone() }),
+            NodeType::Receiver | NodeType::Extension => {
+                Err(Error::UnknownNode { node: name.clone() })
+            }
         }
     }
 }

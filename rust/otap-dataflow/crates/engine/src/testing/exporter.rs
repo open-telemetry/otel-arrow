@@ -14,6 +14,7 @@ use crate::control::{
 };
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
+use crate::extension::registry::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataReceiver;
@@ -259,7 +260,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let metrics_collector = self.metrics_system.collector();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter_start,
+                    ExtensionRegistry::new(),
+                )
                 .await
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {

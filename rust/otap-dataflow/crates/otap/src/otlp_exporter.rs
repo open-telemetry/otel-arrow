@@ -119,6 +119,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otlp.exporter.grpc.start",
@@ -1093,7 +1094,11 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter,
+                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                )
                 .await
                 .map(|_| ())
         }
