@@ -440,6 +440,13 @@ pub enum Error {
         topic: TopicName,
     },
 
+    /// A topic reference could not be resolved in the current scope.
+    #[error("unknown topic `{topic}`")]
+    UnknownTopic {
+        /// The name of the topic that could not be found.
+        topic: TopicName,
+    },
+
     /// Acknowledgement is not enabled for this subscription.
     #[error("ack not enabled for this subscription")]
     AckNotEnabled,
@@ -510,6 +517,7 @@ impl Error {
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
+            Error::UnknownTopic { .. } => "UnknownTopic",
             Error::AckNotEnabled => "AckNotEnabled",
             Error::AckChannelFull => "AckChannelFull",
             Error::AckChannelClosed => "AckChannelClosed",

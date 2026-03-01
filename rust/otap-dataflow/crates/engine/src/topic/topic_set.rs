@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::error::Error;
 use crate::topic::handle::TopicHandle;
 use crate::topic::types::AckEvent;
 use otap_df_config::TopicName;
@@ -123,6 +124,14 @@ impl<T: Send + Sync + 'static> TopicSet<T> {
     pub fn get(&self, local_name: &str) -> Option<TopicHandle<T>> {
         let topics = self.inner.topics.read();
         topics.get(local_name).cloned()
+    }
+
+    /// Get a cloned handle for the given local name or return an explicit error.
+    pub fn get_required(&self, local_name: &TopicName) -> Result<TopicHandle<T>, Error> {
+        self.get(local_name.as_ref())
+            .ok_or_else(|| Error::UnknownTopic {
+                topic: local_name.clone(),
+            })
     }
 
     /// Check whether a topic with the given local name exists in this set.

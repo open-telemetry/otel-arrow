@@ -21,5 +21,6 @@ pub use handle::TopicHandle;
 pub use subscription::Subscription;
 pub use topic_set::TopicSet;
 pub use types::{
-    AckEvent, AckStatus, Envelope, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode,
+    TopicOptions,
 };

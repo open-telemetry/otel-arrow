@@ -26,9 +26,11 @@
 use crate::error::Error;
 use crate::topic::backend::InMemoryBackend;
 use crate::topic::types::{
-    AckEvent, AckStatus, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    AckEvent, AckStatus, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode,
+    TopicOptions,
 };
 use crate::topic::{TopicBroker, TopicSet};
+use otap_df_config::TopicName;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -1281,6 +1283,86 @@ async fn per_publisher_ack_broadcast_mode() {
 }
 
 // =========================================================================
+// Non-blocking publish
+// =========================================================================
+
+// try_publish reports DroppedOnFull for balanced queues without awaiting.
+#[tokio::test]
+async fn try_publish_balanced_only_reports_drop_on_full() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "nb-balanced",
+            TopicOptions::BalancedOnly { capacity: 1 },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let _sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        topic.try_publish(Arc::new(1)).unwrap(),
+        PublishOutcome::Published
+    );
+    assert_eq!(
+        topic.try_publish(Arc::new(2)).unwrap(),
+        PublishOutcome::DroppedOnFull
+    );
+}
+
+// On mixed topics, broadcast delivery stays non-blocking even when balanced
+// queues are full: try_publish can return DroppedOnFull while broadcast
+// subscribers still receive the message.
+#[tokio::test]
+async fn try_publish_mixed_keeps_broadcast_non_blocking() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "nb-mixed",
+            TopicOptions::Mixed {
+                balanced_capacity: 1,
+                broadcast_capacity: 8,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let _balanced_sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut broadcast_sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    assert_eq!(
+        topic.try_publish(Arc::new(10)).unwrap(),
+        PublishOutcome::Published
+    );
+    assert_eq!(
+        topic.try_publish(Arc::new(20)).unwrap(),
+        PublishOutcome::DroppedOnFull
+    );
+
+    topic.close();
+
+    let mut received = Vec::new();
+    while let Ok(item) = broadcast_sub.recv().await {
+        if let RecvItem::Message(env) = item {
+            received.push(*env.payload);
+        }
+    }
+    assert_eq!(received, vec![10, 20]);
+}
+
+// =========================================================================
 // Broker lifecycle methods
 // =========================================================================
 
@@ -1303,6 +1385,17 @@ async fn get_topic_returns_none_for_missing() {
     assert!(broker.get_topic("nonexistent").is_none());
 }
 
+// get_topic_required returns UnknownTopic when missing.
+#[tokio::test]
+async fn get_topic_required_returns_error_for_missing() {
+    let broker = TopicBroker::<u64>::new();
+    let missing = TopicName::parse("missing").unwrap();
+    match broker.get_topic_required(&missing) {
+        Err(Error::UnknownTopic { topic }) => assert_eq!(topic, missing),
+        _ => panic!("expected UnknownTopic"),
+    }
+}
+
 // has_topic returns false before creation and true after.
 #[tokio::test]
 async fn has_topic_reflects_state() {
@@ -1312,6 +1405,40 @@ async fn has_topic_reflects_state() {
         .create_topic("t1", TopicOptions::default(), InMemoryBackend)
         .unwrap();
     assert!(broker.has_topic("t1"));
+}
+
+// create_topics declares multiple topics in one call.
+#[tokio::test]
+async fn create_topics_batch_success() {
+    let broker = TopicBroker::<u64>::new();
+    let declarations = vec![
+        (TopicName::parse("t-a").unwrap(), TopicOptions::default()),
+        (TopicName::parse("t-b").unwrap(), TopicOptions::default()),
+    ];
+    let handles = broker.create_topics(declarations, InMemoryBackend).unwrap();
+    assert_eq!(handles.len(), 2);
+    assert!(broker.has_topic("t-a"));
+    assert!(broker.has_topic("t-b"));
+}
+
+// create_topics is atomic for duplicate checks: duplicate names in the batch
+// fail and no topic from the call is inserted.
+#[tokio::test]
+async fn create_topics_batch_duplicate_is_rejected_atomically() {
+    let broker = TopicBroker::<u64>::new();
+    let dup = TopicName::parse("dup").unwrap();
+    let result = broker.create_topics(
+        vec![
+            (dup.clone(), TopicOptions::default()),
+            (dup.clone(), TopicOptions::default()),
+        ],
+        InMemoryBackend,
+    );
+    match result {
+        Err(Error::TopicAlreadyExists { topic }) => assert_eq!(topic, dup),
+        _ => panic!("expected TopicAlreadyExists"),
+    }
+    assert!(!broker.has_topic("dup"));
 }
 
 // remove_topic closes the topic (publish returns Closed, recv returns Closed)
@@ -1466,6 +1593,17 @@ async fn topic_set_insert_and_get() {
 async fn topic_set_get_missing_returns_none() {
     let set = TopicSet::<u64>::new("empty-set");
     assert!(set.get("nonexistent").is_none());
+}
+
+// get_required on TopicSet returns UnknownTopic when local alias is missing.
+#[tokio::test]
+async fn topic_set_get_required_returns_error_for_missing() {
+    let set = TopicSet::<u64>::new("empty-set");
+    let missing = TopicName::parse("missing-local").unwrap();
+    match set.get_required(&missing) {
+        Err(Error::UnknownTopic { topic }) => assert_eq!(topic, missing),
+        _ => panic!("expected UnknownTopic"),
+    }
 }
 
 // Removing an entry from a TopicSet returns the handle and makes subsequent

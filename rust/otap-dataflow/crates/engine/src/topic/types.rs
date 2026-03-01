@@ -56,6 +56,18 @@ pub enum RecvItem<T> {
     },
 }
 
+/// Result of a non-blocking publish attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishOutcome {
+    /// Message was accepted for delivery.
+    Published,
+    /// Message was dropped because at least one balanced queue was full.
+    ///
+    /// For mixed topics, broadcast delivery may still succeed even when this
+    /// outcome is returned.
+    DroppedOnFull,
+}
+
 /// Subscription mode chosen by the subscriber.
 #[derive(Debug, Clone)]
 pub enum SubscriptionMode {

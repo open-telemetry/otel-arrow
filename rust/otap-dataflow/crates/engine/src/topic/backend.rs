@@ -34,7 +34,7 @@ use std::task::{Context, Poll};
 
 use crate::error::Error;
 use crate::topic::topic::TopicInner;
-use crate::topic::types::{AckEvent, RecvItem, SubscriberOptions, TopicOptions};
+use crate::topic::types::{AckEvent, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions};
 use otap_df_config::TopicName;
 use tokio::sync::mpsc;
 
@@ -57,6 +57,8 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     fn name(&self) -> &TopicName;
     /// Publish one payload under `publisher_id`.
     fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_>;
+    /// Try to publish one payload under `publisher_id` without awaiting.
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error>;
     /// Create a balanced subscription backend for consumer-group `group`.
     fn subscribe_balanced(
         &self,

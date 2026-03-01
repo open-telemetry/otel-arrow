@@ -30,7 +30,7 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::topic::backend::TopicState;
 use crate::topic::subscription::Subscription;
-use crate::topic::types::{AckEvent, SubscriberOptions, SubscriptionMode};
+use crate::topic::types::{AckEvent, PublishOutcome, SubscriberOptions, SubscriptionMode};
 use otap_df_config::TopicName;
 use tokio::sync::mpsc;
 
@@ -82,6 +82,13 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     /// This may await under backpressure when balanced consumer-group buffers are full.
     pub async fn publish(&self, msg: Arc<T>) -> Result<(), Error> {
         self.inner.publish(self.publisher_id, msg).await
+    }
+
+    /// Try to publish a message without awaiting under backpressure.
+    ///
+    /// Use this when publish behavior should be non-blocking (e.g. drop-on-full policy).
+    pub fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        self.inner.try_publish(self.publisher_id, msg)
     }
 
     /// Subscribe to this topic.

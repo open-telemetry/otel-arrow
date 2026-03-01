@@ -10,7 +10,7 @@
 //! only backend is an in-memory implementation, but this design allows for future
 //! extensions (e.g. disk-backed, networked, etc.) without changing the broker API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::Error;
@@ -52,14 +52,43 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
         backend: impl TopicBackend<T>,
     ) -> Result<TopicHandle<T>, Error> {
         let name: TopicName = name.into();
+        let mut handles = self.create_topics(std::iter::once((name, opts)), backend)?;
+        Ok(handles
+            .pop()
+            .expect("single declaration must create one topic handle"))
+    }
+
+    /// Create multiple topics under one broker write lock.
+    ///
+    /// The operation is atomic with respect to duplicate checks: if any
+    /// declaration conflicts with an existing topic or duplicates another name
+    /// in the same batch, no topic from this call is inserted.
+    pub fn create_topics(
+        &self,
+        declarations: impl IntoIterator<Item = (TopicName, TopicOptions)>,
+        backend: impl TopicBackend<T>,
+    ) -> Result<Vec<TopicHandle<T>>, Error> {
+        let declarations: Vec<(TopicName, TopicOptions)> = declarations.into_iter().collect();
         let mut topics = self.inner.topics.write();
-        if topics.contains_key(&name) {
-            return Err(Error::TopicAlreadyExists { topic: name });
+
+        let mut seen = HashSet::with_capacity(declarations.len());
+        for (name, _) in &declarations {
+            if topics.contains_key(name) || !seen.insert(name.clone()) {
+                return Err(Error::TopicAlreadyExists {
+                    topic: name.clone(),
+                });
+            }
         }
-        let state = backend.create_topic(name.clone(), opts);
-        // Result of insert is ignored since we already checked for existence inside the write lock.
-        _ = topics.insert(name, state.clone());
-        Ok(TopicHandle::new(state))
+
+        let mut handles = Vec::with_capacity(declarations.len());
+        for (name, opts) in declarations {
+            let state = backend.create_topic(name.clone(), opts);
+            // Result of insert is ignored since duplicate checks were done above.
+            _ = topics.insert(name, state.clone());
+            handles.push(TopicHandle::new(state));
+        }
+
+        Ok(handles)
     }
 
     /// Convenience wrapper around [`create_topic`](Self::create_topic) that
@@ -72,6 +101,15 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
         self.create_topic(name, opts, InMemoryBackend)
     }
 
+    /// Convenience wrapper around [`create_topics`](Self::create_topics) that
+    /// uses the default in-memory backend.
+    pub fn create_in_memory_topics(
+        &self,
+        declarations: impl IntoIterator<Item = (TopicName, TopicOptions)>,
+    ) -> Result<Vec<TopicHandle<T>>, Error> {
+        self.create_topics(declarations, InMemoryBackend)
+    }
+
     /// Look up a topic by name without creating it.
     pub fn get_topic(&self, name: impl Into<TopicName>) -> Option<TopicHandle<T>> {
         let name: TopicName = name.into();
@@ -79,6 +117,14 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
         topics
             .get(&name)
             .map(|inner| TopicHandle::new(inner.clone()))
+    }
+
+    /// Look up a topic by name and return an explicit error when missing.
+    pub fn get_topic_required(&self, name: &TopicName) -> Result<TopicHandle<T>, Error> {
+        self.get_topic(name.clone())
+            .ok_or_else(|| Error::UnknownTopic {
+                topic: name.clone(),
+            })
     }
 
     /// Check whether a topic exists.

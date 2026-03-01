@@ -83,7 +83,8 @@ use crate::error::Error::{
 };
 use crate::topic::backend::{PublishFuture, SubscriptionBackend, TopicState};
 use crate::topic::types::{
-    AckEvent, AckStatus, Envelope, RecvItem, SubscriberOptions, TopicOptions, message_id,
+    AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions,
+    message_id,
 };
 use futures_core::Stream;
 use otap_df_config::TopicName;
@@ -448,6 +449,14 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
         })
     }
 
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        match self {
+            TopicInner::BalancedOnly(t) => t.try_publish(publisher_id, msg),
+            TopicInner::BroadcastOnly(t) => t.try_publish(publisher_id, msg),
+            TopicInner::Mixed(t) => t.try_publish(publisher_id, msg),
+        }
+    }
+
     fn subscribe_balanced(
         &self,
         group: Arc<str>,
@@ -527,13 +536,18 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         }
     }
 
+    #[inline]
+    fn next_message_id(&self, publisher_id: u16) -> u64 {
+        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
+        message_id::encode(publisher_id, seq)
+    }
+
     async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let id = message_id::encode(publisher_id, seq);
+        let id = self.next_message_id(publisher_id);
 
         if let Some(sg) = self.group.get() {
             let envelope = Envelope { id, payload: msg };
@@ -542,6 +556,27 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         // No subscribers yet → message silently dropped (consistent with Mixed mode).
 
         Ok(())
+    }
+
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id(publisher_id);
+
+        if let Some(sg) = self.group.get() {
+            let envelope = Envelope { id, payload: msg };
+            match sg.tx.try_send(envelope) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Full(_)) => {
+                    return Ok(PublishOutcome::DroppedOnFull);
+                }
+                Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
+            }
+        }
+
+        Ok(PublishOutcome::Published)
     }
 
     fn subscribe_balanced(
@@ -623,6 +658,11 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         Ok(())
     }
 
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        self.publish(publisher_id, msg)?;
+        Ok(PublishOutcome::Published)
+    }
+
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
         let start_seq = self.broadcast_ring.current_seq() + 1;
 
@@ -687,13 +727,18 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
     }
 
+    #[inline]
+    fn next_message_id(&self, publisher_id: u16) -> u64 {
+        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
+        message_id::encode(publisher_id, seq)
+    }
+
     async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let id = message_id::encode(publisher_id, seq);
+        let id = self.next_message_id(publisher_id);
 
         // 1) Write to broadcast ring buffer first (non-blocking, overwrites oldest).
         //    This keeps broadcast delivery independent from balanced backpressure.
@@ -715,6 +760,42 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         Ok(())
+    }
+
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id(publisher_id);
+
+        // Keep broadcast fully non-blocking.
+        self.broadcast_ring
+            .publish_with_preencoded_id(id, Arc::clone(&msg));
+
+        if !self.has_balanced_groups.load(Ordering::Acquire) {
+            return Ok(PublishOutcome::Published);
+        }
+
+        let senders = self.group_senders.read().clone();
+        let envelope = Envelope {
+            id,
+            payload: Arc::clone(&msg),
+        };
+        let mut dropped_on_full = false;
+        for tx in senders.as_ref() {
+            match tx.try_send(envelope.clone()) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Full(_)) => dropped_on_full = true,
+                Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
+            }
+        }
+
+        if dropped_on_full {
+            Ok(PublishOutcome::DroppedOnFull)
+        } else {
+            Ok(PublishOutcome::Published)
+        }
     }
 
     fn subscribe_balanced(
