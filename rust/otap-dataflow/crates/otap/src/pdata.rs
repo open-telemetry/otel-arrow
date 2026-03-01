@@ -387,6 +387,12 @@ impl OtapPdata {
         self.context.has_subscribers()
     }
 
+    /// Stamp the top context frame with a receive timestamp.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_stamp_top_time(&mut self, time_ns: u64) {
+        self.context.stamp_top_time(time_ns);
+    }
+
     /// Returns true if the context stack has any frames at all.
     /// Used by notify_ack/notify_nack to decide whether to send to the controller.
     #[must_use]

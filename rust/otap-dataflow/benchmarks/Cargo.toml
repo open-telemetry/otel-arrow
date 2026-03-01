@@ -12,7 +12,7 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otap-df-otap = { path = "../crates/otap" }
+otap-df-otap = { path = "../crates/otap", features = ["test-utils"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -97,4 +97,8 @@ harness = false
 
 [[bench]]
 name = "self_tracing"
+harness = false
+
+[[bench]]
+name = "pipeline_throughput"
 harness = false
