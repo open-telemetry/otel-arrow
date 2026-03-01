@@ -558,14 +558,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
     /// Report all per-node consumed/produced metric sets.
     fn report_node_metrics(&mut self) -> Result<(), TelemetryError> {
-        for entry in &mut self.node_metric_handles {
-            if let Some(handles) = entry {
-                if let Some(input) = &mut handles.input {
-                    self.metrics_reporter.report(input)?;
-                }
-                for output in &mut handles.outputs {
-                    self.metrics_reporter.report(output)?;
-                }
+        for handles in self.node_metric_handles.iter_mut().flatten() {
+            if let Some(input) = &mut handles.input {
+                self.metrics_reporter.report(input)?;
+            }
+            for output in &mut handles.outputs {
+                self.metrics_reporter.report(output)?;
             }
         }
         Ok(())
