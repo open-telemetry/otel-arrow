@@ -40,6 +40,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
+use crate::output_router::OutputRouter;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
@@ -133,16 +134,7 @@ impl<PData> ControlChannel<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-
-    /// A sender used to forward messages from the receiver.
-    /// Supports multiple named output ports.
-    msg_senders: HashMap<PortName, Sender<PData>>,
-    /// Cached default sender for fast access in the hot path
-    default_sender: Option<Sender<PData>>,
-    /// Stable output port index for the default port.
-    default_port_index: u16,
-    /// Mapping from port name to stable output port index.
-    port_indices: HashMap<PortName, u16>,
+    router: OutputRouter<Sender<PData>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -156,31 +148,10 @@ impl<PData> EffectHandler<PData> {
         node_request_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
+        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
-
-        // Build stable port-name → index mapping (sorted alphabetically).
-        let port_indices = Self::build_port_indices(&msg_senders);
-
-        // Determine and cache the default sender
-        let (default_sender, default_port_index) = if let Some(ref port) = default_port {
-            (
-                msg_senders.get(port).cloned(),
-                port_indices.get(port).copied().unwrap_or(0),
-            )
-        } else if msg_senders.len() == 1 {
-            (msg_senders.values().next().cloned(), 0)
-        } else {
-            (None, 0)
-        };
-
-        EffectHandler {
-            core,
-            msg_senders,
-            default_sender,
-            default_port_index,
-            port_indices,
-        }
+        let router = OutputRouter::new(node_id, msg_senders, default_port);
+        EffectHandler { core, router }
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -210,30 +181,19 @@ impl<PData> EffectHandler<PData> {
     /// Returns the list of connected output ports for this receiver.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.msg_senders.keys().cloned().collect()
+        self.router.connected_ports()
     }
 
     /// Returns the stable output port index for the default port.
     #[must_use]
     pub fn default_output_port_index(&self) -> u16 {
-        self.default_port_index
+        self.router.default_output_port_index()
     }
 
     /// Returns the stable output port index for a named port.
     #[must_use]
     pub fn output_port_index(&self, port: &PortName) -> u16 {
-        self.port_indices.get(port).copied().unwrap_or(0)
-    }
-
-    /// Build a stable port-name → u16 mapping by sorting names alphabetically.
-    fn build_port_indices<V>(senders: &HashMap<PortName, V>) -> HashMap<PortName, u16> {
-        let mut names: Vec<&PortName> = senders.keys().collect();
-        names.sort();
-        names
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| (name.clone(), i as u16))
-            .collect()
+        self.router.output_port_index(port)
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -247,15 +207,7 @@ impl<PData> EffectHandler<PData> {
     /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.receiver_id(),
-            })),
-        }
+        self.router.send_default(data).await
     }
 
     /// Attempts to send a message without awaiting.
@@ -270,12 +222,7 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.receiver_id(),
-            })),
-        }
+        self.router.try_send_default(data)
     }
 
     /// Sends a message to a specific named output port.
@@ -289,17 +236,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.receiver_id(),
-                port: port_name,
-            })),
-        }
+        self.router.send_to(port, data).await
     }
 
     /// Attempts to send a message to a specific named output port without awaiting.
@@ -317,14 +254,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.receiver_id(),
-                port: port_name,
-            })),
-        }
+        self.router.try_send_to(port, data)
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

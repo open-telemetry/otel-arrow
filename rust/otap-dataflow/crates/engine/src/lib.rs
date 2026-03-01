@@ -62,6 +62,7 @@ pub mod effect_handler;
 pub mod entity_context;
 pub mod local;
 pub mod node;
+pub(crate) mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod runtime_pipeline;
