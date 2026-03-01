@@ -32,7 +32,7 @@ use tokio::task::LocalSet;
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<Option<MetricSet<ProducedMetrics>>> {
+) -> Vec<MetricSet<ProducedMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -40,7 +40,7 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    Some(pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key))
+                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
                 })
                 .collect()
         })
@@ -187,6 +187,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             node_metric_entries.push((
                 node_id.index,
                 NodeMetricHandles {
+                    registry: pipeline_context.metrics_registry(),
                     input: consumed,
                     outputs: Vec::new(),
                 },
@@ -243,6 +244,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             node_metric_entries.push((
                 node_id.index,
                 NodeMetricHandles {
+                    registry: pipeline_context.metrics_registry(),
                     input: consumed,
                     outputs: produced,
                 },
@@ -290,6 +292,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             node_metric_entries.push((
                 node_id.index,
                 NodeMetricHandles {
+                    registry: pipeline_context.metrics_registry(),
                     input: None,
                     outputs: produced,
                 },

@@ -59,7 +59,7 @@ pub struct ChannelReceiverMetrics {
     #[metric(name = "recv.error_closed", unit = "{1}")]
     pub recv_error_closed: Counter<u64>,
     /// Maximum channel capacity (buffer size).
-    /// TODO: UpDownCounter
+    /// TODO: UpDownCounter.set()
     #[metric(name = "capacity", unit = "{message}")]
     pub capacity: Gauge<u64>,
 }
@@ -73,7 +73,7 @@ pub struct ConsumedMetrics {
     /// Duration (ns) of consumed requests (min/max/sum/count).
     /// Recorded at ack/nack time using the entry frame timestamp.
     /// Only populated at `MetricLevel::Detailed`.
-    #[metric(name = "consumed.duration_ns", unit = "ns")]
+    #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
     /// Consumed requests successfully processed (ack received).
     #[metric(name = "consumed.success", unit = "{requests}")]

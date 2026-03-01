@@ -25,6 +25,7 @@ use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
 use std::cmp::Reverse;
@@ -180,11 +181,29 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 ///
 /// Owned exclusively by the pipeline controller — no `Arc` or `Mutex`
 /// is needed because only the controller records ack/nack metrics.
+///
+/// These metrics are deliberately **not** tracked by `NodeTelemetryGuard`
+/// because the controller must continue recording ack/nack outcomes during
+/// shutdown draining, after node tasks have exited and their guards have
+/// been dropped. Instead, cleanup is handled via the `Drop` impl here.
 pub(crate) struct NodeMetricHandles {
+    /// Registry handle for automatic unregistration on drop.
+    pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-request metrics for the node's input channel.
-    pub input: Option<MetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MetricSet<ConsumedMetrics>>,
     /// Produced-request metrics indexed by output port.
-    pub outputs: Vec<Option<MetricSet<ProducedMetrics>>>,
+    pub(crate) outputs: Vec<MetricSet<ProducedMetrics>>,
+}
+
+impl Drop for NodeMetricHandles {
+    fn drop(&mut self) {
+        if let Some(input) = self.input.take() {
+            let _ = self.registry.unregister_metric_set(input.metric_set_key());
+        }
+        for output in self.outputs.drain(..) {
+            let _ = self.registry.unregister_metric_set(output.metric_set_key());
+        }
+    }
 }
 
 /// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
@@ -495,9 +514,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
             }
         }
-        // Unregister all consumed/produced metric sets from the telemetry registry
-        // so that the metric set count returns to zero after shutdown.
-        self.unregister_node_metrics();
         Ok(())
     }
 
@@ -529,7 +545,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             // Record produced metrics on the node's output channel.
             if interests.contains(Interests::PRODUCER_METRICS) {
                 let port = calldata.output_port_index as usize;
-                if let Some(Some(output)) = handles.outputs.get_mut(port) {
+                if let Some(output) = handles.outputs.get_mut(port) {
                     match outcome {
                         RequestOutcome::Success => output.produced_success.inc(),
                         RequestOutcome::Failure => output.produced_failure.inc(),
@@ -548,30 +564,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     self.metrics_reporter.report(input)?;
                 }
                 for output in &mut handles.outputs {
-                    if let Some(output) = output {
-                        self.metrics_reporter.report(output)?;
-                    }
+                    self.metrics_reporter.report(output)?;
                 }
             }
         }
         Ok(())
-    }
-
-    /// Unregister all consumed/produced metric sets from the telemetry registry.
-    fn unregister_node_metrics(&mut self) {
-        let registry = self.pipeline_context.metrics_registry();
-        for entry in &mut self.node_metric_handles {
-            if let Some(handles) = entry.take() {
-                if let Some(input) = handles.input {
-                    registry.unregister_metric_set(input.metric_set_key());
-                }
-                for output in handles.outputs {
-                    if let Some(output) = output {
-                        registry.unregister_metric_set(output.metric_set_key());
-                    }
-                }
-            }
-        }
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
