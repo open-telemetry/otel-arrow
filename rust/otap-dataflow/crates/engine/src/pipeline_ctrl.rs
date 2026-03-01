@@ -215,7 +215,7 @@ pub struct PipelineCtrlMsgManager<PData> {
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
     /// Per-node metrics handles for recording consumed/produced outcomes
-    /// from `MetricsStop` entries collected during context unwinding.
+    /// from `Frame` entries collected during context unwinding.
     node_metric_handles: Vec<Option<NodeMetricHandles>>,
 
     /// Flags controlling capture of internal engine metrics.

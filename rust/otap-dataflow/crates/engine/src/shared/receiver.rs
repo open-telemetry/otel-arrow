@@ -86,7 +86,7 @@ impl<PData> ControlChannel<PData> {
     /// Asynchronously receives the next control message.
     ///
     /// Note: produced outcome metrics are now recorded by the pipeline
-    /// controller via `MetricsStop` entries collected during context
+    /// controller via `Frame` entries collected during context
     /// unwinding, not here.
     ///
     /// # Errors

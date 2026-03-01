@@ -138,20 +138,6 @@ pub struct Frame {
     pub node_id: usize,
 }
 
-/// A context frame for a non-subscribing node encountered during
-/// context unwinding. The pipeline controller uses this to record
-/// consumed/produced metrics on behalf of nodes that did not
-/// explicitly subscribe to ack/nack delivery.
-#[derive(Clone, Debug)]
-pub struct MetricsStop {
-    /// The node index.
-    pub node_id: usize,
-    /// The node's call data (includes entry timestamp and output port index).
-    pub calldata: CallData,
-    /// Which metrics to record (`CONSUMER_METRICS`, `PRODUCER_METRICS`, etc.).
-    pub interests: crate::Interests,
-}
-
 /// The ACK message.
 #[derive(Debug, Clone)]
 pub struct AckMsg<PData> {
