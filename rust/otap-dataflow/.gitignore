@@ -35,3 +35,6 @@ resolved-schema.yaml
 
 # Ignore the temporary repo dir created by `cargo xtask history` command
 history-temp-repo/
+
+# Working notes / scratch space (not part of any PR)
+save/

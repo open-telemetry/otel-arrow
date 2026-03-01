@@ -71,9 +71,8 @@ impl Context {
     /// Consume frames to locate the most recent subscriber with ACKS.
     /// This is a "transfer function" used in the engine for route_ack.
     ///
-    /// Drains the context stack, collecting `MetricsStop` entries for
-    /// Consume frames to locate the most recent subscriber with ACKS.
-    /// This is a "transfer function" used in the engine for route_ack.
+    /// Drains the context stack, recording metrics for intermediate
+    /// frames, until it finds a frame with `ACKS` interest.
     #[must_use]
     pub fn next_ack(
         mut ack: AckMsg<OtapPdata>,

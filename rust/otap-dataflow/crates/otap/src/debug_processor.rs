@@ -69,9 +69,12 @@ pub fn create_debug_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let processor = DebugProcessor::from_config(pipeline_ctx, &node_config.config)?;
-    let wrapper = ProcessorWrapper::local(processor, node, node_config, processor_config);
-    Ok(wrapper)
+    Ok(ProcessorWrapper::local(
+        DebugProcessor::from_config(pipeline_ctx, &node_config.config)?,
+        node,
+        node_config,
+        processor_config,
+    ))
 }
 
 /// Register AttributesProcessor as an OTAP processor factory
