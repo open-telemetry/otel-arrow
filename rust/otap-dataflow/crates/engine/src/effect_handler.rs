@@ -281,11 +281,8 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
-    /// Send a AckMsg using a context-transfer function.  The context
-    /// transfer function applies PData-specific logic to discover the
-    /// next recipient in the chain of Acks, if any.  When there is a
-    /// recipient, this returns its node_id and the AckMsg prepared for
-    /// delivery with the recipient's calldata.
+    /// Send an AckMsg using a context-transfer function that drains the
+    /// context stack to find the next subscriber node.
     pub async fn route_ack<Transfer>(
         &self,
         ack_in: AckMsg<PData>,
@@ -295,22 +292,22 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
     {
         if let Some((node_id, ack)) = transfer(ack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
-                .await
-                .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
-                    error: e.to_string(),
-                })
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck {
+                node_id,
+                ack,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
         } else {
             Ok(())
         }
     }
 
-    /// Send a NackMsg using a context-transfer function.  The context
-    /// transfer function applies PData-specific logic to discover the
-    /// next recipient in the chain of Nacks, if any.  When there is a
-    /// recipient, this returns its node_id and the NackMsg prepared for
-    /// delivery with the recipient's calldata.
+    /// Send a NackMsg using a context-transfer function.  Same drain
+    /// semantics as `route_ack()`.
     pub async fn route_nack<Transfer>(
         &self,
         nack_in: NackMsg<PData>,
@@ -320,12 +317,15 @@ impl<PData> EffectHandlerCore<PData> {
         Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
     {
         if let Some((node_id, nack)) = transfer(nack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
-                .await
-                .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
-                    error: e.to_string(),
-                })
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack {
+                node_id,
+                nack,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| Error::PipelineControlMsgError {
+                error: e.to_string(),
+            })
         } else {
             Ok(())
         }

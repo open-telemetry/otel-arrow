@@ -213,6 +213,37 @@ impl<PData> ReceiverWrapper<PData> {
         }
     }
 
+    /// Extract output-channel sender metrics handles indexed by sorted port name.
+    /// The returned Vec is indexed by the same `output_port_index` used in `CallData`.
+    pub(crate) fn output_sender_metrics_handles(
+        &self,
+    ) -> Vec<Option<crate::channel_metrics::OutputChannelSenderMetrics>> {
+        match self {
+            ReceiverWrapper::Local { pdata_senders, .. } => {
+                let mut names: Vec<&PortName> = pdata_senders.keys().collect();
+                names.sort();
+                let mut vec = vec![None; names.len()];
+                for (i, name) in names.into_iter().enumerate() {
+                    if let Some(sender) = pdata_senders.get(name) {
+                        vec[i] = sender.sender_metrics_handle();
+                    }
+                }
+                vec
+            }
+            ReceiverWrapper::Shared { pdata_senders, .. } => {
+                let mut names: Vec<&PortName> = pdata_senders.keys().collect();
+                names.sort();
+                let mut vec = vec![None; names.len()];
+                for (i, name) in names.into_iter().enumerate() {
+                    if let Some(sender) = pdata_senders.get(name) {
+                        vec[i] = sender.sender_metrics_handle();
+                    }
+                }
+                vec
+            }
+        }
+    }
+
     pub(crate) fn with_control_channel_metrics(
         self,
         pipeline_ctx: &PipelineContext,

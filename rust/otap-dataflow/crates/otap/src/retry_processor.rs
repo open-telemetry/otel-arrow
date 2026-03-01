@@ -898,9 +898,9 @@ mod test {
                         NackMsg::new("simulated downstream failure", current_data.clone())
                     };
 
-                    let (_, nack_ctx) = Context::next_nack(nack).unwrap();
+                    let (_, nack_msg) = Context::next_nack(nack).unwrap();
 
-                    ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                    ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     nacks_delivered += 1;
 
                     // The processor should schedule a delayed retry via DelayData
@@ -937,12 +937,12 @@ mod test {
                     // Send final ACK or NACK
                     if let Some(message) = &outcome_failure {
                         let nack = NackMsg::new(format!("TEST {} FAILED", message), current_data);
-                        let (_, nack_ctx) = Context::next_nack(nack).unwrap();
-                        ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                        let (_, nack_msg) = Context::next_nack(nack).unwrap();
+                        ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     } else {
                         let ack = AckMsg::new(current_data);
-                        let (_, ack_ctx) = Context::next_ack(ack).unwrap();
-                        ctx.process(Message::ack_ctrl_msg(ack_ctx)).await.unwrap();
+                        let (_, ack_msg) = Context::next_ack(ack).unwrap();
+                        ctx.process(Message::ack_ctrl_msg(ack_msg)).await.unwrap();
                     }
 
                     // Verify the processor sent the ACK or NACK upstream
@@ -955,7 +955,7 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineControlMsg::DeliverAck { node_id, ack } => {
+                    PipelineControlMsg::DeliverAck { node_id, ack, .. } => {
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -969,7 +969,7 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { node_id, nack, .. } => {
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))

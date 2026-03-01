@@ -9,6 +9,7 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::RequestOutcome;
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -121,6 +122,20 @@ pub struct CallData {
     /// Used on the return path to attribute produced metrics to the
     /// correct output channel.
     pub output_port_index: u16,
+}
+
+/// A context frame for a non-subscribing node encountered during
+/// context unwinding. The pipeline controller uses this to record
+/// consumed/produced metrics on behalf of nodes that did not
+/// explicitly subscribe to ack/nack delivery.
+#[derive(Clone, Debug)]
+pub struct MetricsStop {
+    /// The node index.
+    pub node_id: usize,
+    /// The node's call data (includes entry timestamp and output port index).
+    pub calldata: CallData,
+    /// Which metrics to record (`CONSUMER_METRICS`, `PRODUCER_METRICS`, etc.).
+    pub interests: crate::Interests,
 }
 
 /// The ACK message.
@@ -294,7 +309,7 @@ pub enum PipelineControlMsg<PData> {
         /// The Ack
         ack: AckMsg<PData>,
     },
-    /// Deliver an Nack to the preceding subscriber in the pipeline.
+    /// Deliver a Nack to the preceding subscriber in the pipeline.
     DeliverNack {
         /// The recipient node_id
         node_id: usize,

@@ -138,11 +138,11 @@ pub fn test_exporter_with_subscription(
                 .take_pipeline_ctrl_receiver()
                 .expect("pipeline control receiver should be present in subscription test");
             let (trigger, calldata, reqdata, reason) = match pipeline_rx.recv().await {
-                Ok(PipelineControlMsg::DeliverAck { ack, node_id }) => {
+                Ok(PipelineControlMsg::DeliverAck { ack, node_id, .. }) => {
                     assert_eq!(node_id, 654321);
                     (Interests::ACKS, ack.calldata.user, Some(ack.accepted), "success".into())
                 }
-                Ok(PipelineControlMsg::DeliverNack { nack, node_id }) => {
+                Ok(PipelineControlMsg::DeliverNack { nack, node_id, .. }) => {
                     assert_eq!(node_id, 654321);
                     (Interests::NACKS, nack.calldata.user, Some(nack.refused), nack.reason)
                 }

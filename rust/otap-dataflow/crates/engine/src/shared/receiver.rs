@@ -97,40 +97,15 @@ impl<PData> ControlChannel<PData> {
 
     /// Asynchronously receives the next control message.
     ///
-    /// Automatically records produced outcome metrics for Ack/Nack messages.
+    /// Note: produced outcome metrics are now recorded by the pipeline
+    /// controller via `MetricsStop` entries collected during context
+    /// unwinding, not here.
     ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
-        let msg = self.rx.recv().await?;
-        match &msg {
-            NodeControlMsg::Ack(ack) => {
-                if let Some(Some(h)) = self
-                    .output_channel_sender_metrics
-                    .get(ack.calldata.output_port_index as usize)
-                {
-                    if let Ok(mut state) = h.try_lock() {
-                        state.record_produced(RequestOutcome::Success);
-                    }
-                }
-            }
-            NodeControlMsg::Nack(nack) => {
-                let idx = nack.calldata.output_port_index as usize;
-                if let Some(Some(h)) = self.output_channel_sender_metrics.get(idx) {
-                    if let Ok(mut state) = h.try_lock() {
-                        let outcome = if nack.permanent {
-                            RequestOutcome::Refused
-                        } else {
-                            RequestOutcome::Failure
-                        };
-                        state.record_produced(outcome);
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(msg)
+        self.rx.recv().await
     }
 }
 

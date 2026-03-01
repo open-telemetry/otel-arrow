@@ -11,10 +11,15 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
+use crate::channel_metrics::{InputChannelReceiverMetrics, OutputChannelSenderMetrics};
 use crate::context::PipelineContext;
-use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{
+    ControlSenders, MetricsStop, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
+    nanos_since_epoch,
+};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use crate::{Interests, RequestOutcome};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
@@ -169,6 +174,19 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     }
 }
 
+/// Per-node metrics handles for recording consumed/produced outcomes.
+///
+/// The pipeline controller uses these to process `MetricsStop` entries
+/// collected during context unwinding, recording metrics on behalf of
+/// all pipeline nodes (including those that did not subscribe to
+/// ack/nack delivery).
+pub(crate) struct NodeMetricHandles {
+    /// Input channel receiver metrics (for consumed outcomes + duration).
+    pub input: Option<InputChannelReceiverMetrics>,
+    /// Output channel sender metrics indexed by output port (for produced outcomes).
+    pub outputs: Vec<Option<OutputChannelSenderMetrics>>,
+}
+
 /// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
 ///
 /// Internally uses two TimerSet instances: one for generic TimerTick and one for
@@ -196,6 +214,10 @@ pub struct PipelineCtrlMsgManager<PData> {
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
+    /// Per-node metrics handles for recording consumed/produced outcomes
+    /// from `MetricsStop` entries collected during context unwinding.
+    node_metric_handles: Vec<Option<NodeMetricHandles>>,
+
     /// Flags controlling capture of internal engine metrics.
     telemetry: TelemetryPolicy,
 }
@@ -212,6 +234,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         metrics_reporter: MetricsReporter,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+        node_metric_handles: Vec<Option<NodeMetricHandles>>,
     ) -> Self {
         Self {
             pipeline_key,
@@ -224,6 +247,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             event_reporter,
             metrics_reporter,
             channel_metrics,
+            node_metric_handles,
             telemetry: telemetry_policy,
         }
     }
@@ -374,10 +398,16 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 self.delayed_data.push(delayed);
                             }
                         }
-                        PipelineControlMsg::DeliverAck { node_id, ack } => {
+                        PipelineControlMsg::DeliverAck {
+                            node_id,
+                            ack,
+                        } => {
                             self.send(node_id, NodeControlMsg::Ack(ack)).await;
                         }
-                        PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        PipelineControlMsg::DeliverNack {
+                            node_id,
+                            nack,
+                        } => {
                             self.send(node_id, NodeControlMsg::Nack(nack)).await;
                         }
                     }
@@ -462,6 +492,37 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             }
         }
         Ok(())
+    }
+
+    /// Record metrics for all `MetricsStop` entries collected during
+    /// context unwinding.  For each stop, the controller records
+    /// consumed metrics (via `CONSUMER_METRICS`) and produced metrics
+    /// (via `PRODUCER_METRICS`) using the per-node handles.
+    fn process_metrics_stops(&self, stops: &[MetricsStop], outcome: RequestOutcome) {
+        for stop in stops {
+            if let Some(Some(handles)) = self.node_metric_handles.get(stop.node_id) {
+                // Record consumed metrics on the node's input channel.
+                if stop.interests.contains(Interests::CONSUMER_METRICS) {
+                    if let Some(input) = &handles.input {
+                        input.record_consumed(outcome);
+                        if stop.interests.contains(Interests::ENTRY_TIMESTAMP)
+                            && stop.calldata.time_ns > 0
+                        {
+                            let duration_ns =
+                                nanos_since_epoch().saturating_sub(stop.calldata.time_ns);
+                            input.record_consumed_duration(duration_ns);
+                        }
+                    }
+                }
+                // Record produced metrics on the node's output channel.
+                if stop.interests.contains(Interests::PRODUCER_METRICS) {
+                    let port = stop.calldata.output_port_index as usize;
+                    if let Some(Some(output)) = handles.outputs.get(port) {
+                        output.record_produced(outcome);
+                    }
+                }
+            }
+        }
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
@@ -600,6 +661,7 @@ mod tests {
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
             TelemetryPolicy::default(),
+            Vec::new(),
             Vec::new(),
         );
         (
@@ -1044,6 +1106,7 @@ mod tests {
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetryPolicy::default(),
+                    Vec::new(),
                     Vec::new(),
                 );
                 let duration = Duration::from_millis(50);

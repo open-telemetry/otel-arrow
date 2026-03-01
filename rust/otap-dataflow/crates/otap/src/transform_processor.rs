@@ -482,11 +482,11 @@ mod test {
         context: Context,
         signal_type: SignalType,
     ) -> Result<(), EngineError> {
-        let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+        let ack = Context::next_ack(AckMsg::new(OtapPdata::new(
             context,
             OtapPayload::empty(signal_type),
-        )))
-        .unwrap();
+        )));
+        let (_, ack) = ack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
             .await
     }
@@ -498,11 +498,11 @@ mod test {
         signal_type: SignalType,
         reason: &str,
     ) -> Result<(), EngineError> {
-        let (_, nack) = Context::next_nack(NackMsg::new(
+        let nack = Context::next_nack(NackMsg::new(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
-        ))
-        .unwrap();
+        ));
+        let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
             .await
     }

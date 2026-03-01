@@ -16,11 +16,11 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::control::{AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch};
+use otap_df_engine::control::{AckMsg, CallData, MetricsStop, NackMsg, UserCallData, nanos_since_epoch};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
-    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension, RequestOutcome,
+    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -70,37 +70,54 @@ impl Context {
 
     /// Consume frames to locate the most recent subscriber with ACKS.
     /// This is a "transfer function" used in the engine for route_ack.
+    ///
+    /// Drains the context stack, collecting `MetricsStop` entries for
+    /// Consume frames to locate the most recent subscriber with ACKS.
+    /// This is a "transfer function" used in the engine for route_ack.
     #[must_use]
-    pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
-        ack.accepted
+    pub fn next_ack(
+        mut ack: AckMsg<OtapPdata>,
+    ) -> Option<(usize, AckMsg<OtapPdata>)> {
+        let frame = ack
+            .accepted
             .context
-            .next_with_interest(Interests::ACKS)
-            .map(|frame| {
-                if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                    let _drop = ack.accepted.take_payload();
-                }
-                ack.calldata = frame.calldata;
-                (frame.node_id, ack)
-            })
+            .drain_to_next_subscriber(Interests::ACKS);
+        frame.map(|frame| {
+            if (frame.interests & Interests::RETURN_DATA).is_empty() {
+                let _drop = ack.accepted.take_payload();
+            }
+            ack.calldata = frame.calldata;
+            (frame.node_id, ack)
+        })
     }
 
     /// Consume frames to locate the most recent subscriber with NACKS.
     /// This is a "transfer function" used in the engine for route_nack.
+    ///
+    /// Same drain semantics as `next_ack()`.
     #[must_use]
-    pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
-        nack.refused
+    pub fn next_nack(
+        mut nack: NackMsg<OtapPdata>,
+    ) -> Option<(usize, NackMsg<OtapPdata>)> {
+        let frame = nack
+            .refused
             .context
-            .next_with_interest(Interests::NACKS)
-            .map(|frame| {
-                if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                    let _drop = nack.refused.take_payload();
-                }
-                nack.calldata = frame.calldata;
-                (frame.node_id, nack)
-            })
+            .drain_to_next_subscriber(Interests::NACKS);
+        frame.map(|frame| {
+            if (frame.interests & Interests::RETURN_DATA).is_empty() {
+                let _drop = nack.refused.take_payload();
+            }
+            nack.calldata = frame.calldata;
+            (frame.node_id, nack)
+        })
     }
 
-    fn next_with_interest(&mut self, int: Interests) -> Option<Frame> {
+    /// Drain the context stack to find the first subscriber frame
+    /// with the given interest bit.
+    fn drain_to_next_subscriber(
+        &mut self,
+        int: Interests,
+    ) -> Option<Frame> {
         while let Some(frame) = self.stack.pop() {
             if frame.interests.contains(int) {
                 return Some(frame);
@@ -174,28 +191,29 @@ impl Context {
     ///
     /// # Parameters
     /// - `node_id`: The node's index.
-    /// - `metric_level`: Current metric level.
-    /// - `default_interests`: Node's declared interests. If `METRICS` is set
-    ///   AND `metric_level >= Detailed`, the entry frame captures a timestamp.
+    /// - `node_interests`: Precomputed interests (derived from `MetricLevel`).
     ///
-    /// Note: If neither `PIPELINE_METRICS` nor `ENTRY_TIMESTAMP` is set in
+    /// Note: If neither `CONSUMER_METRICS` nor `ENTRY_TIMESTAMP` is set in
     /// `node_interests`, no frame is pushed (the node is invisible to the
     /// context stack).
     ///
+    /// The frame is pushed with `CONSUMER_METRICS` (no `ACKS` or `NACKS`).
     /// If the component later calls `subscribe_to`, the same-node merge
-    /// will fold interests into this frame while preserving `time_ns`.
+    /// will fold `ACKS | NACKS | PRODUCER_METRICS` into this frame while
+    /// preserving `time_ns`.
     pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
-        // No frame needed when the engine has no metrics interest.
-        if !node_interests.intersects(Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP) {
+        // No frame needed when the engine has no consumer metrics interest.
+        if !node_interests.intersects(Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP) {
             return;
         }
         let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
-        // Auto-subscribe for pipeline outcome counting.
-        if node_interests.contains(Interests::PIPELINE_METRICS) {
-            interests |= Interests::ACKS_OR_NACKS;
+        // Mark this frame for consumer-side outcome counting only.
+        // No ACKS/NACKS — the node must explicitly subscribe to receive delivery.
+        if node_interests.contains(Interests::CONSUMER_METRICS) {
+            interests |= Interests::CONSUMER_METRICS;
         }
         // Timestamp: only when ENTRY_TIMESTAMP is requested.
         let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
@@ -393,9 +411,9 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 {
     fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting.
-        if interests.contains(Interests::PIPELINE_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS;
+        // At Basic+, auto-subscribe for outcome counting and delivery.
+        if interests.contains(Interests::PRODUCER_METRICS) {
+            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
         }
         data.context
             .subscribe_to(int, ctx, self.processor_id().index);
@@ -414,9 +432,9 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 {
     fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting.
-        if interests.contains(Interests::PIPELINE_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS;
+        // At Basic+, auto-subscribe for outcome counting and delivery.
+        if interests.contains(Interests::PRODUCER_METRICS) {
+            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
         }
         data.context
             .subscribe_to(int, ctx, self.receiver_id().index);
@@ -433,9 +451,9 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 {
     fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting.
-        if interests.contains(Interests::PIPELINE_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS;
+        // At Basic+, auto-subscribe for outcome counting and delivery.
+        if interests.contains(Interests::PRODUCER_METRICS) {
+            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
         }
         data.context
             .subscribe_to(int, ctx, self.processor_id().index);
@@ -452,9 +470,9 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 {
     fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting.
-        if interests.contains(Interests::PIPELINE_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS;
+        // At Basic+, auto-subscribe for outcome counting and delivery.
+        if interests.contains(Interests::PRODUCER_METRICS) {
+            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
         }
         data.context
             .subscribe_to(int, ctx, self.receiver_id().index);
@@ -467,114 +485,19 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
-/// Level-gated consumer metric recording for ack.
-fn record_consumer_ack_metrics(
-    context: &Context,
-    interests: Interests,
-    record_duration: impl Fn(u64),
-    record_consumed: impl Fn(RequestOutcome),
-) {
-    if interests.contains(Interests::PIPELINE_METRICS) {
-        if let Some(frame) = context.peek_top() {
-            record_consumed(RequestOutcome::Success);
-            if interests.contains(Interests::ENTRY_TIMESTAMP) {
-                let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-                record_duration(duration_ns);
-            }
-        }
-    }
-}
-
-/// Level-gated consumer metric recording for nack.
-fn record_consumer_nack_metrics(
-    context: &Context,
-    permanent: bool,
-    interests: Interests,
-    record_duration: impl Fn(u64),
-    record_consumed: impl Fn(RequestOutcome),
-) {
-    if interests.contains(Interests::PIPELINE_METRICS) {
-        if let Some(frame) = context.peek_top() {
-            let outcome = if permanent {
-                RequestOutcome::Refused
-            } else {
-                RequestOutcome::Failure
-            };
-            record_consumed(outcome);
-            if interests.contains(Interests::ENTRY_TIMESTAMP) {
-                let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-                record_duration(duration_ns);
-            }
-        }
-    }
-}
-
-/// Level-gated producer metric recording for ack.
-/// The output_port_index in the top frame's calldata identifies which output channel to attribute.
-fn record_producer_ack_metrics(
-    context: &Context,
-    interests: Interests,
-    record_produced: impl Fn(u16, RequestOutcome),
-) {
-    if interests.contains(Interests::PIPELINE_METRICS) {
-        if let Some(frame) = context.peek_top() {
-            record_produced(frame.calldata.output_port_index, RequestOutcome::Success);
-        }
-    }
-}
-
-/// Level-gated producer metric recording for nack.
-fn record_producer_nack_metrics(
-    context: &Context,
-    permanent: bool,
-    interests: Interests,
-    record_produced: impl Fn(u16, RequestOutcome),
-) {
-    if interests.contains(Interests::PIPELINE_METRICS) {
-        if let Some(frame) = context.peek_top() {
-            let outcome = if permanent {
-                RequestOutcome::Refused
-            } else {
-                RequestOutcome::Failure
-            };
-            record_produced(frame.calldata.output_port_index, outcome);
-        }
-    }
-}
+// All metric recording (consumer and producer) is handled by the pipeline
+// controller via MetricsStop entries collected during context unwinding.
+// notify_ack/notify_nack simply route the ack/nack to the next subscriber.
 
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        let interests = self.node_interests();
-        record_consumer_ack_metrics(
-            &ack.accepted.context,
-            interests,
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
-        record_producer_ack_metrics(&ack.accepted.context, interests, |port, o| {
-            self.record_produced(port, o)
-        });
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        let interests = self.node_interests();
-        record_consumer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            interests,
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
-        record_producer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            interests,
-            |port, o| self.record_produced(port, o),
-        );
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -584,23 +507,10 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        record_consumer_ack_metrics(
-            &ack.accepted.context,
-            self.node_interests(),
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        record_consumer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            self.node_interests(),
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -610,34 +520,10 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        let interests = self.node_interests();
-        record_consumer_ack_metrics(
-            &ack.accepted.context,
-            interests,
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
-        record_producer_ack_metrics(&ack.accepted.context, interests, |port, o| {
-            self.record_produced(port, o)
-        });
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        let interests = self.node_interests();
-        record_consumer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            interests,
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
-        record_producer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            interests,
-            |port, o| self.record_produced(port, o),
-        );
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -647,23 +533,10 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        record_consumer_ack_metrics(
-            &ack.accepted.context,
-            self.node_interests(),
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        record_consumer_nack_metrics(
-            &nack.refused.context,
-            nack.permanent,
-            self.node_interests(),
-            |d| self.record_consumed_duration(d),
-            |o| self.record_consumed(o),
-        );
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -1797,33 +1670,39 @@ mod test {
 
     #[test]
     fn push_entry_frame_pipeline_metrics_auto_subscribes() {
-        // PIPELINE_METRICS auto-sets ACKS_OR_NACKS in the entry frame.
+        // CONSUMER_METRICS sets CONSUMER_METRICS in the entry frame (not ACKS_OR_NACKS).
+        // The controller handles metrics-only frames during context unwinding.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS);
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
         assert!(
-            frames[0].interests.contains(Interests::ACKS),
-            "PIPELINE_METRICS should auto-subscribe ACKS"
+            frames[0].interests.contains(Interests::CONSUMER_METRICS),
+            "CONSUMER_METRICS should be set in entry frame"
         );
         assert!(
-            frames[0].interests.contains(Interests::NACKS),
-            "PIPELINE_METRICS should auto-subscribe NACKS"
+            !frames[0].interests.contains(Interests::ACKS),
+            "CONSUMER_METRICS should NOT auto-subscribe ACKS"
+        );
+        assert!(
+            !frames[0].interests.contains(Interests::NACKS),
+            "CONSUMER_METRICS should NOT auto-subscribe NACKS"
         );
         assert_eq!(
             frames[0].calldata.time_ns, 0,
-            "PIPELINE_METRICS alone should not stamp time"
+            "CONSUMER_METRICS alone should not stamp time"
         );
     }
 
     #[test]
     fn push_entry_frame_pipeline_metrics_no_timestamp() {
-        // PIPELINE_METRICS without ENTRY_TIMESTAMP should not capture a timestamp.
+        // CONSUMER_METRICS without ENTRY_TIMESTAMP should not capture a timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS);
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::ACKS_OR_NACKS));
+        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
         assert_eq!(
             frames[0].calldata.time_ns, 0,
             "Entry frame without ENTRY_TIMESTAMP should not stamp time"
@@ -1832,12 +1711,12 @@ mod test {
 
     #[test]
     fn push_entry_frame_entry_timestamp_stamps_time() {
-        // PIPELINE_METRICS | ENTRY_TIMESTAMP stamps a non-zero timestamp.
+        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps a non-zero timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::ACKS_OR_NACKS));
+        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
         assert!(
             frames[0].calldata.time_ns > 0,
             "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
@@ -1853,22 +1732,29 @@ mod test {
             UserCallData::new(),
             0,
         );
-        // Entry frame with PIPELINE_METRICS inherits RETURN_DATA from predecessor.
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS);
+        // Entry frame with CONSUMER_METRICS inherits RETURN_DATA from predecessor.
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 2);
         assert!(
             frames[1].interests.contains(Interests::RETURN_DATA),
             "entry frame should inherit RETURN_DATA"
         );
-        assert!(frames[1].interests.contains(Interests::ACKS));
+        assert!(
+            frames[1].interests.contains(Interests::CONSUMER_METRICS),
+            "entry frame should have CONSUMER_METRICS"
+        );
+        assert!(
+            !frames[1].interests.contains(Interests::ACKS),
+            "entry frame should NOT have ACKS (metrics-only, no auto-subscribe)"
+        );
     }
 
     #[test]
     fn subscribe_to_merges_into_entry_frame() {
-        // PIPELINE_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
+        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
         let original_time = ctx.frames()[0].calldata.time_ns;
         assert!(original_time > 0);
 
@@ -1894,7 +1780,7 @@ mod test {
     fn processor_subscribe_stamps_time() {
         // For processors without ENTRY_TIMESTAMP, time can still be stamped manually.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::PIPELINE_METRICS);
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         assert_eq!(ctx.frames()[0].calldata.time_ns, 0, "initially no time");
 
         // Simulate processor subscribe_to stamping time.
@@ -1922,19 +1808,19 @@ mod test {
 
     #[test]
     fn pipeline_metrics_ack_routable() {
-        // PIPELINE_METRICS auto-subscribes ACKS_OR_NACKS, so ACKs route
-        // to the entry frame even without explicit subscribe_to.
+        // CONSUMER_METRICS does NOT auto-subscribe ACKS, so next_ack skips
+        // the metrics-only entry frame and routes to the real subscriber.
         let (test_data, mut pdata) = create_test();
         pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
         pdata
             .context
-            .push_entry_frame(1, Interests::PIPELINE_METRICS);
+            .push_entry_frame(1, Interests::CONSUMER_METRICS);
 
         let ack = AckMsg::new(pdata);
-        let (node_id, _) = Context::next_ack(ack).expect("should find node 1");
+        let (node_id, _) = Context::next_ack(ack).expect("should find node 0");
         assert_eq!(
-            node_id, 1,
-            "PIPELINE_METRICS entry frame should be routable via next_ack"
+            node_id, 0,
+            "CONSUMER_METRICS entry frame is skipped; ack routes to subscriber at node 0"
         );
     }
 }

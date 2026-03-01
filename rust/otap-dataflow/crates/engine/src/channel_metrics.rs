@@ -255,6 +255,42 @@ impl fmt::Debug for InputChannelReceiverMetrics {
     }
 }
 
+impl InputChannelReceiverMetrics {
+    /// Record a consumed request outcome (success, failure, or refused).
+    #[inline]
+    pub(crate) fn record_consumed(&self, outcome: RequestOutcome) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_consumed(outcome);
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_consumed(outcome);
+                }
+            }
+        }
+    }
+
+    /// Record the consumed-request duration in nanoseconds.
+    #[inline]
+    pub(crate) fn record_consumed_duration(&self, duration_ns: u64) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_consumed_duration(duration_ns);
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_consumed_duration(duration_ns);
+                }
+            }
+        }
+    }
+}
+
 /// Handle to a pdata channel's sender metrics, supporting both local and shared modes.
 /// Stored in producer effect handlers so that ack/nack processing can record
 /// `produced.success`, `produced.failure`, and `produced.refused` on the correct

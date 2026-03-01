@@ -235,9 +235,17 @@ pub struct Interests: u8 {
     /// a wall-clock timestamp for consumer-duration metrics.
     const ENTRY_TIMESTAMP = 1 << 3;
 
-    /// Pipeline-metrics interest — when set, the entry frame
-    /// auto-subscribes to ACKS_OR_NACKS for outcome counting.
-    const PIPELINE_METRICS = 1 << 4;
+    /// Consumer-metrics interest — when set, the entry frame records
+    /// consumed-outcome metrics. Does NOT subscribe to ACKS/NACKS.
+    const CONSUMER_METRICS = 1 << 4;
+
+    /// Producer-metrics interest — when set, the subscriber frame records
+    /// produced-outcome metrics. Set by `subscribe_to()` alongside ACKS/NACKS.
+    const PRODUCER_METRICS = 1 << 5;
+
+    /// Pipeline-metrics interest — compound alias for
+    /// `CONSUMER_METRICS | PRODUCER_METRICS`.
+    const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
 }
 }
 
@@ -245,9 +253,9 @@ impl Interests {
     /// Derive `Interests` from a `MetricLevel`.
     ///
     /// - `None`     → empty
-    /// - `Basic`    → `PIPELINE_METRICS`
-    /// - `Normal`   → `PIPELINE_METRICS`
-    /// - `Detailed` → `PIPELINE_METRICS | ENTRY_TIMESTAMP`
+    /// - `Basic`    → `CONSUMER_METRICS | PRODUCER_METRICS`
+    /// - `Normal`   → `CONSUMER_METRICS | PRODUCER_METRICS`
+    /// - `Detailed` → `CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP`
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
