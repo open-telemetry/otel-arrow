@@ -247,6 +247,4 @@ allow the validation instructions to have control signals to validate against
   - call connect("label1", "label2") to connect a Generator to Capture
     - you can make multiple connections per Generator/Capture
 
-### Test containers
-
-**WIP**
+### Test containers (WIP)
