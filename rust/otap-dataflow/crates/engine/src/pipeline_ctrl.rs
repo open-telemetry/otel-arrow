@@ -15,7 +15,7 @@ use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg,
-    PipelineCtrlMsgReceiver, nanos_since_epoch,
+    PipelineCtrlMsgReceiver,
 };
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
@@ -547,7 +547,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         RequestOutcome::Failure => input.consumed_failure.inc(),
                         RequestOutcome::Refused => input.consumed_refused.inc(),
                     }
-                    if interests.contains(Interests::ENTRY_TIMESTAMP) && calldata.time_ns > 0 {
+                    if calldata.time_ns > 0 && now_ns > 0 {
                         let duration_ns = now_ns.saturating_sub(calldata.time_ns);
                         input.consumed_duration_ns.record(duration_ns as f64);
                     }
@@ -608,12 +608,12 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     /// Unwind the context stack for an ack, recording metrics at each
     /// intermediate frame, then deliver to the first subscriber with ACKS.
     ///
-    /// A single wall-clock timestamp is captured at the start of each
-    /// unwind pass and reused for all duration computations within that
-    /// pass.  A new timestamp is captured if the ack is subsequently
-    /// re-routed (by a node calling `notify_ack` again).
+    /// The return-path timestamp is captured at the ack origin
+    /// (notify_ack) and carried in `ack.calldata.return_time_ns`.
+    /// A new timestamp is captured when it subsequently routes the
+    /// next ack/nack.
     async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
-        let now_ns = nanos_since_epoch();
+        let now_ns = ack.calldata.return_time_ns;
         loop {
             match ack.accepted.pop_frame() {
                 None => return, // no more subscribers
@@ -643,9 +643,9 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     /// Unwind the context stack for a nack, recording metrics at each
     /// intermediate frame, then deliver to the first subscriber with NACKS.
     ///
-    /// Same single-timestamp-per-pass semantics as `unwind_ack`.
+    /// Same origin-captured timestamp semantics as `unwind_ack`.
     async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
-        let now_ns = nanos_since_epoch();
+        let now_ns = nack.calldata.return_time_ns;
         let outcome = if nack.permanent {
             RequestOutcome::Refused
         } else {
@@ -2241,6 +2241,7 @@ mod tests {
                 user: Default::default(),
                 time_ns: 0,
                 output_port_index: 0,
+                ..Default::default()
             },
         });
 
@@ -2257,6 +2258,7 @@ mod tests {
                 user: Default::default(),
                 time_ns,
                 output_port_index: 0,
+                ..Default::default()
             },
         });
 
@@ -2269,6 +2271,7 @@ mod tests {
                 user: Default::default(),
                 time_ns,
                 output_port_index: 0,
+                ..Default::default()
             },
         });
 
@@ -2390,13 +2393,15 @@ mod tests {
     }
 
     /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
-    /// when ENTRY_TIMESTAMP is set and time_ns > 0.
+    /// when time_ns > 0 and return_time_ns > 0.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
             let pdata = build_3node_pdata(nodes, true);
-            vec![PipelineControlMsg::DeliverAck { ack: AckMsg::new(pdata) }]
+            let mut ack = AckMsg::new(pdata);
+            ack.calldata.return_time_ns = nanos_since_epoch();
+            vec![PipelineControlMsg::DeliverAck { ack }]
         }).await;
 
         // Exporter consumed duration: 1 observation, min > 0
@@ -2413,7 +2418,7 @@ mod tests {
         assert!(snap.min > 0.0, "Processor duration should be > 0");
     }
 
-    /// Verify that when time_ns is 0, no duration histogram is recorded.
+    /// Verify that when time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
     #[tokio::test]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();

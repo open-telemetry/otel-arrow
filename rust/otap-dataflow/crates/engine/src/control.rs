@@ -117,6 +117,11 @@ pub struct CallData {
     /// Receive timestamp (monotonic nanos since process epoch).
     /// Only populated when `MetricLevel >= Detailed`; 0 otherwise.
     pub time_ns: u64,
+    /// Return-path timestamp (monotonic nanos since process epoch).
+    /// Captured at the origin of an ack/nack (notify_ack/notify_nack)
+    /// when the context stack contains frames with metrics interests.
+    /// 0 when no metrics interests are present or timestamps are disabled.
+    pub return_time_ns: u64,
     /// Producer's output port index, stamped at send time.
     /// Used on the return path to attribute produced metrics to the
     /// correct output channel.

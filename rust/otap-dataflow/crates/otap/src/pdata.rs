@@ -163,6 +163,25 @@ impl Context {
         !self.stack.is_empty()
     }
 
+    /// Returns true if there are frames with pipeline metrics interests
+    /// at or before the first subscriber for `subscriber_interest` (ACKS
+    /// or NACKS), scanning from the top of the stack (the unwind order).
+    ///
+    /// Used at the ack/nack origin (notify_ack/notify_nack) to decide
+    /// whether to capture a return-path timestamp before routing.
+    #[must_use]
+    pub fn has_pending_metrics(&self, subscriber_interest: Interests) -> bool {
+        for frame in self.stack.iter().rev() {
+            if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+                return true;
+            }
+            if frame.interests.intersects(subscriber_interest) {
+                return false;
+            }
+        }
+        false
+    }
+
     /// Set the source node for this context.
     pub fn set_source_node(&mut self, node_id: usize) {
         let mut interests = Interests::empty();
@@ -404,6 +423,13 @@ impl OtapPdata {
         self.context.has_context_frames()
     }
 
+    /// Returns true if the context stack has frames with pipeline metrics
+    /// interests before the first subscriber for `subscriber_interest`.
+    #[must_use]
+    pub fn has_pending_metrics(&self, subscriber_interest: Interests) -> bool {
+        self.context.has_pending_metrics(subscriber_interest)
+    }
+
     /// Return the source's calldata. Note that after a subscribe_to()
     /// has been called, the current node becomes the source.
     ///
@@ -523,16 +549,22 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if ack.accepted.has_context_frames() {
+            if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                ack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_ack(ack).await
         } else {
             Ok(())
         }
     }
 
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         if nack.refused.has_context_frames() {
+            if nack.refused.has_pending_metrics(Interests::NACKS) {
+                nack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_nack(nack).await
         } else {
             Ok(())
@@ -544,16 +576,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if ack.accepted.has_context_frames() {
+            if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                ack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_ack(ack).await
         } else {
             Ok(())
         }
     }
 
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         if nack.refused.has_context_frames() {
+            if nack.refused.has_pending_metrics(Interests::NACKS) {
+                nack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_nack(nack).await
         } else {
             Ok(())
@@ -565,16 +603,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if ack.accepted.has_context_frames() {
+            if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                ack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_ack(ack).await
         } else {
             Ok(())
         }
     }
 
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         if nack.refused.has_context_frames() {
+            if nack.refused.has_pending_metrics(Interests::NACKS) {
+                nack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_nack(nack).await
         } else {
             Ok(())
@@ -586,16 +630,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if ack.accepted.has_context_frames() {
+            if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                ack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_ack(ack).await
         } else {
             Ok(())
         }
     }
 
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
         if nack.refused.has_context_frames() {
+            if nack.refused.has_pending_metrics(Interests::NACKS) {
+                nack.calldata.return_time_ns = nanos_since_epoch();
+            }
             self.route_nack(nack).await
         } else {
             Ok(())
