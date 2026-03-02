@@ -211,19 +211,6 @@ impl Context {
 
     /// Push an entry frame for a queue-consumer node (processor/exporter).
     /// The frame inherits RETURN_DATA from the predecessor.
-    ///
-    /// # Parameters
-    /// - `node_id`: The node's index.
-    /// - `node_interests`: Precomputed interests (derived from `MetricLevel`).
-    ///
-    /// Note: If neither `CONSUMER_METRICS` nor `ENTRY_TIMESTAMP` is set in
-    /// `node_interests`, no frame is pushed (the node is invisible to the
-    /// context stack).
-    ///
-    /// The frame is pushed with `CONSUMER_METRICS` (no `ACKS` or `NACKS`).
-    /// If the component later calls `subscribe_to`, the same-node merge
-    /// will fold `ACKS | NACKS | PRODUCER_METRICS` into this frame while
-    /// preserving `time_ns`.
     pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
         // No frame needed when the engine has no consumer metrics interest.
         if !node_interests.intersects(Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP) {
@@ -234,7 +221,6 @@ impl Context {
             interests = last.interests & Interests::RETURN_DATA;
         }
         // Mark this frame for consumer-side outcome counting only.
-        // No ACKS/NACKS — the node must explicitly subscribe to receive delivery.
         if node_interests.contains(Interests::CONSUMER_METRICS) {
             interests |= Interests::CONSUMER_METRICS;
         }
@@ -552,7 +538,7 @@ macro_rules! impl_message_source_ext {
                     data
                 };
                 data.context
-                    .stamp_output_port_index(self.default_output_port_index());
+                    .stamp_output_port_index(self.router.default_output_port_index());
                 self.send_message(data).await
             }
 
@@ -566,7 +552,7 @@ macro_rules! impl_message_source_ext {
                     data
                 };
                 data.context
-                    .stamp_output_port_index(self.default_output_port_index());
+                    .stamp_output_port_index(self.router.default_output_port_index());
                 self.try_send_message(data)
             }
 
@@ -585,7 +571,7 @@ macro_rules! impl_message_source_ext {
                     data
                 };
                 data.context
-                    .stamp_output_port_index(self.output_port_index(&port_name));
+                    .stamp_output_port_index(self.router.output_port_index(&port_name));
                 self.send_message_to(port_name, data).await
             }
 
@@ -604,7 +590,7 @@ macro_rules! impl_message_source_ext {
                     data
                 };
                 data.context
-                    .stamp_output_port_index(self.output_port_index(&port_name));
+                    .stamp_output_port_index(self.router.output_port_index(&port_name));
                 self.try_send_message_to(port_name, data)
             }
         }

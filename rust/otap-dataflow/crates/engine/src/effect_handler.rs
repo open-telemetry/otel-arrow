@@ -289,15 +289,16 @@ impl<PData> EffectHandlerCore<PData> {
     where
         PData: crate::Unwindable,
     {
-        if !ack.accepted.has_frames() {
-            return Ok(());
+        if ack.accepted.has_frames() {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
+                .await
+                .map(|_| ())
+                .map_err(|e| Error::PipelineControlMsgError {
+                    error: e.to_string(),
+                })
+        } else {
+            Ok(())
         }
-        self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
     }
 
     /// Send a NackMsg to the pipeline controller for context unwinding.
@@ -306,15 +307,16 @@ impl<PData> EffectHandlerCore<PData> {
     where
         PData: crate::Unwindable,
     {
-        if !nack.refused.has_frames() {
-            return Ok(());
+        if nack.refused.has_frames() {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
+                .await
+                .map(|_| ())
+                .map_err(|e| Error::PipelineControlMsgError {
+                    error: e.to_string(),
+                })
+        } else {
+            Ok(())
         }
-        self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::PipelineControlMsgError {
-                error: e.to_string(),
-            })
     }
 
     /// Delay a message.

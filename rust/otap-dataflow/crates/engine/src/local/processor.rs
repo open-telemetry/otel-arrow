@@ -94,7 +94,8 @@ pub trait Processor<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-    router: OutputRouter<Sender<PData>>,
+    /// Output-port router.
+    pub router: OutputRouter<Sender<PData>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -130,7 +131,17 @@ impl<PData> EffectHandler<PData> {
         self.core.source_tagging()
     }
 
-    delegate_router_methods!();
+    /// Returns the list of connected output ports for this processor.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.router.connected_ports()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
     ///
