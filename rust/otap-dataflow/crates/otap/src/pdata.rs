@@ -457,83 +457,44 @@ impl OtapPdata {
 
 /* -------- Producer effect handler extensions (shared, local) -------- */
 
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting and delivery.
-        if interests.contains(Interests::PRODUCER_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
+/// Implements `ProducerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
+/// `$id_method` is `processor_id` or `receiver_id`.
+macro_rules! impl_producer_ext {
+    ($handler:ty, $id_method:ident) => {
+        #[async_trait(?Send)]
+        impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
+            fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
+                let interests = self.node_interests();
+                // At Basic+, auto-subscribe for outcome counting and delivery.
+                if interests.contains(Interests::PRODUCER_METRICS) {
+                    int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
+                }
+                data.context.subscribe_to(int, ctx, self.$id_method().index);
+                // At Detailed, stamp receive time.
+                if interests.contains(Interests::ENTRY_TIMESTAMP) {
+                    data.context.stamp_top_time(nanos_since_epoch());
+                }
+            }
         }
-        data.context
-            .subscribe_to(int, ctx, self.processor_id().index);
-        // At Detailed, stamp receive time if not already stamped.
-        // (Entry frame should already have time_ns, but this handles
-        // the case where subscribe_to is called on a new frame.)
-        if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            data.context.stamp_top_time(nanos_since_epoch());
-        }
-    }
+    };
 }
 
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting and delivery.
-        if interests.contains(Interests::PRODUCER_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
-        }
-        data.context
-            .subscribe_to(int, ctx, self.receiver_id().index);
-        // At Detailed, stamp receive time.
-        if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            data.context.stamp_top_time(nanos_since_epoch());
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting and delivery.
-        if interests.contains(Interests::PRODUCER_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
-        }
-        data.context
-            .subscribe_to(int, ctx, self.processor_id().index);
-        // At Detailed, stamp receive time if not already stamped.
-        if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            data.context.stamp_top_time(nanos_since_epoch());
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        let interests = self.node_interests();
-        // At Basic+, auto-subscribe for outcome counting and delivery.
-        if interests.contains(Interests::PRODUCER_METRICS) {
-            int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
-        }
-        data.context
-            .subscribe_to(int, ctx, self.receiver_id().index);
-        // At Detailed, stamp receive time.
-        if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            data.context.stamp_top_time(nanos_since_epoch());
-        }
-    }
-}
+impl_producer_ext!(
+    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_producer_ext!(
+    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
+impl_producer_ext!(
+    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_producer_ext!(
+    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
@@ -541,367 +502,139 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 // controller during context unwinding. route_ack/route_nack skip sending
 // when the context stack is empty (nothing to unwind).
 
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        if ack.accepted.has_pending_metrics(Interests::ACKS) {
-            ack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_ack(ack).await
-    }
+/// Implements `ConsumerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
+macro_rules! impl_consumer_ext {
+    ($handler:ty) => {
+        #[async_trait(?Send)]
+        impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
+            async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+                if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                    ack.calldata.return_time_ns = nanos_since_epoch();
+                }
+                self.route_ack(ack).await
+            }
 
-    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        if nack.refused.has_pending_metrics(Interests::NACKS) {
-            nack.calldata.return_time_ns = nanos_since_epoch();
+            async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+                if nack.refused.has_pending_metrics(Interests::NACKS) {
+                    nack.calldata.return_time_ns = nanos_since_epoch();
+                }
+                self.route_nack(nack).await
+            }
         }
-        self.route_nack(nack).await
-    }
+    };
 }
 
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        if ack.accepted.has_pending_metrics(Interests::ACKS) {
-            ack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_ack(ack).await
-    }
-
-    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        if nack.refused.has_pending_metrics(Interests::NACKS) {
-            nack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_nack(nack).await
-    }
-}
-
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        if ack.accepted.has_pending_metrics(Interests::ACKS) {
-            ack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_ack(ack).await
-    }
-
-    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        if nack.refused.has_pending_metrics(Interests::NACKS) {
-            nack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_nack(nack).await
-    }
-}
-
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        if ack.accepted.has_pending_metrics(Interests::ACKS) {
-            ack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_ack(ack).await
-    }
-
-    async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        if nack.refused.has_pending_metrics(Interests::NACKS) {
-            nack.calldata.return_time_ns = nanos_since_epoch();
-        }
-        self.route_nack(nack).await
-    }
-}
+impl_consumer_ext!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
-#[async_trait(?Send)]
-impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.send_message(data).await
-    }
+/// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
+///
+/// Parameters:
+///   $async_attr   – `async_trait(?Send)` for local or `async_trait` for shared
+///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
+///   $handler      – fully-qualified EffectHandler type
+///   $id_method    – `processor_id` or `receiver_id`
+macro_rules! impl_message_source_ext {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident) => {
+        #[$async_attr]
+        impl $trait_name<OtapPdata> for $handler {
+            async fn send_message_with_source_node(
+                &self,
+                data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>> {
+                let mut data = if self.source_tagging().enabled() {
+                    data.add_source_node(self.$id_method().index)
+                } else {
+                    data
+                };
+                data.context
+                    .stamp_output_port_index(self.default_output_port_index());
+                self.send_message(data).await
+            }
 
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.try_send_message(data)
-    }
+            fn try_send_message_with_source_node(
+                &self,
+                data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>> {
+                let mut data = if self.source_tagging().enabled() {
+                    data.add_source_node(self.$id_method().index)
+                } else {
+                    data
+                };
+                data.context
+                    .stamp_output_port_index(self.default_output_port_index());
+                self.try_send_message(data)
+            }
 
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.send_message_to(port_name, data).await
-    }
+            async fn send_message_with_source_node_to<P>(
+                &self,
+                port: P,
+                data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>>
+            where
+                P: Into<PortName> + Send + 'static,
+            {
+                let port_name: PortName = port.into();
+                let mut data = if self.source_tagging().enabled() {
+                    data.add_source_node(self.$id_method().index)
+                } else {
+                    data
+                };
+                data.context
+                    .stamp_output_port_index(self.output_port_index(&port_name));
+                self.send_message_to(port_name, data).await
+            }
 
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.try_send_message_to(port_name, data)
-    }
+            fn try_send_message_with_source_node_to<P>(
+                &self,
+                port: P,
+                data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>>
+            where
+                P: Into<PortName> + Send + 'static,
+            {
+                let port_name: PortName = port.into();
+                let mut data = if self.source_tagging().enabled() {
+                    data.add_source_node(self.$id_method().index)
+                } else {
+                    data
+                };
+                data.context
+                    .stamp_output_port_index(self.output_port_index(&port_name));
+                self.try_send_message_to(port_name, data)
+            }
+        }
+    };
 }
 
-#[async_trait(?Send)]
-impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.send_message(data).await
-    }
-
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.try_send_message(data)
-    }
-
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.send_message_to(port_name, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.try_send_message_to(port_name, data)
-    }
-}
-
-#[async_trait]
-impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.send_message(data).await
-    }
-
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.try_send_message(data)
-    }
-
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.send_message_to(port_name, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.try_send_message_to(port_name, data)
-    }
-}
-
-#[async_trait]
-impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.send_message(data).await
-    }
-
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.default_output_port_index());
-        self.try_send_message(data)
-    }
-
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.send_message_to(port_name, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let port_name: PortName = port.into();
-        let mut data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        data.context
-            .stamp_output_port_index(self.output_port_index(&port_name));
-        self.try_send_message_to(port_name, data)
-    }
-}
+impl_message_source_ext!(
+    async_trait(?Send),
+    MessageSourceLocalEffectHandlerExtension,
+    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_message_source_ext!(
+    async_trait(?Send),
+    MessageSourceLocalEffectHandlerExtension,
+    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
+impl_message_source_ext!(
+    async_trait,
+    MessageSourceSharedEffectHandlerExtension,
+    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_message_source_ext!(
+    async_trait,
+    MessageSourceSharedEffectHandlerExtension,
+    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
 
 /* -------- ReceivedAtNode implementation -------- */
 

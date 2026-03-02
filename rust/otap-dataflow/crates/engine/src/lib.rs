@@ -46,6 +46,38 @@ use std::{
     sync::OnceLock,
 };
 
+/// Generates delegation methods shared by EffectHandler types that have a `core`
+/// and `router` field — i.e. processor and receiver handlers (local and shared).
+///
+/// Call this inside an `impl<PData> EffectHandler<PData> { … }` block.
+macro_rules! delegate_router_methods {
+    () => {
+        /// Returns the precomputed node interests.
+        #[must_use]
+        pub fn node_interests(&self) -> Interests {
+            self.core.node_interests()
+        }
+
+        /// Returns the list of connected output ports.
+        #[must_use]
+        pub fn connected_ports(&self) -> Vec<PortName> {
+            self.router.connected_ports()
+        }
+
+        /// Returns the stable output port index for the default port.
+        #[must_use]
+        pub fn default_output_port_index(&self) -> u16 {
+            self.router.default_output_port_index()
+        }
+
+        /// Returns the stable output port index for a named port.
+        #[must_use]
+        pub fn output_port_index(&self, port: &PortName) -> u16 {
+            self.router.output_port_index(port)
+        }
+    };
+}
+
 pub mod error;
 pub mod exporter;
 pub mod message;

@@ -47,6 +47,36 @@ fn make_produced_metrics(
         .unwrap_or_default()
 }
 
+/// Build per-node metric handles for the pipeline controller.
+///
+/// - `has_input`: whether to register consumed-request metrics (false for receivers).
+/// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+fn make_node_metric_handles(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+    has_input: bool,
+    has_outputs: bool,
+) -> NodeMetricHandles {
+    let consumed = if has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+    } else {
+        None
+    };
+    let produced = if has_outputs {
+        make_produced_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
+    NodeMetricHandles {
+        registry: pipeline_context.metrics_registry(),
+        input: consumed,
+        outputs: produced,
+    }
+}
+
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
 /// Note: Having a Debug bound on `PData` allows us to use it in logging and debugging contexts,
@@ -178,19 +208,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
-            // Create consumed metrics registered under the input channel entity.
-            let consumed = telemetry_handle
-                .as_ref()
-                .and_then(|h| h.input_channel_key())
-                .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key));
             // Collect per-node metrics for the controller (exporters have no output channels).
             node_metric_entries.push((
                 node_id.index,
-                NodeMetricHandles {
-                    registry: pipeline_context.metrics_registry(),
-                    input: consumed,
-                    outputs: Vec::new(),
-                },
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
@@ -233,21 +254,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
-            // Create consumed metrics registered under the input channel entity.
-            let consumed = telemetry_handle
-                .as_ref()
-                .and_then(|h| h.input_channel_key())
-                .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key));
-            // Create produced metrics registered under each output channel entity.
-            let produced = make_produced_metrics(&telemetry_handle, &pipeline_context);
             // Collect per-node metrics for the controller.
             node_metric_entries.push((
                 node_id.index,
-                NodeMetricHandles {
-                    registry: pipeline_context.metrics_registry(),
-                    input: consumed,
-                    outputs: produced,
-                },
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
@@ -282,16 +292,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = receiver.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
-            // Create produced metrics registered under each output channel entity.
-            let produced = make_produced_metrics(&telemetry_handle, &pipeline_context);
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                NodeMetricHandles {
-                    registry: pipeline_context.metrics_registry(),
-                    input: None,
-                    outputs: produced,
-                },
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
