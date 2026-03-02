@@ -25,9 +25,11 @@ use crate::table::RecordBatchPartitionStream;
 
 mod attributes;
 mod conditional;
+mod expr;
 mod filter;
 mod functions;
 mod planner;
+mod project;
 
 pub mod routing;
 pub mod state;

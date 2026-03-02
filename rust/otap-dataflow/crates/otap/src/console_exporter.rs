@@ -22,11 +22,13 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_pdata::OtapPayload;
-use otap_df_pdata::views::common::InstrumentationScopeView;
-use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::resource::ResourceView;
+use otap_df_pdata_views::views::common::InstrumentationScopeView;
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;

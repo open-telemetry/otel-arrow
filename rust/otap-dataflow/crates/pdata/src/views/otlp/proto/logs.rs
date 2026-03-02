@@ -8,13 +8,15 @@ use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, S
 use crate::schema::{SpanId, TraceId};
 
 use crate::views::{
-    common::Str,
-    logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     otlp::proto::common::{
         KeyValueIter, ObjAny, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
     },
     otlp::proto::resource::ObjResource,
     otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
+};
+use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
