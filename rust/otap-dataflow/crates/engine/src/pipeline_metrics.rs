@@ -33,6 +33,8 @@
 //! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
 //!   Process-wide Resident Set Size — physical memory currently held in RAM.
 //!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+//!   **Note:** This is a process-wide value duplicated across all pipeline instances.
+//!   Do not sum across pipelines; use `max` or `last` to query the true RSS.
 //!
 //! - `memory_usage` (`ObserveUpDownCounter<u64>`, `{By}`, jemalloc only):
 //!   Current heap bytes in use by the pipeline thread:
@@ -167,6 +169,9 @@ pub struct PipelineMetrics {
 
     /// Process-wide Resident Set Size — physical RAM currently used by the process.
     /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+    ///
+    /// **Note:** This value is process-wide and identical across all pipeline instances.
+    /// Do not sum across pipelines; use `max` or `last` to get the true RSS.
     #[metric(unit = "{By}")]
     pub memory_rss: ObserveUpDownCounter<u64>,
 
@@ -851,6 +856,10 @@ mod jemalloc_tests {
 
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
         assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
+        assert!(
+            monitor.metrics.memory_rss.get() > 0,
+            "memory_rss should report non-zero process RSS"
+        );
         assert!(monitor.metrics.memory_allocated.get() >= mem0);
         assert!(monitor.metrics.memory_allocated_delta.get() > 0);
 
@@ -918,6 +927,12 @@ mod non_jemalloc_tests {
         // CPU metrics should still update.
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
         assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
+
+        // RSS metric should be populated regardless of jemalloc.
+        assert!(
+            monitor.metrics.memory_rss.get() > 0,
+            "memory_rss should report non-zero process RSS"
+        );
 
         // Scheduling / page fault metrics should be monotonic when supported.
         if monitor.rusage_thread_supported {
