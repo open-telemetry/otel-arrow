@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, UserCallData, nanos_since_epoch};
+use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_epoch};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
@@ -44,7 +44,7 @@ impl Context {
     pub(crate) fn subscribe_to(
         &mut self,
         mut interests: Interests,
-        user_calldata: UserCallData,
+        user_calldata: CallData,
         node_id: usize,
     ) {
         if let Some(top) = self.stack.last_mut() {
@@ -61,7 +61,7 @@ impl Context {
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: CallData {
+            calldata: RouteData {
                 user: user_calldata,
                 ..Default::default()
             },
@@ -74,9 +74,7 @@ impl Context {
     /// Drains the context stack, recording metrics for intermediate
     /// frames, until it finds a frame with `ACKS` interest.
     #[must_use]
-    pub fn next_ack(
-        mut ack: AckMsg<OtapPdata>,
-    ) -> Option<(usize, AckMsg<OtapPdata>)> {
+    pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
         let frame = ack
             .accepted
             .context
@@ -95,9 +93,7 @@ impl Context {
     ///
     /// Same drain semantics as `next_ack()`.
     #[must_use]
-    pub fn next_nack(
-        mut nack: NackMsg<OtapPdata>,
-    ) -> Option<(usize, NackMsg<OtapPdata>)> {
+    pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
         let frame = nack
             .refused
             .context
@@ -113,10 +109,7 @@ impl Context {
 
     /// Drain the context stack to find the first subscriber frame
     /// with the given interest bit.
-    fn drain_to_next_subscriber(
-        &mut self,
-        int: Interests,
-    ) -> Option<Frame> {
+    fn drain_to_next_subscriber(&mut self, int: Interests) -> Option<Frame> {
         while let Some(frame) = self.stack.pop() {
             if frame.interests.contains(int) {
                 return Some(frame);
@@ -146,7 +139,7 @@ impl Context {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<CallData> {
+    pub fn source_calldata(&self) -> Option<RouteData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
 
@@ -196,7 +189,7 @@ impl Context {
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: CallData::default(),
+            calldata: RouteData::default(),
         });
     }
 
@@ -258,8 +251,8 @@ impl Context {
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: CallData {
-                user: UserCallData::new(),
+            calldata: RouteData {
+                user: CallData::new(),
                 time_ns,
                 ..Default::default()
             },
@@ -396,7 +389,7 @@ impl OtapPdata {
     pub fn test_subscribe_to(
         mut self,
         interests: Interests,
-        calldata: UserCallData,
+        calldata: CallData,
         node_id: usize,
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
@@ -440,7 +433,7 @@ impl OtapPdata {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<CallData> {
+    pub fn source_calldata(&self) -> Option<RouteData> {
         self.context.source_calldata()
     }
 
@@ -464,7 +457,7 @@ impl OtapPdata {
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
         // At Basic+, auto-subscribe for outcome counting and delivery.
         if interests.contains(Interests::PRODUCER_METRICS) {
@@ -485,7 +478,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
         // At Basic+, auto-subscribe for outcome counting and delivery.
         if interests.contains(Interests::PRODUCER_METRICS) {
@@ -504,7 +497,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
         // At Basic+, auto-subscribe for outcome counting and delivery.
         if interests.contains(Interests::PRODUCER_METRICS) {
@@ -523,7 +516,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
         let interests = self.node_interests();
         // At Basic+, auto-subscribe for outcome counting and delivery.
         if interests.contains(Interests::PRODUCER_METRICS) {
@@ -1608,9 +1601,9 @@ mod test {
                 test_data.clone().into(),
                 1,
             )
-            .test_subscribe_to(Interests::ACKS, UserCallData::default(), 2)
-            .test_subscribe_to(Interests::NACKS, UserCallData::default(), 3)
-            .test_subscribe_to(Interests::ACKS, UserCallData::default(), 4);
+            .test_subscribe_to(Interests::ACKS, CallData::default(), 2)
+            .test_subscribe_to(Interests::NACKS, CallData::default(), 3)
+            .test_subscribe_to(Interests::ACKS, CallData::default(), 4);
         assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
@@ -1737,7 +1730,7 @@ mod test {
         );
 
         // Node 3: downstream processor subscribes with ACKS (no explicit RETURN_DATA)
-        let pdata = pdata.test_subscribe_to(Interests::ACKS, UserCallData::default(), 3);
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 3);
 
         // Node 3's frame should have inherited RETURN_DATA through the source frame.
         assert!(
@@ -1839,11 +1832,7 @@ mod test {
     fn push_entry_frame_inherits_return_data() {
         let mut ctx = Context::default();
         // Source subscribes with RETURN_DATA.
-        ctx.subscribe_to(
-            Interests::ACKS | Interests::RETURN_DATA,
-            UserCallData::new(),
-            0,
-        );
+        ctx.subscribe_to(Interests::ACKS | Interests::RETURN_DATA, CallData::new(), 0);
         // Entry frame with CONSUMER_METRICS inherits RETURN_DATA from predecessor.
         ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         let frames = ctx.frames();

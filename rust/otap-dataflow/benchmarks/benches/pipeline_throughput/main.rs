@@ -18,7 +18,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::SignalType;
 use otap_df_engine::Interests;
 use otap_df_engine::control::{
-    AckMsg, NodeControlMsg, PipelineControlMsg, UserCallData, nanos_since_epoch,
+    AckMsg, CallData, NodeControlMsg, PipelineControlMsg, nanos_since_epoch,
 };
 use otap_df_engine::message::Sender;
 use otap_df_otap::pdata::{Context, OtapPdata};
@@ -59,31 +59,28 @@ fn bench_pipeline_throughput(c: &mut Criterion) {
     _ = group.throughput(Throughput::Elements(MSG_COUNT as u64));
 
     // (a) Fire-and-forget: send empty pdata, consumer drains without acking.
-    _ = group.bench_function(
-        BenchmarkId::new("fire_and_forget", MSG_COUNT),
-        |b| {
-            b.to_async(&rt).iter(|| async {
-                let (pdata_tx, pdata_rx) = mpsc::Channel::new(CHANNEL_SIZE);
-                let template = Rc::new(empty_pdata());
+    _ = group.bench_function(BenchmarkId::new("fire_and_forget", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (pdata_tx, pdata_rx) = mpsc::Channel::new(CHANNEL_SIZE);
+            let template = Rc::new(empty_pdata());
 
-                let local = LocalSet::new();
-                let t = template.clone();
-                _ = local.spawn_local(async move {
-                    for _ in 0..MSG_COUNT {
-                        _ = pdata_tx.send_async((*t).clone()).await;
-                    }
-                });
-
-                _ = local.spawn_local(async move {
-                    for _ in 0..MSG_COUNT {
-                        let _ = pdata_rx.recv().await;
-                    }
-                });
-
-                local.await;
+            let local = LocalSet::new();
+            let t = template.clone();
+            _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT {
+                    _ = pdata_tx.send_async((*t).clone()).await;
+                }
             });
-        },
-    );
+
+            _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT {
+                    let _ = pdata_rx.recv().await;
+                }
+            });
+
+            local.await;
+        });
+    });
 
     // (b)-(d): Backpressure with ack routing via a lightweight controller loop.
     let scenarios: &[(&str, Interests)] = &[
@@ -148,7 +145,7 @@ fn bench_pipeline_throughput(c: &mut Criterion) {
                             let mut pdata = empty_pdata();
                             pdata = pdata.test_subscribe_to(
                                 interests,
-                                UserCallData::default(),
+                                CallData::default(),
                                 PRODUCER_NODE_ID,
                             );
                             if stamp_time {

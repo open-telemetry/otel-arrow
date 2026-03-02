@@ -134,7 +134,10 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub async fn send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default_sender {
-            Some(sender) => sender.output_send(data).await.map_err(TypedError::ChannelSendError),
+            Some(sender) => sender
+                .output_send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.node_id.clone(),
             })),
@@ -145,7 +148,9 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub fn try_send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default_sender {
-            Some(sender) => sender.try_output_send(data).map_err(TypedError::ChannelSendError),
+            Some(sender) => sender
+                .try_output_send(data)
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.node_id.clone(),
             })),
@@ -154,10 +159,17 @@ impl<S: OutputSend> OutputRouter<S> {
 
     /// Sends a message to a specific named output port.
     #[inline]
-    pub async fn send_to<P: Into<PortName>>(&self, port: P, data: S::Data) -> Result<(), TypedError<S::Data>> {
+    pub async fn send_to<P: Into<PortName>>(
+        &self,
+        port: P,
+        data: S::Data,
+    ) -> Result<(), TypedError<S::Data>> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.output_send(data).await.map_err(TypedError::ChannelSendError),
+            Some(sender) => sender
+                .output_send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.node_id.clone(),
                 port: port_name,
@@ -167,10 +179,16 @@ impl<S: OutputSend> OutputRouter<S> {
 
     /// Attempts to send a message to a specific named output port without awaiting.
     #[inline]
-    pub fn try_send_to<P: Into<PortName>>(&self, port: P, data: S::Data) -> Result<(), TypedError<S::Data>> {
+    pub fn try_send_to<P: Into<PortName>>(
+        &self,
+        port: P,
+        data: S::Data,
+    ) -> Result<(), TypedError<S::Data>> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.try_output_send(data).map_err(TypedError::ChannelSendError),
+            Some(sender) => sender
+                .try_output_send(data)
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.node_id.clone(),
                 port: port_name,

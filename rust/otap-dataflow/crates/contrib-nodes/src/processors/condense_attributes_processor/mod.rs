@@ -1207,7 +1207,8 @@ mod condense_tests {
 
                 match pipeline_ctrl_rx.recv().await.expect("pipeline msg") {
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) =
+                            Context::next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         assert_eq!(nack.refused.signal_type(), SignalType::Metrics);
                     }

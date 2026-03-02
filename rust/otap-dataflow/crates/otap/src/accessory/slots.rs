@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Slot-based correlation system for correlating in-flight requests
-//! and responses. Provides a CallData to retrieve the data for
+//! and responses. Provides a RouteData to retrieve the data for
 //! Ack/Nack handling. Based on the slotmap crate.
 
-use otap_df_engine::control::UserCallData;
+use otap_df_engine::control::CallData;
 use otap_df_engine::error::Error;
 use slotmap::{Key as SlotKey, KeyData, SlotMap, new_key_type};
 
@@ -14,16 +14,16 @@ new_key_type! {
     pub struct Key;
 }
 
-impl From<Key> for UserCallData {
+impl From<Key> for CallData {
     fn from(key: Key) -> Self {
         smallvec::smallvec![key.data().as_ffi().into()]
     }
 }
 
-impl TryFrom<UserCallData> for Key {
+impl TryFrom<CallData> for Key {
     type Error = Error;
 
-    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
         if value.len() != 1 {
             return Err(Error::InternalError {
                 message: "invalid calldata format".into(),

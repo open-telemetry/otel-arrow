@@ -41,7 +41,7 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
-    control::{AckMsg, NackMsg, NodeControlMsg, UserCallData},
+    control::{AckMsg, CallData, NackMsg, NodeControlMsg},
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor as local,
     message::Message,
@@ -959,7 +959,7 @@ where
     async fn handle(
         &mut self,
         signal: SignalType,
-        calldata: UserCallData,
+        calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
     ) -> Result<(), EngineError> {
@@ -998,7 +998,7 @@ impl BatchProcessor {
     async fn handle_response(
         &mut self,
         retdata: OtapPdata,
-        calldata: UserCallData,
+        calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
     ) -> Result<(), EngineError> {

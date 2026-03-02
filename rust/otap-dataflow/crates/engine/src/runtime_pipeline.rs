@@ -28,7 +28,7 @@ use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 /// Build produced-request metric sets indexed by sorted output port name,
-/// matching the `output_port_index` layout used in `CallData`.
+/// matching the `output_port_index` layout used in `RouteData`.
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
@@ -253,11 +253,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(
-                        pipeline_ctrl_msg_tx,
-                        metrics_reporter,
-                        node_interests,
-                    )
+                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests)
                     .await;
                 drop(telemetry_guard);
                 result

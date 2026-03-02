@@ -8,7 +8,7 @@ use bytes::Bytes;
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
-    control::{PipelineControlMsg, UserCallData},
+    control::{CallData, PipelineControlMsg},
 };
 use otap_df_pdata::OtlpProtoBytes;
 use prost::Message;
@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::ops::Add;
 use std::time::Instant;
 
-/// TestCallData helps test the CallData type.
+/// TestCallData helps test the RouteData type.
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct TestCallData {
     id0: u64,
@@ -37,16 +37,16 @@ impl Default for TestCallData {
     }
 }
 
-impl From<TestCallData> for UserCallData {
+impl From<TestCallData> for CallData {
     fn from(value: TestCallData) -> Self {
         smallvec::smallvec![value.id0.into(), value.id1.into()]
     }
 }
 
-impl TryFrom<UserCallData> for TestCallData {
+impl TryFrom<CallData> for TestCallData {
     type Error = otap_df_engine::error::Error;
 
-    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
         if value.len() != 2 {
             return Err(Self::Error::InternalError {
                 message: "invalid calldata".into(),
@@ -158,13 +158,13 @@ pub fn test_exporter_with_subscription(
                     }
                     Ok(other) => break (
                         Interests::empty(),
-                        UserCallData::default(),
+                        CallData::default(),
                         None,
                         format!("other message {other:?}"),
                     ),
                     Err(err) => break (
                         Interests::empty(),
-                        UserCallData::default(),
+                        CallData::default(),
                         None,
                         format!("error {err:?}"),
                     ),

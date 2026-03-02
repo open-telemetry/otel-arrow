@@ -101,7 +101,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg, UserCallData};
+use otap_df_engine::control::{AckMsg, CallData, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::EffectHandler;
 use otap_df_engine::message::Message;
@@ -270,21 +270,21 @@ pub struct DurableBufferMetrics {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BundleRef CallData Encoding
+// BundleRef RouteData Encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Encode a BundleRef into CallData for ACK/NACK tracking.
+/// Encode a BundleRef into RouteData for ACK/NACK tracking.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32 packed into u64)]
-fn encode_bundle_ref(bundle_ref: BundleRef) -> UserCallData {
+fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
     smallvec![
         Context8u8::from(bundle_ref.segment_seq.raw()),
         Context8u8::from(bundle_ref.bundle_index.raw() as u64),
     ]
 }
 
-/// Decode a BundleRef from CallData.
-fn decode_bundle_ref(calldata: &UserCallData) -> Option<BundleRef> {
+/// Decode a BundleRef from RouteData.
+fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     if calldata.len() < 2 {
         return None;
     }
@@ -296,10 +296,10 @@ fn decode_bundle_ref(calldata: &UserCallData) -> Option<BundleRef> {
     })
 }
 
-/// Encode a retry ticket into CallData for DelayedData scheduling.
+/// Encode a retry ticket into RouteData for DelayedData scheduling.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32), retry_count (u32) packed into u64]
-fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> UserCallData {
+fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
     // Pack bundle_index (low 32 bits) and retry_count (high 32 bits) into one u64
     let packed = (bundle_ref.bundle_index.raw() as u64) | ((retry_count as u64) << 32);
     smallvec![
@@ -308,10 +308,10 @@ fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> UserCallData 
     ]
 }
 
-/// Decode a retry ticket from CallData.
+/// Decode a retry ticket from RouteData.
 ///
 /// Returns (BundleRef, retry_count) if valid.
-fn decode_retry_ticket(calldata: &UserCallData) -> Option<(BundleRef, u32)> {
+fn decode_retry_ticket(calldata: &CallData) -> Option<(BundleRef, u32)> {
     if calldata.len() < 2 {
         return None;
     }
@@ -1792,13 +1792,13 @@ mod tests {
 
     #[test]
     fn test_decode_bundle_ref_empty_calldata() {
-        let calldata: UserCallData = smallvec![];
+        let calldata: CallData = smallvec![];
         assert!(decode_bundle_ref(&calldata).is_none());
     }
 
     #[test]
     fn test_decode_bundle_ref_insufficient_calldata() {
-        let calldata: UserCallData = smallvec![Context8u8::from(123u64)];
+        let calldata: CallData = smallvec![Context8u8::from(123u64)];
         assert!(decode_bundle_ref(&calldata).is_none());
     }
 
@@ -1840,7 +1840,7 @@ mod tests {
 
     #[test]
     fn test_decode_retry_ticket_empty_calldata() {
-        let calldata: UserCallData = smallvec![];
+        let calldata: CallData = smallvec![];
         assert!(decode_retry_ticket(&calldata).is_none());
     }
 

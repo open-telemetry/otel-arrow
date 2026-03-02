@@ -25,9 +25,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{
-    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UserCallData,
-};
+use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, RouteData};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
@@ -407,14 +405,14 @@ pub struct FanoutProcessor {
     timer_started: bool,
 }
 
-fn build_calldata(request_id: u64, dest_index: usize) -> UserCallData {
+fn build_calldata(request_id: u64, dest_index: usize) -> CallData {
     smallvec![
         Context8u8::from(request_id),
         Context8u8::from(dest_index as u64)
     ]
 }
 
-fn parse_calldata(calldata: &UserCallData) -> Option<(u64, usize)> {
+fn parse_calldata(calldata: &CallData) -> Option<(u64, usize)> {
     if calldata.len() < 2 {
         return None;
     }
@@ -637,7 +635,7 @@ impl FanoutProcessor {
         // No fallback, produce a nack using original pdata for correct upstream routing.
         Some(NackMsg {
             reason,
-            calldata: CallData::default(),
+            calldata: RouteData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
             permanent: false, // Timeout is retriable
         })
@@ -791,7 +789,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ack_to_return = AckMsg {
                     accepted: Box::new(inflight.original_pdata),
-                    calldata: CallData::default(),
+                    calldata: RouteData::default(),
                 };
                 effect_handler.notify_ack(ack_to_return).await?;
             }
@@ -820,7 +818,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ackmsg = AckMsg {
                     accepted: Box::new(original_pdata),
-                    calldata: CallData::default(),
+                    calldata: RouteData::default(),
                 };
                 effect_handler.notify_ack(ackmsg).await?;
             }
@@ -949,7 +947,7 @@ impl FanoutProcessor {
                     "fanout: max_inflight limit ({}) exceeded",
                     self.config.max_inflight
                 ),
-                calldata: CallData::default(),
+                calldata: RouteData::default(),
                 refused: Box::new(pdata),
                 permanent: false, // Backpressure is retriable
             };
@@ -1020,7 +1018,7 @@ impl FanoutProcessor {
             self.metrics.nacked.add(1);
             let nackmsg = NackMsg {
                 reason: nack.reason,
-                calldata: CallData::default(),
+                calldata: RouteData::default(),
                 refused: Box::new(original_pdata),
                 permanent: nack.permanent, // Propagate from downstream
             };
@@ -1103,7 +1101,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
                             "fanout: max_inflight limit ({}) exceeded",
                             self.config.max_inflight
                         ),
-                        calldata: CallData::default(),
+                        calldata: RouteData::default(),
                         refused: Box::new(pdata),
                         permanent: false, // Backpressure is retriable
                     };

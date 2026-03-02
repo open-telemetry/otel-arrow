@@ -10,7 +10,7 @@ use crate::{
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    control::{AckMsg, MetricLevel, NackMsg, UserCallData},
+    control::{AckMsg, CallData, MetricLevel, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
@@ -321,7 +321,7 @@ impl ReceivedAtNode for String {
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
-    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut PData);
+    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
 }
 
 /// Effect handler extensions for consumers specific to data type.

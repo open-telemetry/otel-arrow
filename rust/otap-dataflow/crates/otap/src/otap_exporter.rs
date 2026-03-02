@@ -847,11 +847,7 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             _ = exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await;
             Ok(())
         }

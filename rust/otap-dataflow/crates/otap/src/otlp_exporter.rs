@@ -800,9 +800,7 @@ mod tests {
         let result = timeout(Duration::from_secs(1), async {
             loop {
                 match pipeline_ctrl_rx.recv().await {
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck {
-                        ack,
-                    }) => {
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck { ack }) => {
                         if !expect_ack {
                             return Err(format!("Got Ack but expected Nack {}", context));
                         }
@@ -816,9 +814,7 @@ mod tests {
                         }
                         return Ok(());
                     }
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack {
-                        nack,
-                    }) => {
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack { nack }) => {
                         if expect_ack {
                             return Err(format!("Got Nack but expected Ack {}", context));
                         }
@@ -1097,11 +1093,7 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }

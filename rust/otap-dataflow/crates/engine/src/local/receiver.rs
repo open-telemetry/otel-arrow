@@ -111,9 +111,7 @@ impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
     pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
-        Self {
-            rx,
-        }
+        Self { rx }
     }
 
     /// Asynchronously receives the next control message.

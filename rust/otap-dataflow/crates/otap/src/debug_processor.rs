@@ -20,7 +20,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NodeControlMsg, UserCallData};
+use otap_df_engine::control::{CallData, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -151,7 +151,7 @@ impl DebugCallData {
     }
 }
 
-impl From<DebugCallData> for UserCallData {
+impl From<DebugCallData> for CallData {
     fn from(value: DebugCallData) -> Self {
         let msb = (value.micros >> 64) as u64;
         let lsb = value.micros as u64;
@@ -159,10 +159,10 @@ impl From<DebugCallData> for UserCallData {
     }
 }
 
-impl TryFrom<UserCallData> for DebugCallData {
+impl TryFrom<CallData> for DebugCallData {
     type Error = Error;
 
-    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
         if value.len() != 2 {
             return Err(Self::Error::InternalError {
                 message: "invalid calldata".into(),
@@ -1440,7 +1440,8 @@ mod tests {
 
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverAck { ack }) => {
-                            let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, ack) =
+                                Context::next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
@@ -1493,7 +1494,8 @@ mod tests {
 
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverNack { nack }) => {
-                            let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
+                            let (node_id, nack) =
+                                Context::next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "NACK should route to subscriber's node_id"

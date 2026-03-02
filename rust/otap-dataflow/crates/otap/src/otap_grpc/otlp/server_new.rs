@@ -22,7 +22,7 @@ use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
-use otap_df_engine::control::{NackMsg, UserCallData};
+use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -71,11 +71,11 @@ pub enum RouteResponse {
 }
 
 impl AckSlot {
-    /// Routes the final outcome into the registered slot matching the provided `CallData`.
+    /// Routes the final outcome into the registered slot matching the provided `RouteData`.
     #[must_use]
     pub fn route_response(
         &self,
-        calldata: UserCallData,
+        calldata: CallData,
         result: Result<(), NackMsg<OtapPdata>>,
     ) -> RouteResponse {
         // Decode slot key from calldata

@@ -102,18 +102,18 @@ impl From<Context8u8> for f64 {
 /// size is arbitrary, but shouldn't be larger than needed by
 /// callers. For example: retry count, sequence and generation
 /// numbers, deadline, num_items, etc.
-pub type UserCallData = SmallVec<[Context8u8; 3]>;
+pub type CallData = SmallVec<[Context8u8; 3]>;
 
 /// Re-export from config crate.
 pub use otap_df_config::policy::MetricLevel;
 
 /// Engine-managed call data envelope. Wraps the component's opaque
-/// [`UserCallData`] with an engine-managed timestamp field used for
+/// [`CallData`] with an engine-managed timestamp field used for
 /// pipeline component metrics.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct CallData {
+pub struct RouteData {
     /// Component-specific opaque data (formerly the entire `CallData`).
-    pub user: UserCallData,
+    pub user: CallData,
     /// Receive timestamp (monotonic nanos since process epoch).
     /// Only populated when `MetricLevel >= Detailed`; 0 otherwise.
     pub time_ns: u64,
@@ -138,7 +138,7 @@ pub struct Frame {
     /// Declares the set of interests this node has (Acks, Nacks, ...)
     pub interests: crate::Interests,
     /// The caller's data returns via AckMsg.calldata or NackMsg.calldata.
-    pub calldata: CallData,
+    pub calldata: RouteData,
     /// The caller's node_id for routing.
     pub node_id: usize,
 }
@@ -150,7 +150,7 @@ pub struct AckMsg<PData> {
     pub accepted: Box<PData>,
 
     /// Subscriber information returned.
-    pub calldata: CallData,
+    pub calldata: RouteData,
 }
 
 impl<PData> AckMsg<PData> {
@@ -158,7 +158,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: CallData::default(),
+            calldata: RouteData::default(),
         }
     }
 }
@@ -170,7 +170,7 @@ pub struct NackMsg<PData> {
     pub reason: String,
 
     /// Subscriber information returned.
-    pub calldata: CallData,
+    pub calldata: RouteData,
 
     /// Refused pdata being returned.
     pub refused: Box<PData>,
@@ -193,7 +193,7 @@ impl<PData> NackMsg<PData> {
     fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
-            calldata: CallData::default(),
+            calldata: RouteData::default(),
             refused: Box::new(refused),
             permanent,
         }

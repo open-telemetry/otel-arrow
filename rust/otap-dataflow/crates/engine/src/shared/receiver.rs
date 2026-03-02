@@ -79,9 +79,7 @@ impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
     pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
-        Self {
-            rx,
-        }
+        Self { rx }
     }
 
     /// Asynchronously receives the next control message.

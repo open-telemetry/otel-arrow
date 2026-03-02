@@ -25,7 +25,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
-    control::{AckMsg, NackMsg, NodeControlMsg, UserCallData},
+    control::{AckMsg, CallData, NackMsg, NodeControlMsg},
     error::{Error, TypedError},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -403,7 +403,7 @@ impl RetryState {
     }
 }
 
-impl From<RetryState> for UserCallData {
+impl From<RetryState> for CallData {
     fn from(value: RetryState) -> Self {
         smallvec::smallvec![
             value.retries.into(),
@@ -413,10 +413,10 @@ impl From<RetryState> for UserCallData {
     }
 }
 
-impl TryFrom<UserCallData> for RetryState {
+impl TryFrom<CallData> for RetryState {
     type Error = Error;
 
-    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
         if value.len() != 3 {
             return Err(Error::InternalError {
                 message: "invalid calldata".into(),
@@ -956,7 +956,8 @@ mod test {
 
                 match have_pmsg.expect("retry replied") {
                     PipelineControlMsg::DeliverAck { ack } => {
-                        let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, ack) =
+                            Context::next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -971,7 +972,8 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) =
+                            Context::next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))

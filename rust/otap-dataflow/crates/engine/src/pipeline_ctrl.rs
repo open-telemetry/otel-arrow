@@ -14,8 +14,7 @@
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
-    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg,
-    PipelineCtrlMsgReceiver,
+    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
 };
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
@@ -534,7 +533,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         &mut self,
         node_id: usize,
         interests: Interests,
-        calldata: &crate::control::CallData,
+        calldata: &crate::control::RouteData,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1765,9 +1764,7 @@ mod tests {
                 // Send DeliverAck during draining - should be processed
                 let ack = AckMsg::new("ack_data".to_owned());
                 pipeline_tx
-                    .send(PipelineControlMsg::DeliverAck {
-                        ack,
-                    })
+                    .send(PipelineControlMsg::DeliverAck { ack })
                     .await
                     .unwrap();
 
@@ -1817,9 +1814,7 @@ mod tests {
                 // Send DeliverNack during draining - should be processed
                 let nack = NackMsg::new("test failure", "nack_data".to_owned());
                 pipeline_tx
-                    .send(PipelineControlMsg::DeliverNack {
-                        nack,
-                    })
+                    .send(PipelineControlMsg::DeliverNack { nack })
                     .await
                     .unwrap();
 
@@ -2003,8 +1998,8 @@ mod tests {
     // ---------------------------------------------------------------
 
     use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
-    use crate::control::{AckMsg, CallData, Frame, NackMsg, nanos_since_epoch};
-    use otap_df_telemetry::metrics::{MetricValue, MetricSetSnapshot};
+    use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_epoch};
+    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otap_df_telemetry::registry::MetricSetKey;
     use otap_df_telemetry::reporter::MetricsReporter;
 
@@ -2075,8 +2070,7 @@ mod tests {
 
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         // Create a reporter with a receiver so tests can collect snapshots.
-        let (snapshot_rx, metrics_reporter) =
-            MetricsReporter::create_new_and_receiver(64);
+        let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let observed_state_store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -2086,7 +2080,9 @@ mod tests {
             controller_context,
             pipeline_group_id.clone(),
             pipeline_id.clone(),
-            0, 1, 0,
+            0,
+            1,
+            0,
         );
 
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -2098,16 +2094,36 @@ mod tests {
         let registry = pipeline_context.metrics_registry();
 
         let recv_out_key = pipeline_context.register_channel_entity(
-            "recv:out".into(), "output".into(), "pdata", "local", "mpsc", "internal",
+            "recv:out".into(),
+            "output".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
         );
         let proc_in_key = pipeline_context.register_channel_entity(
-            "proc:in".into(), "input".into(), "pdata", "local", "mpsc", "internal",
+            "proc:in".into(),
+            "input".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
         );
         let proc_out_key = pipeline_context.register_channel_entity(
-            "proc:out".into(), "output".into(), "pdata", "local", "mpsc", "internal",
+            "proc:out".into(),
+            "output".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
         );
         let exp_in_key = pipeline_context.register_channel_entity(
-            "exp:in".into(), "input".into(), "pdata", "local", "mpsc", "internal",
+            "exp:in".into(),
+            "input".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
         );
 
         let recv_produced: MetricSet<ProducedMetrics> =
@@ -2209,7 +2225,11 @@ mod tests {
     }
 
     /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
-    fn assert_mmsc(values: &[MetricValue], index: usize, msg: &str) -> otap_df_telemetry::instrument::MmscSnapshot {
+    fn assert_mmsc(
+        values: &[MetricValue],
+        index: usize,
+        msg: &str,
+    ) -> otap_df_telemetry::instrument::MmscSnapshot {
         match values[index] {
             MetricValue::Mmsc(snap) => snap,
             other => panic!("{msg}: expected Mmsc, got {other:?}"),
@@ -2237,7 +2257,7 @@ mod tests {
         pdata.push_frame(Frame {
             node_id: nodes[0].index,
             interests: Interests::PRODUCER_METRICS | Interests::ACKS | Interests::NACKS,
-            calldata: CallData {
+            calldata: RouteData {
                 user: Default::default(),
                 time_ns: 0,
                 output_port_index: 0,
@@ -2246,7 +2266,11 @@ mod tests {
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
-        let time_ns = if with_timestamp { nanos_since_epoch() } else { 0 };
+        let time_ns = if with_timestamp {
+            nanos_since_epoch()
+        } else {
+            0
+        };
         pdata.push_frame(Frame {
             node_id: nodes[1].index,
             interests: Interests::CONSUMER_METRICS
@@ -2254,7 +2278,7 @@ mod tests {
                 | Interests::ENTRY_TIMESTAMP
                 | Interests::ACKS
                 | Interests::NACKS,
-            calldata: CallData {
+            calldata: RouteData {
                 user: Default::default(),
                 time_ns,
                 output_port_index: 0,
@@ -2263,11 +2287,15 @@ mod tests {
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
-        let time_ns = if with_timestamp { nanos_since_epoch() } else { 0 };
+        let time_ns = if with_timestamp {
+            nanos_since_epoch()
+        } else {
+            0
+        };
         pdata.push_frame(Frame {
             node_id: nodes[2].index,
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
-            calldata: CallData {
+            calldata: RouteData {
                 user: Default::default(),
                 time_ns,
                 output_port_index: 0,
@@ -2293,24 +2321,26 @@ mod tests {
         } = harness;
 
         let local = LocalSet::new();
-        local.run_until(async {
-            let msgs = send_fn(&nodes);
-            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+        local
+            .run_until(async {
+                let msgs = send_fn(&nodes);
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            for msg in msgs {
-                pipeline_tx.send(msg).await.unwrap();
-            }
+                for msg in msgs {
+                    pipeline_tx.send(msg).await.unwrap();
+                }
 
-            // Drop sender to close channel → manager exits run loop → final metrics flush
-            drop(pipeline_tx);
+                // Drop sender to close channel → manager exits run loop → final metrics flush
+                drop(pipeline_tx);
 
-            let result = timeout(Duration::from_millis(500), manager_handle).await;
-            assert!(result.is_ok(), "Manager should shut down cleanly");
+                let result = timeout(Duration::from_millis(500), manager_handle).await;
+                assert!(result.is_ok(), "Manager should shut down cleanly");
 
-            // Keep _guard alive for the scope of this closure
-            drop(_guard);
-            collect_snapshots(&snapshot_rx, &key_labels)
-        }).await
+                // Keep _guard alive for the scope of this closure
+                drop(_guard);
+                collect_snapshots(&snapshot_rx, &key_labels)
+            })
+            .await
     }
 
     /// Verify that ack correctly records consumed_success and produced_success
@@ -2321,8 +2351,11 @@ mod tests {
         let nodes_clone = harness.nodes.clone();
         let snapshots = run_and_collect(harness, |nodes| {
             let pdata = build_3node_pdata(nodes, false);
-            vec![PipelineControlMsg::DeliverAck { ack: AckMsg::new(pdata) }]
-        }).await;
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
 
         // Exporter consumed: success=1, failure=0, refused=0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
@@ -2340,8 +2373,10 @@ mod tests {
 
         // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
         // so receiver frame is never popped → no metrics recorded.
-        assert!(!snapshots.contains_key(&MetricLabel::RecvProduced),
-            "Receiver produced should have no metrics (ack delivered at processor)");
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Receiver produced should have no metrics (ack delivered at processor)"
+        );
 
         drop(nodes_clone);
     }
@@ -2355,7 +2390,8 @@ mod tests {
             vec![PipelineControlMsg::DeliverNack {
                 nack: NackMsg::new("transient error", pdata),
             }]
-        }).await;
+        })
+        .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMED_FAILURE, 1, "Exporter consumed_failure");
@@ -2378,7 +2414,8 @@ mod tests {
             vec![PipelineControlMsg::DeliverNack {
                 nack: NackMsg::new_permanent("permanent refusal", pdata),
             }]
-        }).await;
+        })
+        .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMED_REFUSED, 1, "Exporter consumed_refused");
@@ -2402,7 +2439,8 @@ mod tests {
             let mut ack = AckMsg::new(pdata);
             ack.calldata.return_time_ns = nanos_since_epoch();
             vec![PipelineControlMsg::DeliverAck { ack }]
-        }).await;
+        })
+        .await;
 
         // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
@@ -2414,7 +2452,10 @@ mod tests {
         // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor duration");
-        assert_eq!(snap.count, 1, "Processor should have 1 duration observation");
+        assert_eq!(
+            snap.count, 1,
+            "Processor should have 1 duration observation"
+        );
         assert!(snap.min > 0.0, "Processor duration should be > 0");
     }
 
@@ -2424,16 +2465,25 @@ mod tests {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
             let pdata = build_3node_pdata(nodes, false);
-            vec![PipelineControlMsg::DeliverAck { ack: AckMsg::new(pdata) }]
-        }).await;
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter duration");
-        assert_eq!(snap.count, 0, "No duration should be recorded when time_ns == 0");
+        assert_eq!(
+            snap.count, 0,
+            "No duration should be recorded when time_ns == 0"
+        );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor duration");
-        assert_eq!(snap.count, 0, "No duration should be recorded when time_ns == 0");
+        assert_eq!(
+            snap.count, 0,
+            "No duration should be recorded when time_ns == 0"
+        );
     }
 
     /// Verify multiple acks accumulate counters correctly through the lifecycle.
@@ -2444,13 +2494,21 @@ mod tests {
             (0..3)
                 .map(|_| {
                     let pdata = build_3node_pdata(nodes, false);
-                    PipelineControlMsg::DeliverAck { ack: AckMsg::new(pdata) }
+                    PipelineControlMsg::DeliverAck {
+                        ack: AckMsg::new(pdata),
+                    }
                 })
                 .collect()
-        }).await;
+        })
+        .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_SUCCESS, 3, "Exporter 3 consumed_success after 3 acks");
+        assert_u64(
+            exp,
+            CONSUMED_SUCCESS,
+            3,
+            "Exporter 3 consumed_success after 3 acks",
+        );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         assert_u64(proc_c, CONSUMED_SUCCESS, 3, "Processor 3 consumed_success");
@@ -2475,7 +2533,8 @@ mod tests {
                     nack: NackMsg::new_permanent("refused", build_3node_pdata(nodes, false)),
                 },
             ]
-        }).await;
+        })
+        .await;
 
         // Exporter consumed: 1 success + 1 failure + 1 refused
         let exp = &snapshots[&MetricLabel::ExpConsumed];

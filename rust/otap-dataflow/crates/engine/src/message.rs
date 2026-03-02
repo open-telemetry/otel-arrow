@@ -133,7 +133,6 @@ impl<T> Sender<T> {
             Sender::Shared(sender) => sender.try_send(msg),
         }
     }
-
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
