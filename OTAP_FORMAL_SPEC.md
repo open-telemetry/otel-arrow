@@ -310,10 +310,9 @@ Delta Dictionary messages can be sent to inform the receiver of the new values.
 To enable domain specific optimizations, OTAP is flexible in the Schemas that 
 it permits for Record Batches of a given Payload Type.
 
-First, OTAP defines many columns for a Payload Type as optional. This is 
-different from Arrow's concept of nullability. If the column is marked as 
-optional in the OTAP spec, it SHOULD be omitted entirely by the Client if there 
-is no data for that Column.
+First, OTAP defines defines some columns for a Payload Type as nullable. Any
+column marked as nullable is also considered "optional" and SHOULD be 
+omitted entirely by the Client if there is no data for that Column.
 
 Additionally, there are a range of Data Types allowed for some columns. For 
 example, a LOGS payload's `resource.schema_url` field may have the `Utf8` type,
