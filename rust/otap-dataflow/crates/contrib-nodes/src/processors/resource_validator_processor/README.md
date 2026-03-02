@@ -51,10 +51,10 @@ processors:
 | Condition                                    | Result                    |
 | -------------------------------------------- | ------------------------- |
 | Attribute present with value in allowed list | Pass through              |
-| Attribute present, empty allowed_values list | Permanent NACK |
-| Attribute missing                            | Permanent NACK |
-| Attribute wrong type (not string)            | Permanent NACK |
-| Attribute value not in allowed list          | Permanent NACK |
+| Attribute present, empty allowed_values list | Permanent NACK            |
+| Attribute missing                            | Permanent NACK            |
+| Attribute wrong type (not string)            | Permanent NACK            |
+| Attribute value not in allowed list          | Permanent NACK            |
 
 > **Note:** The processor sends a permanent NACK (`NackMsg::new_permanent`), but
 > the receiver currently maps all NACKs to HTTP 503 / gRPC UNAVAILABLE. Returning
