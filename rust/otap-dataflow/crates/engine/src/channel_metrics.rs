@@ -70,9 +70,10 @@ pub struct ChannelReceiverMetrics {
 #[metric_set(name = "channel.consumed")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
-    /// Duration (ns) of consumed requests (min/max/sum/count).
-    /// Recorded at ack/nack time using the entry frame timestamp.
-    /// Only populated at `MetricLevel::Detailed`.
+    /// Duration (ns) of the pipeline from entry until the same frame
+    /// is routes its own ack or nack. Detailed level.
+    ///
+    /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
     /// Consumed requests successfully processed (ack received).
