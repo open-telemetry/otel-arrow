@@ -82,7 +82,7 @@ The receiver supports three deployment modes with different concurrency strategi
 <!-- markdownlint-disable MD013 -->
 
 | Mode | Configuration | Semaphores Used |
-| ------ | --------------- |----------------- |
+| ------ | --------------- | ---------------- |
 | **gRPC-only** | Only `protocols.grpc` configured | Local gRPC semaphore only |
 | **HTTP-only** | Only `protocols.http` configured | Local HTTP semaphore only |
 | **Both protocols** | Both `protocols.grpc` and `protocols.http` | Global + per-protocol local |

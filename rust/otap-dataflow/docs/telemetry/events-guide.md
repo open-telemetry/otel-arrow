@@ -59,8 +59,8 @@ All events MUST be emitted using the `otel_*` macros from the
 | Macro | Severity |
 | --- | --- |
 | `otel_debug!` | DEBUG |
-| `otel_info!`  | INFO  |
-| `otel_warn!`  | WARN  |
+| `otel_info!` | INFO |
+| `otel_warn!` | WARN |
 | `otel_error!` | ERROR |
 
 ### Basic usage

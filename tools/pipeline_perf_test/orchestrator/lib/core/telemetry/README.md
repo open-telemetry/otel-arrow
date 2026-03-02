@@ -91,7 +91,8 @@ Implements a full pipeline for structured metrics telemetry, based on OpenTeleme
 - `MetricDataFrame`: `pandas.DataFrame` subclass with schema validation
     and rich filtering.
 - `MetricDataBackend`: Interface for providing normalized metric data.
-- `MetricsRetriever`: Extends `SignalRetriever` to support attribute/time-range queries.
+- `MetricsRetriever`: Extends `SignalRetriever` to support attribute/time-range
+  queries.
 - `FrameworkMetricBackend`: In-memory backend for metrics with caching and transformation.
 - `FrameworkMetricsRetriever`: Pulls metrics from the in-memory backend.
 - `FrameworkMetricExporter`: Exports OpenTelemetry metrics into the in-memory store.
