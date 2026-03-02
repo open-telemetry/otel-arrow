@@ -11,7 +11,6 @@ use crate::event::{LogEvent, ObservedEventReporter};
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord, RawLoggingLayer};
 use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
-use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
@@ -20,21 +19,10 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 /// Creates an `EnvFilter` for the given log level.
 ///
 /// If `RUST_LOG` is set in the environment, it takes precedence for fine-grained control.
-/// Otherwise, falls back to the config level with known noisy dependencies (h2, hyper) silenced.
+/// Otherwise, the level's directive string is passed directly to `EnvFilter`.
 #[must_use]
-pub fn create_env_filter(level: LogLevel) -> EnvFilter {
-    let level_filter = match level {
-        LogLevel::Off => LevelFilter::OFF,
-        LogLevel::Debug => LevelFilter::DEBUG,
-        LogLevel::Info => LevelFilter::INFO,
-        LogLevel::Warn => LevelFilter::WARN,
-        LogLevel::Error => LevelFilter::ERROR,
-    };
-
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        // Default filter: use config level, but silence known noisy HTTP dependencies
-        EnvFilter::new(format!("{level_filter},h2=off,hyper=off"))
-    })
+pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
 }
 
 /// Combined tracing configuration for a thread.
@@ -66,7 +54,7 @@ impl TracingSetup {
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider
-            .try_init_global(self.log_level, self.context_fn)
+            .try_init_global(&self.log_level, self.context_fn)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -75,7 +63,7 @@ impl TracingSetup {
         F: FnOnce() -> R,
     {
         self.provider
-            .with_subscriber(self.log_level, self.context_fn, f)
+            .with_subscriber(&self.log_level, self.context_fn, f)
     }
 }
 
@@ -99,7 +87,7 @@ pub enum ProviderSetup {
 
 impl ProviderSetup {
     /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(&self, log_level: LogLevel, context_fn: LogContextFn) -> Dispatch {
+    fn build_dispatch(&self, log_level: &LogLevel, context_fn: LogContextFn) -> Dispatch {
         let filter = || create_env_filter(log_level);
 
         match self {
@@ -121,7 +109,7 @@ impl ProviderSetup {
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(
         &self,
-        log_level: LogLevel,
+        log_level: &LogLevel,
         context_fn: LogContextFn,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         let dispatch = self.build_dispatch(log_level, context_fn);
@@ -129,7 +117,7 @@ impl ProviderSetup {
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    pub fn with_subscriber<F, R>(&self, log_level: LogLevel, context_fn: LogContextFn, f: F) -> R
+    pub fn with_subscriber<F, R>(&self, log_level: &LogLevel, context_fn: LogContextFn, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -185,17 +173,23 @@ mod tests {
         TracingSetup::new(p, l, LogContext::new)
     }
 
-    const ALL_LEVELS: [LogLevel; 5] = [
-        LogLevel::Off,
-        LogLevel::Debug,
-        LogLevel::Info,
-        LogLevel::Warn,
-        LogLevel::Error,
-    ];
+    fn level(s: &str) -> LogLevel {
+        serde_yaml::from_str(&format!("\"{s}\"")).unwrap()
+    }
+
+    fn all_simple_levels() -> Vec<LogLevel> {
+        vec![
+            level("off"),
+            level("debug"),
+            level("info"),
+            level("warn"),
+            level("error"),
+        ]
+    }
 
     #[test]
     fn noop_provider_runs() {
-        let setup = test_setup(ProviderSetup::Noop, LogLevel::Info);
+        let setup = test_setup(ProviderSetup::Noop, level("info"));
         setup.with_subscriber(|| {
             otel_info!("log_dropped");
         });
@@ -203,8 +197,8 @@ mod tests {
 
     #[test]
     fn noop_provider_all_levels() {
-        for level in ALL_LEVELS {
-            let setup = test_setup(ProviderSetup::Noop, level);
+        for l in all_simple_levels() {
+            let setup = test_setup(ProviderSetup::Noop, l);
             setup.with_subscriber(|| {
                 otel_debug!("debug", "debug message");
                 otel_info!("info");
@@ -216,7 +210,7 @@ mod tests {
 
     #[test]
     fn console_direct_provider_runs() {
-        let setup = test_setup(ProviderSetup::ConsoleDirect, LogLevel::Info);
+        let setup = test_setup(ProviderSetup::ConsoleDirect, level("info"));
         setup.with_subscriber(|| {
             otel_info!("console_log");
         });
@@ -224,8 +218,8 @@ mod tests {
 
     #[test]
     fn console_direct_all_levels() {
-        for level in ALL_LEVELS {
-            let setup = test_setup(ProviderSetup::ConsoleDirect, level);
+        for l in all_simple_levels() {
+            let setup = test_setup(ProviderSetup::ConsoleDirect, l);
             setup.with_subscriber(|| {
                 otel_debug!("debug", "debug message");
                 otel_info!("info");
@@ -238,7 +232,7 @@ mod tests {
     #[test]
     fn console_async_provider_sends_logs() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
         setup.with_subscriber(|| {
             otel_info!("async_log");
@@ -254,9 +248,9 @@ mod tests {
 
     #[test]
     fn console_async_all_levels() {
-        for level in ALL_LEVELS {
+        for l in all_simple_levels() {
             let (reporter, receiver) = test_reporter();
-            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, l.clone());
             setup.with_subscriber(|| {
                 otel_debug!("debug", "debug message");
                 otel_info!("info");
@@ -266,12 +260,13 @@ mod tests {
             drop(setup);
 
             let cnt = receiver.into_iter().count();
-            let expect = match level {
-                LogLevel::Off => 0,
-                LogLevel::Debug => 4,
-                LogLevel::Info => 3,
-                LogLevel::Warn => 2,
-                LogLevel::Error => 1,
+            let expect = match l.as_str() {
+                "off" => 0,
+                "debug" => 4,
+                "info" => 3,
+                "warn" => 2,
+                "error" => 1,
+                _ => unreachable!(),
             };
             assert_eq!(cnt, expect);
         }
@@ -280,7 +275,7 @@ mod tests {
     #[test]
     fn log_level_filters_debug() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
         setup.with_subscriber(|| {
             otel_debug!("filtered", "debug message filtered out");
@@ -295,7 +290,7 @@ mod tests {
     #[test]
     fn log_level_warn_filters_lower() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
 
         setup.with_subscriber(|| {
             otel_debug!("filtered", "debug message filtered out");
@@ -312,7 +307,7 @@ mod tests {
     #[test]
     fn log_level_error_filters_lower() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Error);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("error"));
 
         setup.with_subscriber(|| {
             otel_debug!("filtered", "debug message filtered out");
@@ -329,7 +324,7 @@ mod tests {
     #[test]
     fn log_level_off_filters_all() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Off);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("off"));
 
         setup.with_subscriber(|| {
             otel_debug!("filtered", "debug message filtered out");
@@ -344,7 +339,7 @@ mod tests {
     #[test]
     fn log_level_debug_allows_all() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Debug);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("debug"));
 
         setup.with_subscriber(|| {
             otel_debug!("d", "debug message");
@@ -360,10 +355,9 @@ mod tests {
     }
 
     #[test]
-
     fn console_async_layer_with_fields() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
         setup.with_subscriber(|| {
             otel_info!("structured", key = "value", number = 42);
@@ -379,28 +373,25 @@ mod tests {
 
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
-        ProviderSetup::Noop.with_subscriber(LogLevel::Info, LogContext::new, || {
+        let info = level("info");
+        ProviderSetup::Noop.with_subscriber(&info, LogContext::new, || {
             otel_info!("noop");
         });
 
-        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, LogContext::new, || {
+        ProviderSetup::ConsoleDirect.with_subscriber(&info, LogContext::new, || {
             otel_info!("console_direct");
         });
 
         let (reporter, _rx) = test_reporter();
-        ProviderSetup::InternalAsync { reporter }.with_subscriber(
-            LogLevel::Info,
-            LogContext::new,
-            || {
-                otel_info!("console_async");
-            },
-        );
+        ProviderSetup::InternalAsync { reporter }.with_subscriber(&info, LogContext::new, || {
+            otel_info!("console_async");
+        });
     }
 
     #[test]
     fn its_provider_filters_correctly() {
         let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
+        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
 
         setup.with_subscriber(|| {
             otel_debug!("filtered", "debug message filtered out");
@@ -422,13 +413,13 @@ mod tests {
             ProviderSetup::InternalAsync {
                 reporter: reporter1,
             },
-            LogLevel::Info,
+            level("info"),
         );
         let setup2 = test_setup(
             ProviderSetup::InternalAsync {
                 reporter: reporter2,
             },
-            LogLevel::Info,
+            level("info"),
         );
 
         let result = setup1.with_subscriber(|| {
