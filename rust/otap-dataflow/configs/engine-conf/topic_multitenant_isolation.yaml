@@ -31,10 +31,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: internal_telemetry:receiver
+          type: receiver:internal_telemetry
           config: {}
         sink:
-          type: noop:exporter
+          type: exporter:noop
           config: null
       connections:
         - from: itr
@@ -69,7 +69,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               data_source: static
               generation_strategy: pre_generated
@@ -81,7 +81,7 @@ groups:
                 log_weight: 30
 
           stamp_tenant:
-            type: attribute:processor
+            type: processor:attribute
             config:
               actions:
                 - action: delete
@@ -92,7 +92,7 @@ groups:
               apply_to: ["resource"]
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4537"
               max_in_flight: 6
@@ -112,7 +112,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               data_source: static
               generation_strategy: pre_generated
@@ -124,7 +124,7 @@ groups:
                 log_weight: 30
 
           stamp_tenant:
-            type: attribute:processor
+            type: processor:attribute
             config:
               actions:
                 - action: delete
@@ -135,7 +135,7 @@ groups:
               apply_to: ["resource"]
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4537"
               max_in_flight: 6
@@ -155,7 +155,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               data_source: static
               generation_strategy: pre_generated
@@ -167,7 +167,7 @@ groups:
                 log_weight: 30
 
           stamp_tenant:
-            type: attribute:processor
+            type: processor:attribute
             config:
               actions:
                 - action: delete
@@ -178,7 +178,7 @@ groups:
               apply_to: ["resource"]
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4537"
               max_in_flight: 6
@@ -198,7 +198,7 @@ groups:
 
         nodes:
           otlp_recv:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -206,7 +206,7 @@ groups:
                   wait_for_result: true
 
           tenant_router:
-            type: content_router:processor
+            type: processor:content_router
             outputs: ["tenant_a", "tenant_b", "tenant_c", "unmatched"]
             config:
               routing_key:
@@ -219,25 +219,25 @@ groups:
               default_output: unmatched
 
           to_tenant_a:
-            type: topic:exporter
+            type: exporter:topic
             config:
               topic: tenant_a
               queue_on_full: block
 
           to_tenant_b:
-            type: topic:exporter
+            type: exporter:topic
             config:
               topic: tenant_b
               queue_on_full: block
 
           to_tenant_c:
-            type: topic:exporter
+            type: exporter:topic
             config:
               topic: tenant_c
               queue_on_full: block
 
           unmatched_sink:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:
@@ -261,7 +261,7 @@ groups:
 
         nodes:
           from_topic:
-            type: topic:receiver
+            type: receiver:topic
             config:
               topic: tenant_a
               subscription:
@@ -269,12 +269,12 @@ groups:
                 group: tenant_a_processors
 
           retry:
-            type: retry:processor
+            type: processor:retry
             config:
               multiplier: 1.5
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4538"
               max_in_flight: 4
@@ -294,7 +294,7 @@ groups:
 
         nodes:
           from_topic:
-            type: topic:receiver
+            type: receiver:topic
             config:
               topic: tenant_b
               subscription:
@@ -302,12 +302,12 @@ groups:
                 group: tenant_b_processors
 
           retry:
-            type: retry:processor
+            type: processor:retry
             config:
               multiplier: 1.5
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4539"
               max_in_flight: 4
@@ -327,7 +327,7 @@ groups:
 
         nodes:
           from_topic:
-            type: topic:receiver
+            type: receiver:topic
             config:
               topic: tenant_c
               subscription:
@@ -335,12 +335,12 @@ groups:
                 group: tenant_c_processors
 
           retry:
-            type: retry:processor
+            type: processor:retry
             config:
               multiplier: 1.5
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4540"
               max_in_flight: 4
@@ -360,7 +360,7 @@ groups:
 
         nodes:
           otlp_recv:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -368,7 +368,7 @@ groups:
                   wait_for_result: true
 
           sink:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:
@@ -384,7 +384,7 @@ groups:
 
         nodes:
           otlp_recv:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -392,7 +392,7 @@ groups:
                   wait_for_result: true
 
           sink:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:
@@ -408,7 +408,7 @@ groups:
 
         nodes:
           otlp_recv:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -416,7 +416,7 @@ groups:
                   wait_for_result: true
 
           sink:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:
