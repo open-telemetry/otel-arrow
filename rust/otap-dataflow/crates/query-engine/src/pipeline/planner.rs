@@ -422,10 +422,7 @@ impl PipelinePlanner {
         };
 
         // TODO - we could use attrs insert as case ...
-        let assign_pipeline_stage = AssignPipelineStage::try_new(
-            dest,
-            set_expr.get_source()
-        )?;
+        let assign_pipeline_stage = AssignPipelineStage::try_new(dest, set_expr.get_source())?;
         Ok(vec![Box::new(assign_pipeline_stage)])
 
         // let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;

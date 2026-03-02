@@ -123,7 +123,9 @@ impl From<ColumnAccessor> for DataScope {
     fn from(value: ColumnAccessor) -> Self {
         match value {
             ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => Self::Root,
-            ColumnAccessor::Attributes(attrs_id,  attrs_key) => Self::Attributes(attrs_id, attrs_key)
+            ColumnAccessor::Attributes(attrs_id, attrs_key) => {
+                Self::Attributes(attrs_id, attrs_key)
+            }
         }
     }
 }
@@ -209,7 +211,10 @@ impl ScopedLogicalExpr {
 pub(crate) struct ExprLogicalPlanner {}
 
 impl ExprLogicalPlanner {
-    pub fn plan_scalar_expr(&self, scalar_expression: &ScalarExpression) -> Result<ScopedLogicalExpr> {
+    pub fn plan_scalar_expr(
+        &self,
+        scalar_expression: &ScalarExpression,
+    ) -> Result<ScopedLogicalExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();

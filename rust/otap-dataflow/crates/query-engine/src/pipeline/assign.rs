@@ -140,7 +140,7 @@ impl AssignPipelineStage {
 fn can_assign(dest_column: &ColumnAccessor, source_logical_plan: &ScopedLogicalExpr) -> bool {
     // TODO check type
     // TODO check 1:many
-    return true
+    return true;
 }
 
 #[async_trait(?Send)]
@@ -206,27 +206,40 @@ mod test {
                         KeyValue::new("xs2", AnyValue::new_string("a")),
                     ])
                     .finish(),
-                vec![
-                    LogRecord::build()
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
-                        .finish(),
-                    LogRecord::build()
-                        .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
-                        .finish(),
-                ],
+                vec![],
             )],
         )])
     }
 
     #[tokio::test]
     async fn test_insert_root_column_from_scalar() {
-        let result = exec_logs_pipeline::<OplParser>(
-            "logs | set severity_text = \"ERROR\"",
-            gen_logs_test_data(),
-        )
-        .await;
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | set severity_text = \"ERROR\"", logs_data)
+                .await;
 
         let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 2);
+        for logs_record in logs_records {
+            assert_eq!(logs_record.severity_text, "ERROR");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upsert_root_column_from_scalar() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().finish(),
+        ]);
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | set severity_text = \"ERROR\"", logs_data)
+                .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 2);
         for logs_record in logs_records {
             assert_eq!(logs_record.severity_text, "ERROR");
         }
