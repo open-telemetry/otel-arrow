@@ -226,6 +226,10 @@ impl Context {
         if node_interests.contains(Interests::CONSUMER_METRICS) {
             interests |= Interests::CONSUMER_METRICS;
         }
+        // Mark the frame for entry-timestamp so the controller can compute duration.
+        if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+            interests |= Interests::ENTRY_TIMESTAMP;
+        }
         // Timestamp: only when ENTRY_TIMESTAMP is requested.
         let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
             nanos_since_epoch()
