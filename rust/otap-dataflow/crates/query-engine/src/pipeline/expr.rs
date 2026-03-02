@@ -158,7 +158,7 @@ pub struct ScopedLogicalExpr {
     /// note: type checking during planning is best-effort and there are some expressions where the
     /// expression's type validity cannot be guaranteed before we see the data. this is especially
     /// true for expressions involving AnyValues (attributes/logs body).
-    expr_type: ExprLogicalType,
+    pub expr_type: ExprLogicalType,
 
     /// identifies the source for the incoming data
     source: LogicalExprDataSource,

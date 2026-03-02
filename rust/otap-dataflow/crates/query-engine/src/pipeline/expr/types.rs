@@ -107,6 +107,7 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         // logs fields
         consts::SEVERITY_NUMBER => ExprLogicalType::Int32,
         consts::SEVERITY_TEXT => ExprLogicalType::String,
+        consts::EVENT_NAME => ExprLogicalType::String,
 
         // traces fields
         consts::TRACE_STATE => ExprLogicalType::String,

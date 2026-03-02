@@ -330,7 +330,7 @@ fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> Result<
     )?)
 }
 
-pub  trait JoinExec {
+pub trait JoinExec {
     /// produce the rows that should be taken
     fn rows_to_take(
         &self,

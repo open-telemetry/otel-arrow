@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::compute::take;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{Field, Schema};
 use async_trait::async_trait;
 use data_engine_expressions::{ScalarExpression, SourceScalarExpression};
 use datafusion::config::ConfigOptions;
@@ -20,9 +20,10 @@ use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::Logs;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::join::{JoinExec, RootToAttributesJoin};
+use crate::pipeline::expr::types::{ExprLogicalType, root_field_type};
 use crate::pipeline::expr::{
     DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult, ScopedLogicalExpr,
     ScopedPhysicalExpr,
@@ -47,9 +48,7 @@ impl AssignPipelineStage {
         let logical_planner = ExprLogicalPlanner::default();
         let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
 
-        if !can_assign(&dest_column, &source_logical_plan) {
-            todo!("return error that can't be assigned")
-        }
+        validate_assign(&dest_column, &source_logical_plan)?;
 
         let physical_planner = ExprPhysicalPlanner::default();
         let physical_expr = physical_planner.plan(source_logical_plan)?;
@@ -84,9 +83,11 @@ impl AssignPipelineStage {
             eval_result.values.to_array(root_batch.num_rows())?
         } else {
             let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+                // TODO comment on why this is unreachable
                 unreachable!("unreachable")
             };
 
+            // TODO comment on what this code does
             let join_exec = RootToAttributesJoin::new(attrs_id.clone());
             let root_as_join_arg = PhysicalExprEvalResult::new(
                 ColumnarValue::Scalar(ScalarValue::Null), // placeholder,
@@ -161,10 +162,69 @@ impl AssignPipelineStage {
     }
 }
 
-fn can_assign(dest_column: &ColumnAccessor, source_logical_plan: &ScopedLogicalExpr) -> bool {
-    // TODO check type
-    // TODO check 1:many
-    return true;
+fn validate_assign(
+    dest_column: &ColumnAccessor,
+    source_logical_plan: &ScopedLogicalExpr,
+) -> Result<()> {
+    match dest_column {
+        ColumnAccessor::ColumnName(col_name) => {
+            let dest_type =
+                root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
+                    cause: format!("cannot assign to non-existent column '{col_name}'"),
+                    query_location: None,
+                })?;
+            let source_type = &source_logical_plan.expr_type;
+            if !can_assign_type(&dest_type, source_type) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign expression of type {source_type:?} to type {dest_type:?}"
+                    ),
+                    query_location: None, // TODO it'd be good to put a location here
+                });
+            }
+        }
+        _ => {
+            // TODO check 1:many
+            todo!()
+        }
+    }
+
+    return Ok(());
+}
+
+// TODO put more unit tests for this
+fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -> bool {
+    if dest_type == source_type {
+        return true;
+    }
+
+    match dest_type {
+        ExprLogicalType::Binary | ExprLogicalType::Boolean | ExprLogicalType::String => {
+            source_type == &ExprLogicalType::AnyValue
+        }
+        ExprLogicalType::Float64 => {
+            source_type == &ExprLogicalType::AnyValue
+                || source_type == &ExprLogicalType::AnyValueNumeric
+        }
+        ExprLogicalType::Int64 => match source_type {
+            ExprLogicalType::AnyValue
+            | ExprLogicalType::AnyValueNumeric
+            | ExprLogicalType::ScalarInt => true,
+            _ => false,
+        },
+        ExprLogicalType::AnyValue => match source_type {
+            ExprLogicalType::AnyValue
+            | ExprLogicalType::AnyValueNumeric
+            | ExprLogicalType::ScalarInt
+            | ExprLogicalType::Binary
+            | ExprLogicalType::Boolean
+            | ExprLogicalType::String
+            | ExprLogicalType::Float64
+            | ExprLogicalType::Int64 => true,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 #[async_trait(?Send)]
@@ -197,9 +257,11 @@ impl PipelineStage for AssignPipelineStage {
 
 #[cfg(test)]
 mod test {
+    use data_engine_kql_parser::Parser;
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
+        otap::Logs,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -212,7 +274,7 @@ mod test {
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
-    use crate::pipeline::test::exec_logs_pipeline;
+    use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 
     fn gen_logs_test_data() -> LogsData {
         LogsData::new(vec![ResourceLogs::new(
@@ -324,7 +386,6 @@ mod test {
             LogRecord::build().event_name("replaceme").finish(),
         ]);
 
-        // kind of a silly example, but just need two cols that have the same type for the test
         let result = exec_logs_pipeline::<OplParser>(
             "logs | set event_name = attributes[\"event\"]",
             logs_data,
@@ -360,7 +421,6 @@ mod test {
             ],
         )]);
 
-        // kind of a silly example, but just need two cols that have the same type for the test
         let result = exec_logs_pipeline::<OplParser>(
             "logs | set event_name = instrumentation_scope.attributes[\"attr1\"]",
             logs_data,
@@ -374,4 +434,52 @@ mod test {
         assert_eq!(logs_records.len(), 1);
         assert_eq!(logs_records[0].event_name, "b");
     }
+
+    #[tokio::test]
+    async fn test_set_root_column_rejects_invalid_type_during_planning() {
+        let pipeline = OplParser::parse("logs | set event_name = 1")
+            .unwrap()
+            .pipeline;
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let planner = PipelinePlanner::new();
+        let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("cannot assign expression of type ScalarInt to type String"),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_rejects_invalid_column_during_planning() {
+        let pipeline = OplParser::parse("logs | set bad_column = 1")
+            .unwrap()
+            .pipeline;
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let planner = PipelinePlanner::new();
+        let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("cannot assign to non-existent column 'bad_column'"),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        };
+    }
+
+    // TODO test on empty batch
 }
