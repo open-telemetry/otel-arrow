@@ -172,6 +172,9 @@ pub struct PipelineMetrics {
     ///
     /// **Note:** This value is process-wide and identical across all pipeline instances.
     /// Do not sum across pipelines; use `max` or `last` to get the true RSS.
+    // ToDo: Consider moving this (and other process-wide metrics like virtual memory, process CPU,
+    // open FDs, thread count) to a dedicated `ProcessMetrics` struct with its own entity and
+    // reporting loop, so they are emitted once per process rather than duplicated per pipeline.
     #[metric(unit = "{By}")]
     pub memory_rss: ObserveUpDownCounter<u64>,
 
