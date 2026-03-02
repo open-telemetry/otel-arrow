@@ -670,12 +670,9 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         } else {
             RequestOutcome::Failure
         };
-        if let Some((node_id, calldata)) = self.unwind_frames(
-            &mut nack.refused,
-            now_ns,
-            outcome,
-            Interests::NACKS,
-        ) {
+        if let Some((node_id, calldata)) =
+            self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS)
+        {
             nack.calldata = calldata;
             self.send(node_id, NodeControlMsg::Nack(nack)).await;
         }

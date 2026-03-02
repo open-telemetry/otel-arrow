@@ -198,7 +198,7 @@ impl BatchCache {
         let logs = if log_count > 0 {
             let pdata: OtapPdata = generator.generate_logs(logs_batch_size).try_into()?;
             let (_, payload) = pdata.clone().into_parts();
-            let size = payload.num_bytes();
+            let size = payload.num_bytes().unwrap_or(0);
             otel_info!(
                 "batch_cache.logsize",
                 log_record_count = logs_batch_size,

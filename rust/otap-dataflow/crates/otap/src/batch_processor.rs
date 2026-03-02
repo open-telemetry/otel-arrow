@@ -101,7 +101,9 @@ impl Sizer {
         match self {
             Self::Requests => Ok(1),
             Self::Items => Ok(payload.num_items()),
-            Self::Bytes => Ok(payload.num_bytes()),
+            Self::Bytes => payload.num_bytes().ok_or_else(|| PDataError::Format {
+                error: "bytes encoding not known".into(),
+            }),
         }
     }
 }

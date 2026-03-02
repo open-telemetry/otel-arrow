@@ -154,11 +154,11 @@ impl OtapPayload {
         }
     }
 
-    /// Returns the number of encoded bytes.
+    /// Returns the number of encoded bytes, if known.
     #[must_use]
-    pub fn num_bytes(&self) -> usize {
+    pub fn num_bytes(&self) -> Option<usize> {
         match self {
-            Self::OtlpBytes(value) => value.num_bytes(),
+            Self::OtlpBytes(value) => Some(value.num_bytes()),
             Self::OtapArrowRecords(value) => value.num_bytes(),
         }
     }
@@ -180,8 +180,8 @@ pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Number of items.
     fn num_items(&self) -> usize;
 
-    /// Number of bytes.
-    fn num_bytes(&self) -> usize;
+    /// Number of bytes, if known.
+    fn num_bytes(&self) -> Option<usize>;
 
     /// Return true if there is no data.
     fn is_empty(&self) -> bool;
@@ -199,12 +199,8 @@ impl OtapPayloadHelpers for OtapArrowRecords {
         }
     }
 
-    fn num_bytes(&self) -> usize {
-        match self {
-            Self::Logs(logs) => logs.num_bytes(),
-            Self::Metrics(metrics) => metrics.num_bytes(),
-            Self::Traces(traces) => traces.num_bytes(),
-        }
+    fn num_bytes(&self) -> Option<usize> {
+        None
     }
 
     fn take_payload(&mut self) -> Self {
@@ -247,8 +243,8 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         }
     }
 
-    fn num_bytes(&self) -> usize {
-        self.num_bytes()
+    fn num_bytes(&self) -> Option<usize> {
+        Some(self.num_bytes())
     }
 
     fn is_empty(&self) -> bool {
