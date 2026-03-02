@@ -6,7 +6,7 @@
 use crate::pipeline::expr::ScopedLogicalExpr;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::cast;
-use otap_df_pdata::schema::consts;
+use otap_df_pdata::{proto::opentelemetry::metrics::v1::metric::Data, schema::consts};
 
 /// Identifier of the logical type of some expression/column.
 ///
@@ -69,7 +69,7 @@ impl ExprLogicalType {
 
     /// return the datatype associated with this type. returns None if the type
     /// is not associated with a single datatype, such as with AnyValue* and ScalarInt
-    fn datatype(&self) -> Option<DataType> {
+    pub fn datatype(&self) -> Option<DataType> {
         Some(match self {
             Self::Binary => DataType::Binary,
             Self::Boolean => DataType::Boolean,

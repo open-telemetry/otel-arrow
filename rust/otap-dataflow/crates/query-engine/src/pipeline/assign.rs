@@ -74,7 +74,22 @@ impl AssignPipelineStage {
             }
         };
 
-        // TODO - check the data type and ensure it matches the destination
+        // TODO explain why we can expect here
+        let expected_column_type = root_field_type(target_col_name)
+            .expect("TODO")
+            .datatype()
+            .expect("TODO");
+        let eval_result_column_type = eval_result.values.data_type();
+
+        // TODO - here we actually need to check the logical types
+        if expected_column_type != eval_result_column_type {
+            return Err(Error::ExecutionError {
+                cause: format!(
+                    "cannot assign expression result of type {:?} to column expecting type {:?}",
+                    eval_result_column_type, expected_column_type
+                ),
+            });
+        }
 
         let already_aligned = eval_result.data_scope.is_scalar()
             || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
@@ -265,7 +280,6 @@ mod test {
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
-                arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 resource::v1::Resource,
@@ -275,26 +289,6 @@ mod test {
     };
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
-
-    fn gen_logs_test_data() -> LogsData {
-        LogsData::new(vec![ResourceLogs::new(
-            Resource::build()
-                .attributes(vec![
-                    KeyValue::new("xr1", AnyValue::new_string("a")),
-                    KeyValue::new("xr2", AnyValue::new_string("a")),
-                ])
-                .finish(),
-            vec![ScopeLogs::new(
-                InstrumentationScope::build()
-                    .attributes(vec![
-                        KeyValue::new("xs1", AnyValue::new_string("a")),
-                        KeyValue::new("xs2", AnyValue::new_string("a")),
-                    ])
-                    .finish(),
-                vec![],
-            )],
-        )])
-    }
 
     #[tokio::test]
     async fn test_insert_root_column_from_scalar() {
@@ -481,5 +475,38 @@ mod test {
         };
     }
 
+    #[tokio::test]
+    async fn test_set_root_invalid_expr_result_type_rejected_at_runtime() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_int(1))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_int(1))])
+                .finish(),
+        ]);
+
+        let pipeline_expr = OplParser::parse("logs | set event_name = attributes[\"attr\"]")
+            .unwrap()
+            .pipeline;
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await;
+
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("Pipeline execution error: cannot assign expression result of type Dictionary(UInt16, Int64) to column expecting type Utf8"),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        }
+    }
+
+    // TODO test validation assigning dict column result?
     // TODO test on empty batch
 }
