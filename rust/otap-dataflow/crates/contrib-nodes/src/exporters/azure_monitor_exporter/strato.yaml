@@ -1,0 +1,961 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+    perftest1:
+        pipelines:
+            main:
+                policies:
+                    channel_capacity:
+                        control:
+                            node: 100
+                            pipeline: 100
+                        pdata: 10
+                    resources:
+                        core_allocation:
+                            type: core_count
+                            count: 4
+                nodes:
+                    CefFullyFormed/ms-cef-processor-attributes:
+                        type: urn:otel:processor:attribute
+                        config:
+                            actions:
+                                - action: delete
+                                  key: syslog.version
+                                - action: delete
+                                  key: syslog.message
+                                - action: delete
+                                  key: syslog.content
+                                - action: delete
+                                  key: syslog.facility
+                                - action: delete
+                                  key: syslog.tag
+                                - action: delete
+                                  key: syslog.severity
+                                - action: delete
+                                  key: syslog.app_name
+                                - action: delete
+                                  key: syslog.process_id
+                                - action: delete
+                                  key: syslog.process_id_str
+                                - action: delete
+                                  key: cef.version
+                                - action: rename
+                                  destination_key: Computer
+                                  source_key: syslog.host_name
+                                - action: rename
+                                  destination_key: LogSeverity
+                                  source_key: cef.severity
+                                - action: rename
+                                  destination_key: DeviceVendor
+                                  source_key: cef.device_vendor
+                                - action: rename
+                                  destination_key: DeviceProduct
+                                  source_key: cef.device_product
+                                - action: rename
+                                  destination_key: DeviceVersion
+                                  source_key: cef.device_version
+                                - action: rename
+                                  destination_key: DeviceEventClassID
+                                  source_key: cef.device_event_class_id
+                                - action: rename
+                                  destination_key: Activity
+                                  source_key: cef.name
+                                - action: insert
+                                  key: SourceSystem
+                                  value: OpsManager
+                                - action: rename
+                                  destination_key: DeviceAction
+                                  source_key: act
+                                - action: rename
+                                  destination_key: ApplicationProtocol
+                                  source_key: app
+                                - action: rename
+                                  destination_key: DeviceEventCategory
+                                  source_key: cat
+                                - action: rename
+                                  destination_key: EventCount
+                                  source_key: cnt
+                                - action: rename
+                                  destination_key: DestinationDnsDomain
+                                  source_key: destinationDnsDomain
+                                - action: rename
+                                  destination_key: DestinationServiceName
+                                  source_key: destinationServiceName
+                                - action: rename
+                                  destination_key: DestinationTranslatedAddress
+                                  source_key: destinationTranslatedAddress
+                                - action: rename
+                                  destination_key: DestinationTranslatedPort
+                                  source_key: destinationTranslatedPort
+                                - action: rename
+                                  destination_key: CommunicationDirection
+                                  source_key: deviceDirection
+                                - action: rename
+                                  destination_key: DeviceDnsDomain
+                                  source_key: deviceDnsDomain
+                                - action: rename
+                                  destination_key: DeviceExternalID
+                                  source_key: deviceExternalId
+                                - action: rename
+                                  destination_key: DeviceFacility
+                                  source_key: deviceFacility
+                                - action: rename
+                                  destination_key: DeviceInboundInterface
+                                  source_key: deviceInboundInterface
+                                - action: rename
+                                  destination_key: DeviceNtDomain
+                                  source_key: deviceNtDomain
+                                - action: rename
+                                  destination_key: DeviceOutboundInterface
+                                  source_key: deviceOutboundInterface
+                                - action: rename
+                                  destination_key: DevicePayloadID
+                                  source_key: devicePayloadId
+                                - action: rename
+                                  destination_key: DeviceProcessName
+                                  source_key: deviceProcessName
+                                - action: rename
+                                  destination_key: DeviceTranslatedAddress
+                                  source_key: deviceTranslatedAddress
+                                - action: rename
+                                  destination_key: DestinationHostName
+                                  source_key: dhost
+                                - action: rename
+                                  destination_key: DestinationMACAddress
+                                  source_key: dmac
+                                - action: rename
+                                  destination_key: DestinationNTDomain
+                                  source_key: dntdom
+                                - action: rename
+                                  destination_key: DestinationProcessID
+                                  source_key: dpid
+                                - action: rename
+                                  destination_key: DestinationUserPrivileges
+                                  source_key: dpriv
+                                - action: rename
+                                  destination_key: DestinationProcessName
+                                  source_key: dproc
+                                - action: rename
+                                  destination_key: DestinationPort
+                                  source_key: dpt
+                                - action: rename
+                                  destination_key: DestinationIP
+                                  source_key: dst
+                                - action: rename
+                                  destination_key: DeviceTimeZone
+                                  source_key: dtz
+                                - action: rename
+                                  destination_key: DestinationUserID
+                                  source_key: duid
+                                - action: rename
+                                  destination_key: DestinationUserName
+                                  source_key: duser
+                                - action: rename
+                                  destination_key: DeviceAddress
+                                  source_key: dvc
+                                - action: rename
+                                  destination_key: DeviceName
+                                  source_key: dvchost
+                                - action: rename
+                                  destination_key: DeviceMacAddress
+                                  source_key: dvcmac
+                                - action: rename
+                                  destination_key: ProcessID
+                                  source_key: dvcpid
+                                - action: rename
+                                  destination_key: ExtID
+                                  source_key: externalId
+                                - action: rename
+                                  destination_key: FileCreateTime
+                                  source_key: fileCreateTime
+                                - action: rename
+                                  destination_key: FileHash
+                                  source_key: fileHash
+                                - action: rename
+                                  destination_key: FileID
+                                  source_key: fileId
+                                - action: rename
+                                  destination_key: FileModificationTime
+                                  source_key: fileModificationTime
+                                - action: rename
+                                  destination_key: FilePath
+                                  source_key: filePath
+                                - action: rename
+                                  destination_key: FilePermission
+                                  source_key: filePermission
+                                - action: rename
+                                  destination_key: FileType
+                                  source_key: fileType
+                                - action: rename
+                                  destination_key: FileName
+                                  source_key: fname
+                                - action: rename
+                                  destination_key: FileSize
+                                  source_key: fsize
+                                - action: rename
+                                  destination_key: ReceivedBytes
+                                  source_key: in
+                                - action: rename
+                                  destination_key: Message
+                                  source_key: msg
+                                - action: rename
+                                  destination_key: OldFileCreateTime
+                                  source_key: oldFileCreateTime
+                                - action: rename
+                                  destination_key: OldFileHash
+                                  source_key: oldFileHash
+                                - action: rename
+                                  destination_key: OldFileID
+                                  source_key: oldFileId
+                                - action: rename
+                                  destination_key: OldFileModificationTime
+                                  source_key: oldFileModificationTime
+                                - action: rename
+                                  destination_key: OldFileName
+                                  source_key: oldFileName
+                                - action: rename
+                                  destination_key: OldFilePath
+                                  source_key: oldFilePath
+                                - action: rename
+                                  destination_key: OldFile
+                                  source_key: oldFile
+                                - action: rename
+                                  destination_key: OldFilePermission
+                                  source_key: oldFilePermission
+                                - action: rename
+                                  destination_key: OldFileSize
+                                  source_key: oldFileSize
+                                - action: rename
+                                  destination_key: OldFileType
+                                  source_key: oldFileType
+                                - action: rename
+                                  destination_key: SentBytes
+                                  source_key: out
+                                - action: rename
+                                  destination_key: EventOutcome
+                                  source_key: outcome
+                                - action: rename
+                                  destination_key: Protocol
+                                  source_key: proto
+                                - action: rename
+                                  destination_key: Reason
+                                  source_key: reason
+                                - action: rename
+                                  destination_key: RequestURL
+                                  source_key: request
+                                - action: rename
+                                  destination_key: RequestClientApplication
+                                  source_key: requestClientApplication
+                                - action: rename
+                                  destination_key: RequestContext
+                                  source_key: requestContext
+                                - action: rename
+                                  destination_key: RequestCookies
+                                  source_key: requestCookies
+                                - action: rename
+                                  destination_key: RequestMethod
+                                  source_key: requestMethod
+                                - action: rename
+                                  destination_key: ReceiptTime
+                                  source_key: rt
+                                - action: rename
+                                  destination_key: SourceHostName
+                                  source_key: shost
+                                - action: rename
+                                  destination_key: SourceMACAddress
+                                  source_key: smac
+                                - action: rename
+                                  destination_key: SourceNTDomain
+                                  source_key: sntdom
+                                - action: rename
+                                  destination_key: SourceDnsDomain
+                                  source_key: sourceDnsDomain
+                                - action: rename
+                                  destination_key: SourceServiceName
+                                  source_key: sourceServiceName
+                                - action: rename
+                                  destination_key: SourceTranslatedAddress
+                                  source_key: sourceTranslatedAddress
+                                - action: rename
+                                  destination_key: SourceTranslatedPort
+                                  source_key: sourceTranslatedPort
+                                - action: rename
+                                  destination_key: SourceProcessId
+                                  source_key: spid
+                                - action: rename
+                                  destination_key: SourceUserPrivileges
+                                  source_key: spriv
+                                - action: rename
+                                  destination_key: SourceProcessName
+                                  source_key: sproc
+                                - action: rename
+                                  destination_key: SourcePort
+                                  source_key: spt
+                                - action: rename
+                                  destination_key: SourceIP
+                                  source_key: src
+                                - action: rename
+                                  destination_key: SourceUserID
+                                  source_key: suid
+                                - action: rename
+                                  destination_key: SourceUserName
+                                  source_key: suser
+                                - action: rename
+                                  destination_key: EventType
+                                  source_key: type
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address1
+                                  source_key: c6a1
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address1Label
+                                  source_key: c6a1Label
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address2
+                                  source_key: c6a2
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address2Label
+                                  source_key: c6a2Label
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address3
+                                  source_key: c6a3
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address3Label
+                                  source_key: c6a3Label
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address4
+                                  source_key: c6a4
+                                - action: rename
+                                  destination_key: DeviceCustomIPv6Address4Label
+                                  source_key: c6a4Label
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint1
+                                  source_key: cfp1
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint1Label
+                                  source_key: cfp1Label
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint2
+                                  source_key: cfp2
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint2Label
+                                  source_key: cfp2Label
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint3
+                                  source_key: cfp3
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint3Label
+                                  source_key: cfp3Label
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint4
+                                  source_key: cfp4
+                                - action: rename
+                                  destination_key: DeviceCustomFloatingPoint4Label
+                                  source_key: cfp4Label
+                                - action: rename
+                                  destination_key: FieldDeviceCustomNumber1
+                                  source_key: cn1
+                                - action: rename
+                                  destination_key: DeviceCustomNumber1Label
+                                  source_key: cn1Label
+                                - action: rename
+                                  destination_key: FieldDeviceCustomNumber2
+                                  source_key: cn2
+                                - action: rename
+                                  destination_key: DeviceCustomNumber2Label
+                                  source_key: cn2Label
+                                - action: rename
+                                  destination_key: FieldDeviceCustomNumber3
+                                  source_key: cn3
+                                - action: rename
+                                  destination_key: DeviceCustomNumber3Label
+                                  source_key: cn3Label
+                                - action: rename
+                                  destination_key: DeviceCustomString1
+                                  source_key: cs1
+                                - action: rename
+                                  destination_key: DeviceCustomString1Label
+                                  source_key: cs1Label
+                                - action: rename
+                                  destination_key: DeviceCustomString2
+                                  source_key: cs2
+                                - action: rename
+                                  destination_key: DeviceCustomString2Label
+                                  source_key: cs2Label
+                                - action: rename
+                                  destination_key: DeviceCustomString3
+                                  source_key: cs3
+                                - action: rename
+                                  destination_key: DeviceCustomString3Label
+                                  source_key: cs3Label
+                                - action: rename
+                                  destination_key: DeviceCustomString4
+                                  source_key: cs4
+                                - action: rename
+                                  destination_key: DeviceCustomString4Label
+                                  source_key: cs4Label
+                                - action: rename
+                                  destination_key: DeviceCustomString5
+                                  source_key: cs5
+                                - action: rename
+                                  destination_key: DeviceCustomString5Label
+                                  source_key: cs5Label
+                                - action: rename
+                                  destination_key: DeviceCustomString6
+                                  source_key: cs6
+                                - action: rename
+                                  destination_key: DeviceCustomString6Label
+                                  source_key: cs6Label
+                                - action: rename
+                                  destination_key: DeviceCustomDate1
+                                  source_key: deviceCustomDate1
+                                - action: rename
+                                  destination_key: DeviceCustomDate1Label
+                                  source_key: deviceCustomDate1Label
+                                - action: rename
+                                  destination_key: DeviceCustomDate2
+                                  source_key: deviceCustomDate2
+                                - action: rename
+                                  destination_key: DeviceCustomDate2Label
+                                  source_key: deviceCustomDate2Label
+                                - action: rename
+                                  destination_key: FlexDate1
+                                  source_key: flexDate1
+                                - action: rename
+                                  destination_key: FlexDate1Label
+                                  source_key: flexDate1Label
+                                - action: rename
+                                  destination_key: FlexNumber1
+                                  source_key: flexNumber1
+                                - action: rename
+                                  destination_key: FlexNumber1Label
+                                  source_key: flexNumber1Label
+                                - action: rename
+                                  destination_key: FlexNumber2
+                                  source_key: flexNumber2
+                                - action: rename
+                                  destination_key: FlexNumber2Label
+                                  source_key: flexNumber2Label
+                                - action: rename
+                                  destination_key: FlexString1
+                                  source_key: flexString1
+                                - action: rename
+                                  destination_key: FlexString1Label
+                                  source_key: flexString1Label
+                                - action: rename
+                                  destination_key: FlexString2
+                                  source_key: flexString2
+                                - action: rename
+                                  destination_key: FlexString2Label
+                                  source_key: flexString2Label
+                                - action: insert
+                                  key: CollectorHostName
+                                  value: perftest1
+                    CefFullyFormed/ms-cef-processor-condense:
+                        type: urn:otel:processor:condense_attributes
+                        config:
+                            delimiter: ;
+                            destination_key: AdditionalExtensions
+                            exclude_keys:
+                                - CollectorHostName
+                                - SourceSystem
+                                - LogSeverity
+                                - Computer
+                                - DeviceVendor
+                                - DeviceProduct
+                                - DeviceVersion
+                                - DeviceEventClassID
+                                - Activity
+                                - DeviceAction
+                                - ApplicationProtocol
+                                - DeviceEventCategory
+                                - EventCount
+                                - DestinationDnsDomain
+                                - DestinationServiceName
+                                - DestinationTranslatedAddress
+                                - DestinationTranslatedPort
+                                - CommunicationDirection
+                                - DeviceDnsDomain
+                                - DeviceExternalID
+                                - DeviceFacility
+                                - DeviceInboundInterface
+                                - DeviceNtDomain
+                                - DeviceOutboundInterface
+                                - DevicePayloadID
+                                - DeviceProcessName
+                                - DeviceTranslatedAddress
+                                - DestinationHostName
+                                - DestinationMACAddress
+                                - DestinationNTDomain
+                                - DestinationProcessID
+                                - DestinationUserPrivileges
+                                - DestinationProcessName
+                                - DestinationPort
+                                - DestinationIP
+                                - DeviceTimeZone
+                                - DestinationUserID
+                                - DestinationUserName
+                                - DeviceAddress
+                                - DeviceName
+                                - DeviceMacAddress
+                                - ProcessID
+                                - ExtID
+                                - FileCreateTime
+                                - FileHash
+                                - FileID
+                                - FileModificationTime
+                                - FilePath
+                                - FilePermission
+                                - FileType
+                                - FileName
+                                - FileSize
+                                - ReceivedBytes
+                                - Message
+                                - OldFileCreateTime
+                                - OldFileHash
+                                - OldFileID
+                                - OldFileModificationTime
+                                - OldFileName
+                                - OldFilePath
+                                - OldFile
+                                - OldFilePermission
+                                - OldFileSize
+                                - OldFileType
+                                - SentBytes
+                                - EventOutcome
+                                - Protocol
+                                - Reason
+                                - RequestURL
+                                - RequestClientApplication
+                                - RequestContext
+                                - RequestCookies
+                                - RequestMethod
+                                - ReceiptTime
+                                - SourceHostName
+                                - SourceMACAddress
+                                - SourceNTDomain
+                                - SourceDnsDomain
+                                - SourceServiceName
+                                - SourceTranslatedAddress
+                                - SourceTranslatedPort
+                                - SourceProcessId
+                                - SourceUserPrivileges
+                                - SourceProcessName
+                                - SourcePort
+                                - SourceIP
+                                - SourceUserID
+                                - SourceUserName
+                                - EventType
+                                - DeviceCustomIPv6Address1
+                                - DeviceCustomIPv6Address1Label
+                                - DeviceCustomIPv6Address2
+                                - DeviceCustomIPv6Address2Label
+                                - DeviceCustomIPv6Address3
+                                - DeviceCustomIPv6Address3Label
+                                - DeviceCustomIPv6Address4
+                                - DeviceCustomIPv6Address4Label
+                                - DeviceCustomFloatingPoint1
+                                - DeviceCustomFloatingPoint1Label
+                                - DeviceCustomFloatingPoint2
+                                - DeviceCustomFloatingPoint2Label
+                                - DeviceCustomFloatingPoint3
+                                - DeviceCustomFloatingPoint3Label
+                                - DeviceCustomFloatingPoint4
+                                - DeviceCustomFloatingPoint4Label
+                                - FieldDeviceCustomNumber1
+                                - DeviceCustomNumber1Label
+                                - FieldDeviceCustomNumber2
+                                - DeviceCustomNumber2Label
+                                - FieldDeviceCustomNumber3
+                                - DeviceCustomNumber3Label
+                                - DeviceCustomString1
+                                - DeviceCustomString1Label
+                                - DeviceCustomString2
+                                - DeviceCustomString2Label
+                                - DeviceCustomString3
+                                - DeviceCustomString3Label
+                                - DeviceCustomString4
+                                - DeviceCustomString4Label
+                                - DeviceCustomString5
+                                - DeviceCustomString5Label
+                                - DeviceCustomString6
+                                - DeviceCustomString6Label
+                                - DeviceCustomDate1
+                                - DeviceCustomDate1Label
+                                - DeviceCustomDate2
+                                - DeviceCustomDate2Label
+                                - FlexDate1
+                                - FlexDate1Label
+                                - FlexNumber1
+                                - FlexNumber1Label
+                                - FlexNumber2
+                                - FlexNumber2Label
+                                - FlexString1
+                                - FlexString1Label
+                                - FlexString2
+                                - FlexString2Label
+                    CefFullyFormed/ms-cef-processor-kql:
+                        type: urn:microsoft:processor:recordset_kql
+                        config:
+                            bridge_options:
+                                attributes_schema:
+                                    options:
+                                        allow_undefined_keys: true
+                                    schema:
+                                        TimeGenerated: DateTime
+                            query: source | extend SimplifiedDeviceAction = case(DeviceAction =~ 'permitted' or DeviceAction =~ 'est-allowed', 'Allow', DeviceAction =~ 'deny' or DeviceAction =~ 'denied', 'Deny', DeviceAction =~ 'discarded', 'Discarded', DeviceAction =~ 'teardown', 'Teardown', DeviceAction =~ 'dropping', 'Drop', DeviceAction), RemoteIP = case(CommunicationDirection =~ 'inbound', SourceIP, CommunicationDirection =~ 'outbound', DestinationIP, ''), RemotePort = case(CommunicationDirection =~ 'inbound', SourcePort, CommunicationDirection =~ 'outbound', DestinationPort, ''), TimeGenerated = Timestamp
+                    DefaultOTLPLogs/batch:
+                        type: urn:otel:processor:batch
+                        config:
+                            flush_timeout: 200ms
+                            otap:
+                                min_size: 8192
+                                sizer: items
+                    SyslogFullyFormed/ms-syslog-processor-attributes:
+                        type: urn:otel:processor:attribute
+                        config:
+                            actions:
+                                - action: insert
+                                  key: SourceSystem
+                                  value: Linux
+                                - action: rename
+                                  destination_key: Computer
+                                  source_key: syslog.host_name
+                                - action: rename
+                                  destination_key: Facility
+                                  source_key: syslog.facility
+                                - action: rename
+                                  destination_key: SeverityLevel
+                                  source_key: syslog.severity
+                                - action: rename
+                                  destination_key: ProcessName
+                                  source_key: syslog.app_name
+                                - action: rename
+                                  destination_key: ProcessID
+                                  source_key: syslog.process_id
+                                - action: delete
+                                  key: syslog.process_id_str
+                                - action: delete
+                                  key: syslog.tag
+                                - action: insert
+                                  key: CollectorHostName
+                                  value: perftest1
+                    SyslogFullyFormed/ms-syslog-processor-kql:
+                        type: urn:microsoft:processor:recordset_kql
+                        config:
+                            bridge_options:
+                                attributes_schema:
+                                    options:
+                                        allow_undefined_keys: true
+                                    schema:
+                                        TimeGenerated: DateTime
+                            query: source | extend TimeGenerated = Timestamp, EventTime = Timestamp, HostName = Computer, SeverityLevel = case(SeverityLevel == 0, 'emergency', SeverityLevel == 1, 'alert', SeverityLevel == 2, 'critical', SeverityLevel == 3, 'error', SeverityLevel == 4, 'warning', SeverityLevel == 5, 'notice', SeverityLevel == 6, 'info', SeverityLevel == 7, 'debug', ''), Facility = case(Facility == 0, 'kern', Facility == 1, 'user', Facility == 2, 'mail', Facility == 3, 'daemon', Facility == 4, 'auth', Facility == 5, 'syslog', Facility == 6, 'lpr', Facility == 7, 'news', Facility == 8, 'uucp', Facility == 9, 'cron', Facility == 10, 'authpriv', Facility == 11, 'ftp', Facility == 12, 'ntp', Facility == 13, 'security', Facility == 14, 'console', Facility == 15, 'local0', Facility == 16, 'local1', Facility == 17, 'local2', Facility == 18, 'local3', Facility == 19, 'local4', Facility == 20, 'local5', Facility == 21, 'local6', Facility == 22, 'local7', ''), SyslogMessage = coalesce(Attributes['syslog.message'], Attributes['syslog.content'], '') | project-away Attributes['syslog.message'], Attributes['syslog.content']
+                    cef-ff:
+                        type: urn:otel:receiver:syslog_cef
+                        config:
+                            protocol:
+                                tcp:
+                                    listening_addr: 0.0.0.0:516
+                    cef-ff-fanout:
+                        type: urn:otel:processor:fanout
+                        outputs:
+                            - CefFullyFormed/ms-cef-processor-attributes
+                        config:
+                            await_ack: all
+                            destinations:
+                                - port: CefFullyFormed/ms-cef-processor-attributes
+                            mode: parallel
+                    exporter-la-workspace:
+                        type: urn:microsoft:exporter:azure_monitor
+                        config:
+                            api:
+                                dcr: dcr-1209061f0b974103b956aad11a8687a7
+                                dcr_endpoint: https://mydce-u4wk.westus2-1.ingest.monitor.azure.com
+                                schema:
+                                    log_record_mapping:
+                                        attributes:
+                                            attr_1: Attribute1
+                                            attr_2: Attribute2
+                                            attr_3: Attribute3
+                                            attr_4: Attribute4
+                                        body: Body
+                                        event_name: EventName
+                                        severity_number: SeverityNumber
+                                        severity_text: SeverityText
+                                        time_unix_nano: TimeGenerated
+                                    resource_mapping:
+                                        service.name: ServiceName
+                                stream_name: Custom-OTLP
+                            auth:
+                                method: dev
+                    exporter-la-workspace-cef-ff:
+                        type: urn:microsoft:exporter:azure_monitor
+                        config:
+                            api:
+                                dcr: dcr-1209061f0b974103b956aad11a8687a7
+                                dcr_endpoint: https://mydce-u4wk.westus2-1.ingest.monitor.azure.com
+                                schema:
+                                    log_record_mapping:
+                                        attributes:
+                                            Activity: Activity
+                                            AdditionalExtensions: AdditionalExtensions
+                                            ApplicationProtocol: ApplicationProtocol
+                                            CollectorHostName: CollectorHostName
+                                            CommunicationDirection: CommunicationDirection
+                                            Computer: Computer
+                                            DestinationDnsDomain: DestinationDnsDomain
+                                            DestinationHostName: DestinationHostName
+                                            DestinationIP: DestinationIP
+                                            DestinationMACAddress: DestinationMACAddress
+                                            DestinationNTDomain: DestinationNTDomain
+                                            DestinationPort: DestinationPort
+                                            DestinationProcessId: DestinationProcessId
+                                            DestinationProcessName: DestinationProcessName
+                                            DestinationServiceName: DestinationServiceName
+                                            DestinationTranslatedAddress: DestinationTranslatedAddress
+                                            DestinationTranslatedPort: DestinationTranslatedPort
+                                            DestinationUserID: DestinationUserID
+                                            DestinationUserName: DestinationUserName
+                                            DestinationUserPrivileges: DestinationUserPrivileges
+                                            DeviceAction: DeviceAction
+                                            DeviceAddress: DeviceAddress
+                                            DeviceCustomDate1: DeviceCustomDate1
+                                            DeviceCustomDate1Label: DeviceCustomDate1Label
+                                            DeviceCustomDate2: DeviceCustomDate2
+                                            DeviceCustomDate2Label: DeviceCustomDate2Label
+                                            DeviceCustomFloatingPoint1: DeviceCustomFloatingPoint1
+                                            DeviceCustomFloatingPoint1Label: DeviceCustomFloatingPoint1Label
+                                            DeviceCustomFloatingPoint2: DeviceCustomFloatingPoint2
+                                            DeviceCustomFloatingPoint2Label: DeviceCustomFloatingPoint2Label
+                                            DeviceCustomFloatingPoint3: DeviceCustomFloatingPoint3
+                                            DeviceCustomFloatingPoint3Label: DeviceCustomFloatingPoint3Label
+                                            DeviceCustomFloatingPoint4: DeviceCustomFloatingPoint4
+                                            DeviceCustomFloatingPoint4Label: DeviceCustomFloatingPoint4Label
+                                            DeviceCustomIPv6Address1: DeviceCustomIPv6Address1
+                                            DeviceCustomIPv6Address1Label: DeviceCustomIPv6Address1Label
+                                            DeviceCustomIPv6Address2: DeviceCustomIPv6Address2
+                                            DeviceCustomIPv6Address2Label: DeviceCustomIPv6Address2Label
+                                            DeviceCustomIPv6Address3: DeviceCustomIPv6Address3
+                                            DeviceCustomIPv6Address3Label: DeviceCustomIPv6Address3Label
+                                            DeviceCustomIPv6Address4: DeviceCustomIPv6Address4
+                                            DeviceCustomIPv6Address4Label: DeviceCustomIPv6Address4Label
+                                            DeviceCustomNumber1: DeviceCustomNumber1
+                                            DeviceCustomNumber1Label: DeviceCustomNumber1Label
+                                            DeviceCustomNumber2: DeviceCustomNumber2
+                                            DeviceCustomNumber2Label: DeviceCustomNumber2Label
+                                            DeviceCustomNumber3: DeviceCustomNumber3
+                                            DeviceCustomNumber3Label: DeviceCustomNumber3Label
+                                            DeviceCustomString1: DeviceCustomString1
+                                            DeviceCustomString1Label: DeviceCustomString1Label
+                                            DeviceCustomString2: DeviceCustomString2
+                                            DeviceCustomString2Label: DeviceCustomString2Label
+                                            DeviceCustomString3: DeviceCustomString3
+                                            DeviceCustomString3Label: DeviceCustomString3Label
+                                            DeviceCustomString4: DeviceCustomString4
+                                            DeviceCustomString4Label: DeviceCustomString4Label
+                                            DeviceCustomString5: DeviceCustomString5
+                                            DeviceCustomString5Label: DeviceCustomString5Label
+                                            DeviceCustomString6: DeviceCustomString6
+                                            DeviceCustomString6Label: DeviceCustomString6Label
+                                            DeviceDnsDomain: DeviceDnsDomain
+                                            DeviceEventCategory: DeviceEventCategory
+                                            DeviceEventClassID: DeviceEventClassID
+                                            DeviceExternalID: DeviceExternalID
+                                            DeviceFacility: DeviceFacility
+                                            DeviceInboundInterface: DeviceInboundInterface
+                                            DeviceMacAddress: DeviceMacAddress
+                                            DeviceName: DeviceName
+                                            DeviceNtDomain: DeviceNtDomain
+                                            DeviceOutboundInterface: DeviceOutboundInterface
+                                            DevicePayloadId: DevicePayloadId
+                                            DeviceProduct: DeviceProduct
+                                            DeviceTimeZone: DeviceTimeZone
+                                            DeviceTranslatedAddress: DeviceTranslatedAddress
+                                            DeviceVendor: DeviceVendor
+                                            DeviceVersion: DeviceVersion
+                                            EventCount: EventCount
+                                            EventOutcome: EventOutcome
+                                            EventType: EventType
+                                            ExtID: ExtID
+                                            ExternalID: ExternalID
+                                            FieldDeviceCustomNumber1: FieldDeviceCustomNumber1
+                                            FieldDeviceCustomNumber2: FieldDeviceCustomNumber2
+                                            FieldDeviceCustomNumber3: FieldDeviceCustomNumber3
+                                            FileCreateTime: FileCreateTime
+                                            FileHash: FileHash
+                                            FileID: FileID
+                                            FileModificationTime: FileModificationTime
+                                            FileName: FileName
+                                            FilePath: FilePath
+                                            FilePermission: FilePermission
+                                            FileSize: FileSize
+                                            FileType: FileType
+                                            FlexDate1: FlexDate1
+                                            FlexDate1Label: FlexDate1Label
+                                            FlexNumber1: FlexNumber1
+                                            FlexNumber1Label: FlexNumber1Label
+                                            FlexNumber2: FlexNumber2
+                                            FlexNumber2Label: FlexNumber2Label
+                                            FlexString1: FlexString1
+                                            FlexString1Label: FlexString1Label
+                                            FlexString2: FlexString2
+                                            FlexString2Label: FlexString2Label
+                                            LogSeverity: LogSeverity
+                                            MaliciousIPDataSource: MaliciousIPDataSource
+                                            Message: Message
+                                            OldFileCreateTime: OldFileCreateTime
+                                            OldFileHash: OldFileHash
+                                            OldFileID: OldFileID
+                                            OldFileModificationTime: OldFileModificationTime
+                                            OldFileName: OldFileName
+                                            OldFilePath: OldFilePath
+                                            OldFilePermission: OldFilePermission
+                                            OldFileSize: OldFileSize
+                                            OldFileType: OldFileType
+                                            OriginalLogSeverity: OriginalLogSeverity
+                                            ProcessID: ProcessID
+                                            ProcessName: ProcessName
+                                            Protocol: Protocol
+                                            Reason: Reason
+                                            ReceiptTime: ReceiptTime
+                                            ReceivedBytes: ReceivedBytes
+                                            RemoteIP: RemoteIP
+                                            RemotePort: RemotePort
+                                            RequestClientApplication: RequestClientApplication
+                                            RequestContext: RequestContext
+                                            RequestCookies: RequestCookies
+                                            RequestMethod: RequestMethod
+                                            RequestURL: RequestURL
+                                            SentBytes: SentBytes
+                                            SimplifiedDeviceAction: SimplifiedDeviceAction
+                                            SourceDnsDomain: SourceDnsDomain
+                                            SourceHostName: SourceHostName
+                                            SourceIP: SourceIP
+                                            SourceMACAddress: SourceMACAddress
+                                            SourceNTDomain: SourceNTDomain
+                                            SourcePort: SourcePort
+                                            SourceProcessId: SourceProcessId
+                                            SourceProcessName: SourceProcessName
+                                            SourceServiceName: SourceServiceName
+                                            SourceSystem: SourceSystem
+                                            SourceTranslatedAddress: SourceTranslatedAddress
+                                            SourceTranslatedPort: SourceTranslatedPort
+                                            SourceUserID: SourceUserID
+                                            SourceUserName: SourceUserName
+                                            SourceUserPrivileges: SourceUserPrivileges
+                                            TimeGenerated: TimeGenerated
+                                stream_name: Custom-Microsoft-CommonSecurityLog-FullyFormed
+                            auth:
+                                method: dev
+                    exporter-la-workspace-syslog:
+                        type: urn:microsoft:exporter:azure_monitor
+                        config:
+                            api:
+                                dcr: dcr-1209061f0b974103b956aad11a8687a7
+                                dcr_endpoint: https://mydce-u4wk.westus2-1.ingest.monitor.azure.com
+                                schema:
+                                    log_record_mapping:
+                                        body: Body
+                                        severity_text: SeverityText
+                                        time_unix_nano: TimeGenerated
+                                stream_name: Custom-Syslog
+                            auth:
+                                method: dev
+                    exporter-la-workspace-syslog-ff:
+                        type: urn:microsoft:exporter:azure_monitor
+                        config:
+                            api:
+                                dcr: dcr-1209061f0b974103b956aad11a8687a7
+                                dcr_endpoint: https://mydce-u4wk.westus2-1.ingest.monitor.azure.com
+                                schema:
+                                    log_record_mapping:
+                                        attributes:
+                                            CollectorHostName: CollectorHostName
+                                            Computer: Computer
+                                            EventTime: EventTime
+                                            Facility: Facility
+                                            HostIP: HostIP
+                                            HostName: HostName
+                                            ProcessID: ProcessID
+                                            ProcessName: ProcessName
+                                            SeverityLevel: SeverityLevel
+                                            SourceSystem: SourceSystem
+                                            SyslogMessage: SyslogMessage
+                                            TimeGenerated: TimeGenerated
+                                stream_name: Custom-Microsoft-Syslog-FullyFormed
+                            auth:
+                                method: msi
+                    receiver-OTLP:
+                        type: urn:otel:receiver:otlp
+                        config:
+                            protocols:
+                                grpc:
+                                    listening_addr: 0.0.0.0:4317
+                    receiver-OTLP-fanout:
+                        type: urn:otel:processor:fanout
+                        outputs:
+                            - DefaultOTLPLogs/batch
+                        config:
+                            await_ack: all
+                            destinations:
+                                - port: DefaultOTLPLogs/batch
+                            mode: parallel
+                    syslog-basic:
+                        type: urn:otel:receiver:syslog_cef
+                        config:
+                            protocol:
+                                tcp:
+                                    listening_addr: 0.0.0.0:514
+                    syslog-basic-fanout:
+                        type: urn:otel:processor:fanout
+                        outputs:
+                            - exporter-la-workspace-syslog
+                        config:
+                            await_ack: all
+                            destinations:
+                                - port: exporter-la-workspace-syslog
+                            mode: parallel
+                    syslog-ff:
+                        type: urn:otel:receiver:syslog_cef
+                        config:
+                            protocol:
+                                tcp:
+                                    listening_addr: 0.0.0.0:515
+                    syslog-ff-fanout:
+                        type: urn:otel:processor:fanout
+                        outputs:
+                            - SyslogFullyFormed/ms-syslog-processor-attributes
+                        config:
+                            await_ack: all
+                            destinations:
+                                - port: SyslogFullyFormed/ms-syslog-processor-attributes
+                            mode: parallel
+                connections:
+                    - from: [CefFullyFormed/ms-cef-processor-attributes]
+                      to: [CefFullyFormed/ms-cef-processor-condense]
+                    - from: [CefFullyFormed/ms-cef-processor-condense]
+                      to: [CefFullyFormed/ms-cef-processor-kql]
+                    - from: [CefFullyFormed/ms-cef-processor-kql]
+                      to: [exporter-la-workspace-cef-ff]
+                    - from: [DefaultOTLPLogs/batch]
+                      to: [exporter-la-workspace]
+                    - from: [SyslogFullyFormed/ms-syslog-processor-attributes]
+                      to: [SyslogFullyFormed/ms-syslog-processor-kql]
+                    - from: [SyslogFullyFormed/ms-syslog-processor-kql]
+                      to: [exporter-la-workspace-syslog-ff]
+                    - from: [cef-ff]
+                      to: [cef-ff-fanout]
+                    - from: ['cef-ff-fanout["CefFullyFormed/ms-cef-processor-attributes"]']
+                      to: [CefFullyFormed/ms-cef-processor-attributes]
+                    - from: [receiver-OTLP]
+                      to: [receiver-OTLP-fanout]
+                    - from: ['receiver-OTLP-fanout["DefaultOTLPLogs/batch"]']
+                      to: [DefaultOTLPLogs/batch]
+                    - from: [syslog-basic]
+                      to: [syslog-basic-fanout]
+                    - from: ['syslog-basic-fanout["exporter-la-workspace-syslog"]']
+                      to: [exporter-la-workspace-syslog]
+                    - from: [syslog-ff]
+                      to: [syslog-ff-fanout]
+                    - from: ['syslog-ff-fanout["SyslogFullyFormed/ms-syslog-processor-attributes"]']
+                      to: [SyslogFullyFormed/ms-syslog-processor-attributes]
+

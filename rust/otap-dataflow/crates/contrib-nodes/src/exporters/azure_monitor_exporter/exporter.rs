@@ -463,12 +463,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        effect_handler
-            .info(&format!(
-                "[AzureMonitorExporter] Starting: endpoint={}, stream={}, dcr={}",
-                self.config.api.dcr_endpoint, self.config.api.stream_name, self.config.api.dcr
-            ))
-            .await;
+        otel_info!(
+            "azure_monitor_exporter.start",
+            endpoint = %self.config.api.dcr_endpoint,
+            stream = %self.config.api.stream_name,
+            dcr = %self.config.api.dcr
+        );
 
         let mut msg_id = 0;
 
