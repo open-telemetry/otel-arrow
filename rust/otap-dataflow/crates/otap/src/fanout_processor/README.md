@@ -210,7 +210,7 @@ For tracked modes (`primary`/`all`), the `max_inflight` setting (default: 10,000
 provides the explicit bound on concurrent requests:
 
 | `await_ack` | Overflow Mechanism | Behavior |
-|-------------|-------------------|----------|
+| ----------- | ----------------- | -------- |
 | `primary`/`all` | `max_inflight` | Nack when limit reached |
 | `none` | Channel capacity | Block until downstream drains |
 
