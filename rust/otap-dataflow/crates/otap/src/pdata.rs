@@ -220,14 +220,8 @@ impl Context {
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
-        // Mark this frame for consumer-side outcome counting only.
-        if node_interests.contains(Interests::CONSUMER_METRICS) {
-            interests |= Interests::CONSUMER_METRICS;
-        }
-        // Mark the frame for entry-timestamp so the controller can compute duration.
-        if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
-            interests |= Interests::ENTRY_TIMESTAMP;
-        }
+        // Propagate consumer-metrics and entry-timestamp bits from the node.
+        interests |= node_interests & (Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
         // Timestamp: only when ENTRY_TIMESTAMP is requested.
         let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
             nanos_since_epoch()
