@@ -604,6 +604,41 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 /// controller can pop frames from the context stack carried inside the
 /// ack/nack payload.
 impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
+    /// Shared unwinding loop: pop frames, record metrics at intermediates,
+    /// and stop at the first subscriber matching `interest`. Returns the
+    /// target `node_id` and restored `RouteData` for the delivery, or
+    /// `None` if the stack is exhausted without finding a subscriber.
+    fn unwind_frames(
+        &mut self,
+        pdata: &mut PData,
+        now_ns: u64,
+        outcome: RequestOutcome,
+        interest: Interests,
+    ) -> Option<(usize, crate::control::RouteData)> {
+        loop {
+            match pdata.pop_frame() {
+                None => return None,
+                Some(frame) => {
+                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+                        self.record_frame_metrics(
+                            frame.node_id,
+                            frame.interests,
+                            &frame.calldata,
+                            outcome,
+                            now_ns,
+                        );
+                    }
+                    if frame.interests.contains(interest) {
+                        if !frame.interests.contains(Interests::RETURN_DATA) {
+                            pdata.drop_payload();
+                        }
+                        return Some((frame.node_id, frame.calldata));
+                    }
+                }
+            }
+        }
+    }
+
     /// Unwind the context stack for an ack, recording metrics at each
     /// intermediate frame, then deliver to the first subscriber with ACKS.
     ///
@@ -613,29 +648,14 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     /// next ack/nack.
     async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
         let now_ns = ack.calldata.return_time_ns;
-        loop {
-            match ack.accepted.pop_frame() {
-                None => return, // no more subscribers
-                Some(frame) => {
-                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
-                        self.record_frame_metrics(
-                            frame.node_id,
-                            frame.interests,
-                            &frame.calldata,
-                            RequestOutcome::Success,
-                            now_ns,
-                        );
-                    }
-                    if frame.interests.contains(Interests::ACKS) {
-                        if !frame.interests.contains(Interests::RETURN_DATA) {
-                            ack.accepted.drop_payload();
-                        }
-                        ack.calldata = frame.calldata;
-                        self.send(frame.node_id, NodeControlMsg::Ack(ack)).await;
-                        return;
-                    }
-                }
-            }
+        if let Some((node_id, calldata)) = self.unwind_frames(
+            &mut ack.accepted,
+            now_ns,
+            RequestOutcome::Success,
+            Interests::ACKS,
+        ) {
+            ack.calldata = calldata;
+            self.send(node_id, NodeControlMsg::Ack(ack)).await;
         }
     }
 
@@ -650,29 +670,14 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         } else {
             RequestOutcome::Failure
         };
-        loop {
-            match nack.refused.pop_frame() {
-                None => return, // no more subscribers
-                Some(frame) => {
-                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
-                        self.record_frame_metrics(
-                            frame.node_id,
-                            frame.interests,
-                            &frame.calldata,
-                            outcome,
-                            now_ns,
-                        );
-                    }
-                    if frame.interests.contains(Interests::NACKS) {
-                        if !frame.interests.contains(Interests::RETURN_DATA) {
-                            nack.refused.drop_payload();
-                        }
-                        nack.calldata = frame.calldata;
-                        self.send(frame.node_id, NodeControlMsg::Nack(nack)).await;
-                        return;
-                    }
-                }
-            }
+        if let Some((node_id, calldata)) = self.unwind_frames(
+            &mut nack.refused,
+            now_ns,
+            outcome,
+            Interests::NACKS,
+        ) {
+            nack.calldata = calldata;
+            self.send(node_id, NodeControlMsg::Nack(nack)).await;
         }
     }
 }
