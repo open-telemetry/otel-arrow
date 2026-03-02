@@ -12,7 +12,10 @@
 //! are supported.
 
 use crate::context::PipelineContext;
-use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::{
+    ControlSenders, ExtensionControlMsg, ExtensionControlSender, NodeControlMsg,
+    PipelineControlMsg, PipelineCtrlMsgReceiver,
+};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
@@ -181,8 +184,11 @@ pub struct PipelineCtrlMsgManager<PData> {
     pipeline_context: PipelineContext,
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
-    /// Allows sending control messages back to nodes.
+    /// Allows sending control messages back to data-plane nodes.
     control_senders: ControlSenders<PData>,
+    /// Extension control senders for shutdown-last.
+    /// Extensions are shut down AFTER data-plane nodes have drained.
+    extension_control_senders: Vec<ExtensionControlSender>,
     /// Repeating timers for generic TimerTick.
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
@@ -208,6 +214,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
+        extension_control_senders: Vec<ExtensionControlSender>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         telemetry_policy: TelemetryPolicy,
@@ -218,6 +225,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             pipeline_context,
             pipeline_ctrl_msg_receiver,
             control_senders,
+            extension_control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
             delayed_data: BinaryHeap::new(),
@@ -461,7 +469,34 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
             }
         }
+
+        // Shutdown-last: send shutdown to extensions AFTER data-plane nodes
+        // have drained and the main loop has exited.
+        self.shutdown_extensions().await;
+
         Ok(())
+    }
+
+    /// Sends `ExtensionControlMsg::Shutdown` to all extensions.
+    ///
+    /// Called after the data-plane draining loop exits, ensuring extensions
+    /// remain available to data-plane nodes throughout their shutdown sequence.
+    async fn shutdown_extensions(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let reason = "pipeline shutdown complete".to_string();
+        for ext_sender in &self.extension_control_senders {
+            let msg = ExtensionControlMsg::Shutdown {
+                deadline,
+                reason: reason.clone(),
+            };
+            if let Err(e) = ext_sender.send(msg).await {
+                otel_warn!(
+                    "extension.shutdown.send_failed",
+                    node_id = ext_sender.node_id.name.as_ref(),
+                    error = ?e
+                );
+            }
+        }
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
@@ -597,6 +632,7 @@ mod tests {
             pipeline_context,
             pipeline_rx,
             control_senders,
+            Vec::new(),
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
             TelemetryPolicy::default(),
@@ -1041,6 +1077,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
+                    Vec::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetryPolicy::default(),

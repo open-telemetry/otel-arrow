@@ -31,13 +31,10 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::ExtensionControlMsg;
 use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::extension::{EffectHandler, Extension};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::local::extension::{ControlChannel, EffectHandler, Extension};
 use otap_df_engine::terminal_state::TerminalState;
-
-use otap_df_otap::pdata::OtapPdata;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
@@ -239,13 +236,13 @@ impl BearerTokenProvider for AzureIdentityAuthExtension {
 }
 
 #[async_trait(?Send)]
-impl Extension<OtapPdata> for AzureIdentityAuthExtension {
+impl Extension for AzureIdentityAuthExtension {
     otap_df_engine::extension_traits!(BearerTokenProvider);
 
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
-        effect_handler: EffectHandler<OtapPdata>,
+        mut ctrl_chan: ControlChannel,
+        effect_handler: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         effect_handler
             .info(&format!(
@@ -302,30 +299,26 @@ impl Extension<OtapPdata> for AzureIdentityAuthExtension {
                 }
 
                 // Handle control messages
-                msg = msg_chan.recv() => {
+                msg = ctrl_chan.recv() => {
                     match msg? {
-                        Message::Control(NodeControlMsg::Shutdown { reason, .. }) => {
+                        ExtensionControlMsg::Shutdown { reason, .. } => {
                             otel_info!(
                                 "azure_identity_auth.shutdown",
                                 reason = %reason
                             );
                             break;
                         }
-                        Message::Control(NodeControlMsg::TimerTick {}) => {
+                        ExtensionControlMsg::TimerTick {} => {
                             // Timer ticks handled by tokio::select sleep_until
                         }
-                        Message::Control(NodeControlMsg::Config { config }) => {
+                        ExtensionControlMsg::Config { config } => {
                             otel_info!(
                                 "azure_identity_auth.config_update",
                                 config = ?config
                             );
                         }
-                        Message::PData(_) => {
-                            // Extensions don't process pipeline data
-                            otel_warn!("azure_identity_auth.unexpected_pdata");
-                        }
-                        _ => {
-                            // Handle other control messages as needed
+                        ExtensionControlMsg::CollectTelemetry { .. } => {
+                            // Telemetry collection handled by pipeline metrics
                         }
                     }
                 }

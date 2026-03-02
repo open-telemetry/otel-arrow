@@ -4,6 +4,10 @@
 //! Extension wrapper providing a unified interface over local (`!Send`) and
 //! shared (`Send`) extension implementations.
 //!
+//! Extensions are PData-free — they never process pipeline data, only control
+//! messages. This module wraps local and shared variants into a single
+//! `ExtensionWrapper` that the engine can start and manage.
+//!
 //! For the extension lifecycle traits, see [`local::extension`](crate::local::extension)
 //! and [`shared::extension`](crate::shared::extension).
 //!
@@ -22,17 +26,14 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExtensionConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::ExtensionControlMsg;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
-use crate::message;
-use crate::message::{Receiver, Sender};
-use crate::node::{Node, NodeId};
+use crate::node::NodeId;
 use crate::shared::extension as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
-use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -40,9 +41,10 @@ use std::sync::Arc;
 
 /// A wrapper for the extension that allows for both `Send` and `!Send` implementations.
 ///
-/// Note: This is useful for creating a single interface for the extension regardless of their
-/// 'sendability'.
-pub enum ExtensionWrapper<PData> {
+/// Extensions are NOT generic over PData — they operate exclusively on
+/// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
+/// from the data-plane type.
+pub enum ExtensionWrapper {
     /// An extension with a `!Send` implementation.
     Local {
         /// Index identifier for the node.
@@ -52,11 +54,11 @@ pub enum ExtensionWrapper<PData> {
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
         /// The extension instance.
-        extension: Box<dyn local::Extension<PData>>,
+        extension: Box<dyn local::Extension>,
         /// A sender for control messages.
-        control_sender: LocalSender<NodeControlMsg<PData>>,
+        control_sender: LocalSender<ExtensionControlMsg>,
         /// A receiver for control messages.
-        control_receiver: Option<LocalReceiver<NodeControlMsg<PData>>>,
+        control_receiver: Option<LocalReceiver<ExtensionControlMsg>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
     },
@@ -69,29 +71,17 @@ pub enum ExtensionWrapper<PData> {
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
         /// The extension instance.
-        extension: Box<dyn shared::Extension<PData>>,
+        extension: Box<dyn shared::Extension>,
         /// A sender for control messages.
-        control_sender: SharedSender<NodeControlMsg<PData>>,
+        control_sender: SharedSender<ExtensionControlMsg>,
         /// A receiver for control messages.
-        control_receiver: Option<SharedReceiver<NodeControlMsg<PData>>>,
+        control_receiver: Option<SharedReceiver<ExtensionControlMsg>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
     },
 }
 
-#[async_trait::async_trait(?Send)]
-impl<PData> Controllable<PData> for ExtensionWrapper<PData> {
-    fn control_sender(&self) -> Sender<NodeControlMsg<PData>> {
-        match self {
-            ExtensionWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
-            ExtensionWrapper::Shared { control_sender, .. } => {
-                Sender::Shared(control_sender.clone())
-            }
-        }
-    }
-}
-
-impl<PData> ExtensionWrapper<PData> {
+impl ExtensionWrapper {
     /// Creates a new local `ExtensionWrapper` with the given extension and configuration (!Send
     /// implementation).
     pub fn local<E>(
@@ -101,7 +91,7 @@ impl<PData> ExtensionWrapper<PData> {
         config: &ExtensionConfig,
     ) -> Self
     where
-        E: local::Extension<PData> + 'static,
+        E: local::Extension + 'static,
     {
         let (control_sender, control_receiver) =
             mpsc::Channel::new(config.control_channel.capacity);
@@ -126,7 +116,7 @@ impl<PData> ExtensionWrapper<PData> {
         config: &ExtensionConfig,
     ) -> Self
     where
-        E: shared::Extension<PData> + 'static,
+        E: shared::Extension + 'static,
     {
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
@@ -139,6 +129,33 @@ impl<PData> ExtensionWrapper<PData> {
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: Some(SharedReceiver::mpsc(control_receiver)),
             telemetry: None,
+        }
+    }
+
+    /// Returns whether this extension uses a shared (Send) implementation.
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        match self {
+            ExtensionWrapper::Local { .. } => false,
+            ExtensionWrapper::Shared { .. } => true,
+        }
+    }
+
+    /// Returns the node ID of this extension.
+    #[must_use]
+    pub fn node_id(&self) -> NodeId {
+        match self {
+            ExtensionWrapper::Local { node_id, .. } => node_id.clone(),
+            ExtensionWrapper::Shared { node_id, .. } => node_id.clone(),
+        }
+    }
+
+    /// Returns the user configuration for this extension.
+    #[must_use]
+    pub fn user_config(&self) -> Arc<NodeUserConfig> {
+        match self {
+            ExtensionWrapper::Local { user_config, .. } => user_config.clone(),
+            ExtensionWrapper::Shared { user_config, .. } => user_config.clone(),
         }
     }
 
@@ -220,7 +237,7 @@ impl<PData> ExtensionWrapper<PData> {
                 let control_receiver = control_receiver.expect("control_receiver already taken");
 
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, PData>(
+                    wrap_control_channel_metrics::<LocalMode, ExtensionControlMsg>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,
@@ -253,7 +270,7 @@ impl<PData> ExtensionWrapper<PData> {
                 let control_receiver = control_receiver.expect("control_receiver already taken");
 
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, PData>(
+                    wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,
@@ -276,106 +293,72 @@ impl<PData> ExtensionWrapper<PData> {
         }
     }
 
-    /// Starts the extension and begins its operation.
-    pub async fn start(
-        self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-    ) -> Result<TerminalState, crate::error::Error> {
-        match (self, metrics_reporter) {
-            (
-                ExtensionWrapper::Local {
-                    node_id,
-                    extension,
-                    control_receiver,
-                    ..
-                },
-                metrics_reporter,
-            ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
-                effect_handler
-                    .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-
-                let control_receiver =
-                    control_receiver.expect("control_receiver missing from ExtensionWrapper");
-
-                // Extensions only receive control messages, no pdata.
-                // Create a dummy pdata receiver that will never produce data.
-                let (_dummy_tx, dummy_rx) = mpsc::Channel::<PData>::new(1);
-                let message_channel = message::MessageChannel::new(
-                    Receiver::Local(control_receiver),
-                    Receiver::Local(LocalReceiver::mpsc(dummy_rx)),
-                );
-                extension.start(message_channel, effect_handler).await
-            }
-            (
-                ExtensionWrapper::Shared {
-                    node_id,
-                    extension,
-                    control_receiver,
-                    ..
-                },
-                metrics_reporter,
-            ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
-                effect_handler
-                    .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-
-                let control_receiver =
-                    control_receiver.expect("control_receiver missing from ExtensionWrapper");
-
-                let message_channel = shared::MessageChannel::new(control_receiver);
-                extension.start(message_channel, effect_handler).await
-            }
-        }
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl<PData> Node<PData> for ExtensionWrapper<PData> {
-    fn is_shared(&self) -> bool {
-        match self {
-            ExtensionWrapper::Local { .. } => false,
-            ExtensionWrapper::Shared { .. } => true,
-        }
-    }
-
-    fn node_id(&self) -> NodeId {
-        match self {
-            ExtensionWrapper::Local { node_id, .. } => node_id.clone(),
-            ExtensionWrapper::Shared { node_id, .. } => node_id.clone(),
-        }
-    }
-
-    fn user_config(&self) -> Arc<NodeUserConfig> {
+    /// Returns an `ExtensionControlSender` for sending control messages to this extension.
+    pub(crate) fn extension_control_sender(&self) -> crate::control::ExtensionControlSender {
         match self {
             ExtensionWrapper::Local {
-                user_config: config,
+                node_id,
+                control_sender,
                 ..
-            } => config.clone(),
+            } => crate::control::ExtensionControlSender {
+                node_id: node_id.clone(),
+                sender: crate::message::Sender::Local(control_sender.clone()),
+            },
             ExtensionWrapper::Shared {
-                user_config: config,
+                node_id,
+                control_sender,
                 ..
-            } => config.clone(),
+            } => crate::control::ExtensionControlSender {
+                node_id: node_id.clone(),
+                sender: crate::message::Sender::Shared(control_sender.clone()),
+            },
         }
     }
 
-    async fn send_control_msg(
-        &self,
-        msg: NodeControlMsg<PData>,
-    ) -> Result<(), SendError<NodeControlMsg<PData>>> {
+    /// Starts the extension and begins its operation.
+    ///
+    /// Extensions do NOT receive a `PipelineCtrlMsgSender` — they are fully
+    /// PData-free and manage their own timers directly via `tokio::time`.
+    pub async fn start(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<TerminalState, crate::error::Error> {
         match self {
-            ExtensionWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
-            ExtensionWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+            ExtensionWrapper::Local {
+                node_id,
+                extension,
+                control_receiver,
+                ..
+            } => {
+                let effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+
+                let control_receiver =
+                    control_receiver.expect("control_receiver missing from ExtensionWrapper");
+
+                let ctrl_chan = local::ControlChannel::new(control_receiver);
+                extension.start(ctrl_chan, effect_handler).await
+            }
+            ExtensionWrapper::Shared {
+                node_id,
+                extension,
+                control_receiver,
+                ..
+            } => {
+                let effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+
+                let control_receiver =
+                    control_receiver.expect("control_receiver missing from ExtensionWrapper");
+
+                let ctrl_chan = shared::ControlChannel::new(control_receiver);
+                extension.start(ctrl_chan, effect_handler).await
+            }
         }
     }
 }
 
 // ── TelemetryWrapped impl ───────────────────────────────────────────────────
 
-impl<PData> crate::TelemetryWrapped for ExtensionWrapper<PData> {
+impl crate::TelemetryWrapped for ExtensionWrapper {
     fn with_control_channel_metrics(
         self,
         pipeline_ctx: &PipelineContext,
@@ -398,9 +381,8 @@ impl<PData> crate::TelemetryWrapped for ExtensionWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::NodeControlMsg;
-    use crate::message::Message;
-    use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
+    use crate::control::ExtensionControlMsg;
+    use crate::testing::{CtrlMsgCounters, test_node};
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
     use serde_json::Value;
@@ -417,29 +399,25 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl local::Extension<TestMsg> for TestExtension {
+    impl local::Extension for TestExtension {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: message::MessageChannel<TestMsg>,
-            _effect_handler: local::EffectHandler<TestMsg>,
+            mut ctrl_chan: local::ControlChannel,
+            _effect_handler: local::EffectHandler,
         ) -> Result<TerminalState, crate::error::Error> {
             loop {
-                match msg_chan.recv().await? {
-                    Message::Control(NodeControlMsg::TimerTick { .. }) => {
+                match ctrl_chan.recv().await? {
+                    ExtensionControlMsg::TimerTick { .. } => {
                         self.counter.increment_timer_tick();
                     }
-                    Message::Control(NodeControlMsg::Config { .. }) => {
+                    ExtensionControlMsg::Config { .. } => {
                         self.counter.increment_config();
                     }
-                    Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                    ExtensionControlMsg::Shutdown { .. } => {
                         self.counter.increment_shutdown();
                         break;
                     }
-                    Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {}
-                    Message::Control(NodeControlMsg::Ack(_)) => {}
-                    Message::Control(NodeControlMsg::Nack(_)) => {}
-                    Message::Control(NodeControlMsg::DelayedData { .. }) => {}
-                    Message::PData(_) => {}
+                    ExtensionControlMsg::CollectTelemetry { .. } => {}
                 }
             }
             Ok(TerminalState::default())
@@ -490,14 +468,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl shared::Extension<TestMsg> for SharedTestExtension {
+    impl shared::Extension for SharedTestExtension {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: shared::MessageChannel<TestMsg>,
-            _effect_handler: shared::EffectHandler<TestMsg>,
+            mut ctrl_chan: shared::ControlChannel,
+            _effect_handler: shared::EffectHandler,
         ) -> Result<TerminalState, crate::error::Error> {
             loop {
-                if let Message::Control(NodeControlMsg::Shutdown { .. }) = msg_chan.recv().await? {
+                if let ExtensionControlMsg::Shutdown { .. } = ctrl_chan.recv().await? {
                     self.counter.increment_shutdown();
                     break;
                 }

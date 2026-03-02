@@ -45,7 +45,6 @@ use otap_df_engine::node::NodeId;
 use std::sync::Arc;
 
 use otap_df_otap::OTAP_EXTENSION_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
 
 mod config;
 mod error;
@@ -63,7 +62,7 @@ pub const AZURE_IDENTITY_AUTH_EXTENSION_URN: &str = "urn:microsoft:extension:azu
 /// Uses the `distributed_slice` macro for automatic discovery by the dataflow engine.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
-pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory<OtapPdata> = ExtensionFactory {
+pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: AZURE_IDENTITY_AUTH_EXTENSION_URN,
     create: |_: PipelineContext,
              node: NodeId,

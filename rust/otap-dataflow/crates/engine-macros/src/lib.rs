@@ -106,9 +106,9 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
         #[::otap_df_engine::distributed_slice]
         pub static #exporter_factories_name: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
 
-        /// A slice of extension factories.
+        /// A slice of extension factories (PData-free).
         #[::otap_df_engine::distributed_slice]
-        pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory<#pdata_type>] = [..];
+        pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory] = [..];
 
         /// The factory registry instance.
         #registry_vis static #registry_name: std::sync::LazyLock<PipelineFactory<#pdata_type>> = std::sync::LazyLock::new(|| {
@@ -138,7 +138,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
         }
 
         /// Gets the extension factory map, initializing it if necessary.
-        pub fn #get_extension_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory<#pdata_type>> {
+        pub fn #get_extension_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory> {
             #registry_name.get_extension_factory_map()
         }
     };

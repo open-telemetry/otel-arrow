@@ -199,9 +199,9 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 
 /// A factory for creating extensions.
 ///
-/// Extension factories are NOT generic over PData from the user's perspective,
-/// but the wrapper carries PData for control message compatibility.
-pub struct ExtensionFactory<PData> {
+/// Extension factories are NOT generic over PData — extensions never process
+/// pipeline data. This makes them fully decoupled from the data-plane type.
+pub struct ExtensionFactory {
     /// The name of the extension.
     pub name: &'static str,
     /// A function that creates a new extension instance.
@@ -210,7 +210,7 @@ pub struct ExtensionFactory<PData> {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         extension_config: &ExtensionConfig,
-    ) -> Result<ExtensionWrapper<PData>, otap_df_config::error::Error>,
+    ) -> Result<ExtensionWrapper, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
     ///
     /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
@@ -219,8 +219,8 @@ pub struct ExtensionFactory<PData> {
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
-// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
-impl<PData> Clone for ExtensionFactory<PData> {
+// Note: We don't use `#[derive(Clone)]` here for consistency with other factories.
+impl Clone for ExtensionFactory {
     fn clone(&self) -> Self {
         ExtensionFactory {
             name: self.name,
@@ -230,7 +230,7 @@ impl<PData> Clone for ExtensionFactory<PData> {
     }
 }
 
-impl<PData> NamedFactory for ExtensionFactory<PData> {
+impl NamedFactory for ExtensionFactory {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -367,11 +367,11 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
-    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
-    extension_factories: &'static [ExtensionFactory<PData>],
+    extension_factories: &'static [ExtensionFactory],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -400,7 +400,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         receiver_factories: &'static [ReceiverFactory<PData>],
         processor_factories: &'static [ProcessorFactory<PData>],
         exporter_factories: &'static [ExporterFactory<PData>],
-        extension_factories: &'static [ExtensionFactory<PData>],
+        extension_factories: &'static [ExtensionFactory],
     ) -> Self {
         Self {
             receiver_factory_map: OnceLock::new(),
@@ -445,12 +445,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     }
 
     /// Gets the extension factory map, initializing it if necessary.
-    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory<PData>> {
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory> {
         self.extension_factory_map.get_or_init(|| {
             self.extension_factories
                 .iter()
                 .map(|f| (f.name(), f.clone()))
-                .collect::<HashMap<&'static str, ExtensionFactory<PData>>>()
+                .collect::<HashMap<&'static str, ExtensionFactory>>()
         })
     }
 
@@ -1525,7 +1525,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
-    ) -> Result<ExtensionWrapper<PData>, Error> {
+    ) -> Result<ExtensionWrapper, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
         let core_id = pipeline_ctx.core_id();

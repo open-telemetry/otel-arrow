@@ -53,8 +53,10 @@ well-defined traits through a type-safe registry.
    processors, and exporters so their capabilities are available when
    data-path components initialize.
 
-2. **No PData channels.** Extensions only receive control messages (shutdown,
-   timer ticks, config updates). They never process pipeline data directly.
+2. **PData-free.** Extensions are completely decoupled from the pipeline data
+   type (`PData`). They receive their own `ExtensionControlMsg` messages
+   (shutdown, timer ticks, config updates, telemetry collection) through a
+   dedicated control channel. They never process pipeline data directly.
 
 3. **Local/Shared split.** Like receivers and exporters, extensions have both
    local (`!Send` futures) and shared (`Send` futures) variants. Local
@@ -74,20 +76,21 @@ well-defined traits through a type-safe registry.
 
 ## Core Types
 
-### `Extension<PData>` trait (local and shared variants)
+### `Extension` trait (local and shared variants)
 
-The lifecycle trait every extension implements. Two variants exist, following
-the same pattern as receivers and exporters:
+The lifecycle trait every extension implements. Unlike receivers, processors,
+and exporters, extensions are **not generic over `PData`** -- they are
+completely decoupled from the pipeline data type. Two variants exist:
 
 **Local variant** -- `engine/src/local/extension.rs`:
 
 ```rust
 #[async_trait(?Send)]
-pub trait Extension<PData> {
+pub trait Extension {
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<PData>,
-        effect_handler: EffectHandler<PData>,
+        control_channel: ControlChannel,
+        effect_handler: EffectHandler,
     ) -> Result<TerminalState, Error>;
 
     fn extension_traits(&self) -> Vec<TraitRegistration> {
@@ -100,11 +103,11 @@ pub trait Extension<PData> {
 
 ```rust
 #[async_trait]
-pub trait Extension<PData> {
+pub trait Extension: Send {
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<PData>,
-        effect_handler: EffectHandler<PData>,
+        control_channel: ControlChannel,
+        effect_handler: EffectHandler,
     ) -> Result<TerminalState, Error>;
 
     fn extension_traits(&self) -> Vec<TraitRegistration> {
@@ -115,18 +118,22 @@ pub trait Extension<PData> {
 
 - The local variant uses `#[async_trait(?Send)]` (futures are `!Send`), while
   the shared variant uses `#[async_trait]` (futures must be `Send`).
-- `start()` takes ownership (`Box<Self>`) and runs the extension's event loop.
+- `start()` takes a `ControlChannel` (wrapping a receiver for
+  `ExtensionControlMsg`) and a simplified `EffectHandler` (node ID and metrics
+  reporter only -- no timer management through the pipeline control channel).
 - `extension_traits()` returns trait registrations that the engine inserts into
   the `ExtensionRegistry`. Extensions that don't publish any traits (pure
   background tasks) can use the default empty implementation.
+- Extensions manage their own timers directly (e.g., via `tokio::time`)
+  rather than through the pipeline's timer infrastructure.
 
-### `ExtensionWrapper<PData>`
+### `ExtensionWrapper`
 
 Engine-internal adapter that wires an extension into the pipeline, defined in
-`engine/src/extension.rs`. It is an enum with two variants:
+`engine/src/extension.rs`. It is a **non-generic** enum with two variants:
 
 ```rust
-pub enum ExtensionWrapper<PData> {
+pub enum ExtensionWrapper {
     Local { /* local::extension::Extension impl */ },
     Shared { /* shared::extension::Extension impl */ },
 }
@@ -136,8 +143,10 @@ Constructors: `ExtensionWrapper::local(...)` and `ExtensionWrapper::shared(...)`
 
 It:
 
-- Creates the control channel
-- Implements `Node<PData>` and `Controllable<PData>`
+- Creates the `ExtensionControlMsg` control channel
+- Provides an `extension_control_sender()` for shutdown orchestration
+- Does **not** implement `Node<PData>` or `Controllable<PData>` (extensions
+  are not data-path nodes)
 - Provides telemetry integration
 - Collects trait registrations during pipeline build
 
@@ -185,7 +194,7 @@ trait types.
 Convenience macro with two forms:
 
 ```rust
-// Convenience form -- inside impl Extension<PData>:
+// Convenience form -- inside impl Extension:
 otap_df_engine::extension_traits!(BearerTokenProvider);
 
 // Explicit form -- returns Vec<TraitRegistration>:
@@ -233,8 +242,8 @@ Extensions that publish traits must satisfy:
 | Shared state via `Arc` | Clones must observe the same state               |
 
 Pure background-task extensions (no published traits) have no special
-requirements beyond implementing the `Extension<PData>` trait. Local
-extensions can even use `!Send` futures.
+requirements beyond implementing the `Extension` trait. Local extensions
+can even use `!Send` futures.
 
 ## Pipeline Lifecycle
 
@@ -264,9 +273,24 @@ extensions can even use `!Send` futures.
    +- Data-path components use registry lookups as needed
    +- Control messages flow normally (shutdown, timer, config)
 
-5. Shutdown
-   +- Extensions receive Shutdown control message and terminate
+5. Shutdown (extensions shut down LAST)
+   +- Data-path nodes receive Shutdown and drain
+   +- Pipeline control channel closes after all data-path nodes finish
+   +- PipelineCtrlMsgManager::shutdown_extensions() sends
+      ExtensionControlMsg::Shutdown to all extensions
+   +- Extensions terminate after data-path is fully drained
 ```
+
+**Why shutdown-last?** Extensions provide capabilities (e.g., authentication
+tokens) that data-path nodes depend on during their graceful shutdown. If
+extensions shut down first, exporters flushing final batches could lose access
+to valid credentials.
+
+**Why separate control channels?** Extensions use `ExtensionControlSender` /
+`ExtensionControlMsg` instead of the pipeline's `PipelineCtrlMsgSender<PData>`.
+This prevents extensions from holding clones of the pipeline control channel
+sender, which would prevent the channel from closing and block graceful
+shutdown (requiring the draining deadline to expire).
 
 ## Concrete Implementation: Azure Identity Auth Extension
 
@@ -276,7 +300,7 @@ Located in `contrib-nodes/src/extensions/azure_identity_auth_extension/`.
 
 ```rust
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
-pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory<OtapPdata> = ExtensionFactory {
+pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: "urn:microsoft:extension:azure_identity_auth",
     create: |..| { /* deserialize Config, create AzureIdentityAuthExtension */ },
     validate_config: validate_typed_config::<Config>,
@@ -299,7 +323,7 @@ pub struct AzureIdentityAuthExtension {
 
 It implements both:
 
-- **`Extension<OtapPdata>`** -- drives the proactive token refresh loop via
+- **`Extension`** -- drives the proactive token refresh loop via
   `tokio::select!`, broadcasting new tokens to all subscribers
 - **`BearerTokenProvider`** -- allows consumers to call `get_token()` or
   `subscribe_token_refresh()`
@@ -359,12 +383,12 @@ nodes:
 
 3. Add `pub mod health_check;` in `engine/src/extension.rs`
 4. Extension implementors use `extension_traits!(HealthCheck)` in their
-   `impl Extension<PData>` block
+   `impl Extension` block
 
 ## Adding a New Extension Implementation
 
 1. Create a module under `contrib-nodes/src/extensions/`
-2. Implement `Extension<PData>` on a `Clone + Send + 'static` struct
+2. Implement `Extension` on a `Clone + Send + 'static` struct
 3. Use `extension_traits!` to declare which traits are published
 4. Register with `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]`
 5. Gate behind a Cargo feature in `contrib-nodes/Cargo.toml`
@@ -373,16 +397,18 @@ nodes:
 
 | File | Change |
 | ---- | ------ |
-| `engine/src/extension.rs` | `ExtensionWrapper` enum (Local/Shared), `pub mod` declarations, `Node` impl, telemetry integration |
+| `engine/src/extension.rs` | `ExtensionWrapper` enum (Local/Shared, non-generic), `pub mod` declarations, `ExtensionControlSender`, telemetry integration |
 | `engine/src/extension/registry.rs` | `ExtensionRegistry`, `TraitRegistration`, `extension_traits!` macro, sealed `ExtensionTrait` + `Error` type |
 | `engine/src/extension/bearer_token_provider.rs` | `BearerTokenProvider` trait, `BearerToken`, `Secret`, self-registering sealed impls |
-| `engine/src/local/extension.rs` | Local (`!Send`) `Extension` trait + `EffectHandler` |
-| `engine/src/shared/extension.rs` | Shared (`Send`) `Extension` trait + `EffectHandler` + `MessageChannel` |
+| `engine/src/local/extension.rs` | Local (`!Send`) `Extension` trait + `ControlChannel` + `EffectHandler` (PData-free) |
+| `engine/src/shared/extension.rs` | Shared (`Send`) `Extension` trait + `ControlChannel` + `EffectHandler` (PData-free) |
 | `engine/src/config.rs` | New `ExtensionConfig` type |
 | `engine/src/error.rs` | New `ExtensionAlreadyExists`, `UnknownExtension`, `ExtensionInNodesSection` variants |
 | `engine/src/node.rs` | New `NodeType::Extension` variant |
 | `engine/src/lib.rs` | `ExtensionFactory`, `PipelineFactory::with_extensions()`, `create_extension()`, registry build |
-| `engine/src/runtime_pipeline.rs` | Extension spawning (before other nodes), registry passing |
+| `engine/src/runtime_pipeline.rs` | Extension spawning (before other nodes), separate `extension_control_senders`, registry passing |
+| `engine/src/pipeline_ctrl.rs` | `extension_control_senders` field, `shutdown_extensions()` after data-plane draining |
+| `engine/src/control.rs` | `ExtensionControlMsg` enum, `ExtensionControlSender` struct |
 | `engine/src/exporter.rs` | `start()` signature gains `ExtensionRegistry` |
 | `engine/src/receiver.rs` | `start()` signature gains `ExtensionRegistry` |
 | `engine/src/local/{exporter,receiver}.rs` | Trait method gains `extension_registry` param |

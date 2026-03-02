@@ -22,11 +22,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own extension instance.
 
-use crate::control::NodeControlMsg;
-use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
+use crate::control::ExtensionControlMsg;
 use crate::error::Error;
 use crate::extension::registry::TraitRegistration;
-use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
@@ -34,7 +32,7 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::time::{Sleep, sleep_until};
 
 /// A trait for pipeline extensions (Send definition).
@@ -43,12 +41,10 @@ use tokio::time::{Sleep, sleep_until};
 /// expose functionality (e.g., authentication, service discovery) to other
 /// components through the [`ExtensionRegistry`](crate::extension::registry::ExtensionRegistry).
 ///
-/// # Parameters
-///
-/// The `PData` type parameter is required for compatibility with the pipeline's
-/// control message infrastructure, but extensions never process PData directly.
+/// Unlike receivers, processors, and exporters, extensions are NOT generic over
+/// PData — they never process pipeline data.
 #[async_trait]
-pub trait Extension<PData> {
+pub trait Extension: Send {
     /// Starts the extension.
     ///
     /// The pipeline engine calls this to start the extension in a dedicated task.
@@ -64,18 +60,18 @@ pub trait Extension<PData> {
     ///
     /// # Parameters
     ///
-    /// - `msg_chan`: A channel to receive control messages. Extensions do not
+    /// - `ctrl_chan`: A channel to receive control messages. Extensions do not
     ///   receive PData messages — only control messages (shutdown, timer, config).
     /// - `effect_handler`: A handler to perform side effects such as
-    ///   timers and info logging.
+    ///   info logging.
     ///
     /// # Errors
     ///
     /// Returns an [`Error`] if an unrecoverable error occurs.
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<PData>,
-        effect_handler: EffectHandler<PData>,
+        ctrl_chan: ControlChannel,
+        effect_handler: EffectHandler,
     ) -> Result<TerminalState, Error>;
 
     /// Returns extension trait registrations for this extension.
@@ -96,20 +92,20 @@ pub trait Extension<PData> {
 ///
 /// Control messages are received until a `Shutdown` is seen. After that, the
 /// channel transitions to a draining state and eventually returns the shutdown.
-pub struct MessageChannel<PData> {
-    control_rx: Option<SharedReceiver<NodeControlMsg<PData>>>,
+pub struct ControlChannel {
+    control_rx: Option<SharedReceiver<ExtensionControlMsg>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more messages will be accepted.
     shutting_down_deadline: Option<Instant>,
-    /// Holds the ControlMsg::Shutdown until after we've finished draining.
-    pending_shutdown: Option<NodeControlMsg<PData>>,
+    /// Holds the Shutdown message until after we've finished draining.
+    pending_shutdown: Option<ExtensionControlMsg>,
 }
 
-impl<PData> MessageChannel<PData> {
-    /// Creates a new `MessageChannel` with the given control receiver.
+impl ControlChannel {
+    /// Creates a new `ControlChannel` with the given control receiver.
     #[must_use]
-    pub const fn new(control_rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
-        MessageChannel {
+    pub const fn new(control_rx: SharedReceiver<ExtensionControlMsg>) -> Self {
+        ControlChannel {
             control_rx: Some(control_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
@@ -121,7 +117,7 @@ impl<PData> MessageChannel<PData> {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
+    pub async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
         let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
 
         loop {
@@ -137,7 +133,7 @@ impl<PData> MessageChannel<PData> {
                         .take()
                         .expect("pending_shutdown must exist");
                     self.shutdown();
-                    return Ok(Message::Control(shutdown));
+                    return Ok(shutdown);
                 }
 
                 if sleep_until_deadline.is_none() {
@@ -151,7 +147,7 @@ impl<PData> MessageChannel<PData> {
                             .take()
                             .expect("pending_shutdown must exist");
                         self.shutdown();
-                        return Ok(Message::Control(shutdown));
+                        return Ok(shutdown);
                     }
                 }
             }
@@ -160,16 +156,16 @@ impl<PData> MessageChannel<PData> {
             tokio::select! {
                 biased;
                 ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                    Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.duration_since(Instant::now()).is_zero() {
                             self.shutdown();
-                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
+                            return Ok(ExtensionControlMsg::Shutdown { deadline, reason });
                         }
                         self.shutting_down_deadline = Some(deadline);
-                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
+                        self.pending_shutdown = Some(ExtensionControlMsg::Shutdown { deadline, reason });
                         continue;
                     }
-                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Ok(msg) => return Ok(msg),
                     Err(e)  => return Err(e),
                 },
             }
@@ -185,48 +181,41 @@ impl<PData> MessageChannel<PData> {
 /// A `Send` implementation of the EffectHandler for extensions.
 ///
 /// Provides extensions with the ability to:
-/// - Start periodic timers
 /// - Print info messages
 /// - Access node identity
+///
+/// Extensions manage their own timers directly via `tokio::time` rather than
+/// through the engine's timer infrastructure, keeping the extension system
+/// fully PData-free.
 #[derive(Clone)]
-pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore<PData>,
+pub struct EffectHandler {
+    node_id: NodeId,
+    #[allow(dead_code)]
+    metrics_reporter: MetricsReporter,
 }
 
-impl<PData> EffectHandler<PData> {
+impl EffectHandler {
     /// Creates a new shared (Send) `EffectHandler` for the given extension node.
     #[must_use]
     pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id, metrics_reporter),
+            node_id,
+            metrics_reporter,
         }
     }
 
     /// Returns the id of the extension associated with this handler.
     #[must_use]
     pub fn extension_id(&self) -> NodeId {
-        self.core.node_id()
+        self.node_id.clone()
     }
 
     /// Print an info message to stdout.
     pub async fn info(&self, message: &str) {
-        self.core.info(message).await;
-    }
-
-    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
-    /// Returns a handle that can be used to cancel the timer.
-    pub async fn start_periodic_timer(
-        &self,
-        duration: Duration,
-    ) -> Result<TimerCancelHandle<PData>, Error> {
-        self.core.start_periodic_timer(duration).await
-    }
-
-    /// Starts a cancellable periodic telemetry timer.
-    pub async fn start_periodic_telemetry(
-        &self,
-        duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
-        self.core.start_periodic_telemetry(duration).await
+        use tokio::io::{AsyncWriteExt, stdout};
+        let mut out = stdout();
+        let _ = out.write_all(message.as_bytes()).await;
+        let _ = out.write_all(b"\n").await;
+        let _ = out.flush().await;
     }
 }

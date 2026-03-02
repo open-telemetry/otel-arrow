@@ -340,15 +340,15 @@ impl std::fmt::Debug for ExtensionRegistry {
 ///
 /// Has two forms:
 ///
-/// ## Convenience form (inside `impl Extension<PData>` block)
+/// ## Convenience form (inside `impl Extension` block)
 ///
 /// Expands to a complete
 /// [`Extension::extension_traits`](crate::local::extension::Extension::extension_traits)
-/// method definition. Place it directly inside an `impl Extension<PData>` block:
+/// method definition. Place it directly inside an `impl Extension` block:
 ///
 /// ```ignore
 /// #[async_trait(?Send)]
-/// impl Extension<OtapPdata> for MyExtension {
+/// impl Extension for MyExtension {
 ///     otap_df_engine::extension_traits!(BearerTokenProvider, SomeOtherTrait);
 ///
 ///     async fn start(...) { ... }

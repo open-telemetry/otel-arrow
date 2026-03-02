@@ -6,7 +6,8 @@
 use crate::channel_metrics::ChannelMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, ExtensionControlSender, NodeControlMsg, PipelineCtrlMsgReceiver,
+    PipelineCtrlMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
@@ -38,8 +39,8 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
-    /// Extension runtime nodes.
-    extensions: Vec<ExtensionWrapper<PData>>,
+    /// Extension runtime nodes (PData-free).
+    extensions: Vec<ExtensionWrapper>,
     /// Extension registry for passing to receivers and exporters at start.
     extension_registry: ExtensionRegistry,
 
@@ -79,7 +80,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
-        extensions: Vec<ExtensionWrapper<PData>>,
+        extensions: Vec<ExtensionWrapper>,
         extension_registry: ExtensionRegistry,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
@@ -147,25 +148,23 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
+        let mut extension_control_senders: Vec<ExtensionControlSender> = Vec::new();
 
         // Spawn extension tasks first so they are ready before other components.
+        // Extensions do NOT register in control_senders (they use ExtensionControlMsg,
+        // not NodeControlMsg<PData>). They do NOT receive pipeline_ctrl_msg_tx.
+        // Instead, their control senders are tracked separately for shutdown-last.
         for extension in extensions {
             let mut extension = extension;
-            let node_id = extension.node_id();
-            control_senders.register(
-                node_id.clone(),
-                NodeType::Extension,
-                extension.control_sender(),
-            );
+            extension_control_senders.push(extension.extension_control_sender());
             let telemetry_guard = extension.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = extension
-                    .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
+                    .start(effect_metrics_reporter)
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
@@ -313,6 +312,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 pipeline_context,
                 pipeline_ctrl_msg_rx,
                 control_senders,
+                extension_control_senders,
                 event_reporter,
                 metrics_reporter,
                 telemetry_policy,
@@ -354,7 +354,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         })
     }
 
-    /// Gets a reference to any node by its ID as a Node trait object
+    /// Gets a reference to any node by its ID as a Node trait object.
+    ///
+    /// Returns `None` for extensions — they do not implement `Node<PData>`.
     #[must_use]
     pub fn get_node(&self, node_id: usize) -> Option<&dyn Node<PData>> {
         let ndef = self.nodes.get(node_id)?;
@@ -372,10 +374,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get(ndef.inner.index)
                 .map(|e| e as &dyn Node<PData>),
-            NodeType::Extension => self
-                .extensions
-                .get(ndef.inner.index)
-                .map(|e| e as &dyn Node<PData>),
+            // Extensions are PData-free and don't implement Node<PData>.
+            NodeType::Extension => None,
         }
     }
 
@@ -424,6 +424,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 
     /// Sends a node control message to the specified node.
+    ///
+    /// Extensions cannot receive `NodeControlMsg<PData>` — they use
+    /// `ExtensionControlMsg` instead. Attempting to send to an extension
+    /// returns an error.
     pub async fn send_node_control_message(
         &self,
         node_id: &NodeId,
@@ -453,11 +457,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         .await
                 }
                 NodeType::Extension => {
-                    self.extensions
-                        .get(ndef.inner.index)
-                        .expect("precomputed")
-                        .send_control_msg(ctrl_msg)
-                        .await
+                    // Extensions use ExtensionControlMsg, not NodeControlMsg<PData>.
+                    return Err(TypedError::Error(Error::InternalError {
+                        message: format!(
+                            "cannot send NodeControlMsg to extension {:?}; use ExtensionControlMsg",
+                            node_id
+                        ),
+                    }));
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {
