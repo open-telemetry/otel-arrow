@@ -337,7 +337,10 @@ groups:
         assert_eq!(config.policies.health, HealthPolicy::default());
         assert!(config.policies.telemetry.pipeline_metrics);
         assert!(config.policies.telemetry.tokio_metrics);
-        assert!(config.policies.telemetry.channel_metrics);
+        assert_eq!(
+            config.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Basic
+        );
         assert_eq!(
             config.policies.resources.core_allocation,
             crate::policy::CoreAllocation::AllCores
@@ -357,7 +360,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: false
+    channel_metrics: none
   resources:
     core_allocation:
       type: core_count
@@ -374,7 +377,7 @@ groups:
       health:
         ready_if: [Running, Updating]
       telemetry:
-        channel_metrics: true
+        channel_metrics: basic
       resources:
         core_allocation:
           type: core_count
@@ -390,7 +393,7 @@ groups:
           health:
             ready_if: [Failed]
           telemetry:
-            channel_metrics: false
+            channel_metrics: none
           resources:
             core_allocation:
               type: core_count
@@ -471,7 +474,10 @@ groups:
             p1_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
-        assert!(!p1_resolved.policies.telemetry.channel_metrics);
+        assert_eq!(
+            p1_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::None
+        );
 
         let p2_resolved = resolved
             .pipelines
@@ -488,7 +494,10 @@ groups:
                 crate::health::PhaseKind::Updating,
             ]
         );
-        assert!(p2_resolved.policies.telemetry.channel_metrics);
+        assert_eq!(
+            p2_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Basic
+        );
         assert_eq!(
             p2_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
@@ -506,7 +515,10 @@ groups:
             p3_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Running]
         );
-        assert!(!p3_resolved.policies.telemetry.channel_metrics);
+        assert_eq!(
+            p3_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::None
+        );
         assert_eq!(
             p3_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
@@ -672,7 +684,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: false
+    channel_metrics: none
 engine:
   observability:
     pipeline:
@@ -685,7 +697,7 @@ engine:
         health:
           ready_if: [Failed]
         telemetry:
-          channel_metrics: true
+          channel_metrics: normal
       nodes:
         itr:
           type: "urn:otel:receiver:internal_telemetry"
@@ -728,7 +740,10 @@ groups:
             obs.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
-        assert!(obs.policies.telemetry.channel_metrics);
+        assert_eq!(
+            obs.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Normal
+        );
         assert_eq!(
             obs.policies.resources.core_allocation,
             crate::policy::CoreAllocation::AllCores

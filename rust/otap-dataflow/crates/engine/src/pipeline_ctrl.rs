@@ -13,6 +13,7 @@
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
+use crate::control::MetricLevel;
 use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
 };
@@ -495,12 +496,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
 
-                    if self.telemetry.channel_metrics {
+                    if self.telemetry.channel_metrics >= MetricLevel::Basic {
                         for metrics in &self.channel_metrics {
                             if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                                 otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                             }
                         }
+                    }
+                    if self.telemetry.channel_metrics >= MetricLevel::Normal {
                         if let Err(err) = self.report_node_metrics() {
                             otel_warn!("node.metrics.reporting.fail", error = err.to_string());
                         }
@@ -516,7 +519,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
         // Final metrics flush on shutdown: report any accumulated
         // node-level consumed/produced metrics before exiting.
-        if self.telemetry.channel_metrics {
+        if self.telemetry.channel_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
         }
 
@@ -2169,7 +2172,7 @@ mod tests {
         });
 
         let mut telemetry_policy = TelemetryPolicy::default();
-        telemetry_policy.channel_metrics = true;
+        telemetry_policy.channel_metrics = MetricLevel::Detailed;
 
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {

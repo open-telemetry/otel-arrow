@@ -182,7 +182,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             telemetry_policy,
         } = self;
 
-        let metric_level = telemetry_policy.component_metrics;
+        let metric_level = telemetry_policy.channel_metrics;
         let node_interests = Interests::from_metric_level(metric_level);
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.

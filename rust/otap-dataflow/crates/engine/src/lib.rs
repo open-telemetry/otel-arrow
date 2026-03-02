@@ -285,14 +285,14 @@ impl Interests {
     /// Derive `Interests` from a `MetricLevel`.
     ///
     /// - `None`     → empty
-    /// - `Basic`    → `CONSUMER_METRICS | PRODUCER_METRICS`
+    /// - `Basic`    → empty  (channel transport metrics only, no per-node tracking)
     /// - `Normal`   → `CONSUMER_METRICS | PRODUCER_METRICS`
     /// - `Detailed` → `CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP`
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
-            MetricLevel::None => Self::empty(),
-            MetricLevel::Basic | MetricLevel::Normal => Self::PIPELINE_METRICS,
+            MetricLevel::None | MetricLevel::Basic => Self::empty(),
+            MetricLevel::Normal => Self::PIPELINE_METRICS,
             MetricLevel::Detailed => Self::PIPELINE_METRICS | Self::ENTRY_TIMESTAMP,
         }
     }
@@ -579,7 +579,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.channel_metrics;
+        let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;

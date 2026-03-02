@@ -28,7 +28,7 @@ engine:
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
-          channel_metrics: false
+          channel_metrics: none
       # Internal telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
