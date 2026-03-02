@@ -247,7 +247,7 @@ FANOUT --> [bounded channel] --> Downstream
 ### Summary
 
 | Layer | Mechanism | Effect |
-|-------|-----------|--------|
+| ----- | --------- | ------ |
 | Semantic | Ack/nack propagation | Upstream waits for downstream outcome |
 | State | `max_inflight` limit | Nacks when too many requests pending |
 | Transport | Bounded channels | Blocks when downstream channel full |
@@ -257,7 +257,7 @@ Set `max_inflight: 0` for unlimited tracking (not recommended for production).
 ## Metrics
 
 | Metric | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `sent` | Requests dispatched (per incoming PData) |
 | `acked` | Requests acked upstream (after await_ack/fallback) |
 | `nacked` | Requests nacked upstream (after await_ack/fallback) |
@@ -277,7 +277,7 @@ Each destination receives an independent **clone** of the incoming PData.
 Cloning is cheap for both data formats:
 
 | Format | Storage | Clone Cost |
-|--------|---------|------------|
+| ------ | ------- | ---------- |
 | OTLP (OtlpProtoBytes) | `bytes::Bytes` | O(1) refcount increment |
 | OTAP (OtapArrowRecords) | `Arc` per column | O(columns) refcount increments |
 
@@ -299,7 +299,7 @@ copied during clone.
 ## Quick Reference
 
 | Mode | await_ack | Behavior |
-|------|-----------|----------|
+| ---- | --------- | -------- |
 | parallel | none | Send all, ack immediately, ignore outcomes |
 | parallel | primary | Send all, wait for primary (or fallback) |
 | parallel | all | Send all, wait for all, fail-fast on nack |
@@ -326,7 +326,7 @@ The processor uses optimized fast paths for common configurations to minimize
 memory allocations per request:
 
 | Configuration | Fast Path | State Per Request |
-|---------------|-----------|-------------------|
+| ------------- | --------- | ----------------- |
 | `await_ack: none` | Fire-and-forget | **None** (zero tracking) |
 | `parallel` + `primary` (no fallback/timeout) | Slim primary | Minimal map |
 | All other configs | Full | Complete endpoint tracking |

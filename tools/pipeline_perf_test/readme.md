@@ -28,7 +28,8 @@ and **automated reporting**.
   and reporting.
 4. Allow community and vendors to fork and adapt the framework for their own use
   cases.
-5. Support both lightweight local runs and scalable, automated performance test environments.
+5. Support both lightweight local runs and scalable, automated performance test
+  environments.
 
 ---
 
@@ -42,8 +43,8 @@ data collection.
 
 ### Core Concepts
 
-| Concept              | Purpose                                                              |
-|-----------------------|-----------------------------------------------------------------------|
+| Concept               | Purpose                                                              |
+| --------------------- | -------------------------------------------------------------------- |
 | **Components**        | Services or tools under test (e.g., load generators, collectors, backends). |
 | **Strategies**        | Plugin-based behaviors for deployment, execution, monitoring, and configuration. |
 | **Tests**             | Ordered scenarios made up of steps that deploy, start, monitor, load, and tear down components. |
