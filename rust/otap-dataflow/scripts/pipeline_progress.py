@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Pipeline progress tracker.
-Polls the df_engine metrics endpoint and shows aggregated receiver + exporter
-progress across all cores.  Metrics are delta-temporality, so this script
-accumulates them into running totals.
+Polls the df_engine metrics endpoint and shows cumulative receiver + exporter
+progress across all cores.  The endpoint is queried with reset=false, so
+values are cumulative (like Prometheus counters) — we display them as-is and
+optionally show the delta from the previous poll.
 
 Usage:
     python3 pipeline_progress.py [interval_secs] [url]
@@ -13,7 +14,7 @@ Usage:
 
 Press Ctrl+C to stop.
 """
-import json, sys, time, urllib.request
+import json, subprocess, sys, time, urllib.request
 from datetime import datetime
 
 INTERVAL = int(sys.argv[1]) if len(sys.argv) > 1 else 5
@@ -51,8 +52,40 @@ def fetch():
         return None
 
 
+def find_engine_pids():
+    """Find PIDs of df_engine processes."""
+    try:
+        out = subprocess.check_output(
+            ['pgrep', '-f', 'df_engine'], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return [int(p) for p in out.splitlines() if p.strip()]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+
+
+def get_os_rss_mb(pids):
+    """Get RSS in MB for given PIDs using ps."""
+    if not pids:
+        return None
+    try:
+        out = subprocess.check_output(
+            ['ps', '-o', 'rss=', '-p', ','.join(str(p) for p in pids)],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        total_kb = sum(int(x) for x in out.split() if x.strip())
+        return total_kb / 1024.0 if total_kb > 0 else None
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return None
+
+
+
+
 def parse(data):
-    syslog_pdata_send = {}   # core -> count
+    syslog_pdata_send = {}   # core -> count (batch messages)
+    syslog_logs_forwarded = {}  # core -> count (individual log records forwarded)
+    syslog_logs_total = {}      # core -> count (individual log records received)
+    syslog_logs_invalid = {}    # core -> count (individual log records failed to parse)
+    syslog_logs_forward_failed = {}  # core -> count (individual log records refused)
     fanout_pdata_recv = {}
     fanout_ctrl_send = {}
     fanout_ctrl_full = {}
@@ -64,6 +97,11 @@ def parse(data):
     exp_http2xx = {}
     exp_failed_rows = {}
     exp_inflight = {}
+    mem_usage = {}       # core -> bytes  (cumulative / gauge)
+    mem_rss = {}         # core -> bytes  (process-wide RSS from engine)
+    cpu_util = {}        # core -> ratio  (gauge, 0..1)
+    cpu_time = {}        # core -> seconds (delta)
+    uptime = {}          # core -> seconds (gauge)
 
     for ms in data.get('metric_sets', []):
         name = ms.get('name', '')
@@ -76,12 +114,28 @@ def parse(data):
         core = int(core)
         ch_kind = str(attr_val(attrs, 'channel.kind') or '')
 
-        # Syslog receiver pdata send
+        # Syslog receiver pdata send (batch messages)
         if 'syslog' in nid and 'fanout' not in nid:
             if name == 'channel.sender' and ch_kind == 'pdata':
                 v = metric_val(metrics, 'send.count')
                 if v:
                     syslog_pdata_send[core] = syslog_pdata_send.get(core, 0) + v
+            # Syslog receiver's own metrics (individual log records)
+            # Note: the proc macro converts field underscores to dots,
+            # e.g. received_logs_forwarded -> received.logs.forwarded
+            if name == 'syslog_cef.receiver.metrics':
+                v = metric_val(metrics, 'received.logs.forwarded')
+                if v:
+                    syslog_logs_forwarded[core] = syslog_logs_forwarded.get(core, 0) + v
+                v = metric_val(metrics, 'received.logs.total')
+                if v:
+                    syslog_logs_total[core] = syslog_logs_total.get(core, 0) + v
+                v = metric_val(metrics, 'received.logs.invalid')
+                if v:
+                    syslog_logs_invalid[core] = syslog_logs_invalid.get(core, 0) + v
+                v = metric_val(metrics, 'received.logs.forward.failed')
+                if v:
+                    syslog_logs_forward_failed[core] = syslog_logs_forward_failed.get(core, 0) + v
 
         # Fanout
         if 'fanout' in nid:
@@ -114,8 +168,20 @@ def parse(data):
                 exp_failed_rows[core] = exp_failed_rows.get(core, 0) + metric_val(metrics, 'failed.rows')
                 exp_inflight[core] = exp_inflight.get(core, 0) + metric_val(metrics, 'in.flight.exports')
 
+        # Pipeline-level metrics (memory, CPU, uptime)
+        if name == 'pipeline.metrics':
+            mem_usage[core] = metric_val(metrics, 'memory.usage')
+            mem_rss[core] = metric_val(metrics, 'memory.rss')
+            cpu_util[core] = metric_val(metrics, 'cpu.utilization')
+            cpu_time[core] = metric_val(metrics, 'cpu.time')
+            uptime[core] = metric_val(metrics, 'uptime')
+
     return {
         'syslog_send': syslog_pdata_send,
+        'syslog_logs_forwarded': syslog_logs_forwarded,
+        'syslog_logs_total': syslog_logs_total,
+        'syslog_logs_invalid': syslog_logs_invalid,
+        'syslog_logs_forward_failed': syslog_logs_forward_failed,
         'fanout_recv': fanout_pdata_recv,
         'exp_recv': exp_pdata_recv,
         'exp_rows': exp_rows,
@@ -124,6 +190,11 @@ def parse(data):
         'exp_http2xx': exp_http2xx,
         'exp_failed': exp_failed_rows,
         'exp_inflight': exp_inflight,
+        'mem_usage': mem_usage,
+        'mem_rss': mem_rss,
+        'cpu_util': cpu_util,
+        'cpu_time': cpu_time,
+        'uptime': uptime,
     }
 
 
@@ -137,9 +208,10 @@ def per_core_str(d, cores):
 
 def main():
     prev = None
-    cumulative = {}  # Accumulate delta metrics over time
+    engine_pids = find_engine_pids()
 
-    print(f"Polling {URL} every {INTERVAL}s  (Ctrl+C to stop)\n", flush=True)
+    print(f"Polling {URL} every {INTERVAL}s  (Ctrl+C to stop)", flush=True)
+    print(flush=True)
 
     try:
         while True:
@@ -151,57 +223,84 @@ def main():
             cur = parse(data)
             now = datetime.now().strftime("%H:%M:%S")
 
-            # Accumulate deltas into cumulative totals
-            for key in cur:
-                if key not in cumulative:
-                    cumulative[key] = {}
-                for core, val in cur[key].items():
-                    cumulative[key][core] = cumulative[key].get(core, 0) + val
-
+            # Values from the endpoint are already cumulative (reset=false),
+            # so just use them directly.
             cores = sorted(set(
-                list(cumulative.get('syslog_send', {}).keys()) +
-                list(cumulative.get('exp_rows', {}).keys())
+                list(cur.get('syslog_send', {}).keys()) +
+                list(cur.get('exp_rows', {}).keys())
             ))
 
-            tot_syslog   = sum_dict(cumulative.get('syslog_send', {}))
-            tot_exp_recv = sum_dict(cumulative.get('exp_recv', {}))
-            tot_rows     = sum_dict(cumulative.get('exp_rows', {}))
-            tot_batches  = sum_dict(cumulative.get('exp_batches', {}))
-            tot_msgs     = sum_dict(cumulative.get('exp_msgs', {}))
-            tot_http2xx  = sum_dict(cumulative.get('exp_http2xx', {}))
-            tot_failed   = sum_dict(cumulative.get('exp_failed', {}))
+            tot_syslog   = sum_dict(cur.get('syslog_send', {}))
+            tot_syslog_logs = sum_dict(cur.get('syslog_logs_forwarded', {}))
+            tot_syslog_total = sum_dict(cur.get('syslog_logs_total', {}))
+            tot_syslog_invalid = sum_dict(cur.get('syslog_logs_invalid', {}))
+            tot_syslog_refused = sum_dict(cur.get('syslog_logs_forward_failed', {}))
+            tot_exp_recv = sum_dict(cur.get('exp_recv', {}))
+            tot_rows     = sum_dict(cur.get('exp_rows', {}))
+            tot_batches  = sum_dict(cur.get('exp_batches', {}))
+            tot_msgs     = sum_dict(cur.get('exp_msgs', {}))
+            tot_http2xx  = sum_dict(cur.get('exp_http2xx', {}))
+            tot_failed   = sum_dict(cur.get('exp_failed', {}))
 
+            # Compute deltas from previous poll
+            delta_syslog_logs = ""
             delta_syslog = ""
             delta_rows = ""
-            if prev:
-                ds = tot_syslog - prev['tot_syslog']
-                dr = tot_rows - prev['tot_rows']
-                delta_syslog = f" (+{ds:,})"
-                delta_rows   = f" (+{dr:,})"
-
             delta_msgs = ""
-            if prev and 'tot_msgs' in prev:
-                dm = tot_msgs - prev['tot_msgs']
-                delta_msgs = f" (+{dm:,})"
+            if prev:
+                ds = tot_syslog - prev.get('tot_syslog', 0)
+                dsl = tot_syslog_logs - prev.get('tot_syslog_logs', 0)
+                dr = tot_rows - prev.get('tot_rows', 0)
+                dm = tot_msgs - prev.get('tot_msgs', 0)
+                delta_syslog = f" (+{ds:,})"
+                delta_syslog_logs = f" (+{dsl:,})"
+                delta_rows   = f" (+{dr:,})"
+                delta_msgs   = f" (+{dm:,})"
 
             print(f"[{now}] ─────────────────────────────────────────────────────────")
+            print(f"  syslog recv (logs):   {tot_syslog_total:>12,}    invalid: {tot_syslog_invalid:,}    refused: {tot_syslog_refused:,}")
+            print(f"  syslog fwd  (logs):   {tot_syslog_logs:>12,}{delta_syslog_logs}")
             print(f"  syslog sent (msgs):   {tot_syslog:>12,}{delta_syslog}")
             print(f"  exporter recv (msgs): {tot_exp_recv:>12,}")
             print(f"  exported (msgs):      {tot_msgs:>12,}{delta_msgs}")
             print(f"  exported (rows):      {tot_rows:>12,}{delta_rows}")
             print(f"  batches:              {tot_batches:>12,}    http.2xx: {tot_http2xx:,}    failed: {tot_failed:,}")
+
+            # CPU and memory from pipeline.metrics (gauges — always use current values)
+            mem = cur.get('mem_usage', {})
+            rss = cur.get('mem_rss', {})
+            cpu_u = cur.get('cpu_util', {})
+            up = cur.get('uptime', {})
+            if mem:
+                alloc_mb = max(mem.values()) / (1024 * 1024)
+                rss_mb = max(rss.values()) / (1024 * 1024) if rss and max(rss.values()) > 0 else 0
+                total_cpu_pct = sum(cpu_u.values()) * 100  # ratio → %
+                uptime_s = max(up.values()) if up else 0
+                if not engine_pids:
+                    engine_pids = find_engine_pids()
+                os_rss = get_os_rss_mb(engine_pids)
+                if os_rss is None:
+                    engine_pids = []  # retry next poll
+                rss_str = f"rss(engine)={rss_mb:.1f} MB  " if rss_mb > 0 else ""
+                os_str = f"rss(os)={os_rss:.1f} MB  " if os_rss else ""
+                print(f"  memory: {rss_str}{os_str}heap={alloc_mb:.1f} MB    cpu: {total_cpu_pct:.1f}%    uptime: {uptime_s:.0f}s")
+
             if len(cores) > 1 or (len(cores) == 1 and cores[0] != 0):
-                print(f"  per-core syslog: {per_core_str(cumulative['syslog_send'], cores)}")
-                print(f"  per-core recv:   {per_core_str(cumulative['exp_recv'], cores)}")
-                print(f"  per-core msgs:   {per_core_str(cumulative['exp_msgs'], cores)}")
-                print(f"  per-core rows:   {per_core_str(cumulative['exp_rows'], cores)}")
-                print(f"  per-core batches:{per_core_str(cumulative['exp_batches'], cores)}")
-                print(f"  per-core http2xx:{per_core_str(cumulative['exp_http2xx'], cores)}")
-                print(f"  per-core failed: {per_core_str(cumulative['exp_failed'], cores)}")
+                print(f"  per-core syslog: {per_core_str(cur.get('syslog_logs_forwarded', {}), cores)}")
+                print(f"  per-core recv:   {per_core_str(cur.get('exp_recv', {}), cores)}")
+                print(f"  per-core msgs:   {per_core_str(cur.get('exp_msgs', {}), cores)}")
+                print(f"  per-core rows:   {per_core_str(cur.get('exp_rows', {}), cores)}")
+                print(f"  per-core batches:{per_core_str(cur.get('exp_batches', {}), cores)}")
+                print(f"  per-core http2xx:{per_core_str(cur.get('exp_http2xx', {}), cores)}")
+                print(f"  per-core failed: {per_core_str(cur.get('exp_failed', {}), cores)}")
+                if cpu_u:
+                    cpu_str = " ".join(f"c{c}={cpu_u.get(c,0)*100:>7.1f}%" for c in cores)
+                    print(f"  per-core cpu:    {cpu_str}")
             print(flush=True)
 
             prev = {
                 'tot_syslog': tot_syslog,
+                'tot_syslog_logs': tot_syslog_logs,
                 'tot_rows': tot_rows,
                 'tot_msgs': tot_msgs,
             }
