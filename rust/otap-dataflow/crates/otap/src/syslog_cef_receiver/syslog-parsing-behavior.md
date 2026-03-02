@@ -22,7 +22,7 @@ tries formats in this order:
 <!-- markdownlint-disable MD013 -->
 
 | # | Input Example | Detected As | Parsed Fields | Body Set? | Notes |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 1 | `<34>1 2003-10-11T22:14:15.003Z host app - ID47 - msg` | `Rfc5424` | priority, version, timestamp, hostname, app_name, msg_id, message | No (fully parsed) | Standard RFC 5424 |
 | 2 | `<34>1 - - - - - - msg` | `Rfc5424` | priority, version, message | No | All optional fields nil (`-`) |
 | 3 | `<34>1 - - - - - [sd@123 k="v"] msg` | `Rfc5424` | priority, version, structured_data, message | No | With structured data |
@@ -50,13 +50,13 @@ tries formats in this order:
 <!-- markdownlint-disable MD013 -->
 
 | # | Input Example | Error | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | `""` (empty) | `UnknownFormat` | All three sub-parsers fail with `EmptyInput`; `parse()` returns `UnknownFormat`. This is the **only** input that `parse()` rejects (RFC 3164 accepts everything else). |
 
 ### Cases That Parse Successfully but with Degraded/Partial Results
 
 | # | Input Example | Detected As | What Happens | Body Set? | `is_fully_parsed()` |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 2 | `CEF:` (nothing after prefix) | `Rfc3164` | CEF parser returns `EmptyCEFContent`; RFC 5424 fails (no `<`); RFC 3164 succeeds with priority=None, tag=`CEF`, content=empty | **Yes** | `false` |
 | 3 | `Use the BFG!` (no PRI, no structure) | `Rfc3164` | No priority; entire input becomes `content` | **Yes** (original input) | `false` |
 | 4 | `<00>Test message` (leading-zero PRI) | `Rfc3164` | PRI invalid --> priority=None; entire input (`<00>Test message`) becomes `content` | **Yes** | `false` |
@@ -78,7 +78,7 @@ tries formats in this order:
 ### CEF-Specific Negative Cases
 
 | # | Input Example | Error / Outcome | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 18 | ```CEF:0\|vendor\|product\|version\|id``` (only 4 pipes) | `InvalidCef` --> falls to RFC 3164 | Fewer than 7 required fields |
 | 19 | ```CEF:0\|vendor\|product\|version\|id\|name``` (only 5 pipes) | `InvalidCef` --> falls to RFC 3164 | Missing severity field |
 | 20 | ```CEF:2.0\|V\|P\|1.0\|100\|name\|10\|``` | `InvalidCef` --> falls to RFC 3164 | CEF version must be 0 or 1 |
@@ -98,7 +98,7 @@ tries formats in this order:
 <!-- markdownlint-disable MD013 -->
 
 | Input PRI | Valid? | facility | severity | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `<0>` | Yes | 0 | 0 | Minimum valid |
 | `<191>` | Yes | 23 | 7 | Maximum valid |
 | `<192>` | No | -- | -- | Exceeds max (facility 24 invalid) |
@@ -117,7 +117,7 @@ tries formats in this order:
 <!-- markdownlint-disable MD013 -->
 
 | Syslog Severity | Syslog Name | OTel Severity Number | OTel Severity Text |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 0 | Emergency | 21 | `FATAL` |
 | 1 | Alert | 19 | `ERROR3` |
 | 2 | Critical | 18 | `ERROR2` |

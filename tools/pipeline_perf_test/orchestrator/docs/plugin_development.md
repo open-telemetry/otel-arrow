@@ -170,11 +170,11 @@ Each plugin file typically contains both the `*Config` class and the strategy cl
 
 Every plugin class can define a `PLUGIN_META` attribute with the following fields:
 
-| Field               | Purpose                                              |
-| ------------------- | ---------------------------------------------------- |
-| `supported_contexts` | List of context types the plugin supports                      |
-| `installs_hooks`     | Hook types the plugin automatically installs (if any)          |
-| `yaml_example`       | Example YAML block showing how to use the plugin               |
+| Field                | Purpose                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| `supported_contexts` | List of context types the plugin supports                       |
+| `installs_hooks`     | Hook types the plugin automatically installs (if any)           |
+| `yaml_example`       | Example YAML block showing how to use the plugin                |
 | `cli_flags`          | List of additional cli flags to inject into the argparse parser |
 
 This metadata is used by documentation generators, validation tools, and helps
@@ -508,8 +508,8 @@ Store the config instance for use during execution.
 Define the main method(s) the framework calls to trigger plugin behavior.
 This differs by plugin type:
 
-| Plugin Type           | Typical Method(s) to Implement       | Purpose                        |
-| --------------------- | ------------------------------------ | ------------------------------ |
+| Plugin Type           | Typical Method(s) to Implement         | Purpose                      |
+| --------------------- | -------------------------------------- | ---------------------------- |
 | HookStrategy          | execute(self, ctx: BaseContext)        | Run the hook logic           |
 | ReportingHookStrategy | execute(self, ctx: BaseContext)        | Generate reports             |
 | ExecutionStrategy     | start(self, component, ctx)            | Control execution lifecycle  |
