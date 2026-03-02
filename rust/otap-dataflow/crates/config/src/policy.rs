@@ -52,22 +52,17 @@ impl Policies {
 }
 
 /// Engine-wide metric level controlling per-node instrumentation overhead.
-///
-/// - `None`: no pipeline metrics instrumentation
-/// - `Basic`: outcome counts (auto-subscribe to ACKS|NACKS)
-/// - `Normal`: same as Basic
-/// - `Detailed`: + receive timestamp and duration histogram.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MetricLevel {
-    /// No instrumentation — zero overhead.
+    /// No instrumentation.
     #[default]
     None,
-    /// Outcome counts.
+    /// Producer and consumer outcomes (success, failed, refused).
     Basic,
-    /// Not used presently, same as Basic.
+    /// Same as Basic, reserved for additional.
     Normal,
     /// Adds pipeline latency measurement.
     Detailed,
