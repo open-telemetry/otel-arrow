@@ -111,7 +111,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     error: "Topic set is not available in pipeline context".to_owned(),
                 }
             })?;
-            let topic = topic_set.get(config.topic.as_ref()).ok_or_else(|| {
+            let topic = topic_set.get_required(&config.topic).map_err(|_| {
                 ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
@@ -124,7 +124,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
             let mode = match &config.subscription {
                 TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
                 TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
-                    group: Arc::<str>::from(group.as_ref()),
+                    group: group.clone(),
                 },
             };
             let subscription = topic

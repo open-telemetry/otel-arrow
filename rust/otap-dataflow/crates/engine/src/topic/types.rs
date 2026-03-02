@@ -23,7 +23,7 @@
 //! For example, `BalancedOnly` exposes only balanced capacity, and
 //! `BroadcastOnly` exposes only broadcast capacity.
 
-use otap_df_config::TopicName;
+use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::sync::Arc;
 
 /// A delivered message envelope carrying a broker-assigned id and the payload.
@@ -74,7 +74,7 @@ pub enum SubscriptionMode {
     /// Balanced (consumer-group) mode: each message goes to exactly one subscriber in the group.
     Balanced {
         /// Consumer-group identifier.
-        group: Arc<str>,
+        group: SubscriptionGroupName,
     },
     /// Broadcast mode: each subscriber gets every message (drop-oldest on slow consumers).
     Broadcast,

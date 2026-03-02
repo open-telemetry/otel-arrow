@@ -35,7 +35,7 @@ use std::task::{Context, Poll};
 use crate::error::Error;
 use crate::topic::topic::TopicInner;
 use crate::topic::types::{AckEvent, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions};
-use otap_df_config::TopicName;
+use otap_df_config::{SubscriptionGroupName, TopicName};
 use tokio::sync::mpsc;
 
 /// The future type returned by [`TopicState::publish`].
@@ -62,7 +62,7 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     /// Create a balanced subscription backend for consumer-group `group`.
     fn subscribe_balanced(
         &self,
-        group: Arc<str>,
+        group: SubscriptionGroupName,
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error>;
     /// Create a broadcast subscription backend.

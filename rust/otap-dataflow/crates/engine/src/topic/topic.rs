@@ -87,7 +87,7 @@ use crate::topic::types::{
     message_id,
 };
 use futures_core::Stream;
-use otap_df_config::TopicName;
+use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ struct ConsumerGroup<T> {
 /// enforcement. Stored inside OnceLock -- initialized lazily on first subscribe,
 /// lock-free on subsequent subscribes.
 struct SingleGroup<T> {
-    group_name: Arc<str>,
+    group_name: SubscriptionGroupName,
     tx: async_channel::Sender<Envelope<T>>,
     rx: async_channel::Receiver<Envelope<T>>,
 }
@@ -459,7 +459,7 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
 
     fn subscribe_balanced(
         &self,
-        group: Arc<str>,
+        group: SubscriptionGroupName,
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error> {
         match self {
@@ -581,7 +581,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 
     fn subscribe_balanced(
         &self,
-        group: Arc<str>,
+        group: SubscriptionGroupName,
         _opts: SubscriberOptions,
     ) -> Result<BalancedSub<T>, Error> {
         if self.closed.load(Ordering::Relaxed) {
@@ -701,7 +701,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
 pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
-    groups: RwLock<Vec<(Arc<str>, ConsumerGroup<T>)>>,
+    groups: RwLock<Vec<(SubscriptionGroupName, ConsumerGroup<T>)>>,
     // Cached sender snapshot rebuilt only when groups change, avoiding per-publish Vec alloc/clones.
     group_senders: RwLock<Arc<[async_channel::Sender<Envelope<T>>]>>,
     has_balanced_groups: AtomicBool,
@@ -800,7 +800,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
     fn subscribe_balanced(
         &self,
-        group: Arc<str>,
+        group: SubscriptionGroupName,
         _opts: SubscriberOptions,
     ) -> Result<BalancedSub<T>, Error> {
         if self.closed.load(Ordering::Relaxed) {

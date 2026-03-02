@@ -4,6 +4,7 @@
 //! Topic declarations for inter-pipeline communication.
 
 use crate::Description;
+use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -16,9 +17,9 @@ pub struct TopicName(String);
 
 impl TopicName {
     /// Parses and validates a topic name.
-    pub fn parse(raw: &str) -> Result<Self, String> {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
         if raw.trim().is_empty() {
-            return Err("topic name must be non-empty".to_owned());
+            return Err(Error::TopicNameEmpty);
         }
         Ok(Self(raw.to_owned()))
     }
@@ -55,7 +56,7 @@ impl std::fmt::Display for TopicName {
 }
 
 impl TryFrom<String> for TopicName {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::parse(value.as_str())
@@ -94,9 +95,9 @@ pub struct SubscriptionGroupName(String);
 
 impl SubscriptionGroupName {
     /// Parses and validates a subscription group name.
-    pub fn parse(raw: &str) -> Result<Self, String> {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
         if raw.trim().is_empty() {
-            return Err("subscription group name must be non-empty".to_owned());
+            return Err(Error::SubscriptionGroupNameEmpty);
         }
         Ok(Self(raw.to_owned()))
     }
@@ -127,7 +128,7 @@ impl std::fmt::Display for SubscriptionGroupName {
 }
 
 impl TryFrom<String> for SubscriptionGroupName {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::parse(value.as_str())
@@ -137,6 +138,12 @@ impl TryFrom<String> for SubscriptionGroupName {
 impl From<SubscriptionGroupName> for String {
     fn from(value: SubscriptionGroupName) -> Self {
         value.0
+    }
+}
+
+impl From<&'static str> for SubscriptionGroupName {
+    fn from(value: &'static str) -> Self {
+        Self::parse(value).expect("invalid static subscription group name literal")
     }
 }
 
@@ -245,6 +252,7 @@ mod tests {
     use super::{
         SubscriptionGroupName, TopicBackendKind, TopicName, TopicQueueOnFullPolicy, TopicSpec,
     };
+    use crate::error::Error;
     use serde::Deserialize;
     use std::collections::HashMap;
 
@@ -295,13 +303,13 @@ backend: quiver
     #[test]
     fn topic_name_rejects_empty_values() {
         let err = TopicName::parse("   ").expect_err("empty topic names should fail");
-        assert!(err.contains("non-empty"));
+        assert!(matches!(err, Error::TopicNameEmpty));
     }
 
     #[test]
     fn subscription_group_name_rejects_empty_values() {
         let err = SubscriptionGroupName::parse("   ").expect_err("empty group names should fail");
-        assert!(err.contains("non-empty"));
+        assert!(matches!(err, Error::SubscriptionGroupNameEmpty));
     }
 
     #[test]

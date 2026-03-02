@@ -30,7 +30,7 @@ use crate::topic::types::{
     TopicOptions,
 };
 use crate::topic::{TopicBroker, TopicSet};
-use otap_df_config::TopicName;
+use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -50,13 +50,17 @@ async fn balanced_single_group_all_messages_delivered_exactly_once() {
 
     let mut sub1 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
     let mut sub2 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -125,13 +129,17 @@ async fn balanced_single_group_preserves_order_per_subscriber() {
 
     let mut sub1 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
     let mut sub2 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -175,7 +183,9 @@ async fn balanced_no_duplicates_within_group() {
         .map(|_| {
             topic
                 .subscribe(
-                    SubscriptionMode::Balanced { group: "g1".into() },
+                    SubscriptionMode::Balanced {
+                        group: SubscriptionGroupName::from("g1"),
+                    },
                     SubscriberOptions::default(),
                 )
                 .unwrap()
@@ -213,7 +223,7 @@ async fn balanced_multiple_groups_independent() {
     let mut sub_g1_a = topic
         .subscribe(
             SubscriptionMode::Balanced {
-                group: "group-A".into(),
+                group: SubscriptionGroupName::from("group-A"),
             },
             SubscriberOptions::default(),
         )
@@ -221,7 +231,7 @@ async fn balanced_multiple_groups_independent() {
     let mut sub_g1_b = topic
         .subscribe(
             SubscriptionMode::Balanced {
-                group: "group-A".into(),
+                group: SubscriptionGroupName::from("group-A"),
             },
             SubscriberOptions::default(),
         )
@@ -229,7 +239,7 @@ async fn balanced_multiple_groups_independent() {
     let mut sub_g2 = topic
         .subscribe(
             SubscriptionMode::Balanced {
-                group: "group-B".into(),
+                group: SubscriptionGroupName::from("group-B"),
             },
             SubscriberOptions::default(),
         )
@@ -428,7 +438,9 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
 
     let mut balanced = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -495,7 +507,9 @@ async fn publisher_api_identical_for_all_subscriber_modes() {
     // Mix of balanced and broadcast subscribers.
     let mut balanced = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -537,7 +551,9 @@ async fn ack_nack_events_received_when_enabled() {
 
     let mut sub = base
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -583,7 +599,9 @@ async fn ack_nack_disabled_when_no_ack_sender() {
     // No with_ack_sender() call → publisher_id=0 → NotEnabled.
     let mut sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -617,7 +635,9 @@ async fn ack_channel_full_returns_error() {
 
     let mut sub = base
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -664,7 +684,9 @@ async fn balanced_backpressure_blocks_publisher() {
 
     let mut sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -711,13 +733,17 @@ async fn balanced_multi_threaded_no_duplicates() {
     // Create subscribers BEFORE publishers so the consumer group exists.
     let mut sub1 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
     let mut sub2 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -859,7 +885,9 @@ async fn subscriber_only_receives_messages_after_subscribe() {
 
     let mut sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -896,7 +924,9 @@ async fn balanced_only_basic_delivery() {
 
     let mut sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -957,7 +987,9 @@ async fn balanced_only_rejects_second_group() {
     // First group succeeds.
     let _sub1 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -965,14 +997,18 @@ async fn balanced_only_rejects_second_group() {
     // Same group succeeds (adds another subscriber).
     let _sub2 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
 
     // Different group fails.
     match topic.subscribe(
-        SubscriptionMode::Balanced { group: "g2".into() },
+        SubscriptionMode::Balanced {
+            group: SubscriptionGroupName::from("g2"),
+        },
         SubscriberOptions::default(),
     ) {
         Err(Error::SubscribeSingleGroupViolation) => {}
@@ -997,7 +1033,9 @@ async fn balanced_only_rejects_balanced_subscribe_after_close() {
     topic.close();
 
     match topic.subscribe(
-        SubscriptionMode::Balanced { group: "g1".into() },
+        SubscriptionMode::Balanced {
+            group: SubscriptionGroupName::from("g1"),
+        },
         SubscriberOptions::default(),
     ) {
         Err(Error::TopicClosed) => {}
@@ -1023,7 +1061,9 @@ async fn mixed_rejects_balanced_subscribe_after_close() {
     topic.close();
 
     match topic.subscribe(
-        SubscriptionMode::Balanced { group: "g1".into() },
+        SubscriptionMode::Balanced {
+            group: SubscriptionGroupName::from("g1"),
+        },
         SubscriberOptions::default(),
     ) {
         Err(Error::TopicClosed) => {}
@@ -1049,13 +1089,17 @@ async fn balanced_only_no_messages_lost() {
 
     let mut sub1 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
     let mut sub2 = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1134,7 +1178,9 @@ async fn broadcast_only_rejects_balanced() {
         .unwrap();
 
     match topic.subscribe(
-        SubscriptionMode::Balanced { group: "g1".into() },
+        SubscriptionMode::Balanced {
+            group: SubscriptionGroupName::from("g1"),
+        },
         SubscriberOptions::default(),
     ) {
         Err(Error::SubscribeBalancedNotSupported) => {}
@@ -1209,7 +1255,9 @@ async fn per_publisher_ack_routing() {
 
     let mut sub = base
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1300,7 +1348,9 @@ async fn try_publish_balanced_only_reports_drop_on_full() {
 
     let _sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1334,7 +1384,9 @@ async fn try_publish_mixed_keeps_broadcast_non_blocking() {
 
     let _balanced_sub = topic
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1452,7 +1504,9 @@ async fn remove_topic_closes_and_removes() {
 
     let mut sub = handle
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1502,7 +1556,9 @@ async fn remove_topic_allows_recreation_with_same_name() {
         .unwrap();
     let mut sub = new_handle
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
@@ -1708,7 +1764,9 @@ async fn topic_set_with_ack_sender() {
 
     let mut sub = pub_handle
         .subscribe(
-            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
             SubscriberOptions::default(),
         )
         .unwrap();
