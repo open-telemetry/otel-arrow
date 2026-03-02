@@ -465,9 +465,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
             "azure_monitor_exporter.start",
-            endpoint = %self.config.api.dcr_endpoint,
-            stream = %self.config.api.stream_name,
-            dcr = %self.config.api.dcr
+            endpoint = self.config.api.dcr_endpoint.as_str(),
+            stream = self.config.api.stream_name.as_str(),
+            dcr = self.config.api.dcr.as_str()
         );
 
         let mut msg_id = 0;
