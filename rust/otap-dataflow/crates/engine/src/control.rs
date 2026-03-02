@@ -532,9 +532,9 @@ where
 /// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
 pub struct ExtensionControlSender {
     /// Unique identifier of the extension.
-    pub node_id: NodeId,
+    pub(crate) node_id: NodeId,
     /// The control message sender for the extension.
-    pub sender: Sender<ExtensionControlMsg>,
+    pub(crate) sender: Sender<ExtensionControlMsg>,
 }
 
 impl ExtensionControlSender {

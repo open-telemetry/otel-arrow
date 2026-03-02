@@ -121,6 +121,10 @@ pub trait Extension {
 ///
 /// Extensions only receive control messages (shutdown, timer ticks, config updates).
 /// They do not process pipeline data (PData).
+///
+/// Unlike the shared variant, there is no draining/deadline logic. A `Shutdown`
+/// message is returned immediately when received. Extensions shut down last
+/// (after data-plane nodes), so there is typically nothing left to drain.
 pub struct ControlChannel {
     control_rx: Option<LocalReceiver<ExtensionControlMsg>>,
 }

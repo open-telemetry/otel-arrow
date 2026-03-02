@@ -44,7 +44,7 @@ pub struct RuntimePipeline<PData: Debug> {
     /// Extension registry for passing to receivers and exporters at start.
     extension_registry: ExtensionRegistry,
 
-    /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
+    /// A precomputed map of all node IDs to their node definitions for efficient access.
     /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.

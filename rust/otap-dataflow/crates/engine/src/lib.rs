@@ -160,7 +160,7 @@ impl<PData> NamedFactory for ProcessorFactory<PData> {
 
 /// A factory for creating exporter.
 pub struct ExporterFactory<PData> {
-    /// The name of the receiver.
+    /// The name of the exporter.
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(

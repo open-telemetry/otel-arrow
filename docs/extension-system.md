@@ -302,7 +302,7 @@ Located in `contrib-nodes/src/extensions/azure_identity_auth_extension/`.
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: "urn:microsoft:extension:azure_identity_auth",
-    create: |..| { /* deserialize Config, create AzureIdentityAuthExtension */ },
+    create: |_pipeline_ctx, _node, _node_config, extension_config| { /* ... */ },
     validate_config: validate_typed_config::<Config>,
 };
 ```

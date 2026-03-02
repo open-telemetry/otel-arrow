@@ -90,8 +90,9 @@ pub trait Extension: Send {
 /// Extensions only receive control messages (shutdown, timer ticks, config updates).
 /// They do not process pipeline data (PData).
 ///
-/// Control messages are received until a `Shutdown` is seen. After that, the
-/// channel transitions to a draining state and eventually returns the shutdown.
+/// When a `Shutdown` message arrives with a future deadline, the channel waits
+/// until the deadline expires, then returns the `Shutdown`. No further messages
+/// are delivered during this grace period.
 pub struct ControlChannel {
     control_rx: Option<SharedReceiver<ExtensionControlMsg>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
