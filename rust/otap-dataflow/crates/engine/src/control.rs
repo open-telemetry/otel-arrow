@@ -77,24 +77,17 @@ pub type CallData = SmallVec<[Context8u8; 3]>;
 /// Re-export from config crate.
 pub use otap_df_config::policy::MetricLevel;
 
-/// Engine-managed call data envelope. Wraps the component's opaque
-/// [`CallData`] with an engine-managed timestamp field used for
-/// pipeline component metrics.
+/// Engine-managed call data envelope. Wraps the CallData with an envelope
+/// containing timestamp.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RouteData {
     /// Component-specific opaque data (formerly the entire `CallData`).
     pub user: CallData,
-    /// Receive timestamp (monotonic nanos since process epoch).
-    /// Only populated when `MetricLevel >= Detailed`; 0 otherwise.
+    /// Receive timestamp, see nanos_since_epoch().
     pub time_ns: u64,
     /// Return-path timestamp (monotonic nanos since process epoch).
-    /// Captured at the origin of an ack/nack (notify_ack/notify_nack)
-    /// when the context stack contains frames with metrics interests.
-    /// 0 when no metrics interests are present or timestamps are disabled.
     pub return_time_ns: u64,
-    /// Producer's output port index, stamped at send time.
-    /// Used on the return path to attribute produced metrics to the
-    /// correct output channel.
+    /// Producer's output port index.
     pub output_port_index: u16,
 }
 

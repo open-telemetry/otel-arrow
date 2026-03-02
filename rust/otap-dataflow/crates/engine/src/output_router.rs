@@ -48,7 +48,7 @@ impl<T> OutputSend for crate::shared::message::SharedSender<T> {
 }
 
 /// Port-routing state and message-sending logic shared by all
-/// processor and receiver `EffectHandler` variants.
+/// processor and receiver EffectHandlers.
 #[derive(Clone)]
 pub struct OutputRouter<S> {
     node_id: NodeId,
@@ -59,15 +59,12 @@ pub struct OutputRouter<S> {
 }
 
 impl<S: Clone> OutputRouter<S> {
-    /// Create a new router, resolving the default sender and building
-    /// the alphabetical port-index mapping.
+    /// Create a new router, resolving the default sender and indexing.
     pub fn new(
         node_id: NodeId,
         msg_senders: HashMap<PortName, S>,
         default_port: Option<PortName>,
     ) -> Self {
-        // Build combined (sender, port_index) map, with indices assigned
-        // by sorting port names alphabetically.
         let mut entries: Vec<(PortName, S)> = msg_senders.into_iter().collect();
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         let ports: HashMap<PortName, (S, u16)> = entries

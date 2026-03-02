@@ -81,11 +81,6 @@ pub struct TelemetryPolicy {
     #[serde(default = "default_true")]
     pub tokio_metrics: bool,
     /// Channel and component metric detail level.
-    ///
-    /// * `none`     — no channel or component metrics.
-    /// * `basic`    — channel transport metrics (send/recv counts).
-    /// * `normal`   — adds per-node produced/consumed outcomes.
-    /// * `detailed` — adds pipeline latency (entry timestamps).
     #[serde(default = "default_metric_level_basic")]
     pub channel_metrics: MetricLevel,
 }
