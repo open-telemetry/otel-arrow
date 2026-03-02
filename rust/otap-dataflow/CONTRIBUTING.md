@@ -20,4 +20,11 @@ TODO: Add metrics information
 
 ## Building a Docker image
 
-Run `docker build  --build-context otel-arrow=../../ -f Dockerfile -t df_engine .`
+Run
+```
+docker build  \
+  --build-context otel-arrow=../../ \
+  -f Dockerfile \
+  -t df_engine \
+  .
+```
