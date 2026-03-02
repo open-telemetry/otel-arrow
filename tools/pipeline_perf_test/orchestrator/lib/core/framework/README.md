@@ -22,7 +22,7 @@ foundational unit of test execution (e.g., test suite, scenario, or step).
 - **Lifecycle Hooks**: Attach behaviors (setup, teardown, etc.) at any phase
     using `HookStrategy`.
 - **Lifecycle Phases**: Modeled via the `TestLifecyclePhase` enum.
-- **Extensibility**: Subclass and override `run()` to define specific execution 
+- **Extensibility**: Subclass and override `run()` to define specific execution
   logic.
 
 > All testable entities in the framework derive from `FrameworkElement`.

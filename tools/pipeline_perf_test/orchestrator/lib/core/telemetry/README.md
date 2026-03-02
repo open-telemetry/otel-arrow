@@ -42,7 +42,8 @@ telemetry sources such as:
 
 ### `telemetry_runtime.py` - **Telemetry Runtime Environment**
 
-Defines `TelemetryRuntime`, the orchestration point for telemetry providers and clients.
+Defines `TelemetryRuntime`, the orchestration point for telemetry providers and
+clients.
 
 - Initializes OpenTelemetry components:
   - `TracerProvider` for traces
@@ -56,7 +57,8 @@ Defines `TelemetryRuntime`, the orchestration point for telemetry providers and 
 
 ### `signal_retriever.py` - **Abstract Signal Access Layer**
 
-Defines `SignalRetriever`, the abstract base interface for accessing telemetry signals.
+Defines `SignalRetriever`, the abstract base interface for accessing telemetry
+signals.
 
 - Base for:
   - `MetricsRetriever`
