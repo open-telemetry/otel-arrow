@@ -234,12 +234,18 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Send an Ack to the pipeline controller for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
+    where
+        PData: crate::Unwindable,
+    {
         self.core.route_ack(ack).await
     }
 
     /// Send a Nack to the pipeline controller for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
+    where
+        PData: crate::Unwindable,
+    {
         self.core.route_nack(nack).await
     }
 

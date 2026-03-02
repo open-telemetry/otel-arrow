@@ -273,6 +273,9 @@ impl Interests {
 /// unwinding logic in the controller without requiring PData-specific
 /// knowledge in the engine crate.
 pub trait Unwindable {
+    /// Returns true if the context stack has any frames.
+    fn has_frames(&self) -> bool;
+
     /// Pop the top frame from the context stack.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
@@ -283,12 +286,18 @@ pub trait Unwindable {
 
 // No-op implementations for types used as PData in tests.
 impl Unwindable for () {
+    fn has_frames(&self) -> bool {
+        false
+    }
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }
     fn drop_payload(&mut self) {}
 }
 impl Unwindable for String {
+    fn has_frames(&self) -> bool {
+        false
+    }
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }

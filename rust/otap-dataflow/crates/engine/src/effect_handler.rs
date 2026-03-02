@@ -284,7 +284,14 @@ impl<PData> EffectHandlerCore<PData> {
     /// Send an AckMsg to the pipeline controller for context unwinding.
     /// The controller pops frames from the context stack, records any
     /// metrics stops, and delivers the ack to the next subscriber node.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+    /// Skips sending if the context stack is empty (nothing to unwind).
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
+    where
+        PData: crate::Unwindable,
+    {
+        if !ack.accepted.has_frames() {
+            return Ok(());
+        }
         self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
             .await
             .map(|_| ())
@@ -295,7 +302,13 @@ impl<PData> EffectHandlerCore<PData> {
 
     /// Send a NackMsg to the pipeline controller for context unwinding.
     /// Same semantics as `route_ack()`.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
+    where
+        PData: crate::Unwindable,
+    {
+        if !nack.refused.has_frames() {
+            return Ok(());
+        }
         self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
             .await
             .map(|_| ())

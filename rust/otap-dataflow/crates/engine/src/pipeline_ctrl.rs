@@ -2021,6 +2021,9 @@ mod tests {
     }
 
     impl Unwindable for TestPData {
+        fn has_frames(&self) -> bool {
+            !self.frames.is_empty()
+        }
         fn pop_frame(&mut self) -> Option<Frame> {
             self.frames.pop()
         }
