@@ -250,12 +250,12 @@ pub struct Interests: u8 {
 }
 
 impl Interests {
-    /// Derive `Interests` from a `MetricLevel`.
+    /// Derive Interests from MetricLevel.
     ///
-    /// - `None`     → empty
-    /// - `Basic`    → empty  (channel transport metrics only, no per-node tracking)
-    /// - `Normal`   → `CONSUMER_METRICS | PRODUCER_METRICS`
-    /// - `Detailed` → `CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP`
+    /// - None:     empty()
+    /// - Basic:    empty() with only channel metrics, no use of Context
+    /// - Normal:   CONSUMER_METRICS | PRODUCER_METRICS
+    /// - Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
@@ -267,24 +267,20 @@ impl Interests {
 }
 
 /// Trait for context-stack unwinding during ack/nack delivery.
-///
-/// The pipeline controller calls these methods to pop frames from the
-/// PData's context stack and to drop retained payloads. This keeps all
-/// unwinding logic in the controller without requiring PData-specific
-/// knowledge in the engine crate.
 pub trait Unwindable {
     /// Returns true if the context stack has any frames.
+    ///
+    /// TODO: there are cases where having frames does not necessarily
+    /// mean there are interests. This can be refined.
     fn has_frames(&self) -> bool;
 
-    /// Pop the top frame from the context stack.
+    /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
-    /// Drop the retained payload (called when `RETURN_DATA` is not set
-    /// on the destination frame).
+    /// Drop the retained payload unless RETURN_DATA is set.
     fn drop_payload(&mut self);
 }
 
-// No-op implementations for types used as PData in tests.
 impl Unwindable for () {
     fn has_frames(&self) -> bool {
         false
@@ -294,6 +290,7 @@ impl Unwindable for () {
     }
     fn drop_payload(&mut self) {}
 }
+
 impl Unwindable for String {
     fn has_frames(&self) -> bool {
         false
@@ -304,17 +301,9 @@ impl Unwindable for String {
     fn drop_payload(&mut self) {}
 }
 
-/// Trait for entry-frame stamping when PData is received by a consuming node.
-///
-/// Implementing this trait allows the engine to automatically invoke
-/// data-type-specific instrumentation (e.g., pushing an entry frame for
-/// duration metrics) inside `MessageChannel::recv()` without requiring
-/// a function pointer callback threaded through the entire start chain.
+/// Trait for setting entry information in the Context, for PData consumers.
 pub trait ReceivedAtNode {
     /// Called automatically when a PData message is received from the input channel.
-    ///
-    /// - `node_id`: The receiving node's index.
-    /// - `node_interests`: Precomputed interests (derived from `MetricLevel`).
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests);
 }
 
@@ -326,19 +315,16 @@ impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
-/// Trait for stamping the output port index on PData before sending.
-///
-/// This allows the `OutputRouter` to stamp the port index and send in a
-/// single hash-map lookup, rather than looking up the port index separately.
+/// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
-    /// Stamp the output port index on this data.
+    /// Called automatically when a PData message is sent on an output channel.
     fn stamp_output_port_index(&mut self, index: u16);
 }
 
-// No-op implementations for types used as PData in tests.
 impl StampOutputPort for () {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
+
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
