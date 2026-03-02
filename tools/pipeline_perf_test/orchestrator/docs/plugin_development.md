@@ -60,7 +60,7 @@ corresponds to a specific phase or aspect of orchestrated test execution. This
 section provides an overview of each type and what it is responsible for.
 
 | Plugin Type                | Base Class                    | Purpose                                                                 |
-|----------------------------|-------------------------------|-------------------------------------------------------------------------|
+| -------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
 | **Configuration Strategy** | `ConfigurationStrategy`       | Prepares config files or settings before deployment                     |
 | **Deployment Strategy**    | `DeploymentStrategy`          | Launches components into the test environment (e.g., Docker, processes) |
 | **Execution Strategy**     | `ExecutionStrategy`           | Drives component behavior during the test (send traffic, run scripts)   |
@@ -275,7 +275,7 @@ defined in `lib/core/context/` and contain relevant information for the plugin's
 scope.
 
 | Context Class                    | Used By                    | Description                                                                 |
-|----------------------------------|----------------------------|-----------------------------------------------------------------------------|
+| -------------------------------- | -------------------------- | --------------------------------------------------------------------------- |
 | `BaseContext`                    | Base Class for all Context Types      | Provides core features: logging, telemetry, runtime info                    |
 | `FrameworkElementContext`        | Inherited Class suite/step/scenario   | Base class for contexts created for Suite, Scenario, Steps main execution   |
 | `SuiteContext`                   | Indirect access by any descendant ctx | Root CTX instance in the hierarchy, holds shared runtimes, telemetry, etc   |
@@ -393,7 +393,7 @@ framework to parse and validate user-provided YAML configuration.
 Most plugin types have a corresponding base config class defined under `lib/core/strategies/`:
 
 | Plugin Type         | Base Config Class          |
-|---------------------|----------------------------|
+| ------------------- | -------------------------- |
 | HookStrategy        | `HookStrategyConfig`       |
 | ExecutionStrategy   | `ExecutionStrategyConfig`  |
 | ReportingHookStrategy | `ReportingHookStrategyConfig` |
@@ -477,7 +477,7 @@ Choose the appropriate base class from `lib/core/strategies/` according to your
 plugin type:
 
 | Plugin Type         | Base Class             |
-|---------------------|------------------------|
+| ------------------- | ---------------------- |
 | HookStrategy        | `HookStrategy`          |
 | ExecutionStrategy   | `ExecutionStrategy`     |
 | ReportingHookStrategy | `ReportingHookStrategy` |
@@ -509,7 +509,7 @@ Define the main method(s) the framework calls to trigger plugin behavior.
 This differs by plugin type:
 
 | Plugin Type       | Typical Method(s) to Implement       | Purpose                            |
-|-------------------|--------------------------------------|------------------------------------|
+| ----------------- | ------------------------------------ | ---------------------------------- |
 | HookStrategy          | execute(self, ctx: BaseContext)        | Run the hook logic           |
 | ReportingHookStrategy | execute(self, ctx: BaseContext)        | Generate reports             |
 | ExecutionStrategy     | start(self, component, ctx)            | Control execution lifecycle  |
@@ -646,7 +646,7 @@ The framework provides specialized registries for different plugin categories,
 all accessible from `lib/runner/registry.py`. Common registries include:
 
 | Registry Name          | Description                         | Typical Plugins Registered         |
-|------------------------|-------------------------------------|------------------------------------|
+| ---------------------- | ----------------------------------- | ---------------------------------- |
 | `hook_registry`        | Hook strategies                     | HookStrategy implementations       |
 | `execution_registry`   | Execution strategies                | ExecutionStrategy implementations   |
 | `deployment_registry`  | Deployment strategies               | DeploymentStrategy implementations  |
