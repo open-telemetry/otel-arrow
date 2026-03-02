@@ -47,9 +47,16 @@ use tokio::sync::mpsc;
 ///
 /// Cheaply cloneable (wraps an `Arc`). Multiple tasks in a pipeline can hold
 /// the same `TopicSet` and see the same state.
-#[derive(Clone)]
 pub struct TopicSet<T: Send + Sync + 'static> {
     inner: Arc<TopicSetInner<T>>,
+}
+
+impl<T: Send + Sync + 'static> Clone for TopicSet<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 struct TopicSetInner<T: Send + Sync + 'static> {

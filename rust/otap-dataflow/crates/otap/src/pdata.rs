@@ -248,6 +248,19 @@ impl OtapPdata {
         &self.payload
     }
 
+    /// Clone this pdata while resetting transport context to default.
+    ///
+    /// This is used at transport boundaries (for example topic hops between
+    /// pipelines) where in-process Ack/Nack routing state must not leak across
+    /// boundaries.
+    #[must_use]
+    pub fn clone_without_context(&self) -> Self {
+        Self {
+            context: Context::default(),
+            payload: self.payload.clone(),
+        }
+    }
+
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
@@ -1471,5 +1484,35 @@ mod test {
 
         // Payload still intact for the retry processor
         assert_eq!(ack_msg.accepted.num_items(), 1);
+    }
+
+    #[test]
+    fn test_clone_without_context_resets_ack_nack_routing_state() {
+        let (test_data, pdata) = create_test();
+        let pdata = pdata
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                test_data.into(),
+                101,
+            )
+            .add_source_node(202);
+        assert!(pdata.has_subscribers());
+        assert_eq!(pdata.get_source_node(), Some(202));
+
+        let cloned = pdata.clone_without_context();
+        assert!(!cloned.has_subscribers());
+        assert_eq!(cloned.get_source_node(), None);
+
+        let ack = AckMsg::new(cloned.clone());
+        assert!(
+            Context::next_ack(ack).is_none(),
+            "reset context must not route acks"
+        );
+
+        let nack = NackMsg::new("test", cloned);
+        assert!(
+            Context::next_nack(nack).is_none(),
+            "reset context must not route nacks"
+        );
     }
 }

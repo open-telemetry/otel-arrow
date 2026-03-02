@@ -50,7 +50,11 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
-use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
+use otap_df_config::topic::TopicSpec;
+use otap_df_config::{
+    DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, TopicName,
+    pipeline::PipelineConfig,
+};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
@@ -60,6 +64,7 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::topic::{TopicBroker, TopicOptions, TopicSet};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -69,6 +74,7 @@ use otap_df_telemetry::{
     otel_warn, self_tracing::LogContext,
 };
 use smallvec::smallvec;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -93,6 +99,12 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
 enum RunMode {
     ParkMainThread,
     ShutdownWhenDone,
+}
+
+struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
+    broker: TopicBroker<PData>,
+    global_names: HashMap<TopicName, TopicName>,
+    group_names: HashMap<(PipelineGroupId, TopicName), TopicName>,
 }
 
 /// Returns the set of entity keys relevant to this context.
@@ -122,6 +134,111 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Runs until pipelines are shut down, then closes telemetry/admin services.
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
         self.run_with_mode(engine_config, RunMode::ShutdownWhenDone)
+    }
+
+    fn map_topic_spec_to_options(spec: &TopicSpec) -> TopicOptions {
+        let capacity = spec.policies.queue_capacity.max(1);
+        TopicOptions::Mixed {
+            balanced_capacity: capacity,
+            broadcast_capacity: capacity,
+        }
+    }
+
+    fn parse_topic_name(raw: &str) -> Result<TopicName, Error> {
+        TopicName::parse(raw).map_err(|e| Error::PipelineRuntimeError {
+            source: Box::new(EngineError::InternalError {
+                message: format!("invalid topic name `{raw}`: {e}"),
+            }),
+        })
+    }
+
+    fn declare_topics(config: &OtelDataflowSpec) -> Result<DeclaredTopics<PData>, Error> {
+        let broker = TopicBroker::<PData>::new();
+        let mut global_names = HashMap::new();
+        let mut group_names = HashMap::new();
+
+        for (topic_name, spec) in &config.topics {
+            let declared_name = Self::parse_topic_name(&format!("global::{}", topic_name.as_ref()))?;
+            _ = broker
+                .create_in_memory_topic(declared_name.clone(), Self::map_topic_spec_to_options(spec))
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?;
+            _ = global_names.insert(topic_name.clone(), declared_name);
+        }
+
+        for (group_id, group_cfg) in &config.groups {
+            for (topic_name, spec) in &group_cfg.topics {
+                let declared_name = Self::parse_topic_name(&format!(
+                    "group::{}::{}",
+                    group_id.as_ref(),
+                    topic_name.as_ref()
+                ))?;
+                _ = broker
+                    .create_in_memory_topic(
+                        declared_name.clone(),
+                        Self::map_topic_spec_to_options(spec),
+                    )
+                    .map_err(|e| Error::PipelineRuntimeError {
+                        source: Box::new(e),
+                    })?;
+                _ = group_names.insert((group_id.clone(), topic_name.clone()), declared_name);
+            }
+        }
+
+        Ok(DeclaredTopics {
+            broker,
+            global_names,
+            group_names,
+        })
+    }
+
+    fn build_pipeline_topic_set(
+        config: &OtelDataflowSpec,
+        declared: &DeclaredTopics<PData>,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        core_id: usize,
+    ) -> Result<TopicSet<PData>, Error> {
+        let set_name = format!(
+            "{}::{}::core-{}",
+            pipeline_group_id.as_ref(),
+            pipeline_id.as_ref(),
+            core_id
+        );
+        let set = TopicSet::new(set_name);
+
+        for global_topic_name in config.topics.keys() {
+            if let Some(declared_name) = declared.global_names.get(global_topic_name) {
+                let handle = declared
+                    .broker
+                    .get_topic_required(declared_name)
+                    .map_err(|e| Error::PipelineRuntimeError {
+                        source: Box::new(e),
+                    })?;
+                _ = set.insert(global_topic_name.clone(), handle);
+            }
+        }
+
+        if let Some(group_cfg) = config.groups.get(pipeline_group_id) {
+            for group_topic_name in group_cfg.topics.keys() {
+                if let Some(declared_name) = declared
+                    .group_names
+                    .get(&(pipeline_group_id.clone(), group_topic_name.clone()))
+                {
+                    let handle = declared
+                        .broker
+                        .get_topic_required(declared_name)
+                        .map_err(|e| Error::PipelineRuntimeError {
+                            source: Box::new(e),
+                        })?;
+                    // Group-local declarations override globals with the same local name.
+                    _ = set.insert(group_topic_name.clone(), handle);
+                }
+            }
+        }
+
+        Ok(set)
     }
 
     fn run_with_mode(
@@ -174,6 +291,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
+        // Declare all topics up front before any pipeline thread starts.
+        let declared_topics = Self::declare_topics(&engine_config)?;
 
         for pipeline_entry in &pipelines {
             let pipeline_key = PipelineKey::new(
@@ -212,6 +331,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             its_key.clone(),
             its_core,
             observability_pipeline,
+            &engine_config,
+            &declared_topics,
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -305,13 +426,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 let pipeline_factory = self.pipeline_factory;
                 let thread_id = next_thread_id;
                 next_thread_id += 1;
-                let pipeline_handle = controller_ctx.pipeline_context_with(
+                let mut pipeline_handle = controller_ctx.pipeline_context_with(
                     pipeline_group_id.clone(),
                     pipeline_id.clone(),
                     core_id.id,
                     num_cores,
                     thread_id,
                 );
+                let topic_set = Self::build_pipeline_topic_set(
+                    &engine_config,
+                    &declared_topics,
+                    &pipeline_group_id,
+                    &pipeline_id,
+                    core_id.id,
+                )?;
+                pipeline_handle.set_topic_set(topic_set);
                 let metrics_reporter = metrics_reporter.clone();
 
                 let thread_name = format!(
@@ -586,6 +715,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         its_key: DeployedPipelineKey,
         its_core: CoreId,
         observability_pipeline: Option<ResolvedPipelineConfig>,
+        config: &OtelDataflowSpec,
+        declared_topics: &DeclaredTopics<PData>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -624,13 +755,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             Some(its_settings) => its_settings,
         };
 
-        let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+        let mut internal_pipeline_ctx = controller_ctx.pipeline_context_with(
             its_key.pipeline_group_id.clone(),
             its_key.pipeline_id.clone(),
             its_key.core_id,
             1, // Internal telemetry pipeline runs on a single core
             0, // TODO: we do not have a thread_id
         );
+        let topic_set = Self::build_pipeline_topic_set(
+            config,
+            declared_topics,
+            &its_key.pipeline_group_id,
+            &its_key.pipeline_id,
+            its_key.core_id,
+        )?;
+        internal_pipeline_ctx.set_topic_set(topic_set);
 
         // Create control message channel for internal pipeline
         let (internal_ctrl_tx, internal_ctrl_rx) =

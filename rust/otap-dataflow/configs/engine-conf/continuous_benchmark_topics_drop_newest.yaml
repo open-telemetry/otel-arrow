@@ -17,7 +17,7 @@ policies:
     control:
       node: 256
       pipeline: 256
-    pdata: 128
+    pdata: 4096
   health: {}
   telemetry:
     pipeline_metrics: true
@@ -54,7 +54,7 @@ groups:
         control:
           node: 256
           pipeline: 256
-        pdata: 128
+        pdata: 4096
 
     # Topic declarations shared by all pipelines in this benchmark group.
     # These three topics replace the two ingress gRPC sockets and one backend
@@ -85,8 +85,11 @@ groups:
         policies:
           resources:
             core_allocation:
-              type: core_count
-              count: 15
+              # Keep traffic generation off SUT/backend cores to avoid starvation.
+              type: core_set
+              set:
+                - start: 2
+                  end: 16
 
         nodes:
           receiver:
@@ -141,16 +144,16 @@ groups:
             to: to_topic
 
       # ======================================================================
-      # System Under Test pipeline
+      # System Under Test pipelines (split ingress paths)
       # ======================================================================
-      sut:
+      sut_ingress_1:
         policies:
           resources:
             core_allocation:
               type: core_set
               set:
                 - start: 0
-                  end: 1
+                  end: 0
 
         nodes:
           topic_recv1:
@@ -160,6 +163,53 @@ groups:
               subscription:
                 mode: balanced
                 group: sut_ingress_1
+
+          router:
+            type: type_router:processor
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+          retry:
+            type: retry:processor
+            config:
+              multiplier: 1.5
+
+          logs_to_topic:
+            type: topic:exporter
+            config:
+              topic: backend_logs
+              queue_on_full: drop_newest
+
+          metrics_exporter:
+            type: noop:exporter
+            config: null
+
+          spans_exporter:
+            type: noop:exporter
+            config: null
+
+        connections:
+          - from: topic_recv1
+            to: router
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_to_topic
+
+      sut_ingress_2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 1
+                  end: 1
+
+        nodes:
           topic_recv2:
             type: topic:receiver
             config:
@@ -193,8 +243,6 @@ groups:
             config: null
 
         connections:
-          - from: topic_recv1
-            to: router
           - from: topic_recv2
             to: router
           - from: router["logs"]
@@ -215,8 +263,9 @@ groups:
             core_allocation:
               type: core_set
               set:
-                - start: 1
-                  end: 1
+                # Dedicated backend core (separate from SUT and generators).
+                - start: 17
+                  end: 17
 
         nodes:
           from_topic:

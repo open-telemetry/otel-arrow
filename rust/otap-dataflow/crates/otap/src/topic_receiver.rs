@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Topic receiver.
-//!
-//! Note: This implementation is incomplete and only focus on the configuration.
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::pdata::OtapPdata;
@@ -14,6 +12,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::topic::SubscriptionGroupName;
 use otap_df_engine::ReceiverFactory;
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -22,12 +21,42 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, SubscriptionMode};
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// URN for the topic receiver.
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:topic:receiver";
+
+/// Telemetry metrics for the topic receiver.
+#[metric_set(name = "topic.receiver.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct TopicReceiverMetrics {
+    /// Number of messages forwarded to downstream.
+    #[metric(unit = "{item}")]
+    pub forwarded_messages: Counter<u64>,
+    /// Number of forward failures to downstream channel.
+    #[metric(unit = "{item}")]
+    pub forward_failures: Counter<u64>,
+    /// Number of lag notifications emitted by broadcast subscriptions.
+    #[metric(unit = "{event}")]
+    pub lagged_notifications: Counter<u64>,
+    /// Total messages missed across lag notifications.
+    #[metric(unit = "{item}")]
+    pub lagged_messages: Counter<u64>,
+    /// Number of downstream backpressure events (>= 500ms blocked).
+    #[metric(unit = "{event}")]
+    pub downstream_backpressure_events: Counter<u64>,
+    /// Total milliseconds blocked while forwarding to downstream.
+    #[metric(unit = "ms")]
+    pub downstream_blocked_ms: Counter<u64>,
+}
 
 /// Topic receiver configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,8 +90,9 @@ impl Default for TopicSubscriptionConfig {
 
 /// Receiver for topic subscriptions.
 pub struct TopicReceiver {
-    #[allow(dead_code)]
     config: TopicReceiverConfig,
+    subscription: Subscription<OtapPdata>,
+    metrics: MetricSet<TopicReceiverMetrics>,
 }
 
 /// Declares the topic receiver as a local receiver factory.
@@ -70,13 +100,44 @@ pub struct TopicReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TOPIC_RECEIVER_URN,
-    create: |_pipeline: PipelineContext,
+    create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         let config = TopicReceiver::parse_config(&node_config.config)?;
+        let topic_set = pipeline
+            .topic_set::<OtapPdata>()
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "Topic set is not available in pipeline context".to_owned(),
+            })?;
+        let topic = topic_set
+            .get(config.topic.as_ref())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: format!(
+                    "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
+                    config.topic,
+                    pipeline.pipeline_group_id(),
+                    pipeline.pipeline_id(),
+                ),
+            })?;
+        let mode = match &config.subscription {
+            TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
+            TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
+                group: Arc::<str>::from(group.as_ref()),
+            },
+        };
+        let subscription = topic
+            .subscribe(mode, SubscriberOptions::default())
+            .map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("Failed to subscribe topic receiver to `{}`: {e}", config.topic),
+            })?;
+        let metrics = pipeline.register_metrics::<TopicReceiverMetrics>();
         Ok(ReceiverWrapper::local(
-            TopicReceiver { config },
+            TopicReceiver {
+                config,
+                subscription,
+                metrics,
+            },
             node,
             node_config,
             receiver_config,
@@ -100,15 +161,106 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
-        _effect_handler: local::EffectHandler<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        loop {
-            match ctrl_msg_recv.recv().await {
-                Ok(NodeControlMsg::Shutdown { .. }) => break,
-                Ok(_) => {}
-                Err(e) => return Err(Error::ChannelRecvError(e)),
+        let TopicReceiver {
+            config,
+            mut subscription,
+            mut metrics,
+        } = *self;
+        let subscription_mode = match &config.subscription {
+            TopicSubscriptionConfig::Broadcast {} => "broadcast".to_owned(),
+            TopicSubscriptionConfig::Balanced { group } => format!("balanced(group={})", group),
+        };
+        let receiver_id = effect_handler.receiver_id();
+        otel_info!(
+            "topic_receiver.start",
+            node = receiver_id.name.as_ref(),
+            topic = config.topic.as_ref(),
+            subscription = subscription_mode,
+            message = "Topic receiver started"
+        );
+        let telemetry_cancel_handle = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+
+        let run_result: Result<(), Error> = async {
+            loop {
+                tokio::select! {
+                    biased;
+
+                    ctrl = ctrl_msg_recv.recv() => {
+                        match ctrl {
+                            Ok(NodeControlMsg::CollectTelemetry {
+                                mut metrics_reporter,
+                            }) => {
+                                _ = metrics_reporter.report(&mut metrics);
+                            }
+                            Ok(NodeControlMsg::Shutdown { .. }) => break,
+                            Ok(_) => {}
+                            Err(e) => return Err(Error::ChannelRecvError(e)),
+                        }
+                    }
+
+                    recv = subscription.recv() => {
+                        match recv {
+                            Ok(RecvItem::Message(env)) => {
+                                // Topic hop is a transport boundary: reset in-process
+                                // Ack/Nack routing context before forwarding.
+                                // Use source-tag-aware send so fan-in wiring can attribute source node.
+                                let pdata = env.payload.clone_without_context();
+                                let send_started_at = Instant::now();
+                                if let Err(e) = effect_handler.send_message_with_source_node(pdata).await {
+                                    metrics.forward_failures.add(1);
+                                    otel_warn!(
+                                        "topic_receiver.forward_failed",
+                                        node = receiver_id.name.as_ref(),
+                                        topic = config.topic.as_ref(),
+                                        error = e.to_string(),
+                                        message = "Topic receiver failed forwarding to downstream channel"
+                                    );
+                                    return Err(Error::from(e));
+                                }
+                                metrics.forwarded_messages.add(1);
+                                let blocked_for = send_started_at.elapsed();
+                                if blocked_for.as_millis() >= 500 {
+                                    metrics.downstream_backpressure_events.add(1);
+                                    metrics
+                                        .downstream_blocked_ms
+                                        .add(blocked_for.as_millis() as u64);
+                                    otel_warn!(
+                                        "topic_receiver.downstream_backpressure",
+                                        node = receiver_id.name.as_ref(),
+                                        topic = config.topic.as_ref(),
+                                        blocked_ms = blocked_for.as_millis() as u64,
+                                        message = "Topic receiver blocked while forwarding to downstream pipeline channel"
+                                    );
+                                }
+                                tokio::task::consume_budget().await;
+                            }
+                            Ok(RecvItem::Lagged { missed }) => {
+                                metrics.lagged_notifications.add(1);
+                                metrics.lagged_messages.add(missed);
+                                otel_warn!(
+                                    "topic_receiver.lagged",
+                                    topic = config.topic.as_ref(),
+                                    missed = missed,
+                                    message = "Topic receiver lagged and skipped messages."
+                                );
+                                tokio::task::consume_budget().await;
+                            }
+                            Err(Error::SubscriptionClosed) => break,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
             }
+            Ok(())
         }
+        .await;
+
+        _ = telemetry_cancel_handle.cancel().await;
+        run_result?;
         Ok(TerminalState::default())
     }
 }

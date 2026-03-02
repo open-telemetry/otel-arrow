@@ -1,0 +1,424 @@
+version: otel_dataflow/v1
+
+# Multitenant isolation scenario:
+# - ingress pipeline with content router splits traffic into tenant topics
+# - one topic per tenant
+# - three independent tenant pipelines consume/process/export their own topic
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 1024
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: true
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: internal_telemetry:receiver
+          config: {}
+        sink:
+          type: noop:exporter
+          config: null
+      connections:
+        - from: itr
+          to: sink
+
+groups:
+  topic_multitenant_isolation:
+    topics:
+      tenant_a:
+        description: "Tenant A isolated topic"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+      tenant_b:
+        description: "Tenant B isolated topic"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+      tenant_c:
+        description: "Tenant C isolated topic"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+
+    pipelines:
+      traffic_gen_tenant_a:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 3
+
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          stamp_tenant:
+            type: attribute:processor
+            config:
+              actions:
+                - action: delete
+                  key: service.namespace
+                - action: insert
+                  key: service.namespace
+                  value: tenant-a
+              apply_to: ["resource"]
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4537"
+              max_in_flight: 6
+
+        connections:
+          - from: receiver
+            to: stamp_tenant
+          - from: stamp_tenant
+            to: exporter
+
+      traffic_gen_tenant_b:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 3
+
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          stamp_tenant:
+            type: attribute:processor
+            config:
+              actions:
+                - action: delete
+                  key: service.namespace
+                - action: insert
+                  key: service.namespace
+                  value: tenant-b
+              apply_to: ["resource"]
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4537"
+              max_in_flight: 6
+
+        connections:
+          - from: receiver
+            to: stamp_tenant
+          - from: stamp_tenant
+            to: exporter
+
+      traffic_gen_tenant_c:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          stamp_tenant:
+            type: attribute:processor
+            config:
+              actions:
+                - action: delete
+                  key: service.namespace
+                - action: insert
+                  key: service.namespace
+                  value: tenant-c
+              apply_to: ["resource"]
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4537"
+              max_in_flight: 6
+
+        connections:
+          - from: receiver
+            to: stamp_tenant
+          - from: stamp_tenant
+            to: exporter
+
+      ingress_router:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4537"
+                  wait_for_result: true
+
+          tenant_router:
+            type: content_router:processor
+            outputs: ["tenant_a", "tenant_b", "tenant_c", "unmatched"]
+            config:
+              routing_key:
+                resource_attribute: "service.namespace"
+              case_sensitive: false
+              routes:
+                tenant-a: tenant_a
+                tenant-b: tenant_b
+                tenant-c: tenant_c
+              default_output: unmatched
+
+          to_tenant_a:
+            type: topic:exporter
+            config:
+              topic: tenant_a
+              queue_on_full: block
+
+          to_tenant_b:
+            type: topic:exporter
+            config:
+              topic: tenant_b
+              queue_on_full: block
+
+          to_tenant_c:
+            type: topic:exporter
+            config:
+              topic: tenant_c
+              queue_on_full: block
+
+          unmatched_sink:
+            type: noop:exporter
+            config: null
+
+        connections:
+          - from: otlp_recv
+            to: tenant_router
+          - from: tenant_router["tenant_a"]
+            to: to_tenant_a
+          - from: tenant_router["tenant_b"]
+            to: to_tenant_b
+          - from: tenant_router["tenant_c"]
+            to: to_tenant_c
+          - from: tenant_router["unmatched"]
+            to: unmatched_sink
+
+      tenant_a_processing:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          from_topic:
+            type: topic:receiver
+            config:
+              topic: tenant_a
+              subscription:
+                mode: balanced
+                group: tenant_a_processors
+
+          retry:
+            type: retry:processor
+            config:
+              multiplier: 1.5
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4538"
+              max_in_flight: 4
+
+        connections:
+          - from: from_topic
+            to: retry
+          - from: retry
+            to: exporter
+
+      tenant_b_processing:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          from_topic:
+            type: topic:receiver
+            config:
+              topic: tenant_b
+              subscription:
+                mode: balanced
+                group: tenant_b_processors
+
+          retry:
+            type: retry:processor
+            config:
+              multiplier: 1.5
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4539"
+              max_in_flight: 4
+
+        connections:
+          - from: from_topic
+            to: retry
+          - from: retry
+            to: exporter
+
+      tenant_c_processing:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          from_topic:
+            type: topic:receiver
+            config:
+              topic: tenant_c
+              subscription:
+                mode: balanced
+                group: tenant_c_processors
+
+          retry:
+            type: retry:processor
+            config:
+              multiplier: 1.5
+
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4540"
+              max_in_flight: 4
+
+        connections:
+          - from: from_topic
+            to: retry
+          - from: retry
+            to: exporter
+
+      tenant_a_backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4538"
+                  wait_for_result: true
+
+          sink:
+            type: noop:exporter
+            config: null
+
+        connections:
+          - from: otlp_recv
+            to: sink
+
+      tenant_b_backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4539"
+                  wait_for_result: true
+
+          sink:
+            type: noop:exporter
+            config: null
+
+        connections:
+          - from: otlp_recv
+            to: sink
+
+      tenant_c_backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4540"
+                  wait_for_result: true
+
+          sink:
+            type: noop:exporter
+            config: null
+
+        connections:
+          - from: otlp_recv
+            to: sink
