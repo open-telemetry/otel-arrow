@@ -282,6 +282,12 @@ impl otap_df_engine::Unwindable for OtapPdata {
     }
 }
 
+impl otap_df_engine::StampOutputPort for OtapPdata {
+    fn stamp_output_port_index(&mut self, index: u16) {
+        self.context.stamp_output_port_index(index);
+    }
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
@@ -532,28 +538,24 @@ macro_rules! impl_message_source_ext {
                 &self,
                 data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                let mut data = if self.source_tagging().enabled() {
+                let data = if self.source_tagging().enabled() {
                     data.add_source_node(self.$id_method().index)
                 } else {
                     data
                 };
-                data.context
-                    .stamp_output_port_index(self.router.default_output_port_index());
-                self.send_message(data).await
+                self.router.send_default_stamped(data).await
             }
 
             fn try_send_message_with_source_node(
                 &self,
                 data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                let mut data = if self.source_tagging().enabled() {
+                let data = if self.source_tagging().enabled() {
                     data.add_source_node(self.$id_method().index)
                 } else {
                     data
                 };
-                data.context
-                    .stamp_output_port_index(self.router.default_output_port_index());
-                self.try_send_message(data)
+                self.router.try_send_default_stamped(data)
             }
 
             async fn send_message_with_source_node_to<P>(
@@ -564,15 +566,12 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                let port_name: PortName = port.into();
-                let mut data = if self.source_tagging().enabled() {
+                let data = if self.source_tagging().enabled() {
                     data.add_source_node(self.$id_method().index)
                 } else {
                     data
                 };
-                data.context
-                    .stamp_output_port_index(self.router.output_port_index(&port_name));
-                self.send_message_to(port_name, data).await
+                self.router.send_to_stamped(port, data).await
             }
 
             fn try_send_message_with_source_node_to<P>(
@@ -583,15 +582,12 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                let port_name: PortName = port.into();
-                let mut data = if self.source_tagging().enabled() {
+                let data = if self.source_tagging().enabled() {
                     data.add_source_node(self.$id_method().index)
                 } else {
                     data
                 };
-                data.context
-                    .stamp_output_port_index(self.router.output_port_index(&port_name));
-                self.try_send_message_to(port_name, data)
+                self.router.try_send_to_stamped(port, data)
             }
         }
     };

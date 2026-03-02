@@ -21,41 +21,11 @@ use std::time::{Duration, Instant};
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
 /// Used for duration calculations in pipeline component metrics.
 ///
-/// # Performance note
-///
-/// This uses a `OnceLock` to lazily initialize a fixed `Instant` epoch.
-/// After initialization, each call performs an atomic load to retrieve the
-/// stored `Instant`, then computes `elapsed()`. The atomic load prevents
-/// the compiler from caching the epoch reference in a register, hoisting
-/// it out of a loop, or reordering around it — a small but nonzero cost
-/// on every message through every node.
-///
-/// A zero-synchronization alternative would be to call
-/// `libc::clock_gettime(CLOCK_MONOTONIC, ...)` directly. On Linux this is
-/// a vDSO syscall that returns nanoseconds since boot
-/// with no initialization, no atomic, and no epoch. The trade-off is a
-/// platform-specific `cfg` guard and a `libc` dependency. The timestamps
-/// would be larger numbers (time since boot vs. time since first call) but
-/// that is irrelevant since only differences are used.
-///
-/// On Windows, the equivalent is `QueryPerformanceCounter` /
-/// `QueryPerformanceFrequency` (via `winapi` or `windows-sys`).
-/// `QueryPerformanceCounter` reads a monotonic hardware tick count with
-/// no synchronization and no kernel transition. The frequency is fixed
-/// at boot, so it can be queried once and cached in a `const` or
-/// `OnceLock`. Conversion: `nanos = ticks * 1_000_000_000 / freq`.
-/// This is what `Instant::now()` calls on Windows under the hood.
-///
-/// # Return value
-///
-/// Always returns a value >= 1 to distinguish from the default "no timestamp"
-/// value of 0 used when `MetricLevel < Detailed`.
+/// TODO: This could be perhaps more platform-specific.
 pub fn nanos_since_epoch() -> u64 {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    // Add 1 so the first call (elapsed ~0) returns 1, not 0.
-    // This distinguishes "timestamp at epoch" from "no timestamp".
-    epoch.elapsed().as_nanos() as u64 + 1
+    epoch.elapsed().as_nanos() as u64
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data

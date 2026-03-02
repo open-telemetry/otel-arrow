@@ -326,6 +326,23 @@ impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
+/// Trait for stamping the output port index on PData before sending.
+///
+/// This allows the `OutputRouter` to stamp the port index and send in a
+/// single hash-map lookup, rather than looking up the port index separately.
+pub trait StampOutputPort {
+    /// Stamp the output port index on this data.
+    fn stamp_output_port_index(&mut self, index: u16);
+}
+
+// No-op implementations for types used as PData in tests.
+impl StampOutputPort for () {
+    fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+impl StampOutputPort for String {
+    fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
 /// Effect handler extensions for producers specific to data type.
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {

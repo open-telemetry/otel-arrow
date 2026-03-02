@@ -49,7 +49,7 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) metrics_reporter: MetricsReporter,
     /// The outgoing message source tagging mode.
     pub(crate) source_tag: SourceTagging,
-    /// Precomputed node interests derived from the engine metric level.
+    /// Precomputed node interests derived from metric level.
     node_interests: Interests,
 }
 
@@ -282,9 +282,7 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Send an AckMsg to the pipeline controller for context unwinding.
-    /// The controller pops frames from the context stack, records any
-    /// metrics stops, and delivers the ack to the next subscriber node.
-    /// Skips sending if the context stack is empty (nothing to unwind).
+    /// This will skip if there are no frames.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,

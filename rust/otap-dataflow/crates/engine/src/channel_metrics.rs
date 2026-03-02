@@ -44,6 +44,10 @@ pub struct ChannelSenderMetrics {
     /// Count of send failures due to a closed channel.
     #[metric(name = "send.error_closed", unit = "{1}")]
     pub send_error_closed: Counter<u64>,
+    // Total bytes successfully sent (when message size is known).
+    // TODO: Populate in a future PR when message sizes are tracked.
+    // #[metric(name = "send.bytes", unit = "{By}")]
+    // pub send_bytes: Counter<u64>,
 }
 
 #[metric_set(name = "channel.receiver")]
@@ -58,8 +62,15 @@ pub struct ChannelReceiverMetrics {
     /// Count of receive attempts after the channel was closed.
     #[metric(name = "recv.error_closed", unit = "{1}")]
     pub recv_error_closed: Counter<u64>,
+    // Total bytes successfully received (when message size is known).
+    // TODO: Populate in a future PR when message sizes are tracked.
+    // #[metric(name = "recv.bytes", unit = "{By}")]
+    // pub recv_bytes: Counter<u64>,
+    // Current number of buffered messages.
+    // TODO: Populate in a future PR when queue depth is tracked.
+    // #[metric(name = "queue.depth", unit = "{message}")]
+    // pub queue_depth: Gauge<u64>,
     /// Maximum channel capacity (buffer size).
-    /// TODO: UpDownCounter.set()
     #[metric(name = "capacity", unit = "{message}")]
     pub capacity: Gauge<u64>,
 }

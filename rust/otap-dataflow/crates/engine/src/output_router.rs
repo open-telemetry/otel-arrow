@@ -3,11 +3,8 @@
 
 //! Generic output port router shared by all processor and receiver
 //! `EffectHandler` variants (local/shared × processor/receiver).
-//!
-//! Factored from four nearly-identical implementations to eliminate
-//! duplication of port-index bookkeeping, default-sender resolution,
-//! and message-sending logic.
 
+use crate::StampOutputPort;
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
@@ -15,21 +12,17 @@ use otap_df_config::PortName;
 use std::collections::HashMap;
 use std::future::Future;
 
-// ---------------------------------------------------------------------------
-// Sender abstraction
-// ---------------------------------------------------------------------------
-
-/// Trait abstracting over local [`crate::message::Sender`] and
-/// [`crate::shared::message::SharedSender`] so that `OutputRouter`
-/// can be generic over send mode.
+/// A generic crate::message::Sender or crate::shared::message::SharedSender.
 pub trait OutputSend: Clone {
     /// The data type carried by this sender.
     type Data;
+
     /// Asynchronously send a message.
     fn output_send(
         &self,
         msg: Self::Data,
     ) -> impl Future<Output = Result<(), SendError<Self::Data>>>;
+
     /// Try to send without blocking.
     fn try_output_send(&self, msg: Self::Data) -> Result<(), SendError<Self::Data>>;
 }
@@ -53,10 +46,6 @@ impl<T> OutputSend for crate::shared::message::SharedSender<T> {
         self.try_send(msg)
     }
 }
-
-// ---------------------------------------------------------------------------
-// OutputRouter
-// ---------------------------------------------------------------------------
 
 /// Port-routing state and message-sending logic shared by all
 /// processor and receiver `EffectHandler` variants.
@@ -181,6 +170,91 @@ impl<S: OutputSend> OutputRouter<S> {
             Some((sender, _)) => sender
                 .try_output_send(data)
                 .map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::UnknownOutputPort {
+                node: self.node_id.clone(),
+                port: port_name,
+            })),
+        }
+    }
+}
+
+impl<S: OutputSend> OutputRouter<S>
+where
+    S::Data: StampOutputPort,
+{
+    /// Stamps the output port index on data and sends via the default output port.
+    #[inline]
+    pub async fn send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
+        match &self.default {
+            Some((sender, idx)) => {
+                data.stamp_output_port_index(*idx);
+                sender
+                    .output_send(data)
+                    .await
+                    .map_err(TypedError::ChannelSendError)
+            }
+            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
+                node: self.node_id.clone(),
+            })),
+        }
+    }
+
+    /// Stamps the output port index and attempts to send via the default port without awaiting.
+    #[inline]
+    pub fn try_send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
+        match &self.default {
+            Some((sender, idx)) => {
+                data.stamp_output_port_index(*idx);
+                sender
+                    .try_output_send(data)
+                    .map_err(TypedError::ChannelSendError)
+            }
+            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
+                node: self.node_id.clone(),
+            })),
+        }
+    }
+
+    /// Stamps the output port index and sends to a specific named output port.
+    /// Performs a single hash-map lookup for both the port index and the sender.
+    #[inline]
+    pub async fn send_to_stamped<P: Into<PortName>>(
+        &self,
+        port: P,
+        mut data: S::Data,
+    ) -> Result<(), TypedError<S::Data>> {
+        let port_name: PortName = port.into();
+        match self.ports.get(&port_name) {
+            Some((sender, idx)) => {
+                data.stamp_output_port_index(*idx);
+                sender
+                    .output_send(data)
+                    .await
+                    .map_err(TypedError::ChannelSendError)
+            }
+            None => Err(TypedError::Error(Error::UnknownOutputPort {
+                node: self.node_id.clone(),
+                port: port_name,
+            })),
+        }
+    }
+
+    /// Stamps the output port index and attempts to send to a named port without awaiting.
+    /// Performs a single hash-map lookup for both the port index and the sender.
+    #[inline]
+    pub fn try_send_to_stamped<P: Into<PortName>>(
+        &self,
+        port: P,
+        mut data: S::Data,
+    ) -> Result<(), TypedError<S::Data>> {
+        let port_name: PortName = port.into();
+        match self.ports.get(&port_name) {
+            Some((sender, idx)) => {
+                data.stamp_output_port_index(*idx);
+                sender
+                    .try_output_send(data)
+                    .map_err(TypedError::ChannelSendError)
+            }
             None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.node_id.clone(),
                 port: port_name,
