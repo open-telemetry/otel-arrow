@@ -10,16 +10,17 @@ use crate::proto::opentelemetry::trace::v1::{
 };
 
 use crate::views::{
-    common::{SpanId, Str, TraceId},
     otlp::proto::common::{
         KeyValueIter, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id, read_str,
     },
     otlp::proto::resource::ObjResource,
     otlp::proto::wrappers::{GenericIterator, GenericObj},
-    trace::{
-        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
-    },
 };
+use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::trace::{
+    EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
+};
+use otap_df_pdata_views::{SpanId, TraceId};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 

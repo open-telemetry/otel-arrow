@@ -51,6 +51,7 @@ otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-opl = { path = "../opl" }
 otap-df-pdata = { path = "../pdata" }
+otap-df-pdata-views = { workspace = true }
 otap-df-query-engine = { path = "../query-engine" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
@@ -67,7 +68,7 @@ weaver_semconv.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["rustls", "stream"] }
+reqwest = { workspace = true, features = ["http2", "rustls", "stream"] }
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }

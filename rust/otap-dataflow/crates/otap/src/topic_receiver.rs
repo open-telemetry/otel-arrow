@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// URN for the topic receiver.
-pub const TOPIC_RECEIVER_URN: &str = "urn:otel:topic:receiver";
+pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
 
 /// Telemetry metrics for the topic receiver.
 #[metric_set(name = "topic.receiver.metrics")]

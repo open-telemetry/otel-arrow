@@ -15,14 +15,14 @@ groups:
       main:
         nodes:
           receiver:
-            type: urn:otel:otlp:receiver
+            type: urn:otel:receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: 0.0.0.0:4317
                   request_compression: gzip
           attr:
-            type: urn:otel:attribute:processor
+            type: urn:otel:processor:attribute
             config:
               actions:
               - action: rename
@@ -31,7 +31,7 @@ groups:
                 apply_to:
                 - signal
           exporter:
-            type: urn:otel:otap:exporter
+            type: urn:otel:exporter:otap
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: zstd

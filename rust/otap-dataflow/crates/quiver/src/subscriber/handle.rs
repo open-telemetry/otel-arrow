@@ -73,6 +73,9 @@ pub struct BundleHandle<C: ResolutionCallback> {
     callback: Arc<C>,
     /// Whether the handle has been explicitly resolved.
     resolved: bool,
+    /// Number of logical data items in this bundle (from the segment manifest).
+    /// Zero for legacy segments that pre-date item_count tracking.
+    item_count: u64,
 }
 
 impl<C: ResolutionCallback> BundleHandle<C> {
@@ -85,6 +88,7 @@ impl<C: ResolutionCallback> BundleHandle<C> {
         subscriber_id: SubscriberId,
         data: ReconstructedBundle,
         callback: Arc<C>,
+        item_count: u64,
     ) -> Self {
         Self {
             bundle_ref,
@@ -92,6 +96,7 @@ impl<C: ResolutionCallback> BundleHandle<C> {
             data,
             callback,
             resolved: false,
+            item_count,
         }
     }
 
@@ -105,6 +110,16 @@ impl<C: ResolutionCallback> BundleHandle<C> {
     #[must_use]
     pub const fn bundle_ref(&self) -> BundleRef {
         self.bundle_ref
+    }
+
+    /// Returns the number of logical data items in this bundle.
+    ///
+    /// This value comes from the segment manifest and avoids re-scanning
+    /// bundle data on the drain path. Returns 0 for legacy segments that
+    /// pre-date item_count tracking.
+    #[must_use]
+    pub const fn item_count(&self) -> u64 {
+        self.item_count
     }
 
     /// Returns the subscriber ID.
@@ -223,7 +238,7 @@ mod tests {
         let subscriber_id = SubscriberId::new("test-sub").unwrap();
         let data = ReconstructedBundle::empty();
 
-        BundleHandle::new(bundle_ref, subscriber_id, data, callback)
+        BundleHandle::new(bundle_ref, subscriber_id, data, callback, 0)
     }
 
     #[test]

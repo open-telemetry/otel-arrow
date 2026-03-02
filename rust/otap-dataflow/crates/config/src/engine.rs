@@ -189,10 +189,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -226,10 +226,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -271,10 +271,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -285,10 +285,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -310,10 +310,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -397,10 +397,10 @@ groups:
               count: 2
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -408,10 +408,10 @@ groups:
       p2:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -421,10 +421,10 @@ groups:
       p3:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -537,10 +537,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -615,10 +615,10 @@ groups:
       p1:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -628,10 +628,10 @@ groups:
       p2:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -696,10 +696,10 @@ engine:
           channel_metrics: true
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -710,10 +710,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -772,10 +772,10 @@ engine:
             count: 2
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -786,10 +786,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -822,10 +822,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -857,10 +857,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver

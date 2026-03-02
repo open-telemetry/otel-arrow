@@ -16,11 +16,11 @@ use std::{
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-        PrimitiveBuilder, RecordBatch, StructArray, UInt16Array,
+        PrimitiveBuilder, RecordBatch, UInt16Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::{SortColumn, SortOptions, and, take_record_batch},
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
+    datatypes::{ArrowNativeType, DataType, Schema, UInt8Type, UInt16Type, UInt32Type},
 };
 
 use crate::{
@@ -39,7 +39,11 @@ use crate::{
     },
     otlp::attributes::{AttributeValueType, parent_id::ParentId},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{FieldExt, consts, get_field_metadata},
+    schema::{consts, get_field_metadata},
+};
+
+use super::util::{
+    access_column, replace_column, struct_column_name, update_field_encoding_metadata,
 };
 
 mod attributes;
@@ -123,129 +127,6 @@ fn is_column_encoded(path: &str, schema: &Schema) -> Option<bool> {
     };
 
     Some(is_encoded)
-}
-
-/// Helper function for accessing the column associated for the (possibly nested) path
-pub(crate) fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
-    // handle special case of accessing either the resource ID or scope ID which are nested
-    // within a struct
-    if let Some(struct_col_name) = struct_column_name(path) {
-        let struct_col_idx = schema.index_of(struct_col_name).ok()?;
-        let struct_col = columns
-            .get(struct_col_idx)?
-            .as_any()
-            .downcast_ref::<StructArray>()?;
-        return struct_col.column_by_name(consts::ID).cloned();
-    }
-
-    // otherwise just return column by name
-    let (column_idx, _) = schema.fields.find(path)?;
-    columns.get(column_idx).cloned()
-}
-
-/// Replaces the column identified by `path` within the array of columns with the new column.
-pub(crate) fn replace_column(
-    path: &str,
-    encoding: Option<Encoding>,
-    schema: &Schema,
-    columns: &mut [ArrayRef],
-    new_column: ArrayRef,
-) {
-    if let Some(struct_col_name) = struct_column_name(path) {
-        let field_index = schema.index_of(struct_col_name).ok();
-        if let Some(field_index) = field_index {
-            let struct_column = columns[field_index].as_any().downcast_ref::<StructArray>();
-            if let Some(struct_column) = struct_column {
-                if let Some((struct_idx, _)) = struct_column.fields().find(consts::ID) {
-                    // replace the encoding metadata on the struct field
-                    let mut new_struct_fields = struct_column.fields().to_vec();
-                    update_field_encoding_metadata(consts::ID, encoding, &mut new_struct_fields);
-
-                    // build new struct array
-                    let mut new_struct_columns = struct_column.columns().to_vec();
-                    new_struct_columns[struct_idx] = new_column;
-                    let new_struct_array = Arc::new(StructArray::new(
-                        new_struct_fields.into(),
-                        new_struct_columns,
-                        struct_column.nulls().cloned(),
-                    ));
-
-                    // replace the original struct column with the new one
-                    columns[field_index] = new_struct_array;
-                }
-            }
-        }
-        return;
-    }
-
-    let field_index = schema.index_of(path).ok();
-    if let Some(field_index) = field_index {
-        columns[field_index] = new_column
-    }
-}
-
-/// Sets the encoding metadata on the field metadata for column at path.
-///
-/// # Arguments
-/// - encoding: if `Some`, then the encoding metadata on the field will be updated to reflect the
-///   new encoding. `None` will be interpreted  as plain encoding.
-pub(crate) fn update_field_encoding_metadata(
-    path: &str,
-    encoding: Option<Encoding>,
-    fields: &mut [FieldRef],
-) {
-    if let Some(struct_col_name) = struct_column_name(path) {
-        // replace the field metadata in some nested struct
-        let found_field = fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name().as_str() == struct_col_name);
-
-        if let Some((idx, field)) = found_field {
-            if let DataType::Struct(struct_fields) = field.data_type() {
-                let mut new_struct_fields = struct_fields.to_vec();
-                update_field_encoding_metadata(consts::ID, encoding, &mut new_struct_fields);
-
-                let new_field = field
-                    .as_ref()
-                    .clone()
-                    .with_data_type(DataType::Struct(new_struct_fields.into()));
-                fields[idx] = Arc::new(new_field)
-            }
-        }
-    }
-
-    // not a field nested within a struct, so just replace the metadata on field where name == path
-    let found_field = fields
-        .iter()
-        .enumerate()
-        .find(|(_, f)| f.name().as_str() == path);
-
-    if let Some((idx, field)) = found_field {
-        let encoding = match encoding {
-            None => consts::metadata::encodings::PLAIN,
-            Some(Encoding::Delta | Encoding::DeltaRemapped) => consts::metadata::encodings::DELTA,
-            Some(Encoding::AttributeQuasiDelta | Encoding::ColumnarQuasiDelta(_)) => {
-                consts::metadata::encodings::QUASI_DELTA
-            }
-        };
-        let new_field = field.as_ref().clone().with_encoding(encoding);
-        fields[idx] = Arc::new(new_field)
-    }
-}
-
-/// if configured to encode the ID column in the nested resource/scope struct array, this
-/// helper function simply returns the name of the struct column, and otherwise returns `None`
-pub(crate) fn struct_column_name(path: &str) -> Option<&'static str> {
-    if path == RESOURCE_ID_COL_PATH {
-        return Some(consts::RESOURCE);
-    }
-
-    if path == SCOPE_ID_COL_PATH {
-        return Some(consts::SCOPE);
-    }
-
-    None
 }
 
 /// returns the list of transport-optimized encoding that should be applied to OTAP batches of a

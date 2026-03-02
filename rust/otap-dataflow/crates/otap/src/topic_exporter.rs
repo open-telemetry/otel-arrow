@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// URN for the topic exporter.
-pub const TOPIC_EXPORTER_URN: &str = "urn:otel:topic:exporter";
+pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 /// Telemetry metrics for the topic exporter.
 #[metric_set(name = "topic.exporter.metrics")]
