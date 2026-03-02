@@ -147,6 +147,11 @@ pub struct TopicSpec {
     /// Optional human-readable description of the topic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
+    /// Backend implementation used by this topic.
+    ///
+    /// Defaults to `in_memory`.
+    #[serde(default)]
+    pub backend: TopicBackendKind,
     /// Topic behavior policies.
     #[serde(default)]
     pub policies: TopicPolicies,
@@ -158,6 +163,30 @@ impl TopicSpec {
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         self.policies
             .validation_errors(&format!("{path_prefix}.policies"))
+    }
+}
+
+/// Supported backend kinds for topic declarations.
+///
+/// The engine currently supports `in_memory`. Other variants are accepted in
+/// configuration to make backend selection explicit and forward-compatible.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicBackendKind {
+    /// Built-in in-memory topic backend.
+    #[default]
+    InMemory,
+    /// Reserved for a future Quiver-backed implementation.
+    Quiver,
+}
+
+impl std::fmt::Display for TopicBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::InMemory => "in_memory",
+            Self::Quiver => "quiver",
+        };
+        f.write_str(value)
     }
 }
 
@@ -213,13 +242,16 @@ const fn default_topic_queue_capacity() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{SubscriptionGroupName, TopicName, TopicQueueOnFullPolicy, TopicSpec};
+    use super::{
+        SubscriptionGroupName, TopicBackendKind, TopicName, TopicQueueOnFullPolicy, TopicSpec,
+    };
     use serde::Deserialize;
     use std::collections::HashMap;
 
     #[test]
     fn defaults_match_expected_values() {
         let topic = TopicSpec::default();
+        assert_eq!(topic.backend, TopicBackendKind::InMemory);
         assert_eq!(topic.policies.queue_capacity, 128);
         assert_eq!(topic.policies.queue_on_full, TopicQueueOnFullPolicy::Block);
     }
@@ -237,6 +269,7 @@ mod tests {
     #[test]
     fn deserializes_queue_on_full_policy_values() {
         let yaml = r#"
+backend: in_memory
 policies:
   queue_capacity: 1
   queue_on_full: drop_newest
@@ -247,6 +280,16 @@ policies:
             topic.policies.queue_on_full,
             TopicQueueOnFullPolicy::DropNewest
         );
+    }
+
+    #[test]
+    fn deserializes_topic_backend_kind() {
+        let yaml = r#"
+backend: quiver
+"#;
+
+        let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
+        assert_eq!(topic.backend, TopicBackendKind::Quiver);
     }
 
     #[test]

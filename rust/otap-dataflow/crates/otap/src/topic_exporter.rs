@@ -68,47 +68,48 @@ pub struct TopicExporter {
 /// Declares the topic exporter as a local exporter factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    name: TOPIC_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        let config = TopicExporter::parse_config(&node_config.config)?;
-        let queue_on_full = config
-            .queue_on_full
-            .clone()
-            .unwrap_or(TopicQueueOnFullPolicy::Block);
-        let topic_set = pipeline
-            .topic_set::<OtapPdata>()
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: "Topic set is not available in pipeline context".to_owned(),
+pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
+    ExporterFactory {
+        name: TOPIC_EXPORTER_URN,
+        create: |pipeline: PipelineContext,
+                 node: NodeId,
+                 node_config: Arc<NodeUserConfig>,
+                 exporter_config: &ExporterConfig| {
+            let config = TopicExporter::parse_config(&node_config.config)?;
+            let queue_on_full = config
+                .queue_on_full
+                .clone()
+                .unwrap_or(TopicQueueOnFullPolicy::Block);
+            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
+                    error: "Topic set is not available in pipeline context".to_owned(),
+                }
             })?;
-        let topic = topic_set
-            .get(config.topic.as_ref())
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: format!(
-                    "Unknown topic `{}` for topic exporter (pipeline `{}`/`{}`)",
-                    config.topic,
-                    pipeline.pipeline_group_id(),
-                    pipeline.pipeline_id(),
-                ),
+            let topic = topic_set.get(config.topic.as_ref()).ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "Unknown topic `{}` for topic exporter (pipeline `{}`/`{}`)",
+                        config.topic,
+                        pipeline.pipeline_group_id(),
+                        pipeline.pipeline_id(),
+                    ),
+                }
             })?;
-        let metrics = pipeline.register_metrics::<TopicExporterMetrics>();
-        Ok(ExporterWrapper::local(
-            TopicExporter {
-                topic,
-                queue_on_full,
-                metrics,
-            },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
-};
+            let metrics = pipeline.register_metrics::<TopicExporterMetrics>();
+            Ok(ExporterWrapper::local(
+                TopicExporter {
+                    topic,
+                    queue_on_full,
+                    metrics,
+                },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
+    };
 
 impl TopicExporter {
     /// Parses and validates topic exporter configuration.
@@ -179,7 +180,10 @@ impl Exporter<OtapPdata> for TopicExporter {
                                     message = "Dropping message because topic queue is full"
                                 );
                                 effect_handler
-                                    .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
+                                    .notify_nack(NackMsg::new(
+                                        "topic queue full: dropped newest",
+                                        data,
+                                    ))
                                     .await?;
                             }
                         }

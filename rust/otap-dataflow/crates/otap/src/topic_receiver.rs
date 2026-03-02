@@ -11,8 +11,8 @@ use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::topic::SubscriptionGroupName;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
+use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -98,54 +98,58 @@ pub struct TopicReceiver {
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    name: TOPIC_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
-        let config = TopicReceiver::parse_config(&node_config.config)?;
-        let topic_set = pipeline
-            .topic_set::<OtapPdata>()
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: "Topic set is not available in pipeline context".to_owned(),
+pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
+    ReceiverFactory {
+        name: TOPIC_RECEIVER_URN,
+        create: |pipeline: PipelineContext,
+                 node: NodeId,
+                 node_config: Arc<NodeUserConfig>,
+                 receiver_config: &ReceiverConfig| {
+            let config = TopicReceiver::parse_config(&node_config.config)?;
+            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
+                    error: "Topic set is not available in pipeline context".to_owned(),
+                }
             })?;
-        let topic = topic_set
-            .get(config.topic.as_ref())
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: format!(
-                    "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
-                    config.topic,
-                    pipeline.pipeline_group_id(),
-                    pipeline.pipeline_id(),
-                ),
+            let topic = topic_set.get(config.topic.as_ref()).ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
+                        config.topic,
+                        pipeline.pipeline_group_id(),
+                        pipeline.pipeline_id(),
+                    ),
+                }
             })?;
-        let mode = match &config.subscription {
-            TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
-            TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
-                group: Arc::<str>::from(group.as_ref()),
-            },
-        };
-        let subscription = topic
-            .subscribe(mode, SubscriberOptions::default())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to subscribe topic receiver to `{}`: {e}", config.topic),
-            })?;
-        let metrics = pipeline.register_metrics::<TopicReceiverMetrics>();
-        Ok(ReceiverWrapper::local(
-            TopicReceiver {
-                config,
-                subscription,
-                metrics,
-            },
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
-};
+            let mode = match &config.subscription {
+                TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
+                TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
+                    group: Arc::<str>::from(group.as_ref()),
+                },
+            };
+            let subscription = topic
+                .subscribe(mode, SubscriberOptions::default())
+                .map_err(|e| ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "Failed to subscribe topic receiver to `{}`: {e}",
+                        config.topic
+                    ),
+                })?;
+            let metrics = pipeline.register_metrics::<TopicReceiverMetrics>();
+            Ok(ReceiverWrapper::local(
+                TopicReceiver {
+                    config,
+                    subscription,
+                    metrics,
+                },
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
+    };
 
 impl TopicReceiver {
     /// Parses and validates topic receiver configuration.

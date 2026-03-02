@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 /// The future type returned by [`TopicState::publish`].
 ///
 /// One `Box` allocation per publish call (~25 ns). Acceptable because publish
-/// fans out to many consumers and for external backends (Kafka/Quiver) this is
+/// fans out to many consumers and for external backends (for example Quiver) this is
 /// noise compared to network I/O.
 pub type PublishFuture<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 

@@ -50,7 +50,7 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
-use otap_df_config::topic::TopicSpec;
+use otap_df_config::topic::{TopicBackendKind, TopicSpec};
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, TopicName,
     pipeline::PipelineConfig,
@@ -64,7 +64,7 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_engine::topic::{TopicBroker, TopicOptions, TopicSet};
+use otap_df_engine::topic::{InMemoryBackend, TopicBroker, TopicOptions, TopicSet};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -144,6 +144,32 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
     }
 
+    fn declare_topic(
+        broker: &TopicBroker<PData>,
+        name: TopicName,
+        spec: &TopicSpec,
+    ) -> Result<(), Error> {
+        let opts = Self::map_topic_spec_to_options(spec);
+        match spec.backend {
+            TopicBackendKind::InMemory => {
+                _ = broker
+                    .create_topic(name, opts, InMemoryBackend)
+                    .map_err(|e| Error::PipelineRuntimeError {
+                        source: Box::new(e),
+                    })?;
+                Ok(())
+            }
+            backend => Err(Error::PipelineRuntimeError {
+                source: Box::new(EngineError::InternalError {
+                    message: format!(
+                        "topic backend `{backend}` for topic `{}` is not implemented yet",
+                        name.as_ref()
+                    ),
+                }),
+            }),
+        }
+    }
+
     fn parse_topic_name(raw: &str) -> Result<TopicName, Error> {
         TopicName::parse(raw).map_err(|e| Error::PipelineRuntimeError {
             source: Box::new(EngineError::InternalError {
@@ -158,12 +184,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let mut group_names = HashMap::new();
 
         for (topic_name, spec) in &config.topics {
-            let declared_name = Self::parse_topic_name(&format!("global::{}", topic_name.as_ref()))?;
-            _ = broker
-                .create_in_memory_topic(declared_name.clone(), Self::map_topic_spec_to_options(spec))
-                .map_err(|e| Error::PipelineRuntimeError {
-                    source: Box::new(e),
-                })?;
+            let declared_name =
+                Self::parse_topic_name(&format!("global::{}", topic_name.as_ref()))?;
+            Self::declare_topic(&broker, declared_name.clone(), spec)?;
             _ = global_names.insert(topic_name.clone(), declared_name);
         }
 
@@ -174,14 +197,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     group_id.as_ref(),
                     topic_name.as_ref()
                 ))?;
-                _ = broker
-                    .create_in_memory_topic(
-                        declared_name.clone(),
-                        Self::map_topic_spec_to_options(spec),
-                    )
-                    .map_err(|e| Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    })?;
+                Self::declare_topic(&broker, declared_name.clone(), spec)?;
                 _ = group_names.insert((group_id.clone(), topic_name.clone()), declared_name);
             }
         }
@@ -226,12 +242,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .group_names
                     .get(&(pipeline_group_id.clone(), group_topic_name.clone()))
                 {
-                    let handle = declared
-                        .broker
-                        .get_topic_required(declared_name)
-                        .map_err(|e| Error::PipelineRuntimeError {
-                            source: Box::new(e),
-                        })?;
+                    let handle =
+                        declared
+                            .broker
+                            .get_topic_required(declared_name)
+                            .map_err(|e| Error::PipelineRuntimeError {
+                                source: Box::new(e),
+                            })?;
                     // Group-local declarations override globals with the same local name.
                     _ = set.insert(group_topic_name.clone(), handle);
                 }
@@ -1292,5 +1309,74 @@ connections:
         assert_eq!(assignments.len(), 2);
         assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
         assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
+    }
+
+    #[test]
+    fn declare_topics_accepts_default_and_explicit_in_memory_backend() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_default: {}
+  global_mem:
+    backend: in_memory
+groups:
+  g1:
+    topics:
+      local_default: {}
+      local_mem:
+        backend: in_memory
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+
+        assert_eq!(declared.broker.topic_names().len(), 4);
+    }
+
+    #[test]
+    fn declare_topics_rejects_unimplemented_backend_kind() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_quiver:
+    backend: quiver
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        match Controller::<()>::declare_topics(&config) {
+            Err(Error::PipelineRuntimeError { source }) => {
+                let msg = source.to_string();
+                assert!(msg.contains("backend `quiver`"));
+                assert!(msg.contains("not implemented yet"));
+            }
+            Ok(_) => panic!("quiver backend should be rejected"),
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
     }
 }
