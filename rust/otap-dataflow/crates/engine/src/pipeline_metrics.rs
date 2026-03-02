@@ -30,6 +30,10 @@
 //!   share of that core; summing `cpu_utilization` across co-pinned pipelines
 //!   approximates total core load.
 //!
+//! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
+//!   Process-wide Resident Set Size — physical memory currently held in RAM.
+//!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+//!
 //! - `memory_usage` (`ObserveUpDownCounter<u64>`, `{By}`, jemalloc only):
 //!   Current heap bytes in use by the pipeline thread:
 //!   `memory_allocated - memory_freed`. A rising long-term trend indicates a leak
@@ -160,6 +164,11 @@ pub struct PipelineMetrics {
     /// The time the pipeline instance has been running.
     #[metric(unit = "{s}")]
     pub uptime: Gauge<f64>,
+
+    /// Process-wide Resident Set Size — physical RAM currently used by the process.
+    /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+    #[metric(unit = "{By}")]
+    pub memory_rss: ObserveUpDownCounter<u64>,
 
     /// The amount of heap memory in use by the pipeline instance running on a specific core.
     #[metric(unit = "{By}")]
@@ -508,6 +517,9 @@ impl PipelineMetricsMonitor {
     /// These metrics include CPU usage and, where available, per-thread scheduling/page-fault
     /// signals and jemalloc-derived heap metrics.
     pub fn update_pipeline_metrics(&mut self) {
+        // === Update process-wide RSS metric ===
+        self.metrics.memory_rss.observe(get_rss_bytes());
+
         // === Update thread memory allocation metrics (jemalloc only) ===
         #[cfg(all(not(windows), feature = "jemalloc"))]
         if self.jemalloc_supported {
@@ -761,6 +773,13 @@ impl PipelineMetricsMonitor {
         // Silence unused field warning by reading here and setting to _.
         let _ = self.rusage_thread_supported;
     }
+}
+
+/// Returns the current process-wide RSS (Resident Set Size) in bytes.
+fn get_rss_bytes() -> u64 {
+    memory_stats::memory_stats()
+        .map(|stats| stats.physical_mem as u64)
+        .unwrap_or(0)
 }
 
 impl Drop for PipelineMetricsMonitor {
