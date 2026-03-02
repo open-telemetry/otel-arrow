@@ -244,4 +244,45 @@ mod test {
             assert_eq!(logs_record.severity_text, "ERROR");
         }
     }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_other_column() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+
+        // kind of a silly example, but just need two cols that have the same type for the test
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | set event_name = severity_text", logs_data)
+                .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+
+        assert_eq!(logs_records.len(), 2);
+        assert_eq!(logs_records[0].event_name, "INFO");
+        assert_eq!(logs_records[1].event_name, "DEBUG");
+    }
+
+    #[tokio::test]
+    async fn test_upsert_root_column_from_other_column() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("event1")
+                .finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+
+        // kind of a silly example, but just need two cols that have the same type for the test
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | set event_name = severity_text", logs_data)
+                .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+
+        assert_eq!(logs_records.len(), 2);
+        assert_eq!(logs_records[0].event_name, "INFO");
+        assert_eq!(logs_records[1].event_name, "DEBUG");
+    }
 }
