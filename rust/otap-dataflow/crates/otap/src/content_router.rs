@@ -58,15 +58,15 @@ use otap_df_engine::{
 };
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView};
 use otap_df_pdata::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata::views::resource::ResourceView;
-use otap_df_pdata::views::trace::{ResourceSpansView, TracesView};
+use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
+use otap_df_pdata_views::views::resource::ResourceView;
+use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 
