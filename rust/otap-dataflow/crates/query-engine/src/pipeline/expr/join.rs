@@ -330,7 +330,7 @@ fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> Result<
     )?)
 }
 
-trait JoinExec {
+pub  trait JoinExec {
     /// produce the rows that should be taken
     fn rows_to_take(
         &self,
@@ -393,12 +393,12 @@ impl JoinExec for EqualScopeJoin {
 
 /// Joins root record batch (logs/metrics/traces) to a child attributes record batch
 /// on root.id == attributes.parent_id
-struct RootToAttributesJoin {
+pub struct RootToAttributesJoin {
     attrs_id: AttributesIdentifier,
 }
 
 impl RootToAttributesJoin {
-    fn new(attrs_id: AttributesIdentifier) -> Self {
+    pub fn new(attrs_id: AttributesIdentifier) -> Self {
         Self { attrs_id }
     }
 }

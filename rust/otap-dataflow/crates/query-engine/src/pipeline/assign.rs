@@ -4,19 +4,25 @@
 //! This module contains code for assigning the evaluation of an expression to the
 //! TODO - are these the docs we want for REAL?
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
+use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use data_engine_expressions::{ScalarExpression, SourceScalarExpression};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
+use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::Logs;
 
 use crate::error::Result;
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::join::{JoinExec, RootToAttributesJoin};
 use crate::pipeline::expr::{
     DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult, ScopedLogicalExpr,
     ScopedPhysicalExpr,
@@ -28,7 +34,7 @@ pub(crate) struct AssignPipelineStage {
     ///
     dest_column: ColumnAccessor,
 
-    dest_scope: DataScope,
+    dest_scope: Rc<DataScope>,
 
     /// expression that will produce the data to be assigned to the destination
     source: ScopedPhysicalExpr,
@@ -49,7 +55,7 @@ impl AssignPipelineStage {
         let physical_expr = physical_planner.plan(source_logical_plan)?;
 
         Ok(Self {
-            dest_scope: dest_column.clone().into(),
+            dest_scope: Rc::new(dest_column.clone().into()),
             dest_column: dest_column,
             source: physical_expr,
         })
@@ -72,16 +78,34 @@ impl AssignPipelineStage {
         // TODO - check the data type and ensure it matches the destination
 
         let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == &self.dest_scope;
+            || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
 
-        let aligned_result = if already_aligned {
-            eval_result
+        let values = if already_aligned {
+            eval_result.values.to_array(root_batch.num_rows())?
         } else {
-            todo!()
-            // time to join
-        };
+            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+                unreachable!("unreachable")
+            };
 
-        let values = aligned_result.values.to_array(root_batch.num_rows())?;
+            let join_exec = RootToAttributesJoin::new(attrs_id.clone());
+            let root_as_join_arg = PhysicalExprEvalResult::new(
+                ColumnarValue::Scalar(ScalarValue::Null), // placeholder,
+                self.dest_scope.clone(),
+                root_batch,
+            );
+            let vals_take_indices = join_exec.rows_to_take(
+                &root_as_join_arg,
+                &eval_result,
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )?;
+
+            match eval_result.values {
+                ColumnarValue::Array(arr) => take(&arr, &vals_take_indices, None)?,
+                ColumnarValue::Scalar(_) => {
+                    todo!("error or unreachable here") // err probably better
+                }
+            }
+        };
 
         // TODO - need to attempt to cast to dictionary
 
@@ -176,7 +200,6 @@ mod test {
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
-        otap::Logs,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -284,5 +307,71 @@ mod test {
         assert_eq!(logs_records.len(), 2);
         assert_eq!(logs_records[0].event_name, "INFO");
         assert_eq!(logs_records[1].event_name, "DEBUG");
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_attribute() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("event", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("replaceme")
+                .attributes(vec![KeyValue::new("event", AnyValue::new_string("world"))])
+                .finish(),
+            // no event attribute, result should be ""..
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
+        ]);
+
+        // kind of a silly example, but just need two cols that have the same type for the test
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | set event_name = attributes[\"event\"]",
+            logs_data,
+        )
+        .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+
+        assert_eq!(logs_records.len(), 4);
+        assert_eq!(logs_records[0].event_name, "hello");
+        assert_eq!(logs_records[1].event_name, "world");
+        assert_eq!(logs_records[2].event_name, "");
+        assert_eq!(logs_records[3].event_name, "");
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_non_root_attribute() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("a"))])
+                        .finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("b"))])
+                        .finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+            ],
+        )]);
+
+        // kind of a silly example, but just need two cols that have the same type for the test
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | set event_name = instrumentation_scope.attributes[\"attr1\"]",
+            logs_data,
+        )
+        .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 1);
+        assert_eq!(logs_records[0].event_name, "a");
+        let logs_records = result.resource_logs[0].scope_logs[1].log_records.clone();
+        assert_eq!(logs_records.len(), 1);
+        assert_eq!(logs_records[0].event_name, "b");
     }
 }

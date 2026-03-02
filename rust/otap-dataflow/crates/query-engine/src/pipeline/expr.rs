@@ -74,8 +74,8 @@ use crate::pipeline::expr::types::{
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
-mod join;
-mod types;
+pub(crate) mod join;
+pub(crate) mod types;
 
 pub(crate) const VALUE_COLUMN_NAME: &str = "value";
 pub(crate) const LEFT_COLUMN_NAME: &str = "left";
@@ -706,7 +706,7 @@ pub(crate) struct PhysicalExprEvalResult {
 }
 
 impl PhysicalExprEvalResult {
-    fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
+    pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
         let is_root = *data_scope == DataScope::Root;
 
         let mut result = Self {
