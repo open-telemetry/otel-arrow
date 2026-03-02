@@ -43,14 +43,14 @@ data collection.
 
 ### Core Concepts
 
-| Concept               | Purpose                                                              |
-| --------------------- | -------------------------------------------------------------------- |
-| **Components**        | Services or tools under test (e.g., load generators, collectors, backends). |
-| **Strategies**        | Plugin-based behaviors for deployment, execution, monitoring, and configuration. |
+| Concept               | Purpose                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| **Components**        | Services or tools under test (e.g., load generators, collectors, backends).                     |
+| **Strategies**        | Plugin-based behaviors for deployment, execution, monitoring, and configuration.                |
 | **Tests**             | Ordered scenarios made up of steps that deploy, start, monitor, load, and tear down components. |
-| **Hooks**             | Extensible automation points at suite, scenario, step, or component level. |
-| **Reports**           | Post-test analysis of throughput, latency, resource usage, and trends. |
-| **Error Handling**    | Flexible retry and continuation behavior for resilient test execution. |
+| **Hooks**             | Extensible automation points at suite, scenario, step, or component level.                      |
+| **Reports**           | Post-test analysis of throughput, latency, resource usage, and trends.                          |
+| **Error Handling**    | Flexible retry and continuation behavior for resilient test execution.                          |
 
 ---
 
