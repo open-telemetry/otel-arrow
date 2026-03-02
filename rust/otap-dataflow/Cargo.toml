@@ -69,7 +69,7 @@ arrayvec = "0.7.6"
 arrow = { version = "57.0", features=["prettyprint"] }
 arrow-buffer = { version = "57.0" }
 arrow-ipc = { version = "57.0", features=["zstd"] }
-arrow-schema = { version = "57.0" }
+arrow-schema = { version = "58.0" }
 arrow-array = { version = "57.0" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
