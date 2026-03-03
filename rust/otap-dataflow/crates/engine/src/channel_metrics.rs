@@ -104,6 +104,13 @@ pub struct ConsumedMetrics {
 #[metric_set(name = "channel.produced")]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
+    /// Duration from production until the corresponding ack or nack is
+    /// routed, in nanoseconds. This is reported at the detailed level.
+    /// Only recorded for producer-only frames (i.e., when CONSUMER_METRICS
+    /// is NOT set on the same frame), so each component has at most one
+    /// duration histogram.
+    #[metric(name = "produced.duration", unit = "ns")]
+    pub produced_duration_ns: Mmsc,
     /// Produced requests acknowledged by downstream.
     #[metric(name = "produced.success", unit = "{requests}")]
     pub produced_success: Counter<u64>,

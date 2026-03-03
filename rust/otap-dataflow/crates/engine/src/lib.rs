@@ -259,10 +259,10 @@ pub struct Interests: u8 {
 impl Interests {
     /// Derive Interests from MetricLevel.
     ///
-    /// - None:     empty()
-    /// - Basic:    empty() with only channel metrics, no use of Context
-    /// - Normal:   CONSUMER_METRICS | PRODUCER_METRICS
-    /// - Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
+    /// None:     empty()
+    /// Basic:    empty() with only channel metrics, no use of Context
+    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {

@@ -590,10 +590,7 @@ macro_rules! impl_message_source_ext {
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(
-                    self.node_interests(),
-                    self.$id_method().index,
-                );
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
                 self.router.send_default_stamped(data).await
             }
 
@@ -601,10 +598,7 @@ macro_rules! impl_message_source_ext {
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(
-                    self.node_interests(),
-                    self.$id_method().index,
-                );
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -616,10 +610,7 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(
-                    self.node_interests(),
-                    self.$id_method().index,
-                );
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -631,10 +622,7 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(
-                    self.node_interests(),
-                    self.$id_method().index,
-                );
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
                 self.router.try_send_to_stamped(port, data)
             }
         }

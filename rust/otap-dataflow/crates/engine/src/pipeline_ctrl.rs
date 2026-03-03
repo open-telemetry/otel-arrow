@@ -178,14 +178,6 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 }
 
 /// Per-node metrics handles for recording consumed/produced outcomes.
-///
-/// Owned exclusively by the pipeline controller — no `Arc` or `Mutex`
-/// is needed because only the controller records ack/nack metrics.
-///
-/// These metrics are deliberately **not** tracked by `NodeTelemetryGuard`
-/// because the controller must continue recording ack/nack outcomes during
-/// shutdown draining, after node tasks have exited and their guards have
-/// been dropped. Instead, cleanup is handled via the `Drop` impl here.
 pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
@@ -233,8 +225,7 @@ pub struct PipelineCtrlMsgManager<PData> {
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
-    /// Per-node metrics handles for recording consumed/produced outcomes
-    /// from `Frame` entries collected during context unwinding.
+    /// Per-node metrics handles for recording consumed/produced outcomes.
     node_metric_handles: Vec<Option<NodeMetricHandles>>,
 
     /// Flags controlling capture of internal engine metrics.
@@ -517,8 +508,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             }
         }
 
-        // Final metrics flush on shutdown: report any accumulated
-        // node-level consumed/produced metrics before exiting.
+        // Final metrics flush on shutdown.
         if self.telemetry.channel_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
         }
@@ -527,10 +517,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     }
 
     /// Record consumed/produced metrics for a single unwound frame.
-    ///
-    /// `now_ns` is the wall-clock timestamp (monotonic nanos since process
-    /// epoch) captured once per unwind pass, so all frames in the same
-    /// ack/nack routing share a single "now" measurement.
     #[inline]
     fn record_frame_metrics(
         &mut self,
@@ -563,6 +549,15 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         RequestOutcome::Success => output.produced_success.inc(),
                         RequestOutcome::Failure => output.produced_failure.inc(),
                         RequestOutcome::Refused => output.produced_refused.inc(),
+                    }
+                    // Record produced duration only when CONSUMER_METRICS is
+                    // NOT set on this frame. Processors skip consumer metrics.
+                    if !interests.contains(Interests::CONSUMER_METRICS)
+                        && calldata.entry_time_ns > 0
+                        && now_ns > 0
+                    {
+                        let duration_ns = now_ns.saturating_sub(calldata.entry_time_ns);
+                        output.produced_duration_ns.record(duration_ns as f64);
                     }
                 }
             }
@@ -603,14 +598,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     }
 }
 
-/// Context-unwinding methods. These require `PData: Unwindable` so the
-/// controller can pop frames from the context stack carried inside the
-/// ack/nack payload.
+/// Context-unwinding methods. These require PData: Unwindable.
 impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     /// Shared unwinding loop: pop frames, record metrics at intermediates,
-    /// and stop at the first subscriber matching `interest`. Returns the
-    /// target `node_id` and restored `RouteData` for the delivery, or
-    /// `None` if the stack is exhausted without finding a subscriber.
+    /// and stop at the first subscriber matching the interest.
     fn unwind_frames(
         &mut self,
         pdata: &mut PData,
@@ -642,13 +633,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         }
     }
 
-    /// Unwind the context stack for an ack, recording metrics at each
-    /// intermediate frame, then deliver to the first subscriber with ACKS.
-    ///
-    /// The return-path timestamp is captured at the ack origin
-    /// (notify_ack) and carried in `ack.calldata.return_time_ns`.
-    /// A new timestamp is captured when it subsequently routes the
-    /// next ack/nack.
+    /// Unwind the context stack for an ACK.
     async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
         let now_ns = ack.calldata.return_time_ns;
         if let Some((node_id, calldata)) = self.unwind_frames(
@@ -664,10 +649,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         }
     }
 
-    /// Unwind the context stack for a nack, recording metrics at each
-    /// intermediate frame, then deliver to the first subscriber with NACKS.
-    ///
-    /// Same origin-captured timestamp semantics as `unwind_ack`.
+    /// Unwind the context stack for a NACK.
     async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
         let now_ns = nack.calldata.return_time_ns;
         let outcome = if nack.permanent {
@@ -2254,9 +2236,10 @@ mod tests {
     const CONSUMED_FAILURE: usize = 2;
     const CONSUMED_REFUSED: usize = 3;
     // ProducedMetrics field indices:
-    const PRODUCED_SUCCESS: usize = 0;
-    const PRODUCED_FAILURE: usize = 1;
-    const PRODUCED_REFUSED: usize = 2;
+    const PRODUCED_DURATION: usize = 0;
+    const PRODUCED_SUCCESS: usize = 1;
+    const PRODUCED_FAILURE: usize = 2;
+    const PRODUCED_REFUSED: usize = 3;
 
     /// Build a TestPData with frames simulating a 3-node pipeline:
     /// receiver(node0) → processor(node1) → exporter(node2).
@@ -2299,6 +2282,69 @@ mod tests {
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
+        let entry_time_ns = if with_timestamp {
+            nanos_since_epoch()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[2].index,
+            interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
+            calldata: RouteData {
+                user: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+                ..Default::default()
+            },
+        });
+
+        pdata
+    }
+
+    /// Build a TestPData with frames simulating a 3-node pipeline where
+    /// NO node subscribes to acks/nacks (all frames are metrics-only).
+    /// This lets the controller unwind all frames in a single pass,
+    /// including the receiver's producer-only frame.
+    fn build_3node_pdata_no_subscribers(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
+        let mut pdata = TestPData::new();
+
+        // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
+        let entry_time_ns = if with_timestamp {
+            nanos_since_epoch()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[0].index,
+            interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
+            calldata: RouteData {
+                user: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+                ..Default::default()
+            },
+        });
+
+        // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
+        let entry_time_ns = if with_timestamp {
+            nanos_since_epoch()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[1].index,
+            interests: Interests::CONSUMER_METRICS
+                | Interests::PRODUCER_METRICS
+                | Interests::ENTRY_TIMESTAMP,
+            calldata: RouteData {
+                user: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+                ..Default::default()
+            },
+        });
+
+        // Node 2 (exporter): consumer metrics only.
         let entry_time_ns = if with_timestamp {
             nanos_since_epoch()
         } else {
@@ -2463,12 +2509,89 @@ mod tests {
 
         // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor duration");
+        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
-            "Processor should have 1 duration observation"
+            "Processor should have 1 consumed duration observation"
         );
-        assert!(snap.min > 0.0, "Processor duration should be > 0");
+        assert!(snap.min > 0.0, "Processor consumed duration should be > 0");
+
+        // Processor produced duration: should be 0 observations because the
+        // processor frame has CONSUMER_METRICS, so produced_duration_ns is
+        // suppressed (one duration histogram per component).
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        let snap = assert_mmsc(proc_p, PRODUCED_DURATION, "Processor produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
+        );
+    }
+
+    /// Verify that produced_duration_ns is recorded for producer-only frames
+    /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
+    /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
+    #[tokio::test]
+    async fn test_ack_lifecycle_produced_duration_histogram() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut ack = AckMsg::new(pdata);
+            ack.calldata.return_time_ns = nanos_since_epoch();
+            vec![PipelineControlMsg::DeliverAck { ack }]
+        })
+        .await;
+
+        // Receiver produced duration: 1 observation, min > 0
+        // (producer-only frame, no CONSUMER_METRICS → produced_duration recorded)
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 1,
+            "Receiver should have 1 produced duration observation"
+        );
+        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+        assert!(
+            snap.max >= snap.min,
+            "Receiver produced duration max >= min"
+        );
+
+        // Processor produced duration: 0 observations
+        // (merged frame has CONSUMER_METRICS → produced_duration suppressed)
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        let snap = assert_mmsc(proc_p, PRODUCED_DURATION, "Processor produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "Processor should have 0 produced duration observations"
+        );
+
+        // Processor consumed duration: 1 observation (still works)
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
+        assert_eq!(
+            snap.count, 1,
+            "Processor should have 1 consumed duration observation"
+        );
+    }
+
+    /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
+    #[tokio::test]
+    async fn test_produced_duration_not_recorded_without_timestamp() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        // Receiver produced duration: 0 observations (no timestamp)
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "No produced duration should be recorded when entry_time_ns == 0"
+        );
     }
 
     /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
