@@ -1,7 +1,8 @@
 # Azure Monitor Exporter Telemetry
 
-This document lists telemetry emitted directly by the `azure_monitor_exporter` crate.
-It includes metric instruments registered by the crate and log events emitted via `otel_*` log macros.
+This document lists telemetry emitted directly by the
+`azure_monitor_exporter` crate. It includes metric instruments registered
+by the crate and log events emitted via `otel_*` log macros.
 
 ## Metrics
 
