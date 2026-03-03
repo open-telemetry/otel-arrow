@@ -85,16 +85,16 @@ pub struct ConsumedMetrics {
     /// routed, in nanoseconds. This is reported at the detailed level.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
-    #[metric(name = "consumed.duration", unit = "ns")]
+    #[metric(name = "consumer.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
     /// Consumed requests successfully processed.
-    #[metric(name = "consumed.success", unit = "{requests}")]
+    #[metric(name = "consumer.success", unit = "{requests}")]
     pub consumed_success: Counter<u64>,
     /// Consumed requests that failed, this are retryable errors.
-    #[metric(name = "consumed.failure", unit = "{requests}")]
+    #[metric(name = "consumer.failure", unit = "{requests}")]
     pub consumed_failure: Counter<u64>,
     /// Consumed requests refused, also known as permanent failures.
-    #[metric(name = "consumed.refused", unit = "{requests}")]
+    #[metric(name = "consumer.refused", unit = "{requests}")]
     pub consumed_refused: Counter<u64>,
 }
 
@@ -105,20 +105,20 @@ pub struct ConsumedMetrics {
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
-    /// routed, in nanoseconds. This is reported at the detailed level.
-    /// Only recorded for producer-only frames (i.e., when CONSUMER_METRICS
-    /// is NOT set on the same frame), so each component has at most one
-    /// duration histogram.
-    #[metric(name = "produced.duration", unit = "ns")]
+    /// routed, in nanoseconds. This is reported at the detailed level,
+    /// only in receivers. Processors report consumed_refused.
+    ///
+    /// TODO: make this Option<Box<Mmsc or Histogram>>.
+    #[metric(name = "producer.duration", unit = "ns")]
     pub produced_duration_ns: Mmsc,
     /// Produced requests acknowledged by downstream.
-    #[metric(name = "produced.success", unit = "{requests}")]
+    #[metric(name = "producer.success", unit = "{requests}")]
     pub produced_success: Counter<u64>,
     /// Produced requests that failed, this are retryable errors.
-    #[metric(name = "produced.failure", unit = "{requests}")]
+    #[metric(name = "producer.failure", unit = "{requests}")]
     pub produced_failure: Counter<u64>,
     /// Produced requests refused, also known as permanent failures.
-    #[metric(name = "produced.refused", unit = "{requests}")]
+    #[metric(name = "producer.refused", unit = "{requests}")]
     pub produced_refused: Counter<u64>,
 }
 

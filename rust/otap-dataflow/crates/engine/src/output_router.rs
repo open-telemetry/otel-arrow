@@ -59,6 +59,7 @@ pub struct OutputRouter<S> {
 
 impl<S: Clone> OutputRouter<S> {
     /// Create a new router, indexing the ports and resolving the default sender.
+    #[must_use]
     pub fn new(
         node_id: NodeId,
         msg_senders: HashMap<PortName, S>,

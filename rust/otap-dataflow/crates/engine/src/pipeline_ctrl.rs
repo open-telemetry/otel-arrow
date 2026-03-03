@@ -2157,8 +2157,10 @@ mod tests {
             outputs: Vec::new(),
         });
 
-        let mut telemetry_policy = TelemetryPolicy::default();
-        telemetry_policy.channel_metrics = MetricLevel::Detailed;
+        let telemetry_policy = TelemetryPolicy {
+            channel_metrics: MetricLevel::Detailed,
+            ..Default::default()
+        };
 
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {
@@ -2256,7 +2258,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns: 0,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
@@ -2277,7 +2278,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
@@ -2294,7 +2294,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
@@ -2321,7 +2320,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
@@ -2340,7 +2338,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
@@ -2357,7 +2354,6 @@ mod tests {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
-                ..Default::default()
             },
         });
 
