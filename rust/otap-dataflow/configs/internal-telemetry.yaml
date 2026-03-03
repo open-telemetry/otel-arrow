@@ -5,8 +5,18 @@ policies:
         node: 256
         pipeline: 256
       pdata: 128
+  telemetry:
+    channel_metrics: detailed
 engine:
   telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
     logs:
       level: "debug"
       providers:
@@ -28,7 +38,7 @@ engine:
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
-          channel_metrics: none
+          channel_metrics: detailed
       # Internal telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
