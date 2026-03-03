@@ -1,16 +1,16 @@
 nodes:
   receiver:
-    type: "urn:otel:receiver:otlp"
+    type: "receiver:otlp"
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
   debug:
-    type: "urn:otel:processor:debug"
+    type: "processor:debug"
     config:
       verbosity: basic
   exporter:
-    type: "urn:otel:exporter:otap"
+    type: "exporter:otap"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       compression_method: none
