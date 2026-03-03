@@ -427,7 +427,7 @@ fn eval_result_to_array(
                     },
                     _ => {
                         // array is not dictionary encoded -- determine if we should convert it
-                        let field_info = FieldInfo::try_new_from_array(array_vals);
+                        let field_info = FieldInfo::new_from_array(array_vals);
                         let cardinality = estimate_cardinality(&field_info);
                         let key_type = match cardinality {
                             Cardinality::WithinU8 => Some(DataType::UInt8),

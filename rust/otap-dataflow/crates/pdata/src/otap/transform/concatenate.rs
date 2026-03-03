@@ -298,7 +298,7 @@ pub struct FieldInfo<'a> {
 }
 
 impl<'a> FieldInfo<'a> {
-    pub fn try_new_from_array(array: &'a ArrayRef) -> Self {
+    pub fn new_from_array(array: &'a ArrayRef) -> Self {
         Self {
             value_type: array.data_type(),
             nullable: array.nulls().is_some(),
