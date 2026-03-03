@@ -36,6 +36,7 @@ use crate::schema::{get_field_metadata, update_field_metadata};
 
 pub mod concatenate;
 pub mod reindex;
+pub mod reindex_old;
 pub mod split;
 #[cfg(test)]
 pub(crate) mod testing;

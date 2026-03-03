@@ -474,6 +474,20 @@ impl IdColumnType {
             IdColumnType::U32 => u32::MAX as u64,
         }
     }
+
+    /// Returns the IdColumnType for a given DataType, resolving through
+    /// dictionary encoding to the value type.
+    pub(crate) fn from_data_type(dt: &DataType) -> Option<Self> {
+        let value_type = match dt {
+            DataType::Dictionary(_, v) => v.as_ref(),
+            other => other,
+        };
+        match value_type {
+            DataType::UInt16 => Some(IdColumnType::U16),
+            DataType::UInt32 => Some(IdColumnType::U32),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]

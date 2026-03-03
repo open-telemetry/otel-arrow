@@ -4,7 +4,8 @@
 //! Benchmarks for concatenation and reindexing.
 //!
 //! Reindex benchmarks include contiguous and gapped (doubled IDs) variants
-//! to exercise different code paths.
+//! to exercise different code paths. Both old and new reindex implementations
+//! are benchmarked with the same input data for comparison.
 
 use std::ops::Mul;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otap::transform::concatenate::concatenate;
 use otap_df_pdata::otap::transform::reindex::reindex;
+use otap_df_pdata::otap::transform::reindex_old::reindex as reindex_old;
 use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otap_df_pdata::schema::consts::{ID, PARENT_ID};
 use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig, TracesConfig};
@@ -39,15 +41,21 @@ fn bench_all(c: &mut Criterion) {
         let traces_gapped: Vec<_> = traces.iter().map(introduce_gaps).collect();
 
         bench_group(c, &format!("reindex/{size}items/contiguous"), |group| {
-            bench_reindex(group, "metrics", &metrics);
-            bench_reindex(group, "logs", &logs);
-            bench_reindex(group, "traces", &traces);
+            bench_reindex(group, "metrics/new", &metrics, reindex);
+            bench_reindex(group, "metrics/old", &metrics, reindex_old);
+            bench_reindex(group, "logs/new", &logs, reindex);
+            bench_reindex(group, "logs/old", &logs, reindex_old);
+            bench_reindex(group, "traces/new", &traces, reindex);
+            bench_reindex(group, "traces/old", &traces, reindex_old);
         });
 
         bench_group(c, &format!("reindex/{size}items/gapped"), |group| {
-            bench_reindex(group, "metrics", &metrics_gapped);
-            bench_reindex(group, "logs", &logs_gapped);
-            bench_reindex(group, "traces", &traces_gapped);
+            bench_reindex(group, "metrics/new", &metrics_gapped, reindex);
+            bench_reindex(group, "metrics/old", &metrics_gapped, reindex_old);
+            bench_reindex(group, "logs/new", &logs_gapped, reindex);
+            bench_reindex(group, "logs/old", &logs_gapped, reindex_old);
+            bench_reindex(group, "traces/new", &traces_gapped, reindex);
+            bench_reindex(group, "traces/old", &traces_gapped, reindex_old);
         });
 
         bench_group(c, &format!("concatenate/{size}items/contiguous"), |group| {
@@ -78,11 +86,12 @@ fn bench_reindex<const N: usize>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     signal_name: &str,
     data: &[[Option<RecordBatch>; N]],
+    reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> otap_df_pdata::error::Result<()>,
 ) {
     let _ = group.bench_with_input(BenchmarkId::from_parameter(signal_name), data, |b, data| {
         b.iter_batched(
             || data.to_vec(),
-            |mut batches| reindex(&mut batches).expect("reindex failed"),
+            |mut batches| reindex_fn(&mut batches).expect("reindex failed"),
             BatchSize::SmallInput,
         )
     });

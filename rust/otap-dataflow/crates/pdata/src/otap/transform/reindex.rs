@@ -5,11 +5,13 @@ use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray,
+    PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
+use arrow::compute::kernels::aggregate::{max_array, min_array};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
+    ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
 };
 
 use crate::error::{Error, Result};
@@ -22,7 +24,7 @@ use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 
-use super::util::{PrimaryIdInfo, payload_relations};
+use super::util::{IdColumnType, PrimaryIdInfo, id_column_dispatch, payload_relations};
 
 /// Reindex the provided record batches in place such that all IDs are unique
 /// for each payload type across all batches. This makes it safe to concatenate
@@ -118,26 +120,58 @@ where
         store.remove_transport_optimized_encodings(*payload_type)?;
     }
 
-    // Iterate over all allowed payload types for this signal
     for &payload_type in S::allowed_payload_types() {
-        // Get all relations (parent-child relationships) for this payload type
         let info = payload_relations(payload_type);
 
-        // Check for obvious overflow.
-        //
-        // FIXME: We are vulnerable to issues here with resource and scope id
-        // columns which do not have a primary id column defining them in any
-        // payload type. This is planned to be addressed alongside some upcoming
-        // optimizations.
-        //
-        // See: https://github.com/open-telemetry/otel-arrow/pull/2021#discussion_r2800261547
-        // See: https://github.com/open-telemetry/otel-arrow/issues/1926
-        if let Some(primary_id_info) = info.primary_id {
-            check_primary_id_for_overflow(store, payload_type, &primary_id_info)?;
+        // Check for obvious overflow on the primary ID column.
+        if let Some(ref primary_id_info) = info.primary_id {
+            check_primary_id_for_overflow(store, payload_type, primary_id_info)?;
         }
 
         for relation in info.relations {
-            reindex_id_column_dynamic(store, payload_type, relation.child_types, relation.key_col)?;
+            // Find the first batch with the parent payload to inspect the ID
+            // column type, then dispatch to the appropriately-typed function.
+            let parent_idx = payload_to_idx(payload_type);
+            let id_col = (0..store.len()).find_map(|i| {
+                let batch = store.batches[i][parent_idx].as_ref()?;
+                extract_id_column(batch, relation.key_col).ok()
+            });
+
+            let Some(id_col) = id_col else {
+                continue;
+            };
+
+            // For non-primary ID columns (resource.id, scope.id), check that
+            // the total row count (upper bound on unique IDs) fits in the
+            // column type. The primary ID check above only covers the primary
+            // column; resource/scope IDs need their own check.
+            let primary_id_name = info.primary_id.as_ref().map(|p| p.name);
+            if primary_id_name != Some(relation.key_col) {
+                check_id_column_for_overflow(
+                    store, payload_type, relation.key_col, id_col.as_ref(),
+                )?;
+            }
+
+            id_column_dispatch!(
+                id_col,
+                Native[T] => {
+                    reindex_id_column::<T, S, N>(
+                        store, payload_type, relation.child_types,
+                        relation.key_col, primary_id_name,
+                    )?;
+                },
+                Dictionary[_K, V] => {
+                    reindex_id_column::<V, S, N>(
+                        store, payload_type, relation.child_types,
+                        relation.key_col, primary_id_name,
+                    )?;
+                },
+                _ => {
+                    return Err(Error::InvalidIdColumnType {
+                        data_type: id_col.data_type().clone(),
+                    });
+                },
+            );
         }
     }
 
@@ -187,100 +221,82 @@ where
     Ok(())
 }
 
-/// Helper function that inspects the ID column type and dispatches to the appropriate generic function
-fn reindex_id_column_dynamic<S, const N: usize>(
-    store: &mut MultiBatchStore<'_, S, N>,
-    parent_payload_type: ArrowPayloadType,
-    child_payload_types: &[ArrowPayloadType],
-    id_column_path: &str,
+/// Check that the total row count for a non-primary ID column across all
+/// batches fits in the column's value type. Row count is an upper bound on
+/// unique IDs (which determines how many new IDs the slow path assigns).
+fn check_id_column_for_overflow<S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    payload_type: ArrowPayloadType,
+    column_path: &str,
+    sample_col: &dyn Array,
 ) -> Result<()>
 where
     S: OtapBatchStore,
 {
-    // Find the first batch with the parent payload to inspect the ID column type
-    let parent_idx = payload_to_idx(parent_payload_type);
-    for i in 0..store.len() {
-        if let Some(parent_batch) = &store.batches[i][parent_idx] {
-            if let Ok(id_col) = extract_id_column(parent_batch, id_column_path) {
-                // Inspect the column type and dispatch to the appropriate generic function
-                let data_type = id_col.data_type();
-                match data_type {
-                    DataType::UInt16 => {
-                        return reindex_id_column::<UInt16Type, S, N>(
-                            store,
-                            parent_payload_type,
-                            child_payload_types,
-                            id_column_path,
-                        );
-                    }
-                    DataType::UInt32 => {
-                        return reindex_id_column::<UInt32Type, S, N>(
-                            store,
-                            parent_payload_type,
-                            child_payload_types,
-                            id_column_path,
-                        );
-                    }
-                    DataType::Dictionary(_, value_type) => match value_type.as_ref() {
-                        DataType::UInt16 => {
-                            return reindex_id_column::<UInt16Type, S, N>(
-                                store,
-                                parent_payload_type,
-                                child_payload_types,
-                                id_column_path,
-                            );
-                        }
-                        DataType::UInt32 => {
-                            return reindex_id_column::<UInt32Type, S, N>(
-                                store,
-                                parent_payload_type,
-                                child_payload_types,
-                                id_column_path,
-                            );
-                        }
-                        _ => {
-                            return Err(Error::UnsupportedDictionaryValueType {
-                                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
-                                actual: value_type.as_ref().clone(),
-                            });
-                        }
-                    },
-                    _ => {
-                        return Err(Error::ColumnDataTypeMismatch {
-                            name: id_column_path.to_string(),
-                            expect: DataType::UInt16, // or UInt32
-                            actual: data_type.clone(),
-                        });
-                    }
-                }
-            }
-        }
+    let Some(id_type) = IdColumnType::from_data_type(sample_col.data_type()) else {
+        return Err(Error::InvalidIdColumnType {
+            data_type: sample_col.data_type().clone(),
+        });
+    };
+
+    let mut count: u64 = 0;
+    for batch in store.select(payload_type) {
+        let Ok(col) = extract_id_column(batch, column_path) else {
+            continue;
+        };
+        count += col.len() as u64;
     }
 
-    // No batches found with this ID column - that's okay, nothing to reindex
+    if count > id_type.max() {
+        return Err(Error::TooManyItems {
+            payload_type,
+            count: count as usize,
+            max: id_type.max(),
+            message: format!("Too many items to reindex column '{column_path}'"),
+        });
+    }
+
     Ok(())
 }
 
-/// Generic function to reindex an ID column and its corresponding parent_id columns in child tables
+/// Returns (min, max) of an ID column, handling nulls and dictionary encoding.
 ///
-/// # Type Parameters
-/// * `T` - The Arrow primitive type for the ID (e.g., UInt16Type or UInt32Type)
-/// * `S` - The OtapBatchStore type (e.g., Logs, Metrics, Traces)
-/// * `N` - The number of batches (const generic)
+/// Returns `None` if the column is empty or all null.
+fn id_column_min_max<T>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>>
+where
+    T: ArrowNumericType,
+    T::Native: ArrowNativeTypeOp,
+{
+    let values = materialize_id_values::<T>(col)?;
+    let Some(min) = min_array::<T, _>(values) else {
+        return Ok(None);
+    };
+    // SAFETY: presence of a min value implies at least one non-null element,
+    // so max must also be Some.
+    let max = max_array::<T, _>(values).expect("max must exist when min exists");
+    Ok(Some((min, max)))
+}
+
+/// Generic function to reindex an ID column and its corresponding parent_id
+/// columns in child tables.
 ///
-/// # Arguments
-/// * `store` - The batch store containing the record batches
-/// * `parent_payload_type` - The payload type of the parent table (e.g., Logs)
-/// * `child_payload_types` - The payload types of the child tables (e.g., [LogAttrs, SpanEvents])
-/// * `id_column_path` - The path to the ID column in the parent table (e.g., "id", "resource.id")
+/// Uses a single-pass approach: for each batch, computes min/max inline and
+/// attempts the fast path (uniform offset, no sort). Falls back to the slow
+/// path (sort + create_mappings) per-batch when the fast path cannot be used.
+///
+/// The fast path is only eligible for primary ID columns (where values are
+/// unique). Non-primary ID columns (e.g. resource.id, scope.id) may contain
+/// duplicates, so `span == len` does not prove contiguity -- they always use
+/// the slow path.
 fn reindex_id_column<T, S, const N: usize>(
     store: &mut MultiBatchStore<'_, S, N>,
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
+    primary_id_name: Option<&str>,
 ) -> Result<()>
 where
-    T: ArrowPrimitiveType,
+    T: ArrowNumericType,
     T::Native: Ord
         + Copy
         + Add<Output = T::Native>
@@ -288,9 +304,10 @@ where
         + AddAssign
         + SubAssign
         + From<u8>
-        + ArrowNativeType,
+        + ArrowNativeTypeOp,
     S: OtapBatchStore,
 {
+    let is_primary = primary_id_name == Some(id_column_path);
     let parent_idx = payload_to_idx(parent_payload_type);
     let mut offset = T::Native::from(0);
 
@@ -299,61 +316,149 @@ where
             continue;
         };
 
-        // TODO: Consider unwrapping if we feel like id being present is an invariant.
-        // that needs to be upheld at this point.
-        // Extract ID column - if it doesn't exist, skip reindexing for this batch
         let id_col = match extract_id_column(&parent_rb, id_column_path) {
             Ok(col) => col,
             Err(_) => {
-                // No ID column, put the batch back and continue
                 store.get_mut(i)[parent_idx] = Some(parent_rb);
                 continue;
             }
         };
 
-        // TODO: We can optimize here by reusing some storage:
-        //
-        //  - The vectors to store the sort indices and to hold the sorted Ids is
-        //  while we create mappings is just scratch space and reusasble. We may
-        //  need one scratch buffer per Native type
-        //  - The vector to hold the mappings is also reusable and just scratch
-        //  space
-        //
-        // Create mappings for the parent IDs
-        let mut ids = materialize_id_values::<T>(id_col.as_ref())?
-            .values()
-            .to_vec();
-        let sort_indices = sort_vec_to_indices(&ids);
-        let mut sorted_ids = vec![T::Native::default(); ids.len()];
-        take_vec(&ids, &mut sorted_ids, &sort_indices);
+        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref())? else {
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
+            continue;
+        };
 
-        let (mappings, new_offset) = create_mappings::<T>(&sorted_ids, offset)?;
-        offset = new_offset;
+        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+        let slice = id_values.values();
 
-        // safety: Mappings should always be valid when applied to the ids that
-        // generated them. If not then we've made a serious error.
-        assert!(apply_mappings::<T>(&mut sorted_ids, &mappings).is_none());
+        // The contiguity check (span == len) is only valid for primary ID
+        // columns where values are unique. Non-primary columns (resource.id,
+        // scope.id) can have duplicates that make span == len even with gaps,
+        // e.g. [0, 1, 1, 4, 4] has span=5, len=5, but is not contiguous.
+        let use_fast_path = is_primary && {
+            let span = max.as_usize() - min.as_usize() + 1;
+            let is_contiguous = span == slice.len();
+            is_contiguous
+                && child_payload_types.iter().all(|&ct| {
+                    children_in_parent_range::<T, S, N>(store, i, ct, min, max).unwrap_or(false)
+                })
+        };
 
-        untake_vec(&sorted_ids, &mut ids, &sort_indices);
-        let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+        if use_fast_path {
+            // Fast path: apply a uniform offset to parent and child columns.
+            let (off, sign) = if min <= offset {
+                (offset - min, Sign::Positive)
+            } else {
+                (min - offset, Sign::Negative)
+            };
 
-        // Put parent batch back
-        store.get_mut(i)[parent_idx] = Some(parent_rb);
+            let mut ids = slice.to_vec();
+            apply_uniform_offset(&mut ids, off, sign);
+            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
 
-        // Apply mappings to each child record batch one at a time
-        for &child_payload_type in child_payload_types {
-            let child_idx = payload_to_idx(child_payload_type);
+            for &child_payload_type in child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
+                    let child_rb =
+                        fast_path_reindex_child::<T>(child_rb, PARENT_ID, off, sign)?;
+                    store.get_mut(i)[child_idx] = Some(child_rb);
+                }
+            }
 
-            if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
-                let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
+            let span = max - min + T::Native::from(1);
+            offset += span;
+        } else {
+            // Slow path: create explicit old->new ID mappings.
+            let mut ids = slice.to_vec();
+            let (mappings, new_offset) = if ids.is_sorted() {
+                let (m, o) = create_mappings::<T>(&ids, offset)?;
+                assert!(apply_mappings::<T>(&mut ids, &m).is_none());
+                (m, o)
+            } else {
+                let sort_indices = sort_vec_to_indices(&ids);
+                let mut sorted_ids = vec![T::Native::default(); ids.len()];
+                take_vec(&ids, &mut sorted_ids, &sort_indices);
+                let (m, o) = create_mappings::<T>(&sorted_ids, offset)?;
+                assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
+                untake_vec(&sorted_ids, &mut ids, &sort_indices);
+                (m, o)
+            };
+            offset = new_offset;
 
-                // Put child batch back
-                store.get_mut(i)[child_idx] = Some(child_rb);
+            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
+
+            for &child_payload_type in child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
+                    let child_rb =
+                        reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
+                    store.get_mut(i)[child_idx] = Some(child_rb);
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Check if all of a child's parent_id values for batch_index are within
+/// [min, max]. Returns false if the child has orphan references.
+fn children_in_parent_range<T, S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    batch_index: usize,
+    child_payload_type: ArrowPayloadType,
+    parent_min: T::Native,
+    parent_max: T::Native,
+) -> Result<bool>
+where
+    T: ArrowNumericType,
+    T::Native: Ord + Copy + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let child_idx = payload_to_idx(child_payload_type);
+    let Some(child_batch) = &store.batches[batch_index][child_idx] else {
+        return Ok(true);
+    };
+    let Ok(child_col) = extract_id_column(child_batch, PARENT_ID) else {
+        return Ok(true);
+    };
+    let Some((child_min, child_max)) = id_column_min_max::<T>(child_col.as_ref())? else {
+        return Ok(true);
+    };
+    Ok(child_min >= parent_min && child_max <= parent_max)
+}
+
+/// Applies a uniform offset to all values in a slice.
+fn apply_uniform_offset<T>(values: &mut [T], offset: T, sign: Sign)
+where
+    T: AddAssign + SubAssign + Copy,
+{
+    match sign {
+        Sign::Positive => values.iter_mut().for_each(|v| *v += offset),
+        Sign::Negative => values.iter_mut().for_each(|v| *v -= offset),
+    }
+}
+
+/// Fast-path child reindexing: applies a uniform offset to the parent_id
+/// column in a child record batch.
+fn fast_path_reindex_child<T>(
+    rb: RecordBatch,
+    column_path: &str,
+    offset: T::Native,
+    sign: Sign,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Ord + Copy + AddAssign + SubAssign + ArrowNativeType,
+{
+    let id_col = extract_id_column(&rb, column_path)?;
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let mut new_values = id_values.values().to_vec();
+    apply_uniform_offset(&mut new_values, offset, sign);
+    replace_id_column::<T>(rb, column_path, new_values)
 }
 
 /// Reindexes a child id column in a record batch using the provided mappings.
@@ -2017,6 +2122,72 @@ mod tests {
         );
 
         reindex_traces(&mut [batch_a]).unwrap();
+    }
+
+    /// Regression test: non-primary ID columns (resource.id) with duplicates must
+    /// use the slow path even when span == len.
+    ///
+    /// resource.id = [0, 1, 1, 4, 4] has span=5, len=5, which looks contiguous.
+    /// But only 3 unique values exist (0, 1, 4). The fast path would advance the
+    /// offset by 5 (the span) instead of 3 (the unique count), causing the second
+    /// batch's resource.id values to collide with the first batch after remapping.
+    /// The is_primary check forces the slow path for non-primary columns.
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_many_to_many_resource_id_with_gaps_and_duplicates() {
+        // resource.id has duplicates and gaps -- span == len but NOT contiguous.
+        // 5 log rows, 3 unique resources.
+        let log_ids_1     = vec![0u16, 1, 2, 3, 4];
+        let resource_ids_1 = vec![0u16, 1, 1, 4, 4];
+
+        // Second batch: 2 log rows, 2 unique resources.
+        let log_ids_2      = vec![0u16, 1];
+        let resource_ids_2 = vec![0u16, 1];
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs,
+                    ("id", UInt16, log_ids_1),
+                    ("resource.id", UInt16, resource_ids_1)),
+                (ResourceAttrs,
+                    ("parent_id", UInt16, vec![0u16, 1, 4]))
+            ),
+            logs!(
+                (Logs,
+                    ("id", UInt16, log_ids_2),
+                    ("resource.id", UInt16, resource_ids_2)),
+                (ResourceAttrs,
+                    ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+        ]);
+    }
+
+    /// Non-primary ID columns (resource.id, scope.id) must return an error when
+    /// the total row count across batches exceeds the column type's maximum.
+    #[test]
+    fn test_logs_resource_id_overflow() {
+        // Two batches whose combined row count exceeds u16::MAX.
+        // We omit the "id" column so the primary id overflow check doesn't fire
+        // first -- this tests the non-primary overflow path specifically.
+        let resource_ids_1: Vec<u16> = (0..HALF_U16).collect();
+        let resource_ids_2: Vec<u16> = (0..HALF_U16).collect();
+
+        let mut batches = vec![
+            logs!(
+                (Logs, ("resource.id", UInt16, resource_ids_1)),
+                (ResourceAttrs, ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>()))
+            ),
+            logs!(
+                (Logs, ("resource.id", UInt16, resource_ids_2)),
+                (ResourceAttrs, ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>()))
+            ),
+        ];
+
+        let result = reindex_logs(&mut batches);
+        assert!(
+            matches!(result, Err(Error::TooManyItems { .. })),
+            "Expected TooManyItems error for resource.id overflow, got: {result:?}",
+        );
     }
 
     /// Applies transport optimized encodings to all payload types in each batch group.
