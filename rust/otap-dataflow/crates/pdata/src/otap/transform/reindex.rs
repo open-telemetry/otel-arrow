@@ -145,16 +145,17 @@ where
             // the total row count (upper bound on unique IDs) fits in the
             // column type. The primary ID check above only covers the primary
             // column; resource/scope IDs need their own check.
+            let is_primary = Some(relation.key_col) == info.primary_id.as_ref().map(|id| id.name);
             id_column_dispatch!(
                 id_col,
                 Native[T] => {
                     reindex_id_column::<T, S, N>(
-                        store, payload_type, relation.child_types, relation.key_col,
+                        store, payload_type, relation.child_types, relation.key_col, is_primary
                     )?;
                 },
                 Dictionary[_K, V] => {
                     reindex_id_column::<V, S, N>(
-                        store, payload_type, relation.child_types, relation.key_col,
+                        store, payload_type, relation.child_types, relation.key_col, is_primary
                     )?;
                 },
                 _ => {
@@ -227,6 +228,7 @@ fn reindex_id_column<T, S, const N: usize>(
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
+    is_primary: bool,
 ) -> Result<()>
 where
     T: ArrowNumericType,
@@ -246,6 +248,7 @@ where
         parent_payload_type,
         child_payload_types,
         id_column_path,
+        is_primary,
     )?;
 
     // Compute the ID headroom budget. When total_ids_needed exceeds the
@@ -867,6 +870,7 @@ fn gather_column_stats<T, S, const N: usize>(
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
+    is_primary: bool,
 ) -> Result<Vec<Option<ColumnStats<T::Native>>>>
 where
     T: ArrowNumericType,
@@ -903,13 +907,26 @@ where
             children_in_parent_range::<T, S, N>(store, i, ct, min, max).unwrap_or(false)
         });
 
-        let (strategy, max_ids_needed) = if children_ok {
-            // Offset path: preserve existing ID structure (including gaps)
-            // and consume `span` IDs. The greedy budget check in pass 2
-            // will force compaction if total IDs would overflow.
-            (ReindexStrategy::Any, span)
-        } else {
-            (ReindexStrategy::CompactOnly, len)
+        // We're computing the max number of ids that we will use after
+        // reindexing according to the given strategy.
+        let (strategy, max_ids_needed) = match is_primary {
+            // In the primary case, we can either take the existing
+            // span or we can compact and reduce the number of ids to
+            // the length (which is equal to span if the ids are
+            // contiguous already). We can only take the existing
+            // span if the children are within the parent range otherwise
+            // it's possible that we create integrity violations.
+            true if children_ok => (ReindexStrategy::Any, span),
+            true if !children_ok => (ReindexStrategy::CompactOnly, len),
+
+            // The non-primary case is similar, but we have to be more
+            // pessimistic for the CompactOnly case. In this case we don't
+            // know how many unique ids there will be after we compact as
+            // there could be gaps. This could be <= span, so we'll take the
+            // span as the upper bound.
+            false if children_ok => (ReindexStrategy::Any, span),
+            false if !children_ok => (ReindexStrategy::CompactOnly, span),
+            _ => unreachable!(),
         };
 
         stats.push(Some(ColumnStats {
