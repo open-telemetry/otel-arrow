@@ -743,7 +743,7 @@ mod tests {
                     PipelineControlMsg::DeliverAck { ack } => {
                         let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, 4242);
-                        let got: TestCallData = ack.calldata.user.try_into().unwrap();
+                        let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
                         assert_eq!(ack.accepted.num_items(), 0);
                     }
@@ -781,7 +781,7 @@ mod tests {
                     PipelineControlMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
-                        let got: TestCallData = nack.calldata.user.try_into().unwrap();
+                        let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
                         assert!(
                             nack.reason.contains("Failed to decode logs request"),
