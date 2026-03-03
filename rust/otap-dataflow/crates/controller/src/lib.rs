@@ -49,11 +49,12 @@ use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
+use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
-use otap_df_config::topic::{TopicBackendKind, TopicSpec};
+use otap_df_config::topic::{TopicBackendKind, TopicImplSelectionPolicy, TopicSpec};
 use otap_df_config::{
-    DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, TopicName,
-    pipeline::PipelineConfig,
+    DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
+    TopicName, pipeline::PipelineConfig,
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -74,7 +75,7 @@ use otap_df_telemetry::{
     otel_warn, self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -105,6 +106,53 @@ struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     broker: TopicBroker<PData>,
     global_names: HashMap<TopicName, TopicName>,
     group_names: HashMap<(PipelineGroupId, TopicName), TopicName>,
+    inferred_mode_reports: Vec<InferredTopicModeReport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InferredTopicMode {
+    Mixed,
+    BalancedOnly,
+    BroadcastOnly,
+}
+
+impl InferredTopicMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mixed => "mixed",
+            Self::BalancedOnly => "balanced_only",
+            Self::BroadcastOnly => "broadcast_only",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TopicUsageSummary {
+    receiver_refs: usize,
+    exporter_refs: usize,
+    has_broadcast_receivers: bool,
+    balanced_groups: HashSet<SubscriptionGroupName>,
+    has_unknown_receiver_mode: bool,
+}
+
+#[derive(Debug)]
+enum TopicReceiverMode {
+    Broadcast,
+    Balanced(SubscriptionGroupName),
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+struct InferredTopicModeReport {
+    topic: TopicName,
+    topology_mode: InferredTopicMode,
+    selected_mode: InferredTopicMode,
+    selection_policy: TopicImplSelectionPolicy,
+    receiver_refs: usize,
+    exporter_refs: usize,
+    balanced_group_count: usize,
+    has_broadcast_receivers: bool,
+    has_unknown_receiver_mode: bool,
 }
 
 /// Returns the set of entity keys relevant to this context.
@@ -136,11 +184,251 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         self.run_with_mode(engine_config, RunMode::ShutdownWhenDone)
     }
 
-    fn map_topic_spec_to_options(spec: &TopicSpec) -> TopicOptions {
+    fn map_topic_spec_to_options(
+        spec: &TopicSpec,
+        inferred_mode: InferredTopicMode,
+    ) -> TopicOptions {
         let capacity = spec.policies.queue_capacity.max(1);
-        TopicOptions::Mixed {
-            balanced_capacity: capacity,
-            broadcast_capacity: capacity,
+        match inferred_mode {
+            InferredTopicMode::Mixed => TopicOptions::Mixed {
+                balanced_capacity: capacity,
+                broadcast_capacity: capacity,
+            },
+            InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly { capacity },
+            InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly { capacity },
+        }
+    }
+
+    fn build_declared_topic_name_maps(
+        config: &OtelDataflowSpec,
+    ) -> Result<
+        (
+            HashMap<TopicName, TopicName>,
+            HashMap<(PipelineGroupId, TopicName), TopicName>,
+        ),
+        Error,
+    > {
+        let mut global_names = HashMap::new();
+        let mut group_names = HashMap::new();
+
+        for topic_name in config.topics.keys() {
+            let declared_name =
+                Self::parse_topic_name(&format!("global::{}", topic_name.as_ref()))?;
+            _ = global_names.insert(topic_name.clone(), declared_name);
+        }
+
+        for (group_id, group_cfg) in &config.groups {
+            for topic_name in group_cfg.topics.keys() {
+                let declared_name = Self::parse_topic_name(&format!(
+                    "group::{}::{}",
+                    group_id.as_ref(),
+                    topic_name.as_ref()
+                ))?;
+                _ = group_names.insert((group_id.clone(), topic_name.clone()), declared_name);
+            }
+        }
+
+        Ok((global_names, group_names))
+    }
+
+    fn resolve_declared_topic_name(
+        pipeline_group_id: &PipelineGroupId,
+        topic_name: &TopicName,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+    ) -> Option<TopicName> {
+        group_names
+            .get(&(pipeline_group_id.clone(), topic_name.clone()))
+            .cloned()
+            .or_else(|| global_names.get(topic_name).cloned())
+    }
+
+    fn parse_topic_name_from_node_config(node_config: &NodeUserConfig) -> Option<TopicName> {
+        let raw_topic = node_config.config.get("topic")?.as_str()?;
+        TopicName::parse(raw_topic).ok()
+    }
+
+    fn parse_topic_receiver_mode(node_config: &NodeUserConfig) -> TopicReceiverMode {
+        let Some(subscription) = node_config.config.get("subscription") else {
+            return TopicReceiverMode::Broadcast;
+        };
+        let Some(subscription) = subscription.as_object() else {
+            return TopicReceiverMode::Unknown;
+        };
+        let Some(mode) = subscription.get("mode").and_then(|value| value.as_str()) else {
+            return TopicReceiverMode::Unknown;
+        };
+
+        match mode {
+            "broadcast" => TopicReceiverMode::Broadcast,
+            "balanced" => {
+                let Some(raw_group) = subscription.get("group").and_then(|value| value.as_str())
+                else {
+                    return TopicReceiverMode::Unknown;
+                };
+                match SubscriptionGroupName::parse(raw_group) {
+                    Ok(group) => TopicReceiverMode::Balanced(group),
+                    Err(_) => TopicReceiverMode::Unknown,
+                }
+            }
+            _ => TopicReceiverMode::Unknown,
+        }
+    }
+
+    fn infer_topic_mode(summary: &TopicUsageSummary) -> InferredTopicMode {
+        if summary.has_unknown_receiver_mode {
+            return InferredTopicMode::Mixed;
+        }
+        if summary.receiver_refs == 0 {
+            return InferredTopicMode::Mixed;
+        }
+        if summary.has_broadcast_receivers && summary.balanced_groups.is_empty() {
+            return InferredTopicMode::BroadcastOnly;
+        }
+        if !summary.has_broadcast_receivers && summary.balanced_groups.len() == 1 {
+            return InferredTopicMode::BalancedOnly;
+        }
+        InferredTopicMode::Mixed
+    }
+
+    fn infer_topic_modes(
+        config: &OtelDataflowSpec,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+    ) -> (
+        HashMap<TopicName, InferredTopicMode>,
+        Vec<InferredTopicModeReport>,
+    ) {
+        let mut usage_by_declared_topic = HashMap::<TopicName, TopicUsageSummary>::new();
+        for declared_name in global_names.values().chain(group_names.values()) {
+            _ = usage_by_declared_topic.insert(declared_name.clone(), TopicUsageSummary::default());
+        }
+
+        let mut visit_topic_node =
+            |pipeline_group_id: &PipelineGroupId, node_config: &NodeUserConfig| {
+                let topic_name = match Self::parse_topic_name_from_node_config(node_config) {
+                    Some(topic_name) => topic_name,
+                    None => return,
+                };
+                let Some(declared_topic_name) = Self::resolve_declared_topic_name(
+                    pipeline_group_id,
+                    &topic_name,
+                    global_names,
+                    group_names,
+                ) else {
+                    return;
+                };
+                let Some(summary) = usage_by_declared_topic.get_mut(&declared_topic_name) else {
+                    return;
+                };
+
+                match node_config.kind() {
+                    NodeKind::Receiver => {
+                        summary.receiver_refs += 1;
+                        match Self::parse_topic_receiver_mode(node_config) {
+                            TopicReceiverMode::Broadcast => {
+                                summary.has_broadcast_receivers = true;
+                            }
+                            TopicReceiverMode::Balanced(group) => {
+                                _ = summary.balanced_groups.insert(group);
+                            }
+                            TopicReceiverMode::Unknown => {
+                                summary.has_unknown_receiver_mode = true;
+                            }
+                        }
+                    }
+                    NodeKind::Exporter => {
+                        summary.exporter_refs += 1;
+                    }
+                    _ => {}
+                }
+            };
+
+        for (group_id, group_cfg) in &config.groups {
+            for pipeline_cfg in group_cfg.pipelines.values() {
+                for (_node_id, node_cfg) in pipeline_cfg.node_iter() {
+                    if node_cfg.r#type.id() != "topic" {
+                        continue;
+                    }
+                    visit_topic_node(group_id, node_cfg.as_ref());
+                }
+            }
+        }
+
+        if let Some(observability_pipeline) = config.engine.observability.pipeline.as_ref() {
+            let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+            for (_node_id, node_cfg) in observability_pipeline.nodes.iter() {
+                if node_cfg.r#type.id() != "topic" {
+                    continue;
+                }
+                visit_topic_node(&system_group_id, node_cfg.as_ref());
+            }
+        }
+
+        let mut inferred_modes = HashMap::with_capacity(usage_by_declared_topic.len());
+        let mut inferred_mode_reports = Vec::with_capacity(usage_by_declared_topic.len());
+        let mut declared_topics: Vec<_> = usage_by_declared_topic.keys().cloned().collect();
+        declared_topics.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+
+        for declared_topic in declared_topics {
+            let summary = usage_by_declared_topic
+                .get(&declared_topic)
+                .expect("declared topic must have a usage summary");
+            let topology_mode = Self::infer_topic_mode(summary);
+            inferred_mode_reports.push(InferredTopicModeReport {
+                topic: declared_topic.clone(),
+                topology_mode,
+                selected_mode: topology_mode,
+                selection_policy: TopicImplSelectionPolicy::Auto,
+                receiver_refs: summary.receiver_refs,
+                exporter_refs: summary.exporter_refs,
+                balanced_group_count: summary.balanced_groups.len(),
+                has_broadcast_receivers: summary.has_broadcast_receivers,
+                has_unknown_receiver_mode: summary.has_unknown_receiver_mode,
+            });
+            _ = inferred_modes.insert(declared_topic, topology_mode);
+        }
+
+        (inferred_modes, inferred_mode_reports)
+    }
+
+    fn emit_topic_mode_reports(reports: &[InferredTopicModeReport]) {
+        for report in reports {
+            otel_info!(
+                "controller.topic_mode_inferred",
+                topic = report.topic.as_ref(),
+                topology_mode = report.topology_mode.as_str(),
+                selected_mode = report.selected_mode.as_str(),
+                selection_policy = report.selection_policy.to_string(),
+                receiver_refs = report.receiver_refs as u64,
+                exporter_refs = report.exporter_refs as u64,
+                balanced_group_count = report.balanced_group_count as u64,
+                has_broadcast_receivers = report.has_broadcast_receivers,
+                has_unknown_receiver_mode = report.has_unknown_receiver_mode,
+                message = "Resolved topic mode from topology inference and config selection policy"
+            );
+        }
+    }
+
+    fn apply_topic_impl_selection_policy(
+        topology_mode: InferredTopicMode,
+        policy: TopicImplSelectionPolicy,
+    ) -> InferredTopicMode {
+        match policy {
+            TopicImplSelectionPolicy::Auto => topology_mode,
+            TopicImplSelectionPolicy::ForceMixed => InferredTopicMode::Mixed,
+        }
+    }
+
+    fn update_topic_mode_report(
+        reports: &mut [InferredTopicModeReport],
+        topic: &TopicName,
+        selection_policy: TopicImplSelectionPolicy,
+        selected_mode: InferredTopicMode,
+    ) {
+        if let Some(report) = reports.iter_mut().find(|report| &report.topic == topic) {
+            report.selection_policy = selection_policy;
+            report.selected_mode = selected_mode;
         }
     }
 
@@ -148,8 +436,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         broker: &TopicBroker<PData>,
         name: TopicName,
         spec: &TopicSpec,
+        inferred_mode: InferredTopicMode,
     ) -> Result<(), Error> {
-        let opts = Self::map_topic_spec_to_options(spec);
+        let opts = Self::map_topic_spec_to_options(spec, inferred_mode);
         match spec.backend {
             TopicBackendKind::InMemory => {
                 _ = broker
@@ -180,25 +469,52 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     fn declare_topics(config: &OtelDataflowSpec) -> Result<DeclaredTopics<PData>, Error> {
         let broker = TopicBroker::<PData>::new();
-        let mut global_names = HashMap::new();
-        let mut group_names = HashMap::new();
+        let (global_names, group_names) = Self::build_declared_topic_name_maps(config)?;
+        let (inferred_modes, mut inferred_mode_reports) =
+            Self::infer_topic_modes(config, &global_names, &group_names);
+        let default_selection_policy = config.engine.topics.impl_selection;
 
         for (topic_name, spec) in &config.topics {
-            let declared_name =
-                Self::parse_topic_name(&format!("global::{}", topic_name.as_ref()))?;
-            Self::declare_topic(&broker, declared_name.clone(), spec)?;
-            _ = global_names.insert(topic_name.clone(), declared_name);
+            let declared_name = global_names
+                .get(topic_name)
+                .expect("global topic declaration must resolve to a declared topic name")
+                .clone();
+            let topology_mode = inferred_modes
+                .get(&declared_name)
+                .copied()
+                .unwrap_or(InferredTopicMode::Mixed);
+            let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+            let selected_mode =
+                Self::apply_topic_impl_selection_policy(topology_mode, selection_policy);
+            Self::update_topic_mode_report(
+                &mut inferred_mode_reports,
+                &declared_name,
+                selection_policy,
+                selected_mode,
+            );
+            Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
         }
 
         for (group_id, group_cfg) in &config.groups {
             for (topic_name, spec) in &group_cfg.topics {
-                let declared_name = Self::parse_topic_name(&format!(
-                    "group::{}::{}",
-                    group_id.as_ref(),
-                    topic_name.as_ref()
-                ))?;
-                Self::declare_topic(&broker, declared_name.clone(), spec)?;
-                _ = group_names.insert((group_id.clone(), topic_name.clone()), declared_name);
+                let declared_name = group_names
+                    .get(&(group_id.clone(), topic_name.clone()))
+                    .expect("group topic declaration must resolve to a declared topic name")
+                    .clone();
+                let topology_mode = inferred_modes
+                    .get(&declared_name)
+                    .copied()
+                    .unwrap_or(InferredTopicMode::Mixed);
+                let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+                let selected_mode =
+                    Self::apply_topic_impl_selection_policy(topology_mode, selection_policy);
+                Self::update_topic_mode_report(
+                    &mut inferred_mode_reports,
+                    &declared_name,
+                    selection_policy,
+                    selected_mode,
+                );
+                Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
             }
         }
 
@@ -206,6 +522,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             broker,
             global_names,
             group_names,
+            inferred_mode_reports,
         })
     }
 
@@ -386,6 +703,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // successful startup. This ensures the channel receiver is being consumed
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
+        Self::emit_topic_mode_reports(&declared_topics.inferred_mode_reports);
 
         let internal_collector = telemetry_system.collector();
         let metrics_agg_handle = spawn_thread_local_task(
@@ -1030,6 +1348,39 @@ connections:
         }
     }
 
+    fn global_topic_handle(
+        declared: &DeclaredTopics<()>,
+        topic_name: &str,
+    ) -> otap_df_engine::topic::TopicHandle<()> {
+        let declared_name = declared
+            .global_names
+            .get(topic_name)
+            .expect("global topic must be declared");
+        declared
+            .broker
+            .get_topic_required(declared_name)
+            .expect("declared topic must exist in broker")
+    }
+
+    fn group_topic_handle(
+        declared: &DeclaredTopics<()>,
+        group_id: &str,
+        topic_name: &str,
+    ) -> otap_df_engine::topic::TopicHandle<()> {
+        let key = (
+            PipelineGroupId::from(group_id.to_owned()),
+            TopicName::parse(topic_name).expect("topic name must parse"),
+        );
+        let declared_name = declared
+            .group_names
+            .get(&key)
+            .expect("group topic must be declared");
+        declared
+            .broker
+            .get_topic_required(declared_name)
+            .expect("declared topic must exist in broker")
+    }
+
     #[test]
     fn select_all_cores_by_default() {
         let core_allocation = CoreAllocation::AllCores;
@@ -1333,10 +1684,10 @@ groups:
       p1:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -1362,10 +1713,10 @@ groups:
       p1:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -1382,6 +1733,362 @@ groups:
             Ok(_) => panic!("quiver backend should be rejected"),
             Err(other) => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn declare_topics_infers_balanced_only_for_single_consumer_group() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  balanced_topic: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: balanced_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "balanced_topic");
+
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                        group: "workers".into(),
+                    },
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            topic.subscribe(
+                otap_df_engine::topic::SubscriptionMode::Broadcast,
+                otap_df_engine::topic::SubscriberOptions::default(),
+            ),
+            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+        ));
+    }
+
+    #[test]
+    fn declare_topics_infers_broadcast_only_when_only_broadcast_receivers_exist() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  broadcast_topic: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "broadcast_topic");
+
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Broadcast,
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            topic.subscribe(
+                otap_df_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
+                otap_df_engine::topic::SubscriberOptions::default(),
+            ),
+            Err(otap_df_engine::error::Error::SubscribeBalancedNotSupported)
+        ));
+    }
+
+    #[test]
+    fn declare_topics_keeps_mixed_for_multiple_balanced_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  mixed_topic: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: mixed_topic
+              subscription:
+                mode: balanced
+                group: g1
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+      p2:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: mixed_topic
+              subscription:
+                mode: balanced
+                group: g2
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "mixed_topic");
+
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Broadcast,
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Balanced { group: "g3".into() },
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn declare_topics_defaults_to_mixed_when_topic_has_no_receivers() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  idle_topic: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "idle_topic");
+
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Broadcast,
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn declare_topics_inference_respects_group_local_topic_shadowing() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    topics:
+      shared: {}
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: shared
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let global_topic = global_topic_handle(&declared, "shared");
+        let group_topic = group_topic_handle(&declared, "g1", "shared");
+
+        assert!(
+            global_topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Broadcast,
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            group_topic.subscribe(
+                otap_df_engine::topic::SubscriptionMode::Broadcast,
+                otap_df_engine::topic::SubscriberOptions::default(),
+            ),
+            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+        ));
+    }
+
+    #[test]
+    fn declare_topics_engine_default_force_mixed_disables_optimization() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  balanced_topic: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: balanced_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "balanced_topic");
+
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Broadcast,
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                        group: "workers".into(),
+                    },
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn declare_topics_topic_override_auto_wins_over_engine_force_mixed() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  balanced_topic:
+    impl_selection: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: balanced_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "balanced_topic");
+
+        assert!(matches!(
+            topic.subscribe(
+                otap_df_engine::topic::SubscriptionMode::Broadcast,
+                otap_df_engine::topic::SubscriberOptions::default(),
+            ),
+            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+        ));
+        assert!(
+            topic
+                .subscribe(
+                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                        group: "workers".into(),
+                    },
+                    otap_df_engine::topic::SubscriberOptions::default(),
+                )
+                .is_ok()
+        );
     }
 
     #[test]

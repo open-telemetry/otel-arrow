@@ -15,7 +15,7 @@ use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
-use crate::topic::TopicSpec;
+use crate::topic::{TopicImplSelectionPolicy, TopicSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,9 +70,22 @@ pub struct EngineConfig {
     #[serde(default)]
     pub observed_state: ObservedStateSettings,
 
+    /// Engine-wide topic runtime settings.
+    #[serde(default)]
+    pub topics: EngineTopicsConfig,
+
     /// Engine observability declarations.
     #[serde(default)]
     pub observability: EngineObservabilityConfig,
+}
+
+/// Engine-wide topic runtime settings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineTopicsConfig {
+    /// Default topic implementation selection policy.
+    #[serde(default)]
+    pub impl_selection: TopicImplSelectionPolicy,
 }
 
 /// Engine observability declarations.
@@ -584,6 +597,88 @@ groups:
         assert_eq!(
             local_queue.policies.queue_on_full,
             crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+    }
+
+    #[test]
+    fn from_yaml_defaults_engine_topic_impl_selection_to_auto() {
+        let yaml = r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        assert_eq!(
+            config.engine.topics.impl_selection,
+            TopicImplSelectionPolicy::Auto
+        );
+    }
+
+    #[test]
+    fn from_yaml_parses_engine_and_topic_impl_selection_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  global_topic:
+    impl_selection: auto
+groups:
+  g1:
+    topics:
+      local_topic:
+        impl_selection: force_mixed
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        assert_eq!(
+            config.engine.topics.impl_selection,
+            TopicImplSelectionPolicy::ForceMixed
+        );
+        assert_eq!(
+            config
+                .topics
+                .get("global_topic")
+                .expect("global topic should exist")
+                .impl_selection,
+            Some(TopicImplSelectionPolicy::Auto)
+        );
+        assert_eq!(
+            config
+                .groups
+                .get("g1")
+                .expect("group should exist")
+                .topics
+                .get("local_topic")
+                .expect("local topic should exist")
+                .impl_selection,
+            Some(TopicImplSelectionPolicy::ForceMixed)
         );
     }
 

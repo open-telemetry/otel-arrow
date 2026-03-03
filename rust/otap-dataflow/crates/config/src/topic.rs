@@ -159,6 +159,11 @@ pub struct TopicSpec {
     /// Defaults to `in_memory`.
     #[serde(default)]
     pub backend: TopicBackendKind,
+    /// Optional override for topic implementation selection.
+    ///
+    /// If omitted, the engine-wide default (`engine.topics.impl_selection`) applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_selection: Option<TopicImplSelectionPolicy>,
     /// Topic behavior policies.
     #[serde(default)]
     pub policies: TopicPolicies,
@@ -192,6 +197,27 @@ impl std::fmt::Display for TopicBackendKind {
         let value = match self {
             Self::InMemory => "in_memory",
             Self::Quiver => "quiver",
+        };
+        f.write_str(value)
+    }
+}
+
+/// Policy controlling how the runtime selects the topic implementation variant.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicImplSelectionPolicy {
+    /// Automatically infer the most efficient implementation from topology.
+    #[default]
+    Auto,
+    /// Disable optimization and always use the mixed implementation.
+    ForceMixed,
+}
+
+impl std::fmt::Display for TopicImplSelectionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Auto => "auto",
+            Self::ForceMixed => "force_mixed",
         };
         f.write_str(value)
     }
@@ -250,7 +276,8 @@ const fn default_topic_queue_capacity() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        SubscriptionGroupName, TopicBackendKind, TopicName, TopicQueueOnFullPolicy, TopicSpec,
+        SubscriptionGroupName, TopicBackendKind, TopicImplSelectionPolicy, TopicName,
+        TopicQueueOnFullPolicy, TopicSpec,
     };
     use crate::error::Error;
     use serde::Deserialize;
@@ -260,6 +287,7 @@ mod tests {
     fn defaults_match_expected_values() {
         let topic = TopicSpec::default();
         assert_eq!(topic.backend, TopicBackendKind::InMemory);
+        assert_eq!(topic.impl_selection, None);
         assert_eq!(topic.policies.queue_capacity, 128);
         assert_eq!(topic.policies.queue_on_full, TopicQueueOnFullPolicy::Block);
     }
@@ -298,6 +326,19 @@ backend: quiver
 
         let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
         assert_eq!(topic.backend, TopicBackendKind::Quiver);
+    }
+
+    #[test]
+    fn deserializes_topic_impl_selection_policy() {
+        let yaml = r#"
+impl_selection: force_mixed
+"#;
+
+        let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
+        assert_eq!(
+            topic.impl_selection,
+            Some(TopicImplSelectionPolicy::ForceMixed)
+        );
     }
 
     #[test]

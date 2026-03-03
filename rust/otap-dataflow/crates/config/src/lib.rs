@@ -32,7 +32,7 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
-pub use topic::{SubscriptionGroupName, TopicBackendKind, TopicName};
+pub use topic::{SubscriptionGroupName, TopicBackendKind, TopicImplSelectionPolicy, TopicName};
 /// Validation helpers for node configuration.
 pub mod validation;
 

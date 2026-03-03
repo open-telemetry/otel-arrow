@@ -98,7 +98,7 @@ groups:
               data_source: static
               generation_strategy: pre_generated
               traffic_config:
-                signals_per_second: 150000
+                signals_per_second: 600000
                 max_signal_count: null
                 metric_weight: 0
                 trace_weight: 0
@@ -127,7 +127,7 @@ groups:
             type: receiver:traffic_generator
             config:
               traffic_config:
-                signals_per_second: 100000
+                signals_per_second: 600000
                 max_signal_count: null
                 metric_weight: 0
                 trace_weight: 0
