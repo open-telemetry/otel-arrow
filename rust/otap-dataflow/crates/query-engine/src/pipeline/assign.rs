@@ -388,7 +388,8 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
     }
 }
 
-// TOOD comment on what this does
+/// Convert result of expression evaluation into an arrow array with the appropriate dict encoding
+/// for the destination column.
 fn eval_result_to_array(
     expr_eval_result: &ColumnarValue,
     accept_dict_encoding: bool,
@@ -475,6 +476,7 @@ fn eval_result_to_array(
 
 #[cfg(test)]
 mod test {
+    use arrow::{array::UInt16Array, datatypes::DataType};
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
@@ -483,11 +485,13 @@ mod test {
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
+                arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 resource::v1::Resource,
             },
         },
+        schema::consts,
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
@@ -573,7 +577,6 @@ mod test {
             LogRecord::build().severity_text("DEBUG").finish(),
         ]);
 
-        // kind of a silly example, but just need two cols that have the same type for the test
         let result =
             exec_logs_pipeline::<P>("logs | extend event_name = severity_text", logs_data).await;
 
@@ -603,7 +606,6 @@ mod test {
             LogRecord::build().severity_text("DEBUG").finish(),
         ]);
 
-        // kind of a silly example, but just need two cols that have the same type for the test
         let result =
             exec_logs_pipeline::<P>("logs | extend event_name = severity_text", logs_data).await;
 
@@ -827,7 +829,9 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("Pipeline execution error: cannot assign expression result of type Dictionary(UInt16, Int64) to column expecting type Utf8"),
+                    err_msg.contains(
+                        "Pipeline execution error: cannot assign expression result of type Dictionary(UInt16, Int64) to column expecting type Utf8"
+                    ),
                     "unexpected error message: {err_msg:?}"
                 )
             }
@@ -858,5 +862,152 @@ mod test {
         assert_eq!(result, input)
     }
 
-    // TODO - test all attribute types to root ...
+    #[tokio::test]
+    async fn test_assign_scalar_to_dict_column_produces_correct_type() {
+        let logs_data = to_logs_data(vec![LogRecord::build().finish()]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let pipeline_expr = OplParser::parse("logs | extend event_name = \"event\"")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::EVENT_NAME).unwrap().data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        )
+    }
+
+    #[tokio::test]
+    async fn test_assign_scalar_to_non_dict_column_produces_correct_type() {
+        let logs_data = to_logs_data(vec![LogRecord::build().finish()]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let pipeline_expr = OplParser::parse("logs | extend dropped_attributes_count = 1")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
+                .unwrap()
+                .data_type(),
+            &DataType::UInt32
+        )
+    }
+
+    #[tokio::test]
+    async fn test_assign_dict_u8_to_dict_column_produces_correct_type() {
+        let logs_data = to_logs_data(vec![LogRecord::build().event_name("hello").finish()]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        // double check the input column has the expected type
+        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::EVENT_NAME).unwrap().data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        );
+        let pipeline_expr = OplParser::parse("logs | extend severity_text = event_name")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::SEVERITY_TEXT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        )
+    }
+
+    #[tokio::test]
+    async fn test_assign_dict_u16_to_dict_column_reduces_to_dict_u8_when_possible() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        // double check the input column has the expected type
+        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::ATTRIBUTE_STR)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::SEVERITY_TEXT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        )
+    }
+
+    #[tokio::test]
+    async fn test_assign_dict_u16_to_dict_column_keeps_dict_u16_when_reduction_not_possible() {
+        let mut log_records = vec![];
+        for i in 0..300 {
+            log_records.push(
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new(
+                        "attr1",
+                        AnyValue::new_string(&format!("{i}")),
+                    )])
+                    .finish(),
+            )
+        }
+
+        let logs_data = to_logs_data(log_records);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        // double check the input column has the expected type
+        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::ATTRIBUTE_STR)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::SEVERITY_TEXT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        )
+    }
+
+    #[tokio::test]
+    async fn test_assign_non_dict_to_dict_casts_to_dict_u8_when_possible() {
+        todo!()
+    }
+
+    #[tokio::test]
+    async fn test_assign_non_dict_to_dict_casts_to_dict_u16_when_possible() {
+        todo!()
+    }
+
+    #[tokio::test]
+    async fn test_assign_non_dict_to_dict_keeps_non_dict_when_cast_to_dict_not_possible() {
+        todo!()
+    }
+
+    #[tokio::test]
+    async fn test_assign_dict_to_non_dict_column_converts_to_native() {
+        todo!()
+    }
+
+    // TODO - assignment to all possible root types (incl. from any values / scalars?)
+    // TODO - assignment with null coercsion drops column
 }
