@@ -126,23 +126,22 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
 
 /// Returns true if the field on the root batch can be a dictionary encoded type
 pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
-    match field_name {
-        consts::SCHEMA_URL => true,
-        consts::TRACE_ID => true,
-        consts::SPAN_ID => true,
-        consts::SEVERITY_NUMBER => true,
-        consts::SEVERITY_TEXT => true,
-        consts::EVENT_NAME => true,
-        consts::TRACE_STATE => true,
-        consts::KIND => true,
-        consts::DURATION_TIME_UNIX_NANO => true,
-        consts::NAME => true,
-        consts::DESCRIPTION => true,
-        consts::UNIT => true,
-        consts::AGGREGATION_TEMPORALITY => true,
-
-        _ => false,
-    }
+    matches!(
+        field_name,
+        consts::SCHEMA_URL
+            | consts::TRACE_ID
+            | consts::SPAN_ID
+            | consts::SEVERITY_NUMBER
+            | consts::SEVERITY_TEXT
+            | consts::EVENT_NAME
+            | consts::TRACE_STATE
+            | consts::KIND
+            | consts::DURATION_TIME_UNIX_NANO
+            | consts::NAME
+            | consts::DESCRIPTION
+            | consts::UNIT
+            | consts::AGGREGATION_TEMPORALITY
+    )
 }
 
 /// Return the type from a nested struct field on the root OTAP record batch such as resource/scope

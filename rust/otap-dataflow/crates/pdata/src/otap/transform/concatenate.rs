@@ -591,6 +591,7 @@ impl Cardinality {
 }
 
 /// Estimate the cardinality of a set of arrays
+#[must_use]
 pub fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
     // Small types
     match info.value_type.primitive_width() {

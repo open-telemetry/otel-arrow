@@ -82,7 +82,7 @@ impl AssignPipelineStage {
 
         Ok(Self {
             dest_scope: Rc::new(dest_column.clone().into()),
-            dest_column: dest_column,
+            dest_column,
             source: physical_expr,
         })
     }
@@ -179,7 +179,7 @@ impl AssignPipelineStage {
 
             // create a JoinExec implementation that will compute a join of root to attrs on
             // `root.id == attrs.parent_id`` and use this to get the rows to take from the result
-            let join_exec = RootToAttributesJoin::new(attrs_id.clone());
+            let join_exec = RootToAttributesJoin::new(*attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
                 &PhysicalExprEvalResult::new(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
@@ -199,6 +199,40 @@ impl AssignPipelineStage {
             root_payload_type,
             upsert_column(dest_column_name, values, root_batch)?,
         );
+
+        Ok(otap_batch)
+    }
+
+    fn assign_null_root_column(
+        &self,
+        mut otap_batch: OtapArrowRecords,
+        dest_column_name: &str,
+    ) -> Result<OtapArrowRecords> {
+        let root_batch = match otap_batch.root_record_batch() {
+            Some(rb) => rb,
+            None => {
+                // nothing to do
+                return Ok(otap_batch);
+            }
+        };
+
+        // remove the column if it exists because it's all null result
+        // Note: once again we're assuming that if the field is nullable that it is also optional
+        let schema = root_batch.schema_ref();
+        let maybe_found_column = schema.fields().find(dest_column_name);
+        if let Some((column_index, field)) = maybe_found_column {
+            if field.is_nullable() {
+                let mut new_root_batch = root_batch.clone();
+                _ = new_root_batch.remove_column(column_index);
+                otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
+            } else {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "cannot assign null result to non-nullable column {dest_column_name}"
+                    ),
+                });
+            }
+        }
 
         Ok(otap_batch)
     }
@@ -230,9 +264,19 @@ impl PipelineStage for AssignPipelineStage {
                     });
                 }
             },
-            None => {
-                todo!() // remove data
-            }
+            None => match &self.dest_column {
+                ColumnAccessor::ColumnName(col_name) => {
+                    self.assign_null_root_column(otap_batch, col_name)
+                }
+                other_dest => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "assignment to column destination {:?} not yet supported",
+                            other_dest
+                        ),
+                    });
+                }
+            },
         }
     }
 }
@@ -240,11 +284,9 @@ impl PipelineStage for AssignPipelineStage {
 /// Validate that the results of the passed expression can be assigned to the destination.
 /// This validates three things:
 ///
-/// 1. that the destination exists, that it is a known column in OTAP
+/// It validates that the destination exists, that it is a known column in OTAP
 ///
-/// 2. This will validate the types:
-///
-/// Specifically it will check that the type could possibly be
+/// It also validate the types. Specifically it will check that the type could possibly be
 /// assigned to the destination, but it does not guarantee that the expression will produce
 /// a valid type for the assignment. For example, in an expression like:
 /// ```text
@@ -254,7 +296,7 @@ impl PipelineStage for AssignPipelineStage {
 /// destination `severity_text` expects. However, when this is evaluated, we may find that
 /// `attributes["x"]` is not a string, in which case this would fail at runtime.
 ///
-/// 3. This validates that there is not ambiguity in the assignment based on the cardinality of
+/// This also validates that there is not ambiguity in the assignment based on the cardinality of
 /// the relationship between source and destination. Specifically, if the dest:source relationship
 /// is one:many, then we cannot do the assignment because it's unclear which of the many source
 /// values should be assigned to the destination.
@@ -304,7 +346,7 @@ fn validate_assign(
         }
     }
 
-    return Ok(());
+    Ok(())
 }
 
 /// Determine if the source type could be assigned to the destination
@@ -384,7 +426,7 @@ fn eval_result_to_array(
                     },
                     _ => {
                         // array is not dictionary encoded -- determine if we should convert it
-                        let field_info = FieldInfo::try_new_from_array(&array_vals);
+                        let field_info = FieldInfo::try_new_from_array(array_vals);
                         let cardinality = estimate_cardinality(&field_info);
                         let key_type = match cardinality {
                             Cardinality::WithinU8 => Some(DataType::UInt8),
@@ -420,6 +462,8 @@ fn eval_result_to_array(
     }
 }
 
+/// inserts the column into the record batch if the column does not exist, otherwise replaces the
+/// exiting column with the new one.
 fn upsert_column(
     column_name: &str,
     new_column: ArrayRef,
@@ -491,10 +535,11 @@ mod test {
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 resource::v1::Resource,
+                trace::v1::Span,
             },
         },
         schema::consts,
-        testing::round_trip::{otlp_to_otap, to_logs_data},
+        testing::round_trip::{otlp_to_otap, to_logs_data, to_traces_data},
     };
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
@@ -960,7 +1005,7 @@ mod test {
                 LogRecord::build()
                     .attributes(vec![KeyValue::new(
                         "attr1",
-                        AnyValue::new_string(&format!("{i}")),
+                        AnyValue::new_string(format!("{i}")),
                     )])
                     .finish(),
             )
@@ -999,7 +1044,7 @@ mod test {
                 LogRecord::build()
                     .attributes(vec![KeyValue::new(
                         "attr1",
-                        AnyValue::new_string(&format!("{i}")),
+                        AnyValue::new_string(format!("{i}")),
                     )])
                     .finish(),
             )
@@ -1040,7 +1085,7 @@ mod test {
                 LogRecord::build()
                     .attributes(vec![KeyValue::new(
                         "attr1",
-                        AnyValue::new_string(&format!("{i}")),
+                        AnyValue::new_string(format!("{i}")),
                     )])
                     .finish(),
             )
@@ -1073,5 +1118,49 @@ mod test {
         )
     }
 
-    // TODO - assignment with null coercsion drops column
+    #[tokio::test]
+    async fn test_insert_root_column_handles_null_coercion_by_removing_column() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let pipeline_expr = OplParser::parse("logs | set severity_text = attributes[\"x\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert!(
+            logs.column_by_name(consts::SEVERITY_TEXT).is_none(),
+            "expected severity_text column to have been removed"
+        )
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_handles_null_coercion_to_non_null_col_with_error() {
+        let traces_data = to_traces_data(vec![Span::build().finish()]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+
+        let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        match pipeline.execute(otap_batch).await {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("cannot assign null result to non-nullable column name"),
+                    "unexpected error message {:?}",
+                    err_msg
+                );
+            }
+            Ok(_) => {
+                panic!("expected error, received Ok")
+            }
+        }
+    }
 }
