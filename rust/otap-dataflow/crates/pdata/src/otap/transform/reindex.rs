@@ -302,16 +302,17 @@ where
     // column-type limit we must compact enough batches to fit.
     let limit: u64 = size.max();
 
+    // Figure out an upper bound on how many ids we will use with the
+    // optimal available strategy for each otap batch.
     let total_ids_needed: u64 = stats
         .iter()
         .filter_map(|s| s.as_ref())
         .map(|s| s.max_ids_needed as u64)
         .sum();
-    let need_to_save: i64 = total_ids_needed as i64 - limit as i64;
+    let need_to_save: u64 = total_ids_needed.saturating_sub(limit);
 
-    // -- Pass 2: greedy execution --
     let mut offset = T::Native::from(0);
-    let mut current_saved: i64 = 0;
+    let mut current_saved: u64 = 0;
 
     #[allow(clippy::needless_range_loop)]
     for i in 0..store.len() {
@@ -331,8 +332,10 @@ where
                 id_column_path,
                 offset,
             )?;
+
+            // ids_consume <= max_ids_needed always
             let ids_consumed = new_offset.as_usize() - offset.as_usize();
-            current_saved += stat.max_ids_needed as i64 - ids_consumed as i64;
+            current_saved += stat.max_ids_needed as u64 - ids_consumed as u64;
             offset = new_offset;
         } else {
             offset = apply_offset_reindex::<T, S, N>(
