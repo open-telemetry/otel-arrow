@@ -76,10 +76,6 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
                  node_config: Arc<NodeUserConfig>,
                  exporter_config: &ExporterConfig| {
             let config = TopicExporter::parse_config(&node_config.config)?;
-            let queue_on_full = config
-                .queue_on_full
-                .clone()
-                .unwrap_or(TopicQueueOnFullPolicy::Block);
             let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
                 ConfigError::InvalidUserConfig {
                     error: "Topic set is not available in pipeline context".to_owned(),
@@ -95,6 +91,10 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
                     ),
                 }
             })?;
+            let queue_on_full = config
+                .queue_on_full
+                .clone()
+                .unwrap_or_else(|| topic.default_queue_on_full());
             let metrics = pipeline.register_metrics::<TopicExporterMetrics>();
             Ok(ExporterWrapper::local(
                 TopicExporter {

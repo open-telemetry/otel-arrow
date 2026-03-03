@@ -32,6 +32,7 @@ use crate::topic::backend::TopicState;
 use crate::topic::subscription::Subscription;
 use crate::topic::types::{AckEvent, PublishOutcome, SubscriberOptions, SubscriptionMode};
 use otap_df_config::TopicName;
+use otap_df_config::topic::TopicQueueOnFullPolicy;
 use tokio::sync::mpsc;
 
 /// A handle to a topic, used for publishing and subscribing.
@@ -42,6 +43,7 @@ use tokio::sync::mpsc;
 pub struct TopicHandle<T: Send + Sync + 'static> {
     inner: Arc<dyn TopicState<T>>,
     publisher_id: u16,
+    queue_on_full_default: TopicQueueOnFullPolicy,
 }
 
 impl<T: Send + Sync + 'static> Clone for TopicHandle<T> {
@@ -49,6 +51,7 @@ impl<T: Send + Sync + 'static> Clone for TopicHandle<T> {
         Self {
             inner: Arc::clone(&self.inner),
             publisher_id: self.publisher_id,
+            queue_on_full_default: self.queue_on_full_default.clone(),
         }
     }
 }
@@ -58,6 +61,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         Self {
             inner,
             publisher_id: 0,
+            queue_on_full_default: TopicQueueOnFullPolicy::Block,
         }
     }
 
@@ -73,6 +77,17 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         Self {
             inner: Arc::clone(&self.inner),
             publisher_id: id,
+            queue_on_full_default: self.queue_on_full_default.clone(),
+        }
+    }
+
+    /// Return a cloned handle with the topic-level default full-queue policy.
+    #[must_use]
+    pub fn with_default_queue_on_full(&self, policy: TopicQueueOnFullPolicy) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            publisher_id: self.publisher_id,
+            queue_on_full_default: policy,
         }
     }
 
@@ -119,5 +134,11 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     #[must_use]
     pub fn name(&self) -> &TopicName {
         self.inner.name()
+    }
+
+    /// Topic-level default behavior when the queue is full.
+    #[must_use]
+    pub fn default_queue_on_full(&self) -> TopicQueueOnFullPolicy {
+        self.queue_on_full_default.clone()
     }
 }

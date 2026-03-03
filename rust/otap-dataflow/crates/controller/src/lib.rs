@@ -224,7 +224,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
         let set = TopicSet::new(set_name);
 
-        for global_topic_name in config.topics.keys() {
+        for (global_topic_name, topic_spec) in &config.topics {
             if let Some(declared_name) = declared.global_names.get(global_topic_name) {
                 let handle = declared
                     .broker
@@ -232,12 +232,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .map_err(|e| Error::PipelineRuntimeError {
                         source: Box::new(e),
                     })?;
+                let handle =
+                    handle.with_default_queue_on_full(topic_spec.policies.queue_on_full.clone());
                 _ = set.insert(global_topic_name.clone(), handle);
             }
         }
 
         if let Some(group_cfg) = config.groups.get(pipeline_group_id) {
-            for group_topic_name in group_cfg.topics.keys() {
+            for (group_topic_name, topic_spec) in &group_cfg.topics {
                 if let Some(declared_name) = declared
                     .group_names
                     .get(&(pipeline_group_id.clone(), group_topic_name.clone()))
@@ -249,6 +251,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             .map_err(|e| Error::PipelineRuntimeError {
                                 source: Box::new(e),
                             })?;
+                    let handle = handle
+                        .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone());
                     // Group-local declarations override globals with the same local name.
                     _ = set.insert(group_topic_name.clone(), handle);
                 }
@@ -1378,5 +1382,71 @@ groups:
             Ok(_) => panic!("quiver backend should be rejected"),
             Err(other) => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_pipeline_topic_set_wires_topic_queue_on_full_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_drop:
+    policies:
+      queue_capacity: 8
+      queue_on_full: drop_newest
+groups:
+  g1:
+    topics:
+      local_block:
+        policies:
+          queue_capacity: 8
+          queue_on_full: block
+      # Same local alias as global to verify group-local override path.
+      global_drop:
+        policies:
+          queue_capacity: 8
+          queue_on_full: block
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let group_id: PipelineGroupId = "g1".into();
+        let pipeline_id: PipelineId = "p1".into();
+        let set = Controller::<()>::build_pipeline_topic_set(
+            &config,
+            &declared,
+            &group_id,
+            &pipeline_id,
+            0,
+        )
+        .expect("topic set should build");
+
+        let local_block = set
+            .get_required(&TopicName::from("local_block"))
+            .expect("local_block topic must exist");
+        assert_eq!(
+            local_block.default_queue_on_full(),
+            otap_df_config::topic::TopicQueueOnFullPolicy::Block
+        );
+
+        // group-local declaration must override global policy for same local name
+        let overridden = set
+            .get_required(&TopicName::from("global_drop"))
+            .expect("overridden topic must exist");
+        assert_eq!(
+            overridden.default_queue_on_full(),
+            otap_df_config::topic::TopicQueueOnFullPolicy::Block
+        );
     }
 }
