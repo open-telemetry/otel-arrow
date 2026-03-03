@@ -1439,7 +1439,7 @@ impl DataGenerator {
         let scope_attrs = generate_attrs("scope", config.scope_attrs);
         let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let resource_metrics: Vec<ResourceMetrics> = (0..config.num_resources)
-            .map(|r| {
+            .map(|_| {
                 let scope_metrics: Vec<ScopeMetrics> = (0..config.scopes_per_resource)
                     .map(|s| {
                         ScopeMetrics::new(
@@ -1451,8 +1451,7 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
-                attrs.extend(resource_attrs.iter().cloned());
+                let attrs = resource_attrs.clone();
                 ResourceMetrics::new(Resource::build().attributes(attrs).finish(), scope_metrics)
             })
             .collect();
@@ -1473,7 +1472,7 @@ impl DataGenerator {
         let scope_attrs = generate_attrs("scope", config.scope_attrs);
         let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let resource_logs: Vec<ResourceLogs> = (0..config.num_resources)
-            .map(|r| {
+            .map(|_| {
                 let scope_logs: Vec<ScopeLogs> = (0..config.scopes_per_resource)
                     .map(|s| {
                         let logs: Vec<LogRecord> = (0..config.logs_per_scope)
@@ -1495,8 +1494,7 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
-                attrs.extend(resource_attrs.iter().cloned());
+                let attrs = resource_attrs.clone();
                 ResourceLogs::new(Resource::build().attributes(attrs).finish(), scope_logs)
             })
             .collect();
@@ -1518,7 +1516,7 @@ impl DataGenerator {
         let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let mut span_counter: u64 = 0;
         let resource_spans: Vec<ResourceSpans> = (0..config.num_resources)
-            .map(|r| {
+            .map(|_| {
                 let scope_spans: Vec<ScopeSpans> = (0..config.scopes_per_resource)
                     .map(|s| {
                         let spans: Vec<Span> = (0..config.spans_per_scope)
@@ -1549,8 +1547,7 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
-                attrs.extend(resource_attrs.iter().cloned());
+                let attrs = resource_attrs.clone();
                 ResourceSpans::new(Resource::build().attributes(attrs).finish(), scope_spans)
             })
             .collect();
@@ -1661,5 +1658,162 @@ impl DataGenerator {
                 builder.finish()
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::otap::{OtapArrowRecords, OtapBatchStore};
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::testing::round_trip::otlp_to_otap;
+
+    fn rows(store: &impl OtapBatchStore, pt: ArrowPayloadType) -> usize {
+        store.get(pt).map_or(0, |b| b.num_rows())
+    }
+
+    #[test]
+    fn test_logs_from_config_row_counts() {
+        let num_resources = 3;
+        let scopes_per_resource = 2;
+        let logs_per_scope = 50;
+        let resource_attrs = 3;
+        let scope_attrs = 2;
+        let log_attrs = 4;
+
+        let mut datagen = DataGenerator::with_logs_config(
+            LogsConfig::new(logs_per_scope)
+                .with_resources(num_resources)
+                .with_scopes_per_resource(scopes_per_resource)
+                .with_resource_attrs(resource_attrs)
+                .with_scope_attrs(scope_attrs)
+                .with_log_attrs(log_attrs),
+        );
+
+        let data = datagen.generate_logs_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Logs(l) => l,
+            _ => unreachable!(),
+        };
+
+        let expected_logs = num_resources * scopes_per_resource * logs_per_scope;
+        let expected_scopes = num_resources * scopes_per_resource;
+
+        assert_eq!(rows(&store, ArrowPayloadType::Logs), expected_logs);
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ResourceAttrs),
+            num_resources * resource_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ScopeAttrs),
+            expected_scopes * scope_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::LogAttrs),
+            expected_logs * log_attrs,
+        );
+    }
+
+    #[test]
+    fn test_traces_from_config_row_counts() {
+        let num_resources = 2;
+        let scopes_per_resource = 3;
+        let spans_per_scope = 40;
+        let resource_attrs = 2;
+        let scope_attrs = 3;
+        let span_attrs = 5;
+
+        let mut datagen = DataGenerator::with_traces_config(
+            TracesConfig::new(spans_per_scope)
+                .with_resources(num_resources)
+                .with_scopes_per_resource(scopes_per_resource)
+                .with_resource_attrs(resource_attrs)
+                .with_scope_attrs(scope_attrs)
+                .with_span_attrs(span_attrs),
+        );
+
+        let data = datagen.generate_traces_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Traces(t) => t,
+            _ => unreachable!(),
+        };
+
+        let expected_spans = num_resources * scopes_per_resource * spans_per_scope;
+        let expected_scopes = num_resources * scopes_per_resource;
+
+        assert_eq!(rows(&store, ArrowPayloadType::Spans), expected_spans);
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ResourceAttrs),
+            num_resources * resource_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ScopeAttrs),
+            expected_scopes * scope_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::SpanAttrs),
+            expected_spans * span_attrs,
+        );
+    }
+
+    #[test]
+    fn test_metrics_from_config_row_counts() {
+        let num_resources = 2;
+        let scopes_per_resource = 2;
+        let resource_attrs = 2;
+        let scope_attrs = 3;
+        let gauge_points = vec![10, 20];
+        let sum_points = vec![15];
+        let histogram_points = vec![5];
+        let summary_points = vec![8];
+
+        let config = MetricsConfig::new()
+            .with_gauges(gauge_points.clone())
+            .with_sums(sum_points.clone())
+            .with_histograms(histogram_points.clone())
+            .with_summaries(summary_points.clone())
+            .with_resources(num_resources)
+            .with_scopes_per_resource(scopes_per_resource)
+            .with_resource_attrs(resource_attrs)
+            .with_scope_attrs(scope_attrs);
+
+        let total_metrics =
+            gauge_points.len() + sum_points.len() + histogram_points.len() + summary_points.len();
+        let total_number_points: usize =
+            gauge_points.iter().sum::<usize>() + sum_points.iter().sum::<usize>();
+        let total_histogram_points: usize = histogram_points.iter().sum();
+        let total_summary_points: usize = summary_points.iter().sum();
+
+        assert_eq!(
+            config.total_points(),
+            total_number_points + total_histogram_points + total_summary_points,
+        );
+
+        let mut datagen = DataGenerator::with_metrics_config(config);
+        let data = datagen.generate_metrics_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Metrics(m) => m,
+            _ => unreachable!(),
+        };
+
+        let total_scopes = num_resources * scopes_per_resource;
+
+        // Each scope gets the full set of metrics.
+        assert_eq!(
+            rows(&store, ArrowPayloadType::UnivariateMetrics),
+            total_scopes * total_metrics,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::NumberDataPoints),
+            total_scopes * total_number_points,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::HistogramDataPoints),
+            total_scopes * total_histogram_points,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::SummaryDataPoints),
+            total_scopes * total_summary_points,
+        );
     }
 }
