@@ -3,7 +3,7 @@
 ## Plugin Summary
 
 | Type Name | Module | Class | Config Class | Description Summary |
-|-----------|--------|-------|--------------|----------------------|
+| --------- | ------ | ----- | ------------ | -------------------- |
 | `pipeline_perf_loadgen` | `lib.impl.strategies.execution.pipeline_perf_loadgen` | `PipelinePerfLoadgenExecution` | `PipelinePerfLoadgenConfig` | Execution strategy implementation for controlling the pipeline performance load generator |
 
 ---

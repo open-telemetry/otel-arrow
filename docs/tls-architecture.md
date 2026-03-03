@@ -332,7 +332,7 @@ Potential approaches include:
 ### Reload Mechanism Comparison
 
 | Aspect | Server Cert (Receiver) | Client CA (Receiver) | Exporter |
-|--------|------------------------|----------------------|----------|
+| ------ | ---------------------- | -------------------- | -------- |
 | **Reload Support** | Yes | Yes | No |
 | **Detection Method** | Lazy polling | File watch or poll | N/A |
 | **Check Frequency** | During handshake | Immediate or interval | N/A |
@@ -400,7 +400,7 @@ Continue      Return       Load CA    Build verifier
 **TLS Handshake Path** (per connection):
 
 | Operation | Time | Notes |
-|-----------|------|-------|
+| --------- | ---- | ----- |
 | Certificate lookup | ~5-10ns | Atomic pointer load |
 | CA verification | ~3-5ns | Atomic pointer load |
 | Full TLS handshake | ~1-5ms | Dominated by cryptography |
@@ -413,7 +413,7 @@ to crypto operations.
 **Server Certificate**:
 
 | Operation | Time | Frequency |
-|-----------|------|-----------|
+| --------- | ---- | --------- |
 | Interval check | ~1us | Per handshake (amortized) |
 | File mtime check | ~10-100us | When interval expired (blocking) |
 | Certificate reload | ~1-10ms | When file changed (async) |
@@ -421,14 +421,14 @@ to crypto operations.
 **Client CA (File Watch)**:
 
 | Operation | Time | Frequency |
-|-----------|------|-----------|
+| --------- | ---- | --------- |
 | Event processing | ~100us | Per file change |
 | CA reload | ~1-10ms | When file changed |
 
 **Client CA (Poll)**:
 
 | Operation | Time | Frequency |
-|-----------|------|-----------|
+| --------- | ---- | --------- |
 | Poll check | ~1us | Every interval |
 | CA reload | ~1-10ms | When changed |
 

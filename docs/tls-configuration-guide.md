@@ -237,7 +237,7 @@ changes require a restart.
 #### Reload Mechanism Summary
 
 | Certificate Type | Configuration | Reload Method | When Checked |
-|------------------|---------------|---------------|--------------|
+| ---------------- | ------------- | ------------- | ------------ |
 | Server Cert | `reload_interval` | Lazy polling | Handshake (if interval expired) |
 | Client CA | `watch_client_ca: true` | File watching | Immediate (~50-500ms) |
 | Client CA | `watch_client_ca: false` | Polling | Every `reload_interval` |
