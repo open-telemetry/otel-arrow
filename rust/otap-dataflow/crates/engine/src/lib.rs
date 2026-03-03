@@ -233,26 +233,21 @@ pub struct Interests: u8 {
     /// Return data
     const RETURN_DATA = 1 << 2;
 
-    /// Entry-timestamp interest — when set, the entry frame captures
-    /// a wall-clock timestamp for consumer-duration metrics.
+    /// Entry-timestamp should be recorded for detailed metrics.
     const ENTRY_TIMESTAMP = 1 << 3;
 
-    /// Consumer-metrics interest — when set, the entry frame records
-    /// consumed-outcome metrics. Does NOT subscribe to ACKS/NACKS.
+    /// Consumer metrics will be instrumented by recording the route
+    /// and optional timing.
     const CONSUMER_METRICS = 1 << 4;
 
-    /// Producer-metrics interest — when set, the frame records
-    /// produced-outcome metrics during context unwinding.
-    /// Does NOT auto-subscribe to ACKS/NACKS.
+    /// Producer metrics will be instrumented by recording the route
+    /// and optional timing.
     const PRODUCER_METRICS = 1 << 5;
 
-    /// Source-tagging interest — when set, `prepare_source_send`
-    /// ensures a source frame is pushed for the sending node.
-    /// Derived from `SourceTagging::Enabled` on the effect handler.
+    /// Source-tagging requested. A frame with no other interests may be inserted.
     const SOURCE_TAGGING = 1 << 6;
 
-    /// Pipeline-metrics interest — compound alias for
-    /// `CONSUMER_METRICS | PRODUCER_METRICS`.
+    /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
 }
 }
