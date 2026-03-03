@@ -91,8 +91,7 @@ impl<PData> EffectHandlerCore<PData> {
 
     /// Returns the precomputed node interests.
     ///
-    /// Includes `SOURCE_TAGGING` when source tagging is enabled,
-    /// so callers see a single unified `Interests` value.
+    /// Includes SOURCE_TAGGING when source tagging is enabled.
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         if self.source_tag.enabled() {

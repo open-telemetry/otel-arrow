@@ -106,18 +106,28 @@ impl Context {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<RouteData> {
+    pub fn source_route(&self) -> Option<RouteData> {
         self.stack.last().map(|f| f.route.clone())
     }
 
-    /// Are there any subscribers with actual interests (ACKS or NACKS)?
+    /// Are there any subscribers with actual interests (ACKS or
+    /// NACKS)?
+    ///
+    /// TODO: This could be O(1) by propagating a new interest bit.
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
-        self.stack.iter().any(|f| !f.interests.is_empty())
+        self.stack
+            .iter()
+            .any(|f| f.interests.intersects(Interests::ACKS_OR_NACKS))
     }
 
     /// Returns true if the context stack has any frames at all.
     /// Used to decide whether an ack/nack should be sent to the controller.
+    ///
+    /// TODO: The assumption here is that any stack with frames should be
+    /// sent to the pipeline controller, though there are a odd cases where
+    /// it is not required (e.g., only SOURCE_TAGGING). This could also be
+    /// tightened by differentiating whether an Ack or Nack is impending.
     #[must_use]
     pub fn has_context_frames(&self) -> bool {
         !self.stack.is_empty()
@@ -435,8 +445,8 @@ impl OtapPdata {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<RouteData> {
-        self.context.source_calldata()
+    pub fn source_route(&self) -> Option<RouteData> {
+        self.context.source_route()
     }
 
     /// Update the source node. See also subscribe_to() which supports

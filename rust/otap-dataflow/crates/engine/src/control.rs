@@ -98,6 +98,7 @@ pub struct UnwindData {
 
 impl UnwindData {
     /// Build new return route data.
+    #[must_use]
     pub fn new(route: RouteData, return_time_ns: u64) -> Self {
         Self {
             route,

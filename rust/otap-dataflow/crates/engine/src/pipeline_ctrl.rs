@@ -2230,16 +2230,16 @@ mod tests {
         }
     }
 
-    // ConsumedMetrics field indices (defined by #[metric_set] field order):
-    const CONSUMED_DURATION: usize = 0;
-    const CONSUMED_SUCCESS: usize = 1;
-    const CONSUMED_FAILURE: usize = 2;
-    const CONSUMED_REFUSED: usize = 3;
+    // ConsumerMetrics field indices (defined by #[metric_set] field order):
+    const CONSUMER_DURATION: usize = 0;
+    const CONSUMER_SUCCESS: usize = 1;
+    const CONSUMER_FAILURE: usize = 2;
+    const CONSUMER_REFUSED: usize = 3;
     // ProducedMetrics field indices:
-    const PRODUCED_DURATION: usize = 0;
-    const PRODUCED_SUCCESS: usize = 1;
-    const PRODUCED_FAILURE: usize = 2;
-    const PRODUCED_REFUSED: usize = 3;
+    const PRODUCER_DURATION: usize = 0;
+    const PRODUCER_SUCCESS: usize = 1;
+    const PRODUCER_FAILURE: usize = 2;
+    const PRODUCER_REFUSED: usize = 3;
 
     /// Build a TestPData with frames simulating a 3-node pipeline:
     /// receiver(node0) → processor(node1) → exporter(node2).
@@ -2411,17 +2411,17 @@ mod tests {
 
         // Exporter consumed: success=1, failure=0, refused=0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMED_FAILURE, 0, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMED_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
 
         // Processor consumed: success=1
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
 
         // Processor produced: success=1
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
 
         // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
         // so receiver frame is never popped → no metrics recorded.
@@ -2446,15 +2446,15 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMED_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMED_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_FAILURE, 1, "Processor consumed_failure");
+        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_FAILURE, 1, "Processor produced_failure");
+        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
     }
 
     /// Verify that permanent nack records consumed_refused / produced_refused.
@@ -2470,15 +2470,15 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_REFUSED, 1, "Exporter consumed_refused");
-        assert_u64(exp, CONSUMED_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMED_FAILURE, 0, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
     }
 
     /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
@@ -2496,14 +2496,14 @@ mod tests {
 
         // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter duration");
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
         assert!(snap.min > 0.0, "Duration min should be > 0");
         assert!(snap.max >= snap.min, "Duration max >= min");
 
         // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
@@ -2514,7 +2514,7 @@ mod tests {
         // processor frame has CONSUMER_METRICS, so produced_duration_ns is
         // suppressed (one duration histogram per component).
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCED_DURATION, "Processor produced duration");
+        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
@@ -2538,7 +2538,7 @@ mod tests {
         // Receiver produced duration: 1 observation, min > 0
         // (producer-only frame, no CONSUMER_METRICS → produced_duration recorded)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation"
@@ -2552,7 +2552,7 @@ mod tests {
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS → produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCED_DURATION, "Processor produced duration");
+        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations"
@@ -2560,7 +2560,7 @@ mod tests {
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
@@ -2581,7 +2581,7 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
@@ -2601,14 +2601,14 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter duration");
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor duration");
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
@@ -2634,16 +2634,16 @@ mod tests {
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(
             exp,
-            CONSUMED_SUCCESS,
+            CONSUMER_SUCCESS,
             3,
             "Exporter 3 consumed_success after 3 acks",
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_SUCCESS, 3, "Processor 3 consumed_success");
+        assert_u64(proc_c, CONSUMER_SUCCESS, 3, "Processor 3 consumed_success");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_SUCCESS, 3, "Processor 3 produced_success");
+        assert_u64(proc_p, PRODUCER_SUCCESS, 3, "Processor 3 produced_success");
     }
 
     /// Verify mixed ack and nack messages accumulate correctly.
@@ -2667,21 +2667,21 @@ mod tests {
 
         // Exporter consumed: 1 success + 1 failure + 1 refused
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMED_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMED_REFUSED, 1, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
 
         // Processor consumed: same pattern
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_SUCCESS, 1, "Processor consumed_success");
-        assert_u64(proc_c, CONSUMED_FAILURE, 1, "Processor consumed_failure");
-        assert_u64(proc_c, CONSUMED_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
+        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
 
         // Processor produced: 1 success + 1 failure + 1 refused
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_SUCCESS, 1, "Processor produced_success");
-        assert_u64(proc_p, PRODUCED_FAILURE, 1, "Processor produced_failure");
-        assert_u64(proc_p, PRODUCED_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
+        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
     }
 
     /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
@@ -2724,24 +2724,24 @@ mod tests {
 
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMED_SUCCESS, 1, "Exporter consumed_success");
-        let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter consumed duration");
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
         assert!(snap.min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMED_SUCCESS, 1, "Processor consumed_success");
-        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCED_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
 
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        assert_u64(recv_p, PRODUCED_SUCCESS, 1, "Receiver produced_success");
-        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        assert_u64(recv_p, PRODUCER_SUCCESS, 1, "Receiver produced_success");
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"

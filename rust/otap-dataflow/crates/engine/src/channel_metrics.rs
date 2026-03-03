@@ -78,30 +78,30 @@ pub struct ChannelReceiverMetrics {
 /// Ack/nack metrics for consumed requests, owned exclusively by the pipeline controller.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "component.consumer")]
+#[metric_set(name = "node.consumer")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
     /// Duration from entry until the corresponding ack or nack is
     /// routed, in nanoseconds. This is reported at the detailed level.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
-    #[metric(name = "consumer.duration", unit = "ns")]
+    #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
     /// Consumed requests successfully processed.
-    #[metric(name = "consumer.success", unit = "{requests}")]
+    #[metric(name = "consumed.success", unit = "{requests}")]
     pub consumed_success: Counter<u64>,
     /// Consumed requests that failed, this are retryable errors.
-    #[metric(name = "consumer.failure", unit = "{requests}")]
+    #[metric(name = "consumed.failure", unit = "{requests}")]
     pub consumed_failure: Counter<u64>,
     /// Consumed requests refused, also known as permanent failures.
-    #[metric(name = "consumer.refused", unit = "{requests}")]
+    #[metric(name = "consumed.refused", unit = "{requests}")]
     pub consumed_refused: Counter<u64>,
 }
 
 /// Ack/nack metrics for produced requests, owned exclusively by the pipeline controller.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "component.producer")]
+#[metric_set(name = "node.producer")]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
@@ -109,16 +109,16 @@ pub struct ProducedMetrics {
     /// only in receivers. Processors report consumed_refused.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
-    #[metric(name = "producer.duration", unit = "ns")]
+    #[metric(name = "produced.duration", unit = "ns")]
     pub produced_duration_ns: Mmsc,
     /// Produced requests acknowledged by downstream.
-    #[metric(name = "producer.success", unit = "{requests}")]
+    #[metric(name = "produced.success", unit = "{requests}")]
     pub produced_success: Counter<u64>,
     /// Produced requests that failed, this are retryable errors.
-    #[metric(name = "producer.failure", unit = "{requests}")]
+    #[metric(name = "produced.failure", unit = "{requests}")]
     pub produced_failure: Counter<u64>,
     /// Produced requests refused, also known as permanent failures.
-    #[metric(name = "producer.refused", unit = "{requests}")]
+    #[metric(name = "produced.refused", unit = "{requests}")]
     pub produced_refused: Counter<u64>,
 }
 

@@ -627,7 +627,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
-                    if let Some(calldata) = data.source_calldata() {
+                    if let Some(calldata) = data.source_route() {
                         let rstate: RetryState = calldata.calldata.try_into()?;
                         let _ = self
                             .handle_delayed(when, data, effect_handler, rstate.num_items)
