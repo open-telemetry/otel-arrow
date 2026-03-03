@@ -126,21 +126,19 @@ impl AssignPipelineStage {
         }
 
         // check that the result type of the expr eval can be assigned to this field
-        let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
         let mut type_compatible = expected_column_data_type == eval_result_column_type;
 
         // if it's dict encoded, check if the dict values match the expected type
+        let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
         if !type_compatible && column_supports_dict_encoding {
-            // if the field can be dictionary encoded, check if the eval result is also dictionary
-            // encoded. If so, we're allowed to make the assignment
-            if let DataType::Dictionary(_, val) = &eval_result_column_type {
-                if val.as_ref() == &expected_column_data_type {
+            if let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type {
+                if dict_val_type.as_ref() == &expected_column_data_type {
                     type_compatible = true
                 }
             }
         }
 
-        // if result type incompatible, return error
+        // if result is not type compatible, return error
         if !type_compatible {
             return Err(Error::ExecutionError {
                 cause: format!(
@@ -201,8 +199,9 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
-    /// try to assign an all-null column to the root record batch. This will return an error if it
-    /// turns out the column is not nullable.
+    /// try to assign an all-null column to the root record batch. In practice, this just means
+    /// removing the column from the record batch. This will return an error if it turns out the
+    /// column is not nullable.
     fn assign_null_root_column(
         &self,
         mut otap_batch: OtapArrowRecords,
@@ -305,7 +304,7 @@ impl PipelineStage for AssignPipelineStage {
 /// ```text
 /// logs | set resource.attributes["x"] = severity_text
 /// ```
-/// Because there are many logs w/ possibly different severities for any given resource, we
+/// Because there are many logs with possibly different severities for any given resource, we
 /// consider this assignment invalid.
 ///
 fn validate_assign(
@@ -317,7 +316,7 @@ fn validate_assign(
         ColumnAccessor::ColumnName(col_name) => {
             // No relationship cardinality validation needs to happen for these columns which
             // are on the root record because they are not one:many with anything else in that
-            // could be assigned, so validation only checks the types:
+            // could be assigned. Validation in this case only checks the types.
 
             let dest_type =
                 root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
@@ -349,7 +348,9 @@ fn validate_assign(
     Ok(())
 }
 
-/// Determine if the source type could be assigned to the destination
+/// Determine if the source type can be assigned to the destination.
+///
+/// See comments on [`validate_assign`] for more details about what types are considered compatible
 fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -> bool {
     if dest_type == source_type {
         return true;
