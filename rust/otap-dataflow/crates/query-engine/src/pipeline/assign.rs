@@ -4,17 +4,13 @@
 //! This module contains the implementation of a [`PipelineStage`] for assigning the result of
 //! the evaluation of an expression to a column in an OTAP record batch.
 //!
-//! It services queries such as:
+//! It evaluates the "set" stage in queries such as:
 //! ```text
 //! logs | set severity_text = "INFO"
 //! ```
 //!
 //! Note: implementation is currently a work in progress, and not all destinations are supported
 //!
-//! TODO
-//! - support assigning to more destinations (struct fields, attributes)
-//! - possibly attempt automatic result type coercion (binary -> FSB, int types)
-//!   - undecided if needed/wanted, or if should be handled through explicit casts in expr eval
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -102,7 +98,6 @@ impl AssignPipelineStage {
             }
         };
 
-        // check that the result type of the expr eval can be assigned to this field
         let expected_column_logical_type = root_field_type(dest_column_name)
             // safety: this will only return None if the destination column does not exist in OTAP
             // data model, but this has been validated in the constructor of this type, so it's
@@ -116,10 +111,9 @@ impl AssignPipelineStage {
             // root batch are known/un-ambiguous, so this will return Some and is safe to expect
             .expect("dest column data type");
 
-        // coerce static scalar int ...
-        // if the result was a static scalar integer, it will have been produced as an int64 by
-        // default, however the expression tree doesn't actually specify the type, so we assume the
-        // type should have matched the expected type
+        // coerce static scalar int" if the result was a static scalar integer, it will have been
+        // produced as an int64 by default, however the expression tree doesn't actually specify
+        // the type, so we assume the type should have matched the expected type here and cast it
         let mut eval_result_column_type = eval_result.values.data_type();
         if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
             && eval_result_column_type.is_integer()
@@ -134,6 +128,8 @@ impl AssignPipelineStage {
         // check that the result type of the expr eval can be assigned to this field
         let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
         let mut type_compatible = expected_column_data_type == eval_result_column_type;
+
+        // if it's dict encoded, check if the dict values match the expected type
         if !type_compatible && column_supports_dict_encoding {
             // if the field can be dictionary encoded, check if the eval result is also dictionary
             // encoded. If so, we're allowed to make the assignment
@@ -144,6 +140,7 @@ impl AssignPipelineStage {
             }
         }
 
+        // if result type incompatible, return error
         if !type_compatible {
             return Err(Error::ExecutionError {
                 cause: format!(
@@ -167,9 +164,10 @@ impl AssignPipelineStage {
 
         if !already_aligned {
             // if we're here, it means we have received a column value that has the row order
-            // of something other than the root attribute batch, meaning the result was computed
-            // from attributes. We'll need to join the result's values column to the root column
-            // to get the values in the correct order
+            // of something other than the root attribute batch, basically meaning the result was
+            // computed from attributes. We'll need to join the result's values column to the root
+            // column to get the values in the correct order ...
+
             let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
                 // safety: if the data_scope were anything other than attributes, we'd have taken
                 // the if branch (not the else branch) above when we checked if the data was
@@ -177,8 +175,8 @@ impl AssignPipelineStage {
                 unreachable!("unexpected data_scope")
             };
 
-            // create a JoinExec implementation that will compute a join of root to attrs on
-            // `root.id == attrs.parent_id`` and use this to get the rows to take from the result
+            // create a JoinExec implementation that computes joined indices of values to root on
+            // `root.id == attrs.parent_id` and use this to take rows from the result in order
             let join_exec = RootToAttributesJoin::new(*attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
                 &PhysicalExprEvalResult::new(
@@ -203,6 +201,8 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
+    /// try to assign an all-null column to the root record batch. This will return an error if it
+    /// turns out the column is not nullable.
     fn assign_null_root_column(
         &self,
         mut otap_batch: OtapArrowRecords,
@@ -282,24 +282,24 @@ impl PipelineStage for AssignPipelineStage {
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
-/// This validates three things:
+/// There are multiple validations performed:
 ///
-/// It validates that the destination exists, that it is a known column in OTAP
+/// It validates that the destination exists - e.g. that it is a known column in OTAP
 ///
 /// It also validate the types. Specifically it will check that the type could possibly be
-/// assigned to the destination, but it does not guarantee that the expression will produce
+/// assigned to the destination. Note: it does not guarantee that the expression will produce
 /// a valid type for the assignment. For example, in an expression like:
 /// ```text
 /// severity_text = attributes["x"]
 /// ```
 /// This would pass validation because `attributes["x"]` could be a string, which is what the
-/// destination `severity_text` expects. However, when this is evaluated, we may find that
-/// `attributes["x"]` is not a string, in which case this would fail at runtime.
+/// destination `severity_text` expects. However, when this is evaluated we may find that
+/// `attributes["x"]` is not a string in which case this would fail at runtime.
 ///
 /// This also validates that there is not ambiguity in the assignment based on the cardinality of
 /// the relationship between source and destination. Specifically, if the dest:source relationship
 /// is one:many, then we cannot do the assignment because it's unclear which of the many source
-/// values should be assigned to the destination.
+/// values should be assigned to the destination row.
 ///
 /// Here is an example of this type of invalid assignment:
 /// ```text
@@ -361,9 +361,10 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
     }
 
     match dest_type {
-        ExprLogicalType::Boolean | ExprLogicalType::String => {
-            source_type == &ExprLogicalType::AnyValue
-        }
+        ExprLogicalType::Boolean
+        | ExprLogicalType::String
+        | ExprLogicalType::Int64
+        | ExprLogicalType::Float64 => source_type == &ExprLogicalType::AnyValue,
 
         // TODO - handle other cases as we support a greater variety of destinations
         _ => false,
