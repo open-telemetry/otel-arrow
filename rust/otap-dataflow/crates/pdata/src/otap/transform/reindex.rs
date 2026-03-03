@@ -1,6 +1,80 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+/*!
+This module tries to reindex the id columns of multiple otap batches so that
+they can be safely concatenated together.
+
+# Reindexing strategies
+
+There are two reindexing strategies we can take. The first is a
+naive offset where we just apply some fixed number to the ids to move the
+range out of the way of the previous. For example if we have a batches with
+ids [1, 2] and [1, 2, 3] we can "bump" the second batch out of the way by
+adding 2 to all of the ids.
+
+The problem with naive offset is that if the second batch has holes then we
+"use up" more ids than we need. For example if the second batch is [1, 3]
+then we still have to add 2 to every id to bump it out of the range of batch 1.
+However then the next batch has to start after id 5 and we've wasted id number
+4 because it was never used.
+
+The second reindexing strategy that avoids this is "compaction" where we
+sort the record batch, grab the contiguous ranges that don't have holes and
+remap those individually so that we get a perfectly compact reindexing. For
+example `[1, 3]` we would bump 1 up by 2 and 3 up by 1 to get [3, 4] which
+is a perfect contiguous and compact reindexing.
+
+# Integrity violations
+
+The second major problem with naive offsets is the potential for integrity
+violations. Suppose we have corresponding id and parent id pairs like this:
+
+id: [1, 2]  parent_id: [1, 3]
+
+parent_id has a referential integrgity violation. We compute the mappings
+and next offset based on the id column only, so 3 is dangling over into the
+range that the next otap batch will use and we can accidentally associate
+the row with `id = 3` with some record batch not in this otap batch.
+
+However if the referential integrity violation is in the middle somewhere,
+this is not a problem. Take this one for example:
+
+id: [1, 3] parent_id: [2]
+
+In this case the dangling parent_id is in the middle of the id range that
+we've reserved for this otap batch.
+
+# Approach
+
+We prefer naive offset as much as possible and only compact when either we
+would create junk data or we need the extra space.
+
+We first compute the minmax value of every column and determine the eligible
+reindexing strategies. If the child's parent_id range is not inside the
+parents corresponding id range then we have to compact. If it is then we
+can choose to compact or apply some offset.
+
+For a naive offset on a primary id column, the number of ids that we
+will "use up" is the difference between the minmax of the column. For a
+compacting strategy we will use the length of the column because this is a
+primary id column and the values must be unique.
+
+For non primary id columns (resource id and scope id) we only know the upper
+bound of how many ids we'll use which is max - min + 1. We don't know how
+many unique ids will actually be in there unless we compact and find out.
+
+Once we have the upper bound for how many ids we will use if we follow the
+best eligible strategy for each otap batch, then we see if we're going to
+overflow the limit. If we do then we compute the amount of "savings" that
+we need to achieve.
+
+The only way we can save id space is by choosing compaction and seeing if
+we end up with less ids than the upper bound. We keep choosing compaction
+until we've saved enough ids that we can use the optimal available strategy
+for the rest of the record batches.
+*/
+
 use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
@@ -198,77 +272,8 @@ where
     Ok(())
 }
 
-/// An ID column across both id and parent_id child columns while preferring
-/// sorts to a naive offset whenever possible.
-///
-/// # Reindexing strategies
-///
-/// There are two reindexing strategies we can take. The first is a
-/// naive offset where we just apply some fixed number to the ids to move the
-/// range out of the way of the previous. For example if we have a batches with
-/// ids [1, 2] and [1, 2, 3] we can "bump" the second batch out of the way by
-/// adding 2 to all of the ids.
-///
-/// The problem with naive offset is that if the second batch has holes then we
-/// "use up" more ids than we need. For example if the second batch is [1, 3]
-/// then we still have to add 2 to every id to bump it out of the range of batch 1.
-/// However then the next batch has to start after id 5 and we've wasted id number
-/// 4 because it was never used.
-///
-/// The second reindexing strategy that avoids this is "compaction" where we
-/// sort the record batch, grab the contiguous ranges that don't have holes and
-/// remap those individually so that we get a perfectly compact reindexing. For
-/// example `[1, 3]` we would bump 1 up by 2 and 3 up by 1 to get [3, 4] which
-/// is a perfect contiguous and compact reindexing.
-///
-/// # Integrity violations
-///
-/// The second major problem with naive offsets is the potential for integrity
-/// violations. Suppose we have corresponding id and parent id pairs like this:
-///
-/// id: [1, 2]  parent_id: [1, 3]
-///
-/// parent_id has a referential integrgity violation. We compute the mappings
-/// and next offset based on the id column only, so 3 is dangling over into the
-/// range that the next otap batch will use and we can accidentally associate
-/// the row with `id = 3` with some record batch not in this otap batch.
-///
-/// However if the referential integrity violation is in the middle somewhere,
-/// this is not a problem. Take this one for example:
-///
-/// id: [1, 3] parent_id: [2]
-///
-/// In this case the dangling parent_id is in the middle of the id range that
-/// we've reserved for this otap batch.
-///
-/// # Approach
-///
-/// We prefer naive offset as much as possible and only compact when either we
-/// would create junk data or we need the extra space.
-///
-/// We first compute the min/max value of every column and determine the eligible
-/// reindexing strategies. If the child's parent_id range is not inside the
-/// parents corresponding id range then we have to compact. If it is then we
-/// can choose to compact or apply some offset.
-///
-/// For a naive offset on a primary id column, the number of ids that we
-/// will "use up" is the difference between the min/max of the column. For a
-/// compacting strategy we will use the length of the column because this is a
-/// primary id column and the values must be unique.
-///
-/// For non primary id columns (resource id and scope id) we only know the upper
-/// bound of how many ids we'll use which is max - min + 1. We don't know how
-/// many unique ids will actually be in there unless we compact and find out.
-///
-/// Once we have the upper bound for how many ids we will use if we follow the
-/// best eligible strategy for each otap batch, then we see if we're going to
-/// overflow the limit. If we do then we compute the amount of "savings" that
-/// we need to achieve.
-///
-/// The only way we can save id space is by choosing compaction and seeing if
-/// we end up with less ids than the upper bound. We keep choosing compaction
-/// until we've saved enough ids that we can use the optimal available strategy
-/// for the rest of the record batches.
+// Reindex an ID across both parent id and child parent_id columns while
+// preferring a naive offset whenever possible.
 fn reindex_id_column<T, S, const N: usize>(
     store: &mut MultiBatchStore<'_, S, N>,
     parent_payload_type: ArrowPayloadType,
