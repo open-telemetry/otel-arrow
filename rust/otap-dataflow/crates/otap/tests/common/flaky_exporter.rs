@@ -43,6 +43,10 @@ struct FlakyState {
     should_ack: Arc<AtomicBool>,
     counter: Arc<AtomicU64>,
     nack_count: Arc<AtomicU64>,
+    /// When true, NACKs are sent as permanent (non-retryable).
+    permanent_nack: Arc<AtomicBool>,
+    /// Count of permanent NACKs sent.
+    permanent_nack_count: Arc<AtomicU64>,
 }
 
 /// Registry of flaky exporter states keyed by unique test/pipeline ID.
@@ -58,6 +62,8 @@ pub fn register_state(id: impl Into<String>, counter: Arc<AtomicU64>, should_ack
         should_ack: Arc::new(AtomicBool::new(should_ack)),
         counter,
         nack_count: Arc::new(AtomicU64::new(0)),
+        permanent_nack: Arc::new(AtomicBool::new(false)),
+        permanent_nack_count: Arc::new(AtomicU64::new(0)),
     };
     let _ = STATE_REGISTRY.lock().insert(id.into(), state);
 }
@@ -84,13 +90,40 @@ pub fn nack_count_by_id(id: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Switch the exporter to send permanent (non-retryable) NACKs.
+pub fn set_permanent_nack_by_id(id: &str, permanent: bool) {
+    if let Some(state) = STATE_REGISTRY.lock().get(id) {
+        state.permanent_nack.store(permanent, Ordering::SeqCst);
+    }
+}
+
+/// Get the number of permanent NACKs for a specific ID.
+#[must_use]
+pub fn permanent_nack_count_by_id(id: &str) -> u64 {
+    STATE_REGISTRY
+        .lock()
+        .get(id)
+        .map(|s| s.permanent_nack_count.load(Ordering::Relaxed))
+        .unwrap_or(0)
+}
+
 /// Get state by ID - returns cloned Arcs for the exporter.
-fn get_state(id: &str) -> Option<(Arc<AtomicU64>, Arc<AtomicBool>, Arc<AtomicU64>)> {
+fn get_state(
+    id: &str,
+) -> Option<(
+    Arc<AtomicU64>,
+    Arc<AtomicBool>,
+    Arc<AtomicU64>,
+    Arc<AtomicBool>,
+    Arc<AtomicU64>,
+)> {
     STATE_REGISTRY.lock().get(id).map(|s| {
         (
             s.counter.clone(),
             s.should_ack.clone(),
             s.nack_count.clone(),
+            s.permanent_nack.clone(),
+            s.permanent_nack_count.clone(),
         )
     })
 }
@@ -99,6 +132,8 @@ struct FlakyExporter {
     counter: Option<Arc<AtomicU64>>,
     should_ack: Option<Arc<AtomicBool>>,
     nack_count: Option<Arc<AtomicU64>>,
+    permanent_nack: Option<Arc<AtomicBool>>,
+    permanent_nack_count: Option<Arc<AtomicU64>>,
 }
 
 #[allow(unsafe_code)]
@@ -111,15 +146,17 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              exporter_config: &ExporterConfig| {
         // Look up state by ID from node config
         let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
-        let (counter, should_ack, nack_count) = flaky_id
+        let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count) = flaky_id
             .and_then(get_state)
-            .map(|(c, a, n)| (Some(c), Some(a), Some(n)))
-            .unwrap_or((None, None, None));
+            .map(|(c, a, n, p, pc)| (Some(c), Some(a), Some(n), Some(p), Some(pc)))
+            .unwrap_or((None, None, None, None, None));
         Ok(ExporterWrapper::local(
             FlakyExporter {
                 counter,
                 should_ack,
                 nack_count,
+                permanent_nack,
+                permanent_nack_count,
             },
             node,
             node_config,
@@ -157,13 +194,31 @@ impl Exporter<OtapPdata> for FlakyExporter {
                         }
                         effect_handler.notify_ack(AckMsg::new(data)).await?;
                     } else {
-                        // NACK mode: reject
-                        if let Some(ref nack_count) = self.nack_count {
-                            let _ = nack_count.fetch_add(1, Ordering::Relaxed);
+                        // NACK mode: check if permanent or transient
+                        let is_permanent = self
+                            .permanent_nack
+                            .as_ref()
+                            .map(|f| f.load(Ordering::SeqCst))
+                            .unwrap_or(false);
+
+                        if is_permanent {
+                            if let Some(ref pc) = self.permanent_nack_count {
+                                let _ = pc.fetch_add(1, Ordering::Relaxed);
+                            }
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    "simulated permanent failure",
+                                    data,
+                                ))
+                                .await?;
+                        } else {
+                            if let Some(ref nack_count) = self.nack_count {
+                                let _ = nack_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            effect_handler
+                                .notify_nack(NackMsg::new("simulated transient failure", data))
+                                .await?;
                         }
-                        effect_handler
-                            .notify_nack(NackMsg::new("simulated failure", data))
-                            .await?;
                     }
                 }
                 _ => {}

@@ -30,7 +30,9 @@ use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::reporter::MetricsReporter;
 use quiver::segment::SegmentReader;
 use serde_json::json;
 use std::collections::HashMap;
@@ -278,6 +280,167 @@ fn run_pipeline_with_condition<F>(
 ) where
     F: Fn() -> bool + Send + 'static,
 {
+    let _ = run_pipeline_collecting_metrics(
+        config,
+        pipeline_group_id,
+        pipeline_id,
+        max_duration,
+        shutdown_deadline,
+        shutdown_condition,
+    );
+}
+
+/// Collected metrics from a pipeline run, aggregated across all telemetry snapshots.
+///
+/// Field indices correspond to `DurableBufferMetrics` declaration order:
+///   0: bundles_acked
+///   1: bundles_nacked_deferred
+///   2: bundles_nacked_permanent
+///   3: rejected_log_records
+///   4: rejected_metric_points
+///   5: rejected_spans
+///   6: consumed_log_records
+///   7: consumed_metric_points
+///   8: consumed_spans
+///   9: produced_log_records
+///   10: produced_metric_points
+///   11: produced_spans
+///   12: ingest_errors
+///   13: ingest_backpressure
+///   14: read_errors
+///   15: storage_bytes_used
+///   16: storage_bytes_cap
+///   17: dropped_segments
+///   18: dropped_bundles
+///   19: dropped_items
+///   20: expired_bundles
+///   21: expired_items
+///   22: retries_scheduled
+///   23: in_flight
+///   24: requeued_log_records
+///   25: requeued_metric_points
+///   26: requeued_spans
+///   27: queued_log_records
+///   28: queued_metric_points
+///   29: queued_spans
+const DURABLE_BUFFER_METRIC_COUNT: usize = 30;
+
+#[derive(Debug, Default)]
+struct CollectedMetrics {
+    /// Accumulated metric values by field index (summed deltas — correct for Counters).
+    values: Vec<u64>,
+    /// Last-seen metric values by field index (correct for Gauges).
+    last_values: Vec<u64>,
+}
+
+impl CollectedMetrics {
+    /// Aggregate durable_buffer metric snapshots by summing delta values.
+    ///
+    /// Filters snapshots to those with exactly `DURABLE_BUFFER_METRIC_COUNT` fields
+    /// (the durable buffer's metric set), then sums values across all collection cycles.
+    fn from_snapshots(snapshots: &[MetricSetSnapshot]) -> Self {
+        let db_snapshots: Vec<_> = snapshots
+            .iter()
+            .filter(|s| s.get_metrics().len() == DURABLE_BUFFER_METRIC_COUNT)
+            .collect();
+
+        let mut values = vec![0u64; DURABLE_BUFFER_METRIC_COUNT];
+        let mut last_values = vec![0u64; DURABLE_BUFFER_METRIC_COUNT];
+        for snapshot in &db_snapshots {
+            for (i, metric) in snapshot.get_metrics().iter().enumerate() {
+                values[i] += metric.to_u64_lossy();
+                last_values[i] = metric.to_u64_lossy();
+            }
+        }
+        Self {
+            values,
+            last_values,
+        }
+    }
+
+    fn bundles_acked(&self) -> u64 {
+        self.values.first().copied().unwrap_or(0)
+    }
+
+    fn bundles_nacked_deferred(&self) -> u64 {
+        self.values.get(1).copied().unwrap_or(0)
+    }
+
+    fn bundles_nacked_permanent(&self) -> u64 {
+        self.values.get(2).copied().unwrap_or(0)
+    }
+
+    fn rejected_log_records(&self) -> u64 {
+        self.values.get(3).copied().unwrap_or(0)
+    }
+
+    fn rejected_metric_points(&self) -> u64 {
+        self.values.get(4).copied().unwrap_or(0)
+    }
+
+    fn rejected_spans(&self) -> u64 {
+        self.values.get(5).copied().unwrap_or(0)
+    }
+
+    fn produced_log_records(&self) -> u64 {
+        self.values.get(9).copied().unwrap_or(0)
+    }
+
+    #[allow(dead_code)] // Available for future tests with mixed signal types
+    fn produced_metric_points(&self) -> u64 {
+        self.values.get(10).copied().unwrap_or(0)
+    }
+
+    #[allow(dead_code)] // Available for future tests with mixed signal types
+    fn produced_spans(&self) -> u64 {
+        self.values.get(11).copied().unwrap_or(0)
+    }
+
+    fn retries_scheduled(&self) -> u64 {
+        self.values.get(22).copied().unwrap_or(0)
+    }
+
+    fn requeued_log_records(&self) -> u64 {
+        self.values.get(24).copied().unwrap_or(0)
+    }
+
+    fn requeued_metric_points(&self) -> u64 {
+        self.values.get(25).copied().unwrap_or(0)
+    }
+
+    fn requeued_spans(&self) -> u64 {
+        self.values.get(26).copied().unwrap_or(0)
+    }
+
+    fn queued_log_records(&self) -> u64 {
+        self.last_values.get(27).copied().unwrap_or(0)
+    }
+
+    fn queued_metric_points(&self) -> u64 {
+        self.last_values.get(28).copied().unwrap_or(0)
+    }
+
+    fn queued_spans(&self) -> u64 {
+        self.last_values.get(29).copied().unwrap_or(0)
+    }
+}
+
+/// Run a pipeline with an optional early shutdown condition, collecting metrics snapshots.
+///
+/// Returns the collected metrics from all `CollectTelemetry` cycles during the pipeline run.
+/// Uses a dedicated `MetricsReporter` channel to intercept metric snapshots rather than
+/// letting them flow into the `InternalCollector` (which doesn't run in test mode).
+fn run_pipeline_collecting_metrics<F>(
+    config: PipelineConfig,
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    max_duration: Duration,
+    shutdown_deadline: Duration,
+    shutdown_condition: Option<F>,
+) -> CollectedMetrics
+where
+    F: Fn() -> bool + Send + 'static,
+{
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
@@ -312,7 +475,9 @@ fn run_pipeline_with_condition<F>(
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
     };
-    let metrics_reporter = telemetry_system.reporter();
+    // Create a metrics reporter with our own receiver so we can inspect metrics.
+    // The channel is large enough to hold many telemetry collection cycles.
+    let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1000);
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
     let shutdown_handle = std::thread::spawn(move || {
@@ -373,6 +538,13 @@ fn run_pipeline_with_condition<F>(
         "metric sets should be cleaned up"
     );
     assert_eq!(registry.entity_count(), 0, "entities should be cleaned up");
+
+    // Drain the metrics receiver and aggregate all snapshots.
+    let mut snapshots = Vec::new();
+    while let Ok(snapshot) = metrics_rx.try_recv() {
+        snapshots.push(snapshot);
+    }
+    CollectedMetrics::from_snapshots(&snapshots)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,7 +641,7 @@ struct DurableBufferMetricsSnapshot {
 impl DurableBufferMetricsSnapshot {
     /// Get a metric value by its dot-separated field name (e.g. "consumed.logs").
     fn get(&self, field: &str) -> u64 {
-        self.fields.get(field).copied().unwrap_or(0)
+        self.fields.get(field).copied().unwrap_or(u64::MAX) // Use u64::MAX to make missing fields fail assertions clearly
     }
 
     /// Assert that a metric equals an exact expected value.
@@ -709,7 +881,7 @@ fn test_durable_buffer_retries_on_nack() {
     // Run the pipeline - shut down as soon as we see delivered items
     // (meaning retries succeeded after the flip to ACK mode).
     let delivered_counter = counter.clone();
-    run_pipeline_with_condition(
+    let metrics = run_pipeline_collecting_metrics(
         config,
         &pipeline_group_id,
         &pipeline_id,
@@ -745,6 +917,68 @@ fn test_durable_buffer_retries_on_nack() {
         nacks_before_flip >= 5,
         "Should have observed at least 5 NACKs before flip, got {}",
         nacks_before_flip
+    );
+
+    // Validate metrics: transient NACKs should increment bundles_nacked_deferred
+    assert!(
+        metrics.bundles_nacked_deferred() > 0,
+        "Expected bundles_nacked_deferred metric > 0, got {}",
+        metrics.bundles_nacked_deferred()
+    );
+
+    // Validate metrics: no permanent NACKs in this test
+    assert_eq!(
+        metrics.bundles_nacked_permanent(),
+        0,
+        "Expected bundles_nacked_permanent metric = 0 (only transient NACKs), got {}",
+        metrics.bundles_nacked_permanent()
+    );
+
+    // Validate metrics: retries should have been scheduled
+    assert!(
+        metrics.retries_scheduled() > 0,
+        "Expected retries_scheduled metric > 0, got {}",
+        metrics.retries_scheduled()
+    );
+
+    // Validate metrics: some bundles were eventually ACKd
+    assert!(
+        metrics.bundles_acked() > 0,
+        "Expected bundles_acked metric > 0, got {}",
+        metrics.bundles_acked()
+    );
+
+    // Validate per-item metrics: transient NACKs should requeue items, not reject them.
+    // This test uses 100% logs, so only log counters should be non-zero.
+    assert!(
+        metrics.requeued_log_records() > 0,
+        "Expected requeued_log_records metric > 0 (items requeued for retry), got {}",
+        metrics.requeued_log_records()
+    );
+    assert_eq!(
+        metrics.rejected_log_records(),
+        0,
+        "Expected rejected_log_records metric = 0 (no permanent NACKs), got {}",
+        metrics.rejected_log_records()
+    );
+    assert_eq!(
+        metrics.rejected_metric_points(),
+        0,
+        "Expected rejected_metric_points metric = 0 (no metrics generated), got {}",
+        metrics.rejected_metric_points()
+    );
+    assert_eq!(
+        metrics.rejected_spans(),
+        0,
+        "Expected rejected_spans metric = 0 (no traces generated), got {}",
+        metrics.rejected_spans()
+    );
+
+    // Validate: items were produced (sent downstream)
+    assert!(
+        metrics.produced_log_records() > 0,
+        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
+        metrics.produced_log_records()
     );
 }
 
@@ -1309,7 +1543,8 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     // items get grouped per bundle), but there must be at least 3 — one per
     // signal type (logs, traces, metrics).
     metrics_snapshot.assert_ge("bundles.acked", 3);
-    metrics_snapshot.assert_eq("bundles.nacked", 0);
+    metrics_snapshot.assert_eq("bundles.nacked.deferred", 0);
+    metrics_snapshot.assert_eq("bundles.nacked.permanent", 0);
 
     // No errors, drops, or expirations in a clean run.
     metrics_snapshot.assert_eq("dropped.items", 0);
@@ -1390,5 +1625,438 @@ fn test_durable_buffer_drop_oldest_policy() {
         "Expected at least {} items delivered with drop_oldest policy, got {}",
         total_signals,
         delivered
+    );
+}
+
+/// Test permanent NACK handling: bundles are rejected immediately without retry.
+///
+/// Verifies:
+/// - When an exporter sends a permanent NACK, the durable buffer calls
+///   `handle.reject()` on the bundle (marks it as `AckOutcome::Dropped` in Quiver)
+/// - The bundle is NOT retried (no retry scheduling)
+/// - The `bundles_nacked_permanent` metric is incremented
+/// - Queued gauges are decremented (no gauge drift)
+/// - Data sent after permanent NACKs still flows correctly
+///
+/// Uses the flaky_exporter in permanent-NACK mode, then switches to ACK mode
+/// to verify the pipeline continues to function after permanent rejections.
+#[test]
+fn test_durable_buffer_permanent_nack_rejects_without_retry() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "permanent-nack-test".into();
+    let pipeline_id: PipelineId = "permanent-nack-pipeline".into();
+    let test_id = "permanent_nack_rejects";
+
+    // Setup: Configure flaky exporter to send permanent NACKs
+    let counter = Arc::new(AtomicU64::new(0));
+    flaky_exporter::register_state(test_id, counter.clone(), false); // Start in NACK mode
+    flaky_exporter::set_permanent_nack_by_id(test_id, true); // Make NACKs permanent
+
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(None) // Generate continuously
+        .max_batch_size(5)
+        .signals_per_second(Some(50))
+        // Mix of traces (50%) and logs (50%) to exercise all queued gauge decrements.
+        // No metrics (pdata metrics view not yet implemented — see payload.rs:290).
+        .signal_weights(0, 50, 50)
+        .use_flaky_exporter()
+        .exporter_id(test_id)
+        .retry_config(json!({
+            "initial_retry_interval": "50ms",
+            "max_retry_interval": "200ms",
+            "retry_multiplier": 2.0,
+            "max_in_flight": 10
+        }))
+        .build(&pipeline_group_id, &pipeline_id);
+
+    // Spawn a thread to:
+    // 1. Wait for permanent NACKs to occur
+    // 2. Switch to ACK mode to verify pipeline still works
+    let flip_test_id = test_id.to_owned();
+    let flip_counter = counter.clone();
+    let flip_handle = std::thread::spawn(move || {
+        // Wait for at least 3 permanent NACKs
+        let permanent_nacks_observed = wait_for_condition(
+            || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        );
+        assert!(
+            permanent_nacks_observed,
+            "Expected at least 3 permanent NACKs within timeout, got {}",
+            flaky_exporter::permanent_nack_count_by_id(&flip_test_id)
+        );
+
+        let permanent_nacks_before = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
+        let transient_nacks_before = flaky_exporter::nack_count_by_id(&flip_test_id);
+
+        // Switch to ACK mode - new data should be delivered
+        flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
+
+        // Wait for some data to be delivered in ACK mode
+        let delivered = wait_for_condition(
+            || flip_counter.load(Ordering::Relaxed) > 0,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        );
+        assert!(
+            delivered,
+            "Expected data to be delivered after switching to ACK mode"
+        );
+
+        (permanent_nacks_before, transient_nacks_before)
+    });
+
+    // Run the pipeline - shut down once we see delivered items
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(15),
+        Duration::from_secs(1),
+        Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+    );
+
+    let (_permanent_nacks, transient_nacks) = flip_handle.join().expect("flip thread panicked");
+
+    // Cleanup and validate
+    let delivered = counter.load(Ordering::Relaxed);
+    let total_permanent_nacks = flaky_exporter::permanent_nack_count_by_id(test_id);
+    let total_transient_nacks = flaky_exporter::nack_count_by_id(test_id);
+    flaky_exporter::unregister_state(test_id);
+
+    // Validate: Permanent NACKs occurred
+    assert!(
+        total_permanent_nacks >= 3,
+        "Expected at least 3 permanent NACKs, got {}",
+        total_permanent_nacks
+    );
+
+    // Validate: No transient NACKs were sent (only permanent mode was used)
+    assert_eq!(
+        transient_nacks, 0,
+        "Expected 0 transient NACKs during permanent NACK phase, got {}",
+        transient_nacks
+    );
+
+    // Validate: Data was delivered after switching to ACK mode
+    assert!(
+        delivered > 0,
+        "Expected items to be delivered after switching to ACK mode, got 0"
+    );
+
+    // Validate metrics: bundles_nacked_permanent should be non-zero
+    assert!(
+        metrics.bundles_nacked_permanent() > 0,
+        "Expected bundles_nacked_permanent metric > 0, got {}",
+        metrics.bundles_nacked_permanent()
+    );
+
+    // Validate metrics: bundles_nacked_deferred should be zero (no transient NACKs)
+    assert_eq!(
+        metrics.bundles_nacked_deferred(),
+        0,
+        "Expected bundles_nacked_deferred metric = 0, got {}",
+        metrics.bundles_nacked_deferred()
+    );
+
+    // Validate metrics: retries_scheduled should be zero (permanent NACKs don't retry)
+    assert_eq!(
+        metrics.retries_scheduled(),
+        0,
+        "Expected retries_scheduled metric = 0, got {}",
+        metrics.retries_scheduled()
+    );
+
+    // Validate metrics: bundles_acked should be non-zero (data delivered in ACK phase)
+    assert!(
+        metrics.bundles_acked() > 0,
+        "Expected bundles_acked metric > 0, got {}",
+        metrics.bundles_acked()
+    );
+
+    // Validate per-item metrics: permanent NACKs should reject items, not requeue them.
+    // This test uses 50% logs + 50% traces, so both log and span counters should be non-zero.
+    assert!(
+        metrics.rejected_log_records() > 0,
+        "Expected rejected_log_records metric > 0 (items permanently rejected), got {}",
+        metrics.rejected_log_records()
+    );
+    assert!(
+        metrics.rejected_spans() > 0,
+        "Expected rejected_spans metric > 0 (items permanently rejected), got {}",
+        metrics.rejected_spans()
+    );
+    assert_eq!(
+        metrics.requeued_log_records(),
+        0,
+        "Expected requeued_log_records metric = 0 (permanent NACKs don't requeue), got {}",
+        metrics.requeued_log_records()
+    );
+    assert_eq!(
+        metrics.requeued_metric_points(),
+        0,
+        "Expected requeued_metric_points metric = 0 (no metrics generated), got {}",
+        metrics.requeued_metric_points()
+    );
+    assert_eq!(
+        metrics.requeued_spans(),
+        0,
+        "Expected requeued_spans metric = 0 (permanent NACKs don't requeue), got {}",
+        metrics.requeued_spans()
+    );
+
+    // Validate: items were produced (sent downstream)
+    assert!(
+        metrics.produced_log_records() > 0,
+        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
+        metrics.produced_log_records()
+    );
+
+    // Validate: queued gauges should reflect that permanent NACKs decremented them.
+    // It may not be exactly zero because new data can be ingested between the last
+    // send and shutdown. But the gauge must not exceed total consumed items
+    // (a leak would show queued growing unboundedly).
+    let consumed_logs = metrics.values.get(6).copied().unwrap_or(0);
+    assert!(
+        metrics.queued_log_records() <= consumed_logs,
+        "queued_log_records gauge ({}) should not exceed consumed_log_records ({}); \
+         permanent NACKs may be leaking the queued gauge",
+        metrics.queued_log_records(),
+        consumed_logs
+    );
+    let consumed_spans = metrics.values.get(8).copied().unwrap_or(0);
+    assert!(
+        metrics.queued_spans() <= consumed_spans,
+        "queued_spans gauge ({}) should not exceed consumed_spans ({}); \
+         permanent NACKs may be leaking the queued gauge",
+        metrics.queued_spans(),
+        consumed_spans
+    );
+    // No metrics generated (pdata limitation), so queued_metric_points should be 0.
+    assert_eq!(
+        metrics.queued_metric_points(),
+        0,
+        "queued_metric_points gauge should be 0 (no metrics generated), got {}",
+        metrics.queued_metric_points()
+    );
+
+    println!(
+        "permanent_nack_rejects: permanent_nacks={}, transient_nacks={}, delivered={}, \
+         metrics=[acked={}, deferred={}, permanent={}, retries={}, \
+         rejected_logs={}, rejected_spans={}, requeued_logs={}, produced_logs={}, \
+         queued_logs={}, queued_spans={}, queued_metrics={}]",
+        total_permanent_nacks,
+        total_transient_nacks,
+        delivered,
+        metrics.bundles_acked(),
+        metrics.bundles_nacked_deferred(),
+        metrics.bundles_nacked_permanent(),
+        metrics.retries_scheduled(),
+        metrics.rejected_log_records(),
+        metrics.rejected_spans(),
+        metrics.requeued_log_records(),
+        metrics.produced_log_records(),
+        metrics.queued_log_records(),
+        metrics.queued_spans(),
+        metrics.queued_metric_points()
+    );
+}
+
+/// Test mixed permanent and transient NACKs in the same pipeline run.
+///
+/// This verifies that the durable buffer correctly handles a transition from
+/// transient to permanent NACKs:
+/// 1. Start with transient NACKs (bundles deferred for retry)
+/// 2. Switch to permanent NACKs (bundles rejected immediately)
+/// 3. Switch to ACK mode (verify pipeline still delivers data)
+///
+/// Validates both `bundles_nacked_deferred` and `bundles_nacked_permanent`
+/// metrics are correctly incremented.
+#[test]
+fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "mixed-nack-test".into();
+    let pipeline_id: PipelineId = "mixed-nack-pipeline".into();
+    let test_id = "mixed_transient_permanent";
+
+    // Setup: Start in transient NACK mode (default for flaky_exporter)
+    let counter = Arc::new(AtomicU64::new(0));
+    flaky_exporter::register_state(test_id, counter.clone(), false); // NACK mode
+    // permanent_nack defaults to false (transient NACKs)
+
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(None) // Continuous generation
+        .max_batch_size(5)
+        .signals_per_second(Some(50))
+        .use_flaky_exporter()
+        .exporter_id(test_id)
+        .retry_config(json!({
+            "initial_retry_interval": "50ms",
+            "max_retry_interval": "200ms",
+            "retry_multiplier": 2.0,
+            "max_in_flight": 10
+        }))
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let flip_test_id = test_id.to_owned();
+    let flip_counter = counter.clone();
+    let flip_handle = std::thread::spawn(move || {
+        // Phase 1: Wait for transient NACKs
+        let transient_observed = wait_for_condition(
+            || flaky_exporter::nack_count_by_id(&flip_test_id) >= 3,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        );
+        assert!(
+            transient_observed,
+            "Expected transient NACKs, got {}",
+            flaky_exporter::nack_count_by_id(&flip_test_id)
+        );
+        let transient_nacks_phase1 = flaky_exporter::nack_count_by_id(&flip_test_id);
+
+        // Phase 2: Switch to permanent NACKs
+        flaky_exporter::set_permanent_nack_by_id(&flip_test_id, true);
+
+        let permanent_observed = wait_for_condition(
+            || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        );
+        assert!(
+            permanent_observed,
+            "Expected permanent NACKs, got {}",
+            flaky_exporter::permanent_nack_count_by_id(&flip_test_id)
+        );
+        let permanent_nacks_phase2 = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
+
+        // Phase 3: Switch to ACK mode
+        flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
+
+        let delivered = wait_for_condition(
+            || flip_counter.load(Ordering::Relaxed) > 0,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        );
+        assert!(
+            delivered,
+            "Expected data delivery after switching to ACK mode"
+        );
+
+        (transient_nacks_phase1, permanent_nacks_phase2)
+    });
+
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(15),
+        Duration::from_secs(1),
+        Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+    );
+
+    let (transient_nacks, permanent_nacks) = flip_handle.join().expect("flip thread panicked");
+
+    let delivered = counter.load(Ordering::Relaxed);
+    let total_transient = flaky_exporter::nack_count_by_id(test_id);
+    let total_permanent = flaky_exporter::permanent_nack_count_by_id(test_id);
+    flaky_exporter::unregister_state(test_id);
+
+    // Validate: Both transient and permanent NACKs occurred
+    assert!(
+        transient_nacks >= 3,
+        "Phase 1: Expected >= 3 transient NACKs, got {}",
+        transient_nacks
+    );
+    assert!(
+        permanent_nacks >= 3,
+        "Phase 2: Expected >= 3 permanent NACKs, got {}",
+        permanent_nacks
+    );
+
+    // Validate: Data was eventually delivered after ACK mode
+    assert!(
+        delivered > 0,
+        "Expected items delivered after switching to ACK mode, got 0"
+    );
+
+    // Validate metrics: both NACK counters should be non-zero
+    assert!(
+        metrics.bundles_nacked_deferred() > 0,
+        "Expected bundles_nacked_deferred metric > 0, got {}",
+        metrics.bundles_nacked_deferred()
+    );
+    assert!(
+        metrics.bundles_nacked_permanent() > 0,
+        "Expected bundles_nacked_permanent metric > 0, got {}",
+        metrics.bundles_nacked_permanent()
+    );
+
+    // Validate metrics: retries should have been scheduled (from transient phase)
+    assert!(
+        metrics.retries_scheduled() > 0,
+        "Expected retries_scheduled metric > 0 from transient NACK phase, got {}",
+        metrics.retries_scheduled()
+    );
+
+    // Validate metrics: bundles_acked should be non-zero (data delivered in ACK phase)
+    assert!(
+        metrics.bundles_acked() > 0,
+        "Expected bundles_acked metric > 0, got {}",
+        metrics.bundles_acked()
+    );
+
+    // Validate per-item metrics: mixed NACKs should both reject and requeue items.
+    // This test uses 100% logs, so only log counters should be non-zero.
+    assert!(
+        metrics.rejected_log_records() > 0,
+        "Expected rejected_log_records metric > 0 (items permanently rejected in phase 2), got {}",
+        metrics.rejected_log_records()
+    );
+    assert!(
+        metrics.requeued_log_records() > 0,
+        "Expected requeued_log_records metric > 0 (items requeued in transient phase 1), got {}",
+        metrics.requeued_log_records()
+    );
+    assert_eq!(
+        metrics.rejected_metric_points(),
+        0,
+        "Expected rejected_metric_points metric = 0 (no metrics generated), got {}",
+        metrics.rejected_metric_points()
+    );
+    assert_eq!(
+        metrics.rejected_spans(),
+        0,
+        "Expected rejected_spans metric = 0 (no traces generated), got {}",
+        metrics.rejected_spans()
+    );
+
+    // Validate: items were produced (sent downstream)
+    assert!(
+        metrics.produced_log_records() > 0,
+        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
+        metrics.produced_log_records()
+    );
+
+    println!(
+        "mixed_nacks: transient={} (total={}), permanent={} (total={}), delivered={}, \
+         metrics=[acked={}, deferred={}, permanent={}, retries={}, \
+         rejected_logs={}, requeued_logs={}, produced_logs={}]",
+        transient_nacks,
+        total_transient,
+        permanent_nacks,
+        total_permanent,
+        delivered,
+        metrics.bundles_acked(),
+        metrics.bundles_nacked_deferred(),
+        metrics.bundles_nacked_permanent(),
+        metrics.retries_scheduled(),
+        metrics.rejected_log_records(),
+        metrics.requeued_log_records(),
+        metrics.produced_log_records()
     );
 }
