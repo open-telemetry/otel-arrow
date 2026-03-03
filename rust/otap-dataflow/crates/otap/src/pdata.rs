@@ -434,6 +434,33 @@ impl OtapPdata {
         self
     }
 
+    /// Prepare the context for a message-source send.
+    ///
+    /// When `node_interests` includes `PRODUCER_METRICS` a subscriber
+    /// frame is pushed so the pipeline controller can record
+    /// produced-outcome metrics during ack/nack unwinding.  Otherwise,
+    /// if source-tagging is enabled, a lightweight tag frame is pushed
+    /// instead.
+    fn prepare_source_send(
+        &mut self,
+        node_interests: Interests,
+        source_tagging_enabled: bool,
+        node_id: usize,
+    ) {
+        if node_interests.contains(Interests::PRODUCER_METRICS) {
+            let mut int = Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
+            if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+                int |= Interests::ENTRY_TIMESTAMP;
+            }
+            self.context.subscribe_to(int, CallData::new(), node_id);
+            if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+                self.context.stamp_top_time(nanos_since_epoch());
+            }
+        } else if source_tagging_enabled {
+            self.context.set_source_node(node_id);
+        }
+    }
+
     /// return the source node field
     #[must_use]
     pub fn get_source_node(&self) -> Option<usize> {
@@ -530,57 +557,57 @@ macro_rules! impl_message_source_ext {
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
                 &self,
-                data: OtapPdata,
+                mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                let data = if self.source_tagging().enabled() {
-                    data.add_source_node(self.$id_method().index)
-                } else {
-                    data
-                };
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.source_tagging().enabled(),
+                    self.$id_method().index,
+                );
                 self.router.send_default_stamped(data).await
             }
 
             fn try_send_message_with_source_node(
                 &self,
-                data: OtapPdata,
+                mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                let data = if self.source_tagging().enabled() {
-                    data.add_source_node(self.$id_method().index)
-                } else {
-                    data
-                };
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.source_tagging().enabled(),
+                    self.$id_method().index,
+                );
                 self.router.try_send_default_stamped(data)
             }
 
             async fn send_message_with_source_node_to<P>(
                 &self,
                 port: P,
-                data: OtapPdata,
+                mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>>
             where
                 P: Into<PortName> + Send + 'static,
             {
-                let data = if self.source_tagging().enabled() {
-                    data.add_source_node(self.$id_method().index)
-                } else {
-                    data
-                };
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.source_tagging().enabled(),
+                    self.$id_method().index,
+                );
                 self.router.send_to_stamped(port, data).await
             }
 
             fn try_send_message_with_source_node_to<P>(
                 &self,
                 port: P,
-                data: OtapPdata,
+                mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>>
             where
                 P: Into<PortName> + Send + 'static,
             {
-                let data = if self.source_tagging().enabled() {
-                    data.add_source_node(self.$id_method().index)
-                } else {
-                    data
-                };
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.source_tagging().enabled(),
+                    self.$id_method().index,
+                );
                 self.router.try_send_to_stamped(port, data)
             }
         }
