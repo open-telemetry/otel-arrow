@@ -1349,14 +1349,6 @@ mod tests {
         ]);
     }
 
-    // ---- Greedy budget tests ----
-    //
-    // These tests exercise the two-pass greedy reindex budget logic across
-    // three scenarios:
-    //   A) sum(span) < 65535 -> all batches use the offset fast-path
-    //   B) sum(span) > 65535, sum(len) < 65535 -> greedy compacts some batches
-    //   C) sum(len) == 65535, sum(span) >> 65535 -> every batch must compact
-
     #[test]
     #[rustfmt::skip]
     fn test_logs_greedy_all_offset() {
