@@ -979,7 +979,7 @@ mod test {
                         assert_eq!(node_id, 4444);
 
                         let nackdata: TestCallData =
-                            nack.unwind.user.try_into().expect("my calldata");
+                            nack.unwind.route.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), nackdata);
 
                         // Requested RETURN_DATA, check item count match

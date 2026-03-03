@@ -361,14 +361,14 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Ack(ack_message) => {
                     self.handle_ack_nack_inbound(
-                        ack_message.calldata.user.try_into()?,
+                        ack_message.unwind.route.user.try_into()?,
                         ack_message.accepted.signal_type(),
                         effect_handler,
                     )
                     .await?;
                 }
                 NodeControlMsg::Nack(nack_message) => {
-                    let outbound_key: Key = nack_message.calldata.user.try_into()?;
+                    let outbound_key: Key = nack_message.unwind.route.user.try_into()?;
                     self.contexts
                         .set_failed_outbound(outbound_key, nack_message.reason);
                     self.handle_ack_nack_inbound(
@@ -1168,8 +1168,7 @@ mod test {
                 let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match ack_msg {
                     PipelineControlMsg::DeliverAck { ack } => {
-                        let (node_id, _ack) =
-                            next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                     }
                     other => {
@@ -1247,8 +1246,7 @@ mod test {
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) =
-                            next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
                     }
@@ -1327,8 +1325,7 @@ mod test {
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) =
-                            next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
                     }
@@ -1405,8 +1402,7 @@ mod test {
                 let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
                 match nack_msg {
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) =
-                            next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
                     }

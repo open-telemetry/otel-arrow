@@ -1482,7 +1482,7 @@ mod test {
             "CONSUMER_METRICS should NOT auto-subscribe NACKS"
         );
         assert_eq!(
-            frames[0].unwind.route.entry_time_ns, 0,
+            frames[0].route.entry_time_ns, 0,
             "CONSUMER_METRICS alone should not stamp time"
         );
     }
@@ -1497,7 +1497,7 @@ mod test {
         assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
         assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
         assert_eq!(
-            frames[0].unwind.route.entry_time_ns, 0,
+            frames[0].route.entry_time_ns, 0,
             "Entry frame without ENTRY_TIMESTAMP should not stamp time"
         );
     }
@@ -1511,7 +1511,7 @@ mod test {
         assert_eq!(frames.len(), 1);
         assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
         assert!(
-            frames[0].unwind.route.entry_time_ns > 0,
+            frames[0].route.entry_time_ns > 0,
             "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
         );
     }
@@ -1544,7 +1544,7 @@ mod test {
         // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
         let mut ctx = Context::default();
         ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
-        let original_time = ctx.frames()[0].unwind.route.entry_time_ns;
+        let original_time = ctx.frames()[0].route.entry_time_ns;
         assert!(original_time > 0);
 
         // Component subscribes on the same node — should merge, preserving time_ns.
@@ -1560,7 +1560,7 @@ mod test {
         assert!(frames[0].interests.contains(Interests::NACKS));
         assert!(frames[0].interests.contains(Interests::RETURN_DATA));
         assert_eq!(
-            frames[0].unwind.route.entry_time_ns, original_time,
+            frames[0].route.entry_time_ns, original_time,
             "merge must preserve engine entry_time_ns"
         );
     }
@@ -1570,16 +1570,12 @@ mod test {
         // For processors without ENTRY_TIMESTAMP, time can still be stamped manually.
         let mut ctx = Context::default();
         ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
-        assert_eq!(
-            ctx.frames()[0].unwind.route.entry_time_ns,
-            0,
-            "initially no time"
-        );
+        assert_eq!(ctx.frames()[0].route.entry_time_ns, 0, "initially no time");
 
         // Simulate processor subscribe_to stamping time.
         ctx.stamp_top_time(nanos_since_birth());
         assert!(
-            ctx.frames()[0].unwind.route.entry_time_ns > 0,
+            ctx.frames()[0].route.entry_time_ns > 0,
             "after stamp_top_time, should have non-zero time"
         );
     }

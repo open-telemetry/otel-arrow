@@ -1043,7 +1043,9 @@ mod tests {
         );
 
         // Send ACK back
-        if let Some((_, ack)) = crate::testing::next_ack(otap_df_engine::control::AckMsg::new(received)) {
+        if let Some((_, ack)) =
+            crate::testing::next_ack(otap_df_engine::control::AckMsg::new(received))
+        {
             let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
         }
 
