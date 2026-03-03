@@ -13,8 +13,8 @@
 //!
 //! TODO
 //! - support assigning to more destinations (struct fields, attributes)
-//! - attempt automatic result type coercion (binary -> FSB, int types) (not sure if needed/wanted)
-//! -
+//! - possibly attempt automatic result type coercion (binary -> FSB, int types)
+//!   - undecided if needed/wanted, or if should be handled through explicit casts in expr eval
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -81,7 +81,7 @@ impl AssignPipelineStage {
         let physical_expr = physical_planner.plan(source_logical_plan)?;
 
         Ok(Self {
-            dest_scope: Rc::new(dest_column.clone().into()),
+            dest_scope: Rc::new(DataScope::from(&dest_column)),
             dest_column,
             source: physical_expr,
         })
@@ -305,7 +305,7 @@ impl PipelineStage for AssignPipelineStage {
 /// ```text
 /// logs | set resource.attributes["x"] = severity_text
 /// ```
-/// because there are many logs w/ possibly different severities for any given resource, we
+/// Because there are many logs w/ possibly different severities for any given resource, we
 /// consider this assignment invalid.
 ///
 fn validate_assign(
@@ -462,7 +462,7 @@ fn eval_result_to_array(
     }
 }
 
-/// inserts the column into the record batch if the column does not exist, otherwise replaces the
+/// Inserts the column into the record batch if the column does not exist, otherwise replaces the
 /// exiting column with the new one.
 fn upsert_column(
     column_name: &str,

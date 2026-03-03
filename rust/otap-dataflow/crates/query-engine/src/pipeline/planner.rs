@@ -423,9 +423,9 @@ impl PipelinePlanner {
 
         let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
         match dest_accessor {
-            // TODO [albertlockett]: Attributes is still handled as a special case because
-            // AssignPipelineStage does not yet handle assigning attributes. This capability will
-            //  soon be added to  AssignPipelineStage, at which point we can simplify this planning
+            // TODO Attributes is still handled as a special case because AssignPipelineStage does
+            // not yet handle assigning attributes. This capability will soon be added to this
+            // pipeline stage implementation, at which point we can simplify this planning
             ColumnAccessor::Attributes(attrs_id, key) => {
                 let ScalarExpression::Static(static_val) = set_expr.get_source() else {
                     return Err(Error::NotYetSupportedError {
@@ -458,7 +458,6 @@ impl PipelinePlanner {
         }
     }
 
-    // TODO this can be deleted, there's another method that does exactly the same thing
     fn static_scalar_to_literal(static_val: &StaticScalarExpression) -> Result<LiteralValue> {
         match static_val {
             StaticScalarExpression::String(s) => Ok(LiteralValue::Str(s.get_value().to_string())),
@@ -508,7 +507,7 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ColumnAccessor {
     ColumnName(String),
 

@@ -360,7 +360,8 @@ impl JoinExec for EqualScopeJoin {
         _right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
-        // TODO - is this what we want, or should we technically return all the rows?
+        // Not implemented - if joining two results with the same row order, can just append
+        // the valued directly into a vec of columns to form a joined record batch.
         Err(Error::ExecutionError {
             cause: "rows_to_take not implemented for EqualScopeJoin".into(),
         })

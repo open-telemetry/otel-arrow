@@ -119,12 +119,12 @@ impl DataScope {
     }
 }
 
-impl From<ColumnAccessor> for DataScope {
-    fn from(value: ColumnAccessor) -> Self {
+impl From<&ColumnAccessor> for DataScope {
+    fn from(value: &ColumnAccessor) -> Self {
         match value {
             ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => Self::Root,
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
-                Self::Attributes(attrs_id, attrs_key)
+                Self::Attributes(*attrs_id, attrs_key.clone())
             }
         }
     }
