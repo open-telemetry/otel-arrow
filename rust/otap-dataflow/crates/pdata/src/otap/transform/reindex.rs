@@ -1352,6 +1352,275 @@ mod tests {
         ]);
     }
 
+    // ---- Greedy budget tests ----
+    //
+    // These tests exercise the two-pass greedy reindex budget logic across
+    // three scenarios:
+    //   A) sum(span) < 65535 -> all batches use the offset fast-path
+    //   B) sum(span) > 65535, sum(len) < 65535 -> greedy compacts some batches
+    //   C) sum(len) == 65535, sum(span) >> 65535 -> every batch must compact
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_greedy_all_offset() {
+        // Checking scenario where we skip all compaction becuase 
+        // all batches have gaps (span > len) but sum(span) fits
+        // in U16 range. Every batch qualifies for the offset fast-path.
+        //
+        // Per batch: span=6, len=3, sum(span)=18, need_to_save < 0.
+
+        // id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 2, 5])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 5, 2]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![10u16, 13, 15])),
+                (LogAttrs, ("parent_id", UInt16, vec![10u16, 13, 15]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![20u16, 22, 25])),
+                (LogAttrs, ("parent_id", UInt16, vec![20u16, 22, 25, 25]))
+            ),
+        ]);
+
+        // resource.id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
+                       ("resource.id", UInt16, vec![0u16, 0, 2, 5, 5])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 2, 5]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("resource.id", UInt16, vec![10u16, 10, 13, 15])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![10u16, 13, 15]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("resource.id", UInt16, vec![20u16, 22, 25, 25])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![20u16, 22, 25]))
+            ),
+        ]);
+
+        // scope.id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
+                       ("scope.id", UInt16, vec![0u16, 0, 2, 5, 5])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 2, 5]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("scope.id", UInt16, vec![10u16, 10, 13, 15])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![10u16, 13, 15]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("scope.id", UInt16, vec![20u16, 22, 25, 25])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![20u16, 22, 25]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_greedy_some_compact() {
+        // Checking that we can handle partial compaction where some 
+        // batches need to compact, but not all.
+        //
+        // Batch 0: span=40001, len=3
+        // Batch 1: span=30001, len=3
+        // Batch 2: span=6,     len=3
+        // total_span=70008, need_to_save=4473. Batch 0 compacts (saves 39998).
+
+        // id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 10000, 40000])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 10000, 40000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 10000, 30000])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 10000, 30000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 3, 5])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 3, 5]))
+            ),
+        ]);
+
+        // resource.id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
+                       ("resource.id", UInt16, vec![0u16, 0, 10000, 40000, 40000])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 10000, 40000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("resource.id", UInt16, vec![0u16, 0, 10000, 30000])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 10000, 30000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("resource.id", UInt16, vec![0u16, 3, 5, 5])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 3, 5]))
+            ),
+        ]);
+
+        // scope.id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
+                       ("scope.id", UInt16, vec![0u16, 0, 10000, 40000, 40000])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 10000, 40000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("scope.id", UInt16, vec![0u16, 0, 10000, 30000])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 10000, 30000]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3]),
+                       ("scope.id", UInt16, vec![0u16, 3, 5, 5])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 3, 5]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_greedy_all_compact() {
+        // Checking that we can perfectly compact to the max u16
+        // range when every batch needs compaction.
+        //
+        // Batch 0: ids = 0,2,4,...,65534 (32768 items, span=65535)
+        // Batch 1: ids = 0,2,4,...,65532 (32767 items, span=65533)
+        // total_span=131068, need_to_save=65533. Both compact.
+
+        let even_ids_0: Vec<u16> = (0..32768).map(|i| i * 2).collect();
+        let even_ids_1: Vec<u16> = (0..32767).map(|i| i * 2).collect();
+
+        // id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, even_ids_0.clone())),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, even_ids_1.clone())),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+        ]);
+
+        // resource.id
+        let contiguous_ids_0: Vec<u16> = (0..32768).collect();
+        let contiguous_ids_1: Vec<u16> = (0..32767).collect();
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, contiguous_ids_0.clone()),
+                       ("resource.id", UInt16, even_ids_0.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, contiguous_ids_1.clone()),
+                       ("resource.id", UInt16, even_ids_1.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+        ]);
+
+        // scope.id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, contiguous_ids_0.clone()),
+                       ("scope.id", UInt16, even_ids_0.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, contiguous_ids_1.clone()),
+                       ("scope.id", UInt16, even_ids_1.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_logs_greedy_violation_no_overflow() {
+        // Exactly 65535 total logs with referential integrity violations in
+        // child tables. Each child table has more rows than its parent and
+        // includes parent_ids outside the parent's [min, max] range.
+        //
+        // The children_in_parent_range check detects these violations via
+        // min/max statistics and forces CompactOnly strategy. Without this,
+        // the offset fast-path would overflow u16 when adding the offset to
+        // out-of-range parent_ids (e.g. batch 1 offset=32768, child
+        // parent_id=u16::MAX -> 32768 + 65535 overflows).
+
+        let ids_0: Vec<u16> = (0..32768).collect();
+        let ids_1: Vec<u16> = (0..32767).collect();
+
+        // let mut child_pids_0: Vec<u16> = (0..32768).collect();
+        let mut child_pids_0: Vec<u16> = (0..65535).collect();
+        child_pids_0.push(u16::MAX);
+        // let mut child_pids_1: Vec<u16> = (0..32767).collect();
+        let mut child_pids_1: Vec<u16> = (0..65535).collect();
+        child_pids_1.push(u16::MAX);
+
+        // id
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, ids_0.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_pids_0.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, ids_1.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_pids_1.clone()))
+            ),
+        ]);
+
+        test_reindex_logs(&mut [
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, ids_0.clone()),
+                    ("resource.id", UInt16, ids_0.clone())
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, child_pids_0.clone()))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, ids_1.clone()),
+                    ("resource.id", UInt16, ids_1.clone())
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, child_pids_1.clone()))
+            ),
+        ]);
+
+        // scope.id
+        test_reindex_logs(&mut [
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, ids_0.clone()),
+                    ("scope.id", UInt16, ids_0.clone())
+                ),
+                (ScopeAttrs, ("parent_id", UInt16, child_pids_0.clone()))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, ids_1.clone()),
+                    ("scope.id", UInt16, ids_1.clone())
+                ),
+                (ScopeAttrs, ("parent_id", UInt16, child_pids_1.clone()))
+            ),
+        ]);
+    }
+
     // ---- Traces tests ----
 
     #[test]
@@ -2288,40 +2557,6 @@ mod tests {
                     ("parent_id", UInt16, vec![0u16, 1]))
             ),
         ]);
-    }
-
-    /// Non-primary ID columns (resource.id, scope.id) must return an error when
-    /// the total row count across batches exceeds the column type's maximum.
-    #[test]
-    fn test_logs_resource_id_overflow() {
-        // Two batches whose combined row count exceeds u16::MAX.
-        // We omit the "id" column so the primary id overflow check doesn't fire
-        // first -- this tests the non-primary overflow path specifically.
-        let resource_ids_1: Vec<u16> = (0..HALF_U16).collect();
-        let resource_ids_2: Vec<u16> = (0..HALF_U16).collect();
-
-        let mut batches = vec![
-            logs!(
-                (Logs, ("resource.id", UInt16, resource_ids_1)),
-                (
-                    ResourceAttrs,
-                    ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>())
-                )
-            ),
-            logs!(
-                (Logs, ("resource.id", UInt16, resource_ids_2)),
-                (
-                    ResourceAttrs,
-                    ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>())
-                )
-            ),
-        ];
-
-        let result = reindex_logs(&mut batches);
-        assert!(
-            matches!(result, Err(Error::TooManyItems { .. })),
-            "Expected TooManyItems error for resource.id overflow, got: {result:?}",
-        );
     }
 
     /// Applies transport optimized encodings to all payload types in each batch group.
