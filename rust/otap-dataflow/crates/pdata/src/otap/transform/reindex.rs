@@ -145,28 +145,16 @@ where
             // the total row count (upper bound on unique IDs) fits in the
             // column type. The primary ID check above only covers the primary
             // column; resource/scope IDs need their own check.
-            let primary_id_name = info.primary_id.as_ref().map(|p| p.name);
-            if primary_id_name != Some(relation.key_col) {
-                check_id_column_for_overflow(
-                    store,
-                    payload_type,
-                    relation.key_col,
-                    id_col.as_ref(),
-                )?;
-            }
-
             id_column_dispatch!(
                 id_col,
                 Native[T] => {
                     reindex_id_column::<T, S, N>(
-                        store, payload_type, relation.child_types,
-                        relation.key_col, primary_id_name,
+                        store, payload_type, relation.child_types, relation.key_col,
                     )?;
                 },
                 Dictionary[_K, V] => {
                     reindex_id_column::<V, S, N>(
-                        store, payload_type, relation.child_types,
-                        relation.key_col, primary_id_name,
+                        store, payload_type, relation.child_types, relation.key_col,
                     )?;
                 },
                 _ => {
@@ -224,44 +212,6 @@ where
     Ok(())
 }
 
-/// Check that the total row count for a non-primary ID column across all
-/// batches fits in the column's value type. Row count is an upper bound on
-/// unique IDs (which determines how many new IDs the slow path assigns).
-fn check_id_column_for_overflow<S, const N: usize>(
-    store: &MultiBatchStore<'_, S, N>,
-    payload_type: ArrowPayloadType,
-    column_path: &str,
-    sample_col: &dyn Array,
-) -> Result<()>
-where
-    S: OtapBatchStore,
-{
-    let Some(id_type) = IdColumnType::from_data_type(sample_col.data_type()) else {
-        return Err(Error::InvalidIdColumnType {
-            data_type: sample_col.data_type().clone(),
-        });
-    };
-
-    let mut count: u64 = 0;
-    for batch in store.select(payload_type) {
-        let Ok(col) = extract_id_column(batch, column_path) else {
-            continue;
-        };
-        count += col.len() as u64;
-    }
-
-    if count > id_type.max() {
-        return Err(Error::TooManyItems {
-            payload_type,
-            count: count as usize,
-            max: id_type.max(),
-            message: format!("Too many items to reindex column '{column_path}'"),
-        });
-    }
-
-    Ok(())
-}
-
 /// Two-pass reindexing for an ID column and its corresponding parent_id
 /// columns in child tables.
 ///
@@ -277,7 +227,6 @@ fn reindex_id_column<T, S, const N: usize>(
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
-    primary_id_name: Option<&str>,
 ) -> Result<()>
 where
     T: ArrowNumericType,
@@ -291,15 +240,12 @@ where
         + ArrowNativeTypeOp,
     S: OtapBatchStore,
 {
-    let is_primary = primary_id_name == Some(id_column_path);
-
     // -- Pass 1: gather statistics --
     let stats = gather_column_stats::<T, S, N>(
         store,
         parent_payload_type,
         child_payload_types,
         id_column_path,
-        is_primary,
     )?;
 
     // Compute the ID headroom budget. When total_ids_needed exceeds the
@@ -921,7 +867,6 @@ fn gather_column_stats<T, S, const N: usize>(
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
-    is_primary: bool,
 ) -> Result<Vec<Option<ColumnStats<T::Native>>>>
 where
     T: ArrowNumericType,
