@@ -1,14 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Criterion benchmarks for balanced (consumer group) delivery against flume MPMC.
+//! Balanced topic benchmarks against a flume MPMC baseline.
+//!
+//! Workload model:
+//! - one publisher sends `MSG_COUNT` messages of fixed-size payloads
+//! - one balanced consumer group (`g1`) with `N` subscribers
+//! - bounded queue capacity is aligned across implementations (`4096`)
+//!
+//! What is measured:
+//! - Criterion throughput is configured as `Elements(MSG_COUNT)`, so reported
+//!   throughput is messages published per second
+//! - each message must be delivered exactly once across all subscribers
+//!   (`sum(received_by_subscribers) == MSG_COUNT`)
+//!
+//! Interpretation:
+//! - isolates the cost of balanced dispatch and receiver contention as
+//!   subscriber count increases
+//! - does not include network I/O, serialization, or downstream processing
 
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use otap_df_engine::topic::{
-    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
+    InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
 };
 use tokio::runtime::Runtime;
 
@@ -28,8 +44,9 @@ struct BenchCase {
 
 async fn run_broker_case(case: BenchCase) {
     let broker = TopicBroker::new();
+    let opts = TopicOptions::BalancedOnly { capacity: 4096 };
     let topic = broker
-        .create_in_memory_topic("bench", TopicOptions::BalancedOnly { capacity: 4096 })
+        .create_topic("bench", opts, InMemoryBackend)
         .expect("benchmark topic creation failed");
 
     // Create subscribers.

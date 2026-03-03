@@ -1,15 +1,35 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Criterion benchmarks for topic broadcast delivery against tokio::sync::broadcast.
+//! Broadcast topic benchmarks against `tokio::sync::broadcast`.
+//!
+//! This module provides three benchmark families:
+//! - `topic_broadcast_vs_tokio`: `BroadcastOnly` topic vs tokio broadcast in
+//!   steady-state no-lag conditions (large capacity)
+//! - `topic_mixed_broadcast_vs_tokio`: broadcast path of `TopicOptions::Mixed`
+//!   vs tokio broadcast
+//! - `topic_broadcast_lag_vs_tokio`: forced-lag scenario with tiny capacity to
+//!   exercise lag accounting paths
+//!
+//! Workload model:
+//! - one publisher sends `MSG_COUNT` messages of fixed-size payloads
+//! - `N` broadcast subscribers
+//! - no-lag groups assert full fan-out delivery
+//!   (`sum(received_by_subscribers) == MSG_COUNT * N`)
+//! - lag group asserts lag is observed (`lagged > 0`)
+//!
+//! What is measured:
+//! - Criterion throughput uses `Elements(MSG_COUNT)`, so results are messages
+//!   published per second
+//!
+//! Out of scope:
+//! - network I/O, serialization, and downstream processing
 
 use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_engine::topic::{
-    RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
-};
+use otap_df_engine::topic::{InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions};
 use tokio::runtime::Runtime;
 
 const MSG_COUNT: u64 = 10_000;
@@ -33,7 +53,7 @@ struct BenchCase {
 async fn run_topic_broadcast_case(case: BenchCase, opts: TopicOptions) {
     let broker = TopicBroker::new();
     let topic = broker
-        .create_in_memory_topic("bench-broadcast", opts)
+        .create_topic("bench-broadcast", opts, InMemoryBackend)
         .expect("benchmark topic creation failed");
 
     let mut subs: Vec<_> = (0..case.num_subs)
