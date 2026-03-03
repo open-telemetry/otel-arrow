@@ -74,7 +74,8 @@ groups:
                   node_sequence: 1
           debug:
             type: processor:debug
-            config: {}
+            config:
+              verbosity: basic
             entity:
               extend:
                 identity_attributes:

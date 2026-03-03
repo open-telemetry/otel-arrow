@@ -2685,4 +2685,69 @@ mod tests {
         assert_u64(proc_p, PRODUCED_FAILURE, 1, "Processor produced_failure");
         assert_u64(proc_p, PRODUCED_REFUSED, 1, "Processor produced_refused");
     }
+
+    /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
+    ///
+    /// Pass 1: full stack [recv, proc, exp] — unwinds exp and proc frames,
+    ///         delivers ack to processor (first ACKS subscriber).
+    /// Pass 2: processor re-notifies with just the receiver frame — unwinds recv,
+    ///         recording producer duration on the receiver's output.
+    ///
+    /// This is the scenario where producer.duration must be recorded for the receiver.
+    #[tokio::test]
+    async fn test_two_pass_unwind_receiver_produced_duration() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            // --- Pass 1: full 3-node stack (processor subscribes to ACKS) ---
+            let pdata_full = build_3node_pdata(nodes, true);
+            let mut ack1 = AckMsg::new(pdata_full);
+            ack1.calldata.return_time_ns = nanos_since_epoch();
+
+            // --- Pass 2: only the receiver frame remains (processor re-notified) ---
+            let mut pdata_recv_only = TestPData::new();
+            pdata_recv_only.push_frame(Frame {
+                node_id: nodes[0].index,
+                interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
+                calldata: RouteData {
+                    user: Default::default(),
+                    entry_time_ns: nanos_since_epoch(),
+                    output_port_index: 0,
+                },
+            });
+            let mut ack2 = AckMsg::new(pdata_recv_only);
+            ack2.calldata.return_time_ns = nanos_since_epoch();
+
+            vec![
+                PipelineControlMsg::DeliverAck { ack: ack1 },
+                PipelineControlMsg::DeliverAck { ack: ack2 },
+            ]
+        })
+        .await;
+
+        // From pass 1: exporter and processor consumer metrics are recorded.
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMED_SUCCESS, 1, "Exporter consumed_success");
+        let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter consumed duration");
+        assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
+        assert!(snap.min > 0.0, "Exporter consumed duration > 0");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMED_SUCCESS, 1, "Processor consumed_success");
+        let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor consumed duration");
+        assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
+
+        // From pass 1: processor produced counter recorded.
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCED_SUCCESS, 1, "Processor produced_success");
+
+        // From pass 2: receiver produced counter AND duration recorded.
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        assert_u64(recv_p, PRODUCED_SUCCESS, 1, "Receiver produced_success");
+        let snap = assert_mmsc(recv_p, PRODUCED_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 1,
+            "Receiver should have 1 produced duration observation from two-pass unwind"
+        );
+        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+    }
 }

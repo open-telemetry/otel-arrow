@@ -78,7 +78,7 @@ pub struct ChannelReceiverMetrics {
 /// Ack/nack metrics for consumed requests, owned exclusively by the pipeline controller.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "channel.consumed")]
+#[metric_set(name = "component.consumer")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
     /// Duration from entry until the corresponding ack or nack is
@@ -101,7 +101,7 @@ pub struct ConsumedMetrics {
 /// Ack/nack metrics for produced requests, owned exclusively by the pipeline controller.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "channel.produced")]
+#[metric_set(name = "component.producer")]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
