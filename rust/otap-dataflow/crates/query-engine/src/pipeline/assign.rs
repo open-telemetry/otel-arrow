@@ -7,18 +7,21 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::compute::take;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::array::{DictionaryArray, RecordBatch, cast};
+use arrow::compute::{cast, take};
+use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::{ScalarExpression, SourceScalarExpression};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::ColumnarValue;
+use datafusion::functions_aggregate::count::Count;
+use datafusion::logical_expr::function::AccumulatorArgs;
+use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, ColumnarValue};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::Logs;
+use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -108,7 +111,7 @@ impl AssignPipelineStage {
         let already_aligned = eval_result.data_scope.is_scalar()
             || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
 
-        let values = if already_aligned {
+        let mut values = if already_aligned {
             // if we're here, either the expression returned a scalar, or it returned an array
             // that already has the correct row order, so just covert to an arrow array.
             eval_result.values.to_array(root_batch.num_rows())?
@@ -125,7 +128,7 @@ impl AssignPipelineStage {
             };
 
             // create a JoinExec implementation that will compute a join of root to attrs on
-            // `root.id =attrs.parent_id`` and use this to get the rows to take from the result
+            // `root.id == attrs.parent_id`` and use this to get the rows to take from the result
             let join_exec = RootToAttributesJoin::new(attrs_id.clone());
             let vals_take_indices = join_exec.rows_to_take(
                 &PhysicalExprEvalResult::new(
@@ -146,6 +149,56 @@ impl AssignPipelineStage {
         };
 
         // TODO - need to attempt to cast to dictionary
+        if column_supports_dict_encoding {
+            match values.data_type() {
+                DataType::Dictionary(k, v) => match k.as_ref() {
+                    DataType::UInt8 => {
+                        // nothing to do
+                    }
+                    DataType::UInt16 => {
+                        let values_as_dict = values
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .expect("can downcast to dict");
+                        if values_as_dict.values().len() <= 255 {
+                            values = cast(
+                                &values,
+                                &DataType::Dictionary(
+                                    Box::new(k.as_ref().clone()),
+                                    Box::new(v.as_ref().clone()),
+                                ),
+                            )?;
+                        }
+                    }
+                    other_key_type => {
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "invalid dictionary key in evaluation result {other_key_type:?}"
+                            ),
+                        });
+                    }
+                },
+                _ => {
+                    let field_info = FieldInfo::try_new_from_array(&values);
+                    let cardinality = estimate_cardinality(&field_info);
+                    let key_type = match cardinality {
+                        Cardinality::WithinU8 => Some(DataType::UInt8),
+                        Cardinality::WithinU16 => Some(DataType::UInt16),
+                        _ => None,
+                    };
+
+                    if let Some(key_type) = key_type {
+                        values = cast(
+                            &values,
+                            &DataType::Dictionary(
+                                Box::new(key_type),
+                                Box::new(values.data_type().clone()),
+                            ),
+                        )?;
+                    }
+                }
+            }
+        }
 
         let mut columns = root_batch.columns().to_vec();
         let schema = root_batch.schema();
@@ -643,7 +696,6 @@ mod test {
         test_set_root_invalid_expr_result_type_rejected_at_runtime::<KqlParser>().await
     }
 
-    // TODO - make these tests dynamic over parser
     // TODO - test on empty batch
     // TODO - test all attribute types to root ...
 }
