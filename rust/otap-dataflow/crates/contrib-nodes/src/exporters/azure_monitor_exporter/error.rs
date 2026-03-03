@@ -262,6 +262,19 @@ impl Error {
         }
     }
 
+    /// Creates a token acquisition timeout error.
+    #[must_use]
+    pub fn token_acquisition_timeout(timeout: std::time::Duration) -> Self {
+        Self::Auth {
+            kind: AuthErrorKind::TokenAcquisition,
+            source: Some(azure_core::error::Error::new(
+                azure_core::error::ErrorKind::Other,
+                format!("token acquisition timed out after {}s", timeout.as_secs()),
+            )),
+            body: None,
+        }
+    }
+
     /// Creates an unauthorized (401) error.
     #[must_use]
     pub fn unauthorized(body: String) -> Self {

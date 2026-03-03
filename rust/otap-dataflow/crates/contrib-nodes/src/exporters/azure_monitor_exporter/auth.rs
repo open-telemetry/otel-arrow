@@ -68,6 +68,19 @@ impl Auth {
         Ok(token_response)
     }
 
+    /// Attempt a single token acquisition with a timeout.
+    /// Used at startup to surface auth misconfigurations quickly.
+    /// Returns Ok(token) on success, or Err if it fails or times out.
+    pub async fn try_get_token_once(
+        &self,
+        timeout: tokio::time::Duration,
+    ) -> Result<AccessToken, Error> {
+        match tokio::time::timeout(timeout, self.get_token_internal()).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(Error::token_acquisition_timeout(timeout)),
+        }
+    }
+
     pub async fn get_token(&mut self) -> Result<AccessToken, Error> {
         let mut attempt = 0_i32;
         let start = tokio::time::Instant::now();
@@ -354,6 +367,90 @@ mod tests {
             } => {}
             err => panic!("Expected Auth token acquisition error, got: {:?}", err),
         }
+    }
+
+    // ==================== try_get_token_once Tests ====================
+
+    #[tokio::test]
+    async fn test_try_get_token_once_returns_token_on_success() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let credential = make_mock_credential(
+            "startup_token",
+            azure_core::time::Duration::minutes(60),
+            call_count.clone(),
+        );
+
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let result = auth
+            .try_get_token_once(tokio::time::Duration::from_secs(5))
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().token.secret(), "startup_token");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_try_get_token_once_returns_error_on_credential_failure() {
+        #[derive(Debug)]
+        struct FailingCredential;
+
+        #[async_trait::async_trait]
+        impl TokenCredential for FailingCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                Err(azure_core::error::Error::new(
+                    azure_core::error::ErrorKind::Credential,
+                    "Mock credential failure",
+                ))
+            }
+        }
+
+        let credential: Arc<dyn TokenCredential> = Arc::new(FailingCredential);
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let result = auth
+            .try_get_token_once(tokio::time::Duration::from_secs(5))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_try_get_token_once_times_out_on_slow_credential() {
+        #[derive(Debug)]
+        struct SlowCredential;
+
+        #[async_trait::async_trait]
+        impl TokenCredential for SlowCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                // Simulate a slow IMDS endpoint
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                Ok(AccessToken {
+                    token: "slow_token".to_string().into(),
+                    expires_on: OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(60),
+                })
+            }
+        }
+
+        let credential: Arc<dyn TokenCredential> = Arc::new(SlowCredential);
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let start = tokio::time::Instant::now();
+        let result = auth
+            .try_get_token_once(tokio::time::Duration::from_millis(100))
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        // Should have timed out quickly, not waited 60 seconds
+        assert!(elapsed < tokio::time::Duration::from_secs(1));
     }
 
     // ==================== Clone Behavior Tests ====================
