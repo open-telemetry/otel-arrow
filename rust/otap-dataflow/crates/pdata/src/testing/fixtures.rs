@@ -878,6 +878,12 @@ pub struct MetricsConfig {
     pub num_resources: usize,
     /// Number of scopes per resource (default 1).
     pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of metadata attributes per metric (default 0).
+    pub metric_attrs: usize,
 }
 
 impl Default for MetricsConfig {
@@ -890,6 +896,9 @@ impl Default for MetricsConfig {
             vary_attributes: false,
             num_resources: 1,
             scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            metric_attrs: 0,
         }
     }
 }
@@ -950,6 +959,27 @@ impl MetricsConfig {
         self
     }
 
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of metadata attributes per metric.
+    #[must_use]
+    pub const fn with_metric_attrs(mut self, n: usize) -> Self {
+        self.metric_attrs = n;
+        self
+    }
+
     /// Calculate total data point count across all metrics
     #[must_use]
     pub fn total_points(&self) -> usize {
@@ -978,6 +1008,12 @@ pub struct LogsConfig {
     pub num_resources: usize,
     /// Number of scopes per resource (default 1).
     pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of attributes per log record (default 0).
+    pub log_attrs: usize,
 }
 
 impl LogsConfig {
@@ -988,6 +1024,9 @@ impl LogsConfig {
             logs_per_scope,
             num_resources: 1,
             scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            log_attrs: 0,
         }
     }
 
@@ -1002,6 +1041,27 @@ impl LogsConfig {
     #[must_use]
     pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
         self.scopes_per_resource = n;
+        self
+    }
+
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per log record.
+    #[must_use]
+    pub const fn with_log_attrs(mut self, n: usize) -> Self {
+        self.log_attrs = n;
         self
     }
 }
@@ -1015,6 +1075,12 @@ pub struct TracesConfig {
     pub num_resources: usize,
     /// Number of scopes per resource (default 1).
     pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of attributes per span (default 0).
+    pub span_attrs: usize,
 }
 
 impl TracesConfig {
@@ -1025,6 +1091,9 @@ impl TracesConfig {
             spans_per_scope,
             num_resources: 1,
             scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            span_attrs: 0,
         }
     }
 
@@ -1039,6 +1108,27 @@ impl TracesConfig {
     #[must_use]
     pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
         self.scopes_per_resource = n;
+        self
+    }
+
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per span.
+    #[must_use]
+    pub const fn with_span_attrs(mut self, n: usize) -> Self {
+        self.span_attrs = n;
         self
     }
 }
@@ -1060,6 +1150,13 @@ pub struct DataGenerator {
     metrics_config: Option<MetricsConfig>,
     logs_config: Option<LogsConfig>,
     traces_config: Option<TracesConfig>,
+}
+
+/// Generate `count` synthetic KeyValue attributes with the given prefix.
+fn generate_attrs(prefix: &str, count: usize) -> Vec<KeyValue> {
+    (0..count)
+        .map(|i| KeyValue::new(format!("{prefix}.attr_{i}"), AnyValue::new_string(format!("value_{i}"))))
+        .collect()
 }
 
 impl DataGenerator {
@@ -1269,6 +1366,7 @@ impl DataGenerator {
 
         let mut metrics = Vec::new();
         let vary_attrs = config.vary_attributes;
+        let metric_attrs = generate_attrs("metric", config.metric_attrs);
 
         // Generate gauge metrics
         for (idx, &point_count) in config.gauge_points.iter().enumerate() {
@@ -1277,6 +1375,7 @@ impl DataGenerator {
                     .name(format!("gauge_{}", idx))
                     .description(format!("Gauge metric {}", idx))
                     .unit("1")
+                    .metadata(metric_attrs.clone())
                     .data_gauge(Gauge::new(
                         self.build_number_data_points(point_count, vary_attrs),
                     ))
@@ -1291,6 +1390,7 @@ impl DataGenerator {
                     .name(format!("sum_{}", idx))
                     .description(format!("Sum metric {}", idx))
                     .unit("1")
+                    .metadata(metric_attrs.clone())
                     .data_sum(Sum::new(
                         AggregationTemporality::Cumulative,
                         true,
@@ -1307,6 +1407,7 @@ impl DataGenerator {
                     .name(format!("histogram_{}", idx))
                     .description(format!("Histogram metric {}", idx))
                     .unit("s")
+                    .metadata(metric_attrs.clone())
                     .data_histogram(Histogram::new(
                         AggregationTemporality::Delta,
                         self.build_histogram_data_points(point_count, vary_attrs),
@@ -1322,6 +1423,7 @@ impl DataGenerator {
                     .name(format!("summary_{}", idx))
                     .description(format!("Summary metric {}", idx))
                     .unit("ms")
+                    .metadata(metric_attrs.clone())
                     .data_summary(Summary::new(
                         self.build_summary_data_points(point_count, vary_attrs),
                     ))
@@ -1329,6 +1431,8 @@ impl DataGenerator {
             );
         }
 
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let resource_metrics: Vec<ResourceMetrics> = (0..config.num_resources)
             .map(|r| {
                 let scope_metrics: Vec<ScopeMetrics> = (0..config.scopes_per_resource)
@@ -1336,18 +1440,19 @@ impl DataGenerator {
                         ScopeMetrics::new(
                             InstrumentationScope::build()
                                 .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
                                 .finish(),
                             metrics.clone(),
                         )
                     })
                     .collect();
+                let mut attrs = vec![KeyValue::new(
+                    "resource.index",
+                    AnyValue::new_int(r as i64),
+                )];
+                attrs.extend(resource_attrs.iter().cloned());
                 ResourceMetrics::new(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new(
-                            "resource.index",
-                            AnyValue::new_int(r as i64),
-                        )])
-                        .finish(),
+                    Resource::build().attributes(attrs).finish(),
                     scope_metrics,
                 )
             })
@@ -1365,6 +1470,9 @@ impl DataGenerator {
             .expect("logs_config must be set")
             .clone();
 
+        let log_attrs = generate_attrs("log", config.log_attrs);
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let resource_logs: Vec<ResourceLogs> = (0..config.num_resources)
             .map(|r| {
                 let scope_logs: Vec<ScopeLogs> = (0..config.scopes_per_resource)
@@ -1375,24 +1483,26 @@ impl DataGenerator {
                                     .time_unix_nano(self.timestamp())
                                     .observed_time_unix_nano(self.timestamp())
                                     .severity_number(SeverityNumber::Info as i32)
+                                    .attributes(log_attrs.clone())
                                     .finish()
                             })
                             .collect();
                         ScopeLogs::new(
                             InstrumentationScope::build()
                                 .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
                                 .finish(),
                             logs,
                         )
                     })
                     .collect();
+                let mut attrs = vec![KeyValue::new(
+                    "resource.index",
+                    AnyValue::new_int(r as i64),
+                )];
+                attrs.extend(resource_attrs.iter().cloned());
                 ResourceLogs::new(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new(
-                            "resource.index",
-                            AnyValue::new_int(r as i64),
-                        )])
-                        .finish(),
+                    Resource::build().attributes(attrs).finish(),
                     scope_logs,
                 )
             })
@@ -1410,6 +1520,9 @@ impl DataGenerator {
             .expect("traces_config must be set")
             .clone();
 
+        let span_attrs = generate_attrs("span", config.span_attrs);
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
         let mut span_counter: u64 = 0;
         let resource_spans: Vec<ResourceSpans> = (0..config.num_resources)
             .map(|r| {
@@ -1430,24 +1543,26 @@ impl DataGenerator {
                                     .start_time_unix_nano(self.timestamp())
                                     .end_time_unix_nano(self.timestamp())
                                     .status(Status::new(StatusCode::Ok, "ok"))
+                                    .attributes(span_attrs.clone())
                                     .finish()
                             })
                             .collect();
                         ScopeSpans::new(
                             InstrumentationScope::build()
                                 .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
                                 .finish(),
                             spans,
                         )
                     })
                     .collect();
+                let mut attrs = vec![KeyValue::new(
+                    "resource.index",
+                    AnyValue::new_int(r as i64),
+                )];
+                attrs.extend(resource_attrs.iter().cloned());
                 ResourceSpans::new(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new(
-                            "resource.index",
-                            AnyValue::new_int(r as i64),
-                        )])
-                        .finish(),
+                    Resource::build().attributes(attrs).finish(),
                     scope_spans,
                 )
             })

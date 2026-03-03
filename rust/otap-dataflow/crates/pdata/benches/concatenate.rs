@@ -38,9 +38,9 @@ const INPUT_SHAPES: &[(usize, usize, &str)] = &[(1, 1, "1r1s"), (3, 2, "3r2s")];
 fn bench_all(c: &mut Criterion) {
     for &size in BATCH_SIZES {
         for &(num_res, scopes, shape_label) in INPUT_SHAPES {
-            let metrics = generate_metrics(size, num_res, scopes);
-            let logs = generate_logs(size, num_res, scopes);
-            let traces = generate_traces(size, num_res, scopes);
+            let metrics = generate_metrics(size, num_res, scopes, 10, 5, 3);
+            let logs = generate_logs(size, num_res, scopes, 10, 5, 3);
+            let traces = generate_traces(size, num_res, scopes, 10, 5, 3);
 
             let metrics_unsorted: Vec<_> = metrics.iter().map(unsort_ids).collect();
             let logs_unsorted: Vec<_> = logs.iter().map(unsort_ids).collect();
@@ -157,12 +157,18 @@ fn generate_metrics(
     points_per_gauge: usize,
     num_resources: usize,
     scopes_per_resource: usize,
+    resource_attrs: usize,
+    scope_attrs: usize,
+    metric_attrs: usize,
 ) -> Vec<[Option<RecordBatch>; Metrics::COUNT]> {
     let mut datagen = DataGenerator::with_metrics_config(
         MetricsConfig::new()
             .with_gauges(vec![points_per_gauge])
             .with_resources(num_resources)
-            .with_scopes_per_resource(scopes_per_resource),
+            .with_scopes_per_resource(scopes_per_resource)
+            .with_resource_attrs(resource_attrs)
+            .with_scope_attrs(scope_attrs)
+            .with_metric_attrs(metric_attrs),
     );
     (0..NUM_BATCHES)
         .map(|_| {
@@ -179,11 +185,17 @@ fn generate_logs(
     logs_per_scope: usize,
     num_resources: usize,
     scopes_per_resource: usize,
+    resource_attrs: usize,
+    scope_attrs: usize,
+    log_attrs: usize,
 ) -> Vec<[Option<RecordBatch>; Logs::COUNT]> {
     let mut datagen = DataGenerator::with_logs_config(
         LogsConfig::new(logs_per_scope)
             .with_resources(num_resources)
-            .with_scopes_per_resource(scopes_per_resource),
+            .with_scopes_per_resource(scopes_per_resource)
+            .with_resource_attrs(resource_attrs)
+            .with_scope_attrs(scope_attrs)
+            .with_log_attrs(log_attrs),
     );
     (0..NUM_BATCHES)
         .map(|_| {
@@ -200,11 +212,17 @@ fn generate_traces(
     spans_per_scope: usize,
     num_resources: usize,
     scopes_per_resource: usize,
+    resource_attrs: usize,
+    scope_attrs: usize,
+    span_attrs: usize,
 ) -> Vec<[Option<RecordBatch>; Traces::COUNT]> {
     let mut datagen = DataGenerator::with_traces_config(
         TracesConfig::new(spans_per_scope)
             .with_resources(num_resources)
-            .with_scopes_per_resource(scopes_per_resource),
+            .with_scopes_per_resource(scopes_per_resource)
+            .with_resource_attrs(resource_attrs)
+            .with_scope_attrs(scope_attrs)
+            .with_span_attrs(span_attrs),
     );
     (0..NUM_BATCHES)
         .map(|_| {
