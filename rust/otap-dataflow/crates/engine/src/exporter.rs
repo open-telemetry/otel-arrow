@@ -821,4 +821,108 @@ mod tests {
         // Second recv -> channel considered closed
         assert!(matches!(chan.recv().await, Err(RecvError::Closed)));
     }
+
+    // ==================== recv_when tests ====================
+
+    /// recv_when(false) blocks pdata, only returns control messages.
+    #[tokio::test]
+    async fn test_recv_when_false_blocks_pdata() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        // recv_when(false) should return the control message, not pdata
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+
+        // pdata is still in the channel - recv_when(true) should return it
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+    }
+
+    /// recv_when(true) behaves identically to recv().
+    #[tokio::test]
+    async fn test_recv_when_true_same_as_recv() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+    }
+
+    /// During shutdown draining, recv_when(false) still drains pdata
+    /// because the guard is ignored in draining mode.
+    #[tokio::test]
+    async fn test_recv_when_false_drains_during_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Pre-load pdata
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        pdata_tx.send_async("pdata2".to_owned()).await.unwrap();
+
+        // Send shutdown with deadline
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now().add(Duration::from_millis(200)),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        // Even with accept_pdata=false, pdata should be drained during shutdown
+        let msg1 = channel.recv_when(false).await.unwrap();
+        assert!(matches!(msg1, Message::PData(ref s) if s == "pdata1"));
+
+        let msg2 = channel.recv_when(false).await.unwrap();
+        assert!(matches!(msg2, Message::PData(ref s) if s == "pdata2"));
+
+        // Close pdata channel to end draining
+        drop(pdata_tx);
+
+        // Should get shutdown message
+        let msg3 = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg3,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// recv_when(false) with only pdata available should not return pdata.
+    /// When a control message is then sent, it should be returned.
+    #[tokio::test]
+    async fn test_recv_when_false_waits_for_control() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        // recv_when(false) should not return pdata — use a timeout to prove it blocks
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(result.is_err(), "recv_when(false) should not return pdata");
+
+        // Now send a control message
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        // recv_when(false) should now return the control message
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+
+        // pdata still buffered
+        let msg = channel.recv().await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+    }
 }
