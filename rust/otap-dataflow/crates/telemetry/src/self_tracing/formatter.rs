@@ -6,9 +6,9 @@
 use super::encoder::level_to_severity_number;
 use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata::views::logs::LogRecordView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
+use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otap_df_pdata_views::views::logs::LogRecordView;
 use std::io::{Cursor, Write};
 use std::time::SystemTime;
 use tracing::{Event, Level, Subscriber};

@@ -3,7 +3,7 @@
 ## Plugin Summary
 
 | Type Name | Module | Class | Config Class | Description Summary |
-|-----------|--------|-------|--------------|----------------------|
+| --------- | ------ | ----- | ------------ | ------------------- |
 | `component_action` | `lib.impl.actions.component_action` | `ComponentAction` | `ComponentActionConfig` | Step action implementation for executing a lifecycle phase on a named component |
 | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |

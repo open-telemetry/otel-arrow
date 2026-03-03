@@ -42,7 +42,8 @@ telemetry sources such as:
 
 ### `telemetry_runtime.py` - **Telemetry Runtime Environment**
 
-Defines `TelemetryRuntime`, the orchestration point for telemetry providers and clients.
+Defines `TelemetryRuntime`, the orchestration point for telemetry providers and
+clients.
 
 - Initializes OpenTelemetry components:
   - `TracerProvider` for traces
@@ -56,7 +57,8 @@ Defines `TelemetryRuntime`, the orchestration point for telemetry providers and 
 
 ### `signal_retriever.py` - **Abstract Signal Access Layer**
 
-Defines `SignalRetriever`, the abstract base interface for accessing telemetry signals.
+Defines `SignalRetriever`, the abstract base interface for accessing telemetry
+signals.
 
 - Base for:
   - `MetricsRetriever`
@@ -89,7 +91,8 @@ Implements a full pipeline for structured metrics telemetry, based on OpenTeleme
 - `MetricDataFrame`: `pandas.DataFrame` subclass with schema validation
     and rich filtering.
 - `MetricDataBackend`: Interface for providing normalized metric data.
-- `MetricsRetriever`: Extends `SignalRetriever` to support attribute/time-range queries.
+- `MetricsRetriever`: Extends `SignalRetriever` to support attribute/time-range
+  queries.
 - `FrameworkMetricBackend`: In-memory backend for metrics with caching and transformation.
 - `FrameworkMetricsRetriever`: Pulls metrics from the in-memory backend.
 - `FrameworkMetricExporter`: Exports OpenTelemetry metrics into the in-memory store.

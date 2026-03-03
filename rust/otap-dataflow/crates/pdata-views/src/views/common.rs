@@ -8,8 +8,6 @@
 //! an analogous proto message, but are available as common return types for other View trait
 //! implementations
 
-pub use crate::schema::{SpanId, TraceId};
-
 /// All current implementations only use borrowed strings from the underlying data.
 /// If lossy UTF-8 support is needed in the future, this can be reverted to `Cow<'src, str>`.
 pub type Str<'src> = &'src [u8];
