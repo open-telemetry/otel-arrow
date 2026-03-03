@@ -277,17 +277,16 @@ where
     Ok(Some((min, max)))
 }
 
-/// Generic function to reindex an ID column and its corresponding parent_id
+/// Two-pass reindexing for an ID column and its corresponding parent_id
 /// columns in child tables.
 ///
-/// Uses a single-pass approach: for each batch, computes min/max inline and
-/// attempts the fast path (uniform offset, no sort). Falls back to the slow
-/// path (sort + create_mappings) per-batch when the fast path cannot be used.
+/// Pass 1 (`gather_column_stats`): read-only scan to collect per-batch min/max,
+/// length, and strategy (offset vs compact).
 ///
-/// The fast path is only eligible for primary ID columns (where values are
-/// unique). Non-primary ID columns (e.g. resource.id, scope.id) may contain
-/// duplicates, so `span == len` does not prove contiguity -- they always use
-/// the slow path.
+/// Pass 2 (greedy execution): for each batch, decide whether to apply a cheap
+/// uniform offset or fall back to sort+compact. The decision uses per-batch
+/// stats and a global budget: batches that *must* compact always do, and
+/// remaining batches compact only when needed to stay within the ID type limit.
 fn reindex_id_column<T, S, const N: usize>(
     store: &mut MultiBatchStore<'_, S, N>,
     parent_payload_type: ArrowPayloadType,
@@ -308,100 +307,193 @@ where
     S: OtapBatchStore,
 {
     let is_primary = primary_id_name == Some(id_column_path);
+
+    // -- Pass 1: gather statistics --
+    let stats = gather_column_stats::<T, S, N>(
+        store,
+        parent_payload_type,
+        child_payload_types,
+        id_column_path,
+        is_primary,
+    )?;
+
+    // Compute the ID headroom budget. When total_ids_needed exceeds the
+    // column-type limit we must compact enough batches to fit.
     let parent_idx = payload_to_idx(parent_payload_type);
+    let sample_col = (0..store.len()).find_map(|i| {
+        let batch = store.batches[i][parent_idx].as_ref()?;
+        extract_id_column(batch, id_column_path).ok()
+    });
+    let limit: u64 = sample_col
+        .and_then(|c| IdColumnType::from_data_type(c.data_type()))
+        .map_or(u64::MAX, |t| t.max());
+
+    let total_ids_needed: u64 = stats
+        .iter()
+        .filter_map(|s| s.as_ref())
+        .map(|s| s.max_ids_needed as u64)
+        .sum();
+    let need_to_save: i64 = total_ids_needed as i64 - limit as i64;
+
+    // -- Pass 2: greedy execution --
     let mut offset = T::Native::from(0);
+    let mut current_saved: i64 = 0;
 
     for i in 0..store.len() {
-        let Some(parent_rb) = store.get_mut(i)[parent_idx].take() else {
+        let Some(ref stat) = stats[i] else {
             continue;
         };
 
-        let id_col = match extract_id_column(&parent_rb, id_column_path) {
-            Ok(col) => col,
-            Err(_) => {
-                store.get_mut(i)[parent_idx] = Some(parent_rb);
-                continue;
-            }
-        };
+        let must_compact = stat.strategy == ReindexStrategy::CompactOnly
+            || (need_to_save > 0 && current_saved < need_to_save);
 
-        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref())? else {
-            store.get_mut(i)[parent_idx] = Some(parent_rb);
-            continue;
-        };
-
-        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-        let slice = id_values.values();
-
-        // The contiguity check (span == len) is only valid for primary ID
-        // columns where values are unique. Non-primary columns (resource.id,
-        // scope.id) can have duplicates that make span == len even with gaps,
-        // e.g. [0, 1, 1, 4, 4] has span=5, len=5, but is not contiguous.
-        let use_fast_path = is_primary && {
-            let span = max.as_usize() - min.as_usize() + 1;
-            let is_contiguous = span == slice.len();
-            is_contiguous
-                && child_payload_types.iter().all(|&ct| {
-                    children_in_parent_range::<T, S, N>(store, i, ct, min, max).unwrap_or(false)
-                })
-        };
-
-        if use_fast_path {
-            // Fast path: apply a uniform offset to parent and child columns.
-            let (off, sign) = if min <= offset {
-                (offset - min, Sign::Positive)
-            } else {
-                (min - offset, Sign::Negative)
-            };
-
-            let mut ids = slice.to_vec();
-            apply_uniform_offset(&mut ids, off, sign);
-            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
-            store.get_mut(i)[parent_idx] = Some(parent_rb);
-
-            for &child_payload_type in child_payload_types {
-                let child_idx = payload_to_idx(child_payload_type);
-                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
-                    let child_rb =
-                        fast_path_reindex_child::<T>(child_rb, PARENT_ID, off, sign)?;
-                    store.get_mut(i)[child_idx] = Some(child_rb);
-                }
-            }
-
-            let span = max - min + T::Native::from(1);
-            offset += span;
-        } else {
-            // Slow path: create explicit old->new ID mappings.
-            let mut ids = slice.to_vec();
-            let (mappings, new_offset) = if ids.is_sorted() {
-                let (m, o) = create_mappings::<T>(&ids, offset)?;
-                assert!(apply_mappings::<T>(&mut ids, &m).is_none());
-                (m, o)
-            } else {
-                let sort_indices = sort_vec_to_indices(&ids);
-                let mut sorted_ids = vec![T::Native::default(); ids.len()];
-                take_vec(&ids, &mut sorted_ids, &sort_indices);
-                let (m, o) = create_mappings::<T>(&sorted_ids, offset)?;
-                assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
-                untake_vec(&sorted_ids, &mut ids, &sort_indices);
-                (m, o)
-            };
+        if must_compact {
+            let new_offset = apply_compact_reindex::<T, S, N>(
+                store,
+                i,
+                parent_payload_type,
+                child_payload_types,
+                id_column_path,
+                offset,
+            )?;
+            let ids_consumed = new_offset.as_usize() - offset.as_usize();
+            current_saved += stat.max_ids_needed as i64 - ids_consumed as i64;
             offset = new_offset;
-
-            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
-            store.get_mut(i)[parent_idx] = Some(parent_rb);
-
-            for &child_payload_type in child_payload_types {
-                let child_idx = payload_to_idx(child_payload_type);
-                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
-                    let child_rb =
-                        reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
-                    store.get_mut(i)[child_idx] = Some(child_rb);
-                }
-            }
+        } else {
+            offset = apply_offset_reindex::<T, S, N>(
+                store,
+                i,
+                parent_payload_type,
+                child_payload_types,
+                id_column_path,
+                stat.min,
+                stat.max,
+                offset,
+            )?;
         }
     }
 
     Ok(())
+}
+
+/// Fast path: apply a uniform offset to the ID column and all child parent_id
+/// columns. Works for any column (primary or non-primary) as long as the values
+/// array is offset-safe (dict-encoded columns remap values, preserving key
+/// structure).
+///
+/// Returns the new offset (= old offset + span).
+fn apply_offset_reindex<T, S, const N: usize>(
+    store: &mut MultiBatchStore<'_, S, N>,
+    batch_index: usize,
+    parent_payload_type: ArrowPayloadType,
+    child_payload_types: &[ArrowPayloadType],
+    id_column_path: &str,
+    min: T::Native,
+    max: T::Native,
+    offset: T::Native,
+) -> Result<T::Native>
+where
+    T: ArrowNumericType,
+    T::Native: Ord
+        + Copy
+        + Add<Output = T::Native>
+        + Sub<Output = T::Native>
+        + AddAssign
+        + SubAssign
+        + From<u8>
+        + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let parent_idx = payload_to_idx(parent_payload_type);
+    let parent_rb = store.get_mut(batch_index)[parent_idx]
+        .take()
+        .expect("batch must exist for non-None stat");
+
+    let id_col = extract_id_column(&parent_rb, id_column_path)?;
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+
+    let (off, sign) = if min <= offset {
+        (offset - min, Sign::Positive)
+    } else {
+        (min - offset, Sign::Negative)
+    };
+
+    let mut ids = id_values.values().to_vec();
+    apply_uniform_offset(&mut ids, off, sign);
+    let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+    store.get_mut(batch_index)[parent_idx] = Some(parent_rb);
+
+    for &child_payload_type in child_payload_types {
+        let child_idx = payload_to_idx(child_payload_type);
+        if let Some(child_rb) = store.get_mut(batch_index)[child_idx].take() {
+            let child_rb = fast_path_reindex_child::<T>(child_rb, PARENT_ID, off, sign)?;
+            store.get_mut(batch_index)[child_idx] = Some(child_rb);
+        }
+    }
+
+    let span = max - min + T::Native::from(1);
+    Ok(offset + span)
+}
+
+/// Slow path: sort the ID column, create old->new mappings, and remap both the
+/// parent ID column and all child parent_id columns.
+///
+/// Returns the new offset after compaction.
+fn apply_compact_reindex<T, S, const N: usize>(
+    store: &mut MultiBatchStore<'_, S, N>,
+    batch_index: usize,
+    parent_payload_type: ArrowPayloadType,
+    child_payload_types: &[ArrowPayloadType],
+    id_column_path: &str,
+    offset: T::Native,
+) -> Result<T::Native>
+where
+    T: ArrowNumericType,
+    T::Native: Ord
+        + Copy
+        + Add<Output = T::Native>
+        + Sub<Output = T::Native>
+        + AddAssign
+        + SubAssign
+        + From<u8>
+        + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let parent_idx = payload_to_idx(parent_payload_type);
+    let parent_rb = store.get_mut(batch_index)[parent_idx]
+        .take()
+        .expect("batch must exist for non-None stat");
+
+    let id_col = extract_id_column(&parent_rb, id_column_path)?;
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let mut ids = id_values.values().to_vec();
+
+    let (mappings, new_offset) = if ids.is_sorted() {
+        let (m, o) = create_mappings::<T>(&ids, offset)?;
+        assert!(apply_mappings::<T>(&mut ids, &m).is_none());
+        (m, o)
+    } else {
+        let sort_indices = sort_vec_to_indices(&ids);
+        let mut sorted_ids = vec![T::Native::default(); ids.len()];
+        take_vec(&ids, &mut sorted_ids, &sort_indices);
+        let (m, o) = create_mappings::<T>(&sorted_ids, offset)?;
+        assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
+        untake_vec(&sorted_ids, &mut ids, &sort_indices);
+        (m, o)
+    };
+
+    let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+    store.get_mut(batch_index)[parent_idx] = Some(parent_rb);
+
+    for &child_payload_type in child_payload_types {
+        let child_idx = payload_to_idx(child_payload_type);
+        if let Some(child_rb) = store.get_mut(batch_index)[child_idx].take() {
+            let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
+            store.get_mut(batch_index)[child_idx] = Some(child_rb);
+        }
+    }
+
+    Ok(new_offset)
 }
 
 /// Check if all of a child's parent_id values for batch_index are within
@@ -793,6 +885,94 @@ struct IdMapping<T> {
     offset: T,
     /// Sign of the offset operation
     sign: Sign,
+}
+
+/// Whether a batch can use the fast offset path or must compact (sort + remap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReindexStrategy {
+    /// Must use the slow path (sort + compact).
+    CompactOnly,
+    /// May use the fast path (uniform offset) if headroom allows.
+    Any,
+}
+
+/// Per-batch statistics collected in the first pass of reindexing.
+#[derive(Debug, Clone)]
+struct ColumnStats<T> {
+    min: T,
+    max: T,
+    /// Upper bound on IDs consumed if this batch uses the offset path.
+    /// Equal to `span` for `Any`, unique value count for `CompactOnly`.
+    max_ids_needed: usize,
+    strategy: ReindexStrategy,
+}
+
+/// Read-only first pass: compute per-batch statistics for an ID column without
+/// mutating any batches.
+///
+/// Returns a `Vec` of length `store.len()`. Entry `i` is `None` when batch `i`
+/// has no parent payload, no ID column, or an empty/all-null ID column (same
+/// batches the current code skips via `continue`).
+fn gather_column_stats<T, S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    parent_payload_type: ArrowPayloadType,
+    child_payload_types: &[ArrowPayloadType],
+    id_column_path: &str,
+    is_primary: bool,
+) -> Result<Vec<Option<ColumnStats<T::Native>>>>
+where
+    T: ArrowNumericType,
+    T::Native: Ord + Copy + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let parent_idx = payload_to_idx(parent_payload_type);
+    let mut stats = Vec::with_capacity(store.len());
+
+    for i in 0..store.len() {
+        let Some(parent_rb) = &store.batches[i][parent_idx] else {
+            stats.push(None);
+            continue;
+        };
+
+        let id_col = match extract_id_column(parent_rb, id_column_path) {
+            Ok(col) => col,
+            Err(_) => {
+                stats.push(None);
+                continue;
+            }
+        };
+
+        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref())? else {
+            stats.push(None);
+            continue;
+        };
+
+        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+        let len = id_values.len();
+        let span = max.as_usize() - min.as_usize() + 1;
+
+        let children_ok = child_payload_types.iter().all(|&ct| {
+            children_in_parent_range::<T, S, N>(store, i, ct, min, max).unwrap_or(false)
+        });
+
+        let (strategy, max_ids_needed) = if children_ok {
+            // Offset path: preserve existing ID structure (including gaps)
+            // and consume `span` IDs. The greedy budget check in pass 2
+            // will force compaction if total IDs would overflow.
+            (ReindexStrategy::Any, span)
+        } else {
+            (ReindexStrategy::CompactOnly, len)
+        };
+
+        stats.push(Some(ColumnStats {
+            min,
+            max,
+            max_ids_needed,
+            strategy,
+        }));
+    }
+
+    Ok(stats)
 }
 
 /// Chunks the sorted ID column into consecutive ranges and creates mappings

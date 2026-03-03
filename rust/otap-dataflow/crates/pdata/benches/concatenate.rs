@@ -32,12 +32,22 @@ criterion_main!(benches);
 /// (num_resources, scopes_per_resource, label)
 /// Shapes must stay within u16::MAX total items across NUM_BATCHES batches.
 /// Each batch generates num_resources * scopes_per_resource * items_per_scope
-/// items. With 3r2s and 1000 items: 10 * 3 * 2 * 1000 = 60,000 < 65,535.
-const INPUT_SHAPES: &[(usize, usize, &str)] = &[(1, 1, "1r1s"), (3, 2, "3r2s")];
+/// items. Combinations that would overflow u16::MAX are skipped at runtime.
+const INPUT_SHAPES: &[(usize, usize, &str)] = &[
+    (1, 1, "1r1s"),
+    (3, 2, "3r2s"),
+    (5, 3, "5r3s"),
+];
 
 fn bench_all(c: &mut Criterion) {
     for &size in BATCH_SIZES {
         for &(num_res, scopes, shape_label) in INPUT_SHAPES {
+            // Skip shapes that would overflow u16::MAX total items.
+            let total_items = size * num_res * scopes * NUM_BATCHES;
+            if total_items > 65000 {
+                continue;
+            }
+
             let metrics = generate_metrics(size, num_res, scopes, 10, 5, 3);
             let logs = generate_logs(size, num_res, scopes, 10, 5, 3);
             let traces = generate_traces(size, num_res, scopes, 10, 5, 3);
