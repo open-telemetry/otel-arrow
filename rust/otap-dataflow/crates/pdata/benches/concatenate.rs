@@ -17,7 +17,6 @@ use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otap::transform::concatenate::concatenate;
 use otap_df_pdata::otap::transform::reindex::reindex;
-use otap_df_pdata::otap::transform::reindex_old::reindex as reindex_old;
 use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otap_df_pdata::schema::consts::{ID, PARENT_ID};
 use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig, TracesConfig};
@@ -60,12 +59,9 @@ fn bench_all(c: &mut Criterion) {
                 c,
                 &format!("reindex/{size}items/{shape_label}/contiguous"),
                 |group| {
-                    bench_reindex(group, "metrics/new", reindex, &metrics);
-                    bench_reindex(group, "metrics/old", reindex_old, &metrics);
-                    bench_reindex(group, "logs/new", reindex, &logs);
-                    bench_reindex(group, "logs/old", reindex_old, &logs);
-                    bench_reindex(group, "traces/new", reindex, &traces);
-                    bench_reindex(group, "traces/old", reindex_old, &traces);
+                    bench_reindex(group, "metrics", reindex, &metrics);
+                    bench_reindex(group, "logs", reindex, &logs);
+                    bench_reindex(group, "traces", reindex, &traces);
                 },
             );
 
@@ -73,12 +69,9 @@ fn bench_all(c: &mut Criterion) {
                 c,
                 &format!("reindex/{size}items/{shape_label}/unsorted_contiguous"),
                 |group| {
-                    bench_reindex(group, "metrics/new", reindex, &metrics_unsorted);
-                    bench_reindex(group, "metrics/old", reindex_old, &metrics_unsorted);
-                    bench_reindex(group, "logs/new", reindex, &logs_unsorted);
-                    bench_reindex(group, "logs/old", reindex_old, &logs_unsorted);
-                    bench_reindex(group, "traces/new", reindex, &traces_unsorted);
-                    bench_reindex(group, "traces/old", reindex_old, &traces_unsorted);
+                    bench_reindex(group, "metrics", reindex, &metrics_unsorted);
+                    bench_reindex(group, "logs", reindex, &logs_unsorted);
+                    bench_reindex(group, "traces", reindex, &traces_unsorted);
                 },
             );
 
@@ -86,12 +79,9 @@ fn bench_all(c: &mut Criterion) {
                 c,
                 &format!("reindex/{size}items/{shape_label}/gapped"),
                 |group| {
-                    bench_reindex(group, "metrics/new", reindex, &metrics_gapped);
-                    bench_reindex(group, "metrics/old", reindex_old, &metrics_gapped);
-                    bench_reindex(group, "logs/new", reindex, &logs_gapped);
-                    bench_reindex(group, "logs/old", reindex_old, &logs_gapped);
-                    bench_reindex(group, "traces/new", reindex, &traces_gapped);
-                    bench_reindex(group, "traces/old", reindex_old, &traces_gapped);
+                    bench_reindex(group, "metrics", reindex, &metrics_gapped);
+                    bench_reindex(group, "logs", reindex, &logs_gapped);
+                    bench_reindex(group, "traces", reindex, &traces_gapped);
                 },
             );
 
