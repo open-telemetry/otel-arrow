@@ -12,6 +12,7 @@ use arrow::buffer::ScalarBuffer;
 use arrow::compute::kernels::aggregate::{max_array, min_array};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
+    UInt32Type,
 };
 
 use crate::error::{Error, Result};
@@ -24,7 +25,7 @@ use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 
-use super::util::{IdColumnType, PrimaryIdInfo, id_column_dispatch, payload_relations};
+use super::util::{IdColumnType, PrimaryIdInfo, payload_relations};
 
 /// Reindex the provided record batches in place such that all IDs are unique
 /// for each payload type across all batches. This makes it safe to concatenate
@@ -129,41 +130,29 @@ where
         }
 
         for relation in info.relations {
-            // Find the first batch with the parent payload to inspect the ID
-            // column type, then dispatch to the appropriately-typed function.
-            let parent_idx = payload_to_idx(payload_type);
-            let id_col = (0..store.len()).find_map(|i| {
-                let batch = store.batches[i][parent_idx].as_ref()?;
-                extract_id_column(batch, relation.key_col).ok()
-            });
-
-            let Some(id_col) = id_col else {
-                continue;
-            };
-
-            // For non-primary ID columns (resource.id, scope.id), check that
-            // the total row count (upper bound on unique IDs) fits in the
-            // column type. The primary ID check above only covers the primary
-            // column; resource/scope IDs need their own check.
             let is_primary = Some(relation.key_col) == info.primary_id.as_ref().map(|id| id.name);
-            id_column_dispatch!(
-                id_col,
-                Native[T] => {
-                    reindex_id_column::<T, S, N>(
-                        store, payload_type, relation.child_types, relation.key_col, is_primary
+            match relation.size {
+                IdColumnType::U16 => {
+                    reindex_id_column::<UInt16Type, S, N>(
+                        store,
+                        payload_type,
+                        relation.child_types,
+                        relation.key_col,
+                        is_primary,
+                        relation.size,
                     )?;
-                },
-                Dictionary[_K, V] => {
-                    reindex_id_column::<V, S, N>(
-                        store, payload_type, relation.child_types, relation.key_col, is_primary
+                }
+                IdColumnType::U32 => {
+                    reindex_id_column::<UInt32Type, S, N>(
+                        store,
+                        payload_type,
+                        relation.child_types,
+                        relation.key_col,
+                        is_primary,
+                        relation.size,
                     )?;
-                },
-                _ => {
-                    return Err(Error::InvalidIdColumnType {
-                        data_type: id_col.data_type().clone(),
-                    });
-                },
-            );
+                }
+            }
         }
     }
 
@@ -197,10 +186,6 @@ where
     // at the top. We could maybe try to do offset math with u64, but we will
     // have to constantly cast back and forth and it won't be as clear if we've
     // made a mistake somewhere. Only consequence is max batch size is 1 less.
-    //
-    // TODO: Consider if we want to be checking the u32 ids for potential overflow.
-    // It would be a lot of memory, probably >20GB just to have the IDs in memory
-    // but if we run on a big server then maybe that's valid.
     if count > id_info.size.max() {
         return Err(Error::TooManyItems {
             payload_type,
@@ -229,6 +214,7 @@ fn reindex_id_column<T, S, const N: usize>(
     child_payload_types: &[ArrowPayloadType],
     id_column_path: &str,
     is_primary: bool,
+    size: IdColumnType,
 ) -> Result<()>
 where
     T: ArrowNumericType,
@@ -253,14 +239,7 @@ where
 
     // Compute the ID headroom budget. When total_ids_needed exceeds the
     // column-type limit we must compact enough batches to fit.
-    let parent_idx = payload_to_idx(parent_payload_type);
-    let sample_col = (0..store.len()).find_map(|i| {
-        let batch = store.batches[i][parent_idx].as_ref()?;
-        extract_id_column(batch, id_column_path).ok()
-    });
-    let limit: u64 = sample_col
-        .and_then(|c| IdColumnType::from_data_type(c.data_type()))
-        .map_or(u64::MAX, |t| t.max());
+    let limit: u64 = size.max();
 
     let total_ids_needed: u64 = stats
         .iter()
@@ -273,6 +252,7 @@ where
     let mut offset = T::Native::from(0);
     let mut current_saved: i64 = 0;
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..store.len() {
         let Some(ref stat) = stats[i] else {
             continue;
@@ -2440,6 +2420,48 @@ mod tests {
             }
         };
         testing::complete_batch(payload_type, batch, &[payload_type])
+    }
+
+    #[test]
+    fn test_logs_wrong_id_size() {
+        let mut batches = vec![
+            logs!((Logs, ("id", UInt32, vec![0u32, 1]))),
+            logs!((Logs, ("id", UInt32, vec![0u32, 1]))),
+        ];
+        let result = reindex_logs(&mut batches);
+        assert!(
+            matches!(result, Err(Error::ColumnDataTypeMismatch { .. })),
+            "expected ColumnDataTypeMismatch, got: {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn test_traces_span_events_wrong_id_size() {
+        let mut batches = vec![
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1])),
+                (
+                    SpanEvents,
+                    ("id", UInt16, vec![0u16, 1]),
+                    ("parent_id", UInt16, vec![0u16, 1])
+                )
+            ),
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1])),
+                (
+                    SpanEvents,
+                    ("id", UInt16, vec![0u16, 1]),
+                    ("parent_id", UInt16, vec![0u16, 1])
+                )
+            ),
+        ];
+        let result = reindex_traces(&mut batches);
+        assert!(
+            matches!(result, Err(Error::ColumnDataTypeMismatch { .. })),
+            "expected ColumnDataTypeMismatch, got: {:?}",
+            result,
+        );
     }
 
     // ---- Test helpers ----

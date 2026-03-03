@@ -474,20 +474,6 @@ impl IdColumnType {
             IdColumnType::U32 => u32::MAX as u64,
         }
     }
-
-    /// Returns the IdColumnType for a given DataType, resolving through
-    /// dictionary encoding to the value type.
-    pub(crate) fn from_data_type(dt: &DataType) -> Option<Self> {
-        let value_type = match dt {
-            DataType::Dictionary(_, v) => v.as_ref(),
-            other => other,
-        };
-        match value_type {
-            DataType::UInt16 => Some(IdColumnType::U16),
-            DataType::UInt32 => Some(IdColumnType::U32),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -500,6 +486,7 @@ pub(crate) struct PrimaryIdInfo {
 pub(crate) struct Relation {
     pub key_col: &'static str,
     pub child_types: &'static [ArrowPayloadType],
+    pub size: IdColumnType,
 }
 
 /// Get the primary ID column info and foreign relations for the given payload type.
@@ -515,14 +502,17 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                 Relation {
                     key_col: RESOURCE_ID_COL_PATH,
                     child_types: &[ArrowPayloadType::ResourceAttrs],
+                    size: IdColumnType::U16,
                 },
                 Relation {
                     key_col: SCOPE_ID_COL_PATH,
                     child_types: &[ArrowPayloadType::ScopeAttrs],
+                    size: IdColumnType::U16,
                 },
                 Relation {
                     key_col: ID,
                     child_types: &[ArrowPayloadType::LogAttrs],
+                    size: IdColumnType::U16,
                 },
             ],
         },
@@ -536,10 +526,12 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                 Relation {
                     key_col: RESOURCE_ID_COL_PATH,
                     child_types: &[ArrowPayloadType::ResourceAttrs],
+                    size: IdColumnType::U16,
                 },
                 Relation {
                     key_col: SCOPE_ID_COL_PATH,
                     child_types: &[ArrowPayloadType::ScopeAttrs],
+                    size: IdColumnType::U16,
                 },
                 Relation {
                     key_col: ID,
@@ -548,6 +540,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                         ArrowPayloadType::SpanEvents,
                         ArrowPayloadType::SpanLinks,
                     ],
+                    size: IdColumnType::U16,
                 },
             ],
         },
@@ -559,6 +552,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::SpanEventAttrs],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::SpanLinks => PayloadRelationInfo {
@@ -566,6 +560,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::SpanLinkAttrs],
+                size: IdColumnType::U32,
             }],
         },
 
@@ -580,10 +575,12 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                     Relation {
                         key_col: RESOURCE_ID_COL_PATH,
                         child_types: &[ArrowPayloadType::ResourceAttrs],
+                        size: IdColumnType::U16,
                     },
                     Relation {
                         key_col: SCOPE_ID_COL_PATH,
                         child_types: &[ArrowPayloadType::ScopeAttrs],
+                        size: IdColumnType::U16,
                     },
                     Relation {
                         key_col: ID,
@@ -594,6 +591,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                             ArrowPayloadType::HistogramDataPoints,
                             ArrowPayloadType::ExpHistogramDataPoints,
                         ],
+                        size: IdColumnType::U16,
                     },
                 ],
             }
@@ -610,6 +608,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                     ArrowPayloadType::NumberDpAttrs,
                     ArrowPayloadType::NumberDpExemplars,
                 ],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::NumberDpExemplars => PayloadRelationInfo {
@@ -620,6 +619,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::SummaryDataPoints => PayloadRelationInfo {
@@ -630,6 +630,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::SummaryDpAttrs],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::HistogramDataPoints => PayloadRelationInfo {
@@ -643,6 +644,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                     ArrowPayloadType::HistogramDpAttrs,
                     ArrowPayloadType::HistogramDpExemplars,
                 ],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::HistogramDpExemplars => PayloadRelationInfo {
@@ -653,6 +655,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::ExpHistogramDataPoints => PayloadRelationInfo {
@@ -666,6 +669,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                     ArrowPayloadType::ExpHistogramDpAttrs,
                     ArrowPayloadType::ExpHistogramDpExemplars,
                 ],
+                size: IdColumnType::U32,
             }],
         },
         ArrowPayloadType::ExpHistogramDpExemplars => PayloadRelationInfo {
@@ -676,6 +680,7 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[Relation {
                 key_col: ID,
                 child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
+                size: IdColumnType::U32,
             }],
         },
         _ => PayloadRelationInfo {
