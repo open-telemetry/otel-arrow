@@ -64,6 +64,18 @@ pub struct ExporterConfig {
     pub input_pdata_channel: PdataChannelConfig,
 }
 
+/// Generic configuration for an extension.
+///
+/// Extensions are non-pipeline components (e.g., auth providers, health checks)
+/// that only receive control messages. They do not participate in pdata flow.
+#[derive(Clone, Debug)]
+pub struct ExtensionConfig {
+    /// Name of the extension.
+    pub name: NodeId,
+    /// Configuration for control channel.
+    pub control_channel: ControlChannelConfig,
+}
+
 impl ReceiverConfig {
     /// Creates a new receiver configuration with default channel capacities.
     pub fn new<T>(name: T) -> Self
@@ -168,6 +180,30 @@ impl ExporterConfig {
             },
             input_pdata_channel: PdataChannelConfig {
                 capacity: pdata_channel_capacity,
+            },
+        }
+    }
+}
+
+impl ExtensionConfig {
+    /// Creates a new extension configuration with default channel capacities.
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        Self::with_channel_capacity(name, DEFAULT_CONTROL_CHANNEL_CAPACITY)
+    }
+
+    /// Creates a new extension configuration with an explicit control channel capacity.
+    #[must_use]
+    pub fn with_channel_capacity<T>(name: T, control_channel_capacity: usize) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        ExtensionConfig {
+            name: name.into(),
+            control_channel: ControlChannelConfig {
+                capacity: control_channel_capacity,
             },
         }
     }

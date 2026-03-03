@@ -37,6 +37,7 @@ use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
+use crate::extensions::ExtensionRegistry;
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
@@ -80,6 +81,7 @@ pub trait Receiver<PData> {
     ///
     /// - `ctrl_chan`: A channel to receive control messages.
     /// - `effect_handler`: A handler to perform side effects such as opening a listener.
+    /// - `extension_registry`: A registry of extension service handles, consumed at startup.
     ///
     /// Each of these parameters is **NOT** [`Send`].
     ///
@@ -94,6 +96,7 @@ pub trait Receiver<PData> {
         self: Box<Self>,
         ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error>;
 }
 
@@ -125,7 +128,7 @@ impl<PData> ControlChannel<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore<PData>,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.

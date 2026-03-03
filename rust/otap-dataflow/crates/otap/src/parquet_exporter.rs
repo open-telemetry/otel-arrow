@@ -42,6 +42,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
@@ -153,6 +154,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store =
@@ -432,6 +434,7 @@ mod test {
         pipeline_ctrl_msg_channel,
     };
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::extensions::ExtensionRegistry;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::message::{Receiver, Sender};
     use otap_df_engine::node::NodeWithPDataReceiver;
@@ -919,8 +922,9 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            let extension_registry = ExtensionRegistry::empty();
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .map(|_| ())
         }
@@ -1069,8 +1073,9 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            let extension_registry = ExtensionRegistry::empty();
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .map(|_| ())
         }
@@ -1217,8 +1222,9 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+            let extension_registry = ExtensionRegistry::empty();
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .map(|_| ())
         }
@@ -1460,8 +1466,9 @@ mod test {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
+            let extension_registry = ExtensionRegistry::empty();
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .map(|_| ())
         }

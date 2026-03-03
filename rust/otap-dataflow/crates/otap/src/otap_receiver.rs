@@ -31,6 +31,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -235,6 +236,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otap_df_telemetry::otel_info!(
             "receiver.start",

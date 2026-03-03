@@ -60,6 +60,7 @@ use tonic::{Request, Response, Status};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
@@ -454,7 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, ExtensionRegistry::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -520,7 +521,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, ExtensionRegistry::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -591,7 +592,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, ExtensionRegistry::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });

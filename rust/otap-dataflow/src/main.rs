@@ -195,6 +195,10 @@ fn validate_pipeline_components(
                 .get_exporter_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::Extension => OTAP_PIPELINE_FACTORY
+                .get_extension_factory_map()
+                .get(urn_str)
+                .map(|f| f.validate_config),
         };
 
         match validate_config_fn {
@@ -203,6 +207,7 @@ fn validate_pipeline_components(
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
+                    NodeKind::Extension => "extension",
                 };
                 return Err(std::io::Error::other(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",

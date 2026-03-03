@@ -28,6 +28,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
@@ -119,6 +120,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otlp.exporter.grpc.start",
@@ -781,6 +783,7 @@ mod tests {
     #[cfg(not(windows))]
     use {
         otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel},
+        otap_df_engine::extensions::ExtensionRegistry,
         otap_df_engine::local::message::{LocalReceiver, LocalSender},
         otap_df_engine::message::{Receiver, Sender},
         otap_df_engine::node::NodeWithPDataReceiver,
@@ -1092,8 +1095,9 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
+            let extension_registry = ExtensionRegistry::empty();
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .map(|_| ())
         }

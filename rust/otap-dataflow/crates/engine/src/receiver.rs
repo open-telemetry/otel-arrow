@@ -15,6 +15,7 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -233,7 +234,7 @@ impl<PData> ReceiverWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, PData>(
+                    wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,
@@ -270,7 +271,7 @@ impl<PData> ReceiverWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, PData>(
+                    wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,
@@ -301,6 +302,7 @@ impl<PData> ReceiverWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -335,7 +337,9 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                receiver.start(ctrl_msg_chan, effect_handler).await
+                receiver
+                    .start(ctrl_msg_chan, effect_handler, extension_registry)
+                    .await
             }
             (
                 ReceiverWrapper::Shared {
@@ -369,7 +373,9 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                receiver.start(ctrl_msg_chan, effect_handler).await
+                receiver
+                    .start(ctrl_msg_chan, effect_handler, extension_registry)
+                    .await
             }
         }
     }
@@ -464,6 +470,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use super::ReceiverWrapper;
+    use crate::extensions::ExtensionRegistry;
     use crate::local::receiver as local;
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -510,6 +517,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
+            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -589,6 +597,7 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
+            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -770,5 +779,141 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario(port_rx))
             .run_validation(validation_procedure());
+    }
+}
+
+/// Tests that a receiver can retrieve an auth handle from the extension
+/// registry (passed to `start()`) and use it to validate requests.
+#[cfg(test)]
+mod auth_extension_tests {
+    use super::ReceiverWrapper;
+    use crate::error::Error;
+    use crate::extensions::ExtensionRegistry;
+    use crate::extensions::auth::{AuthError, ServerAuthenticator, ServerAuthenticatorHandle};
+    use crate::extensions::{ExtensionHandles, ExtensionRegistryBuilder};
+    use crate::local::receiver as local;
+    use crate::terminal_state::TerminalState;
+    use crate::testing::receiver::TestRuntime;
+    use crate::testing::{TestMsg, test_node};
+    use async_trait::async_trait;
+    use otap_df_config::node::NodeUserConfig;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::time::timeout;
+
+    /// A server authenticator that checks `x-api-key` against an allow list.
+    struct ApiKeyAuth {
+        allowed_keys: Vec<String>,
+    }
+
+    impl ServerAuthenticator for ApiKeyAuth {
+        fn authenticate(&self, headers: &http::HeaderMap) -> Result<(), AuthError> {
+            let key = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| AuthError {
+                    message: "missing x-api-key header".into(),
+                })?;
+            if !self.allowed_keys.iter().any(|k| k == key) {
+                return Err(AuthError {
+                    message: format!("invalid API key: {key}"),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// A minimal receiver that retrieves an auth handle from the extension
+    /// registry, validates a set of headers, and forwards authenticated
+    /// payloads as messages. No TCP — auth is exercised directly in `start()`.
+    struct AuthReceiver;
+
+    #[async_trait(?Send)]
+    impl local::Receiver<TestMsg> for AuthReceiver {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl: local::ControlChannel<TestMsg>,
+            effect_handler: local::EffectHandler<TestMsg>,
+            extension_registry: ExtensionRegistry,
+        ) -> Result<TerminalState, Error> {
+            // Retrieve the auth handle — this is what a real receiver does.
+            let auth = extension_registry
+                .get::<ServerAuthenticatorHandle>("api_key_auth")
+                .expect("api_key_auth extension must be registered");
+
+            // Valid key → forward the payload.
+            let mut headers = http::HeaderMap::new();
+            let _ = headers.insert("x-api-key", "valid-key".parse().unwrap());
+            assert!(auth.authenticate(&headers).is_ok());
+            effect_handler
+                .send_message(TestMsg("authenticated".into()))
+                .await
+                .unwrap();
+
+            // Invalid key → rejected, nothing forwarded.
+            let _ = headers.insert("x-api-key", "bad-key".parse().unwrap());
+            assert!(auth.authenticate(&headers).is_err());
+
+            // Wait for shutdown.
+            loop {
+                let msg = ctrl.recv().await?;
+                if msg.is_shutdown() {
+                    break;
+                }
+            }
+            Ok(TerminalState::default())
+        }
+    }
+
+    fn build_auth_registry() -> ExtensionRegistry {
+        let auth = ApiKeyAuth {
+            allowed_keys: vec!["valid-key".into()],
+        };
+        let mut handles = ExtensionHandles::new();
+        handles.register(ServerAuthenticatorHandle::new(auth));
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.merge("api_key_auth", handles).unwrap();
+        builder.build()
+    }
+
+    /// Receiver retrieves auth handle from the extension registry and
+    /// uses it to accept/reject requests.
+    #[test]
+    fn test_receiver_with_auth_extension() {
+        let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("auth_receiver"));
+        let receiver = ReceiverWrapper::local(
+            AuthReceiver,
+            test_node("auth_recv"),
+            user_config,
+            test_runtime.config(),
+        );
+
+        let registry = build_auth_registry();
+
+        test_runtime
+            .set_receiver(receiver)
+            .with_extension_registry(registry)
+            .run_test(|ctx| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "Test")
+                        .await
+                        .expect("shutdown failed");
+                })
+            })
+            .run_validation(|mut ctx| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    let msg = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("timed out")
+                        .expect("no message");
+                    assert!(
+                        matches!(&msg, TestMsg(payload) if payload == "authenticated"),
+                        "expected authenticated payload, got {msg:?}"
+                    );
+                })
+            });
     }
 }
