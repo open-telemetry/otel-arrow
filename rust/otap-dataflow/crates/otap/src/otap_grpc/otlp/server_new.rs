@@ -71,7 +71,7 @@ pub enum RouteResponse {
 }
 
 impl AckSlot {
-    /// Routes the final outcome into the registered slot matching the provided `RouteData`.
+    /// Routes the final outcome into the registered slot matching the provided `CallData`.
     #[must_use]
     pub fn route_response(
         &self,

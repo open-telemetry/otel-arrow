@@ -270,10 +270,10 @@ pub struct DurableBufferMetrics {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BundleRef RouteData Encoding
+// BundleRef CallData Encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Encode a BundleRef into RouteData for ACK/NACK tracking.
+/// Encode a BundleRef into CallData for ACK/NACK tracking.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32 packed into u64)]
 fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
@@ -283,7 +283,7 @@ fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
     ]
 }
 
-/// Decode a BundleRef from RouteData.
+/// Decode a BundleRef from CallData.
 fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     if calldata.len() < 2 {
         return None;
@@ -296,7 +296,7 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
-/// Encode a retry ticket into RouteData for DelayedData scheduling.
+/// Encode a retry ticket into CallData for DelayedData scheduling.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32), retry_count (u32) packed into u64]
 fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
@@ -308,7 +308,7 @@ fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
     ]
 }
 
-/// Decode a retry ticket from RouteData.
+/// Decode a retry ticket from CallData.
 ///
 /// Returns (BundleRef, retry_count) if valid.
 fn decode_retry_ticket(calldata: &CallData) -> Option<(BundleRef, u32)> {
