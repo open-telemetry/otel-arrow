@@ -16,14 +16,14 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Plugin Summary: `deployment_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `docker` | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
 | `process` | `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components as a sub-process |
 
 ## Plugin Summary: `monitoring_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `docker_component` | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
 | `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
 | `prometheus` | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
@@ -31,13 +31,13 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Plugin Summary: `execution_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `pipeline_perf_loadgen` | `pipeline_perf_loadgen` | `lib.impl.strategies.execution.pipeline_perf_loadgen` | `PipelinePerfLoadgenExecution` | `PipelinePerfLoadgenConfig` | Execution strategy implementation for controlling the pipeline performance load generator |
 
 ## Plugin Summary: `hook_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `build_docker_images` | `build_docker_images` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImages` | `BuildDockerImagesConfig` | Hook strategy to build Docker images for multiple components locally |
 | `build_docker_image` | `build_docker_image` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImage` | `BuildDockerImageConfig` | Hook strategy implementation for building a single Docker image |
 | `create_docker_network` | `create_docker_network` | `lib.impl.strategies.hooks.docker.network` | `CreateDockerNetwork` | `CreateDockerNetworkConfig` | Hook strategy to create a Docker network for a component if it does not already exist |
@@ -55,7 +55,7 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Plugin Summary: `step_actions`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `component_action` | `component_action` | `lib.impl.actions.component_action` | `ComponentAction` | `ComponentActionConfig` | Step action implementation for executing a lifecycle phase on a named component |
 | `multi_component_action` | `multi_component_action` | `lib.impl.actions.multi_component_action` | `MultiComponentAction` | `MultiComponentActionConfig` | Step action that executes a specified lifecycle phase on one or more components |
 | `wait` | `wait` | `lib.impl.actions.wait_action` | `WaitAction` | `WaitActionConfig` | Step action that introduces a delay during test execution |
@@ -65,7 +65,7 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Plugin Summary: `report_formatters`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `noop` | `noop` | `lib.impl.strategies.common.report` | `NoopFormatter` | `NoopFormatterConfig` | A report formatter that performs no formatting and returns an empty string |
 | `json` | `json` | `lib.impl.strategies.common.report` | `JsonFormatter` | `JsonFormatterConfig` | Formats a report as a JSON string using the specified configuration |
 | `template` | `template` | `lib.impl.strategies.common.report` | `TemplateFormatter` | `TemplateFormatterConfig` | Formats a report using a Jinja2 template specified either by file path or inline string |
@@ -73,7 +73,7 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Plugin Summary: `report_writers`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
-|------|-------------|--------|-------|--------------|-------------|
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `noop` | `noop` | `lib.impl.strategies.common.report` | `NoopDestination` | `NoopDestinationConfig` | A destination writer that performs no action |
 | `file` | `file` | `lib.impl.strategies.common.report` | `FileDestination` | `FileDestinationConfig` | A destination writer that outputs to a local file |
 | `console` | `console` | `lib.impl.strategies.common.report` | `ConsoleDestination` | `ConsoleDestinationConfig` | Writes report data to the console (stdout) or via a logger |

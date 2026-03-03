@@ -82,20 +82,20 @@ struct MetricSet {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
-    #[default]
     Json,
     JsonCompact,
     LineProtocol,
+    #[default]
     Prometheus,
 }
 
 /// Query parameters for /telemetry/metrics
 #[derive(Debug, Default, Deserialize)]
 pub struct MetricsQuery {
-    /// When true, reset metrics after reading. Default: true.
-    #[serde(default = "default_true")]
+    /// When true, reset metrics after reading. Default: false.
+    #[serde(default = "default_false")]
     reset: bool,
-    /// Output format: json (default), json_compact, line_protocol, prometheus
+    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
     /// When true, metric set which have all zero values are kept in the output. Default: false.
@@ -106,13 +106,13 @@ pub struct MetricsQuery {
 /// Query parameters for /telemetry/metrics/aggregate
 #[derive(Debug, Default, Deserialize)]
 pub struct AggregateQuery {
-    /// When true, reset metrics after reading. Default: true.
-    #[serde(default = "default_true")]
+    /// When true, reset metrics after reading. Default: false.
+    #[serde(default = "default_false")]
     reset: bool,
     /// Comma-separated list of attribute names to group by (in addition to metric set name).
     #[serde(default)]
     attrs: Option<String>,
-    /// Output format: json (default), json_compact, line_protocol, prometheus
+    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
 }
@@ -130,11 +130,6 @@ struct AggregateGroup {
 }
 
 #[inline]
-const fn default_true() -> bool {
-    true
-}
-
-#[inline]
 const fn default_false() -> bool {
     false
 }
@@ -148,12 +143,12 @@ pub async fn get_live_schema(
     Ok(Json(state.metrics_registry.generate_semconv_registry()))
 }
 
-/// Handler for the `/metrics` endpoint.
+/// Handler for the `/telemetry/metrics` endpoint.
 /// Supports multiple output formats and optional reset.
 ///
 /// Query parameters:
-/// - `reset` (bool, default true): whether to reset metrics after reading.
-/// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+/// - `reset` (bool, default false): whether to reset metrics after reading.
+/// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
 pub async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
@@ -227,7 +222,7 @@ pub async fn get_metrics(
 /// Aggregates metrics by metric set name and optionally by a list of attributes.
 ///
 /// Query parameters:
-/// - `reset` (bool, default true): whether to reset metrics after reading.
+/// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `attrs` (string, optional): comma-separated list of attribute names to group by.
 /// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
 pub async fn get_metrics_aggregate(

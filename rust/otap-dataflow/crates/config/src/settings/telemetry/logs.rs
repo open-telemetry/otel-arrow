@@ -11,6 +11,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogsConfig {
     /// The log level for internal engine logs.
+    ///
+    /// Accepts either a simple level keyword (`off`, `debug`, `info`, `warn`, `error`)
+    /// or a full [`tracing_subscriber::EnvFilter`] directive string for fine-grained
+    /// control (e.g., `"info,typespec_client_core=warn,azure_core=off"`).
+    ///
+    /// The value is passed directly to `EnvFilter`. When not specified, the default
+    /// is `"info,h2=off,hyper=off"` which silences known noisy HTTP dependencies.
+    ///
+    /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
     #[serde(default)]
     pub level: LogLevel,
 
@@ -20,20 +29,28 @@ pub struct LogsConfig {
 }
 
 /// Log level for dataflow engine logs.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    /// Logging is completely disabled.
-    Off,
-    /// Debug level logging.
-    Debug,
-    /// Info level logging.
-    #[default]
-    Info,
-    /// Warn level logging.
-    Warn,
-    /// Error level logging.
-    Error,
+///
+/// Accepts either a simple level keyword (`off`, `debug`, `info`, `warn`, `error`)
+/// or a full [`tracing_subscriber::EnvFilter`] directive string for fine-grained
+/// control (e.g., `"info,typespec_client_core=warn,azure_core=off"`).
+///
+/// Defaults to `"info,h2=off,hyper=off"`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(transparent)]
+pub struct LogLevel(String);
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self("info,h2=off,hyper=off".to_string())
+    }
+}
+
+impl LogLevel {
+    /// Returns the filter directive string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Logging providers for different execution contexts.
@@ -240,7 +257,7 @@ mod tests {
     fn test_defaults() {
         // Manual Default impl matches serde defaults
         let config = LogsConfig::default();
-        assert_eq!(config.level, LogLevel::Info);
+        assert_eq!(config.level.as_str(), "info,h2=off,hyper=off");
         assert_eq!(config.providers.global, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
@@ -256,17 +273,20 @@ mod tests {
     }
 
     #[test]
-    fn test_log_level_parsing() {
-        let cases = [
-            ("off", LogLevel::Off),
-            ("debug", LogLevel::Debug),
-            ("info", LogLevel::Info),
-            ("warn", LogLevel::Warn),
-            ("error", LogLevel::Error),
-        ];
-        for (name, expected) in cases {
-            assert_eq!(parse(&format!("level: {name}")).level, expected);
+    fn test_log_level_parsing_simple() {
+        for name in ["off", "debug", "info", "warn", "error"] {
+            let config = parse(&format!("level: {name}"));
+            assert_eq!(config.level.as_str(), name);
         }
+    }
+
+    #[test]
+    fn test_log_level_parsing_directive_string() {
+        let config = parse("level: \"info,typespec_client_core=warn\"");
+        assert_eq!(config.level.as_str(), "info,typespec_client_core=warn");
+
+        let config = parse("level: \"warn,azure_core=off,h2=off\"");
+        assert_eq!(config.level.as_str(), "warn,azure_core=off,h2=off");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 ## Plugin Summary
 
 | Type Name | Module | Class | Config Class | Description Summary |
-|-----------|--------|-------|--------------|----------------------|
+| --------- | ------ | ----- | ------------ | -------------------- |
 | `noop` | `lib.impl.strategies.common.report` | `NoopFormatter` | `NoopFormatterConfig` | A report formatter that performs no formatting and returns an empty string |
 | `json` | `lib.impl.strategies.common.report` | `JsonFormatter` | `JsonFormatterConfig` | Formats a report as a JSON string using the specified configuration |
 | `template` | `lib.impl.strategies.common.report` | `TemplateFormatter` | `TemplateFormatterConfig` | Formats a report using a Jinja2 template specified either by file path or inline string |
