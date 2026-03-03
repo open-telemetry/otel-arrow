@@ -60,6 +60,7 @@ pub mod config;
 pub mod context;
 pub mod control;
 pub mod effect_handler;
+pub mod engine_metrics;
 pub mod entity_context;
 pub mod local;
 pub mod node;
