@@ -193,62 +193,12 @@ impl AssignPipelineStage {
             values = take(&values, &vals_take_indices, None)?;
         };
 
-        // build the new record batch ..
-        let mut columns = root_batch.columns().to_vec();
-        let schema = root_batch.schema();
-        let fields = schema.fields();
-        let target_col_index = fields.find(dest_column_name).map(|(position, _)| position);
-        let mut fields = fields.to_vec();
-
-        if let Some(target_col_index) = target_col_index {
-            // replace field if the datatype has changed. Note, we wont have changed the logical
-            // type of the field, but the dictionary encoding may be what has changed
-            let needs_field_update = fields[target_col_index].data_type() != values.data_type();
-            if needs_field_update {
-                fields
-                    .iter_mut()
-                    .enumerate()
-                    .for_each(|(curr_index, field)| {
-                        if target_col_index == curr_index {
-                            let new_field = field
-                                .as_ref()
-                                .clone()
-                                .with_data_type(values.data_type().clone());
-                            *field = Arc::new(new_field)
-                        }
-                    });
-            }
-
-            // replace column
-            columns
-                .iter_mut()
-                .enumerate()
-                .for_each(|(curr_index, col)| {
-                    if target_col_index == curr_index {
-                        *col = Arc::clone(&values)
-                    }
-                });
-        } else {
-            // just insert the new column at the end
-            fields.push(Arc::new(Field::new(
-                dest_column_name,
-                values.data_type().clone(),
-                // Note: here we're assuming that since the column was missing that it was an
-                // optional column which means that it is nullable
-                true,
-            )));
-            columns.push(values)
-        }
-
-        // safety: try_new will only fail here if the column types are invalid for the schema, or
-        // if the columns don't all have the same length, but we've computed the fields/columns in
-        // such a way that they should be valid and this should return Ok
-        let new_root_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("can create record batch");
-
         // replace the root record batch with the new one
         let root_payload_type = otap_batch.root_payload_type();
-        otap_batch.set(root_payload_type, new_root_batch);
+        otap_batch.set(
+            root_payload_type,
+            upsert_column(dest_column_name, values, root_batch)?,
+        );
 
         Ok(otap_batch)
     }
@@ -372,16 +322,6 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
         ExprLogicalType::Boolean | ExprLogicalType::String => {
             source_type == &ExprLogicalType::AnyValue
         }
-        ExprLogicalType::Float64 => {
-            source_type == &ExprLogicalType::AnyValue
-                || source_type == &ExprLogicalType::AnyValueNumeric
-        }
-        ExprLogicalType::Int64 => match source_type {
-            ExprLogicalType::AnyValue
-            | ExprLogicalType::AnyValueNumeric
-            | ExprLogicalType::ScalarInt => true,
-            _ => false,
-        },
 
         // TODO - handle other cases as we support a greater variety of destinations
         _ => false,
@@ -467,16 +407,78 @@ fn eval_result_to_array(
                     }
                 }
             } else {
-                // TODO - do we need to remove dictionary encoding?
+                // TODO - eventually we may have to remove the dictionary encoding here.
+                // however currently the only destinations we support all either support dict
+                // encoding, or it's not possible to produce an expression for the column that
+                // results in dictionary encoding. If eventually we support int type coercion,
+                // we'll need to remove dict encoding here for expressions like:
+                // dropped_attributes_count = attributes["x"] // e.g. uint32 <- dict<u16, int64>
+
                 Ok(Arc::clone(array_vals))
             }
         }
     }
 }
 
+fn upsert_column(
+    column_name: &str,
+    new_column: ArrayRef,
+    record_batch: &RecordBatch,
+) -> Result<RecordBatch> {
+    let mut columns = record_batch.columns().to_vec();
+    let schema = record_batch.schema();
+    let fields = schema.fields();
+    let target_col_index = fields.find(column_name).map(|(position, _)| position);
+    let mut fields = fields.to_vec();
+
+    if let Some(target_col_index) = target_col_index {
+        // replace field if the datatype has changed. Note, we wont have changed the logical
+        // type of the field, but the dictionary encoding may be what has changed
+        let needs_field_update = fields[target_col_index].data_type() != new_column.data_type();
+        if needs_field_update {
+            fields
+                .iter_mut()
+                .enumerate()
+                .for_each(|(curr_index, field)| {
+                    if target_col_index == curr_index {
+                        let new_field = field
+                            .as_ref()
+                            .clone()
+                            .with_data_type(new_column.data_type().clone());
+                        *field = Arc::new(new_field)
+                    }
+                });
+        }
+
+        // replace column
+        columns
+            .iter_mut()
+            .enumerate()
+            .for_each(|(curr_index, col)| {
+                if target_col_index == curr_index {
+                    *col = Arc::clone(&new_column)
+                }
+            });
+    } else {
+        // just insert the new column at the end
+        fields.push(Arc::new(Field::new(
+            column_name,
+            new_column.data_type().clone(),
+            // Note: here we're assuming that since the column was missing that it was an
+            // optional column which means that it is nullable
+            true,
+        )));
+        columns.push(new_column)
+    }
+
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
+}
 #[cfg(test)]
 mod test {
-    use arrow::{array::UInt16Array, datatypes::DataType};
+    use arrow::{compute::kernels::cast, datatypes::DataType};
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
@@ -967,9 +969,10 @@ mod test {
         let logs_data = to_logs_data(log_records);
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         // double check the input column has the expected type
-        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         assert_eq!(
-            logs.column_by_name(consts::ATTRIBUTE_STR)
+            log_attrs
+                .column_by_name(consts::ATTRIBUTE_STR)
                 .unwrap()
                 .data_type(),
             &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
@@ -990,24 +993,85 @@ mod test {
 
     #[tokio::test]
     async fn test_assign_non_dict_to_dict_casts_to_dict_u8_when_possible() {
-        todo!()
+        let mut log_records = vec![];
+        for i in 0..128 {
+            log_records.push(
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new(
+                        "attr1",
+                        AnyValue::new_string(&format!("{i}")),
+                    )])
+                    .finish(),
+            )
+        }
+
+        let logs_data = to_logs_data(log_records);
+        let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        // double check the input column has the expected type
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let str_val = log_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        let log_attrs = super::upsert_column(
+            consts::ATTRIBUTE_STR,
+            cast(&str_val, &DataType::Utf8).unwrap(),
+            log_attrs,
+        )
+        .unwrap();
+        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs);
+
+        let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::SEVERITY_TEXT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+        )
     }
 
     #[tokio::test]
     async fn test_assign_non_dict_to_dict_casts_to_dict_u16_when_possible() {
-        todo!()
+        let mut log_records = vec![];
+        for i in 0..300 {
+            log_records.push(
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new(
+                        "attr1",
+                        AnyValue::new_string(&format!("{i}")),
+                    )])
+                    .finish(),
+            )
+        }
+
+        let logs_data = to_logs_data(log_records);
+        let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        // double check the input column has the expected type
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let str_val = log_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        let log_attrs = super::upsert_column(
+            consts::ATTRIBUTE_STR,
+            cast(&str_val, &DataType::Utf8).unwrap(),
+            log_attrs,
+        )
+        .unwrap();
+        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs);
+
+        let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(
+            logs.column_by_name(consts::SEVERITY_TEXT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        )
     }
 
-    #[tokio::test]
-    async fn test_assign_non_dict_to_dict_keeps_non_dict_when_cast_to_dict_not_possible() {
-        todo!()
-    }
-
-    #[tokio::test]
-    async fn test_assign_dict_to_non_dict_column_converts_to_native() {
-        todo!()
-    }
-
-    // TODO - assignment to all possible root types (incl. from any values / scalars?)
     // TODO - assignment with null coercsion drops column
 }
