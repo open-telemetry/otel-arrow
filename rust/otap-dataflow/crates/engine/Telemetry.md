@@ -1,7 +1,8 @@
 # Engine Crate Telemetry
 
 This document lists telemetry emitted directly by the `crates/engine` crate.
-It includes metric instruments registered by the crate and log events emitted via `otel_*` log macros.
+It includes metric instruments registered by the crate and log events
+emitted via `otel_*` log macros.
 
 ## Metrics
 
@@ -77,15 +78,24 @@ It includes metric instruments registered by the crate and log events emitted vi
 When adding or changing telemetry in this crate:
 
 1. **Metrics**
-	- If you add a field under a `#[metric_set(...)]` struct in `crates/engine/src/*metrics*.rs`, add/update the corresponding row in the **Metrics** table.
-	- Use the effective emitted name as `<metric_set_name>.<metric_field_name_or_metric_name_override>`.
-	- If the metric is feature/target gated (for example `tokio_unstable`, `target_has_atomic = "64"`, or jemalloc-specific), note that in the description.
+     - If you add a field under a `#[metric_set(...)]` struct in
+         `crates/engine/src/*metrics*.rs`, add/update the corresponding row in
+         the **Metrics** table.
+     - Use the effective emitted name as
+         `<metric_set_name>.<metric_field_name_or_metric_name_override>`.
+     - If the metric is feature/target gated (for example `tokio_unstable`,
+         `target_has_atomic = "64"`, or jemalloc-specific), note that in the
+         description.
 
 2. **Logs**
-	- If you add `otel_trace!`, `otel_debug!`, `otel_info!`, `otel_warn!`, or `otel_error!` calls in `crates/engine/src/**`, add/update a row in the **Logs** table.
-	- Keep event names exact (first macro argument), include the explicit log level, and reference the file where it is emitted.
+     - If you add `otel_trace!`, `otel_debug!`, `otel_info!`, `otel_warn!`, or
+         `otel_error!` calls in `crates/engine/src/**`, add/update a row in the
+         **Logs** table.
+     - Keep event names exact (first macro argument), include the explicit
+         log level, and reference the file where it is emitted.
 
 3. **Review checklist (quick)**
-	- Search for new metric sets: `#[metric_set(` in `crates/engine/src/**`.
-	- Search for new log events: `otel_(trace|debug|info|warn|error)!(` in `crates/engine/src/**`.
-	- Confirm this document still matches current source files.
+     - Search for new metric sets: `#[metric_set(` in `crates/engine/src/**`.
+     - Search for new log events: `otel_(trace|debug|info|warn|error)!(` in
+         `crates/engine/src/**`.
+     - Confirm this document still matches current source files.
