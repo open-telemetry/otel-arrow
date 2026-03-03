@@ -11,12 +11,29 @@
 //! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
 //!   Process-wide Resident Set Size — physical memory currently held in RAM.
 //!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+//!
+//! - `cpu_utilization` (`Gauge<f64>`, `{1}`):
+//!   Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across **all
+//!   logical CPU cores on the system** (not just the cores assigned to the engine).
+//!   Computed as `cpu_delta / (wall_delta × num_system_cores)` over the last
+//!   measurement interval. A value of `1.0` means 100% of all system cores are
+//!   in use; `0.5` on an 8-core machine corresponds to 4 fully loaded cores.
+//!   Aligned with the OTel semantic convention `process.cpu.utilization`.
+//!
+//!   We emit utilization directly (rather than a cumulative `cpu_time` counter)
+//!   so that users can read the metric as-is without requiring PromQL `rate()`
+//!   or similar query-time derivations.
+//!
+//!   TODO: Also emit a cumulative `cpu_time` counter (like the Go Collector's
+//!   `process_cpu_seconds_total`) for users who prefer query-time computation.
 
-use otap_df_telemetry::instrument::ObserveUpDownCounter;
+use cpu_time::ProcessTime;
+use otap_df_telemetry::instrument::{Gauge, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use std::time::Instant;
 
 /// Engine-wide metrics emitted once per engine instance.
 #[metric_set(name = "engine.metrics")]
@@ -26,6 +43,14 @@ pub struct EngineMetrics {
     /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
     #[metric(unit = "{By}")]
     pub memory_rss: ObserveUpDownCounter<u64>,
+
+    /// Process-wide CPU utilization as a ratio in [0, 1], normalized across all
+    /// logical CPU cores on the system (not just engine-assigned cores).
+    /// Aligned with the OTel semantic convention `process.cpu.utilization`.
+    ///
+    /// The `cpu.mode` attribute is not set; this reports combined user + system time.
+    #[metric(unit = "{1}")]
+    pub cpu_utilization: Gauge<f64>,
 }
 
 /// Monitors and reports engine-wide metrics.
@@ -37,6 +62,12 @@ pub struct EngineMetricsMonitor {
     metrics: MetricSet<EngineMetrics>,
     reporter: MetricsReporter,
     registry: TelemetryRegistryHandle,
+    /// Wall-clock anchor for the current measurement interval.
+    wall_start: Instant,
+    /// Process-wide CPU time anchor for the current measurement interval.
+    cpu_start: ProcessTime,
+    /// Total number of logical CPU cores available on the system.
+    num_cores: usize,
 }
 
 impl EngineMetricsMonitor {
@@ -51,16 +82,39 @@ impl EngineMetricsMonitor {
         reporter: MetricsReporter,
     ) -> Self {
         let metrics = registry.register_metric_set_for_entity::<EngineMetrics>(entity_key);
+        let num_cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         Self {
             metrics,
             reporter,
             registry,
+            wall_start: Instant::now(),
+            cpu_start: ProcessTime::now(),
+            num_cores,
         }
     }
 
-    /// Samples current engine-wide metrics (RSS, etc.).
+    /// Samples current engine-wide metrics (RSS, CPU utilization, etc.).
     pub fn update(&mut self) {
         self.metrics.memory_rss.observe(get_rss_bytes());
+
+        // Compute process-wide CPU utilization normalized across all cores.
+        let now_wall = Instant::now();
+        let now_cpu = ProcessTime::now();
+        let wall_delta = now_wall.duration_since(self.wall_start);
+        let cpu_delta = now_cpu.duration_since(self.cpu_start);
+        let wall_micros = wall_delta.as_micros();
+        if wall_micros > 0 {
+            let utilization = (cpu_delta.as_micros() as f64
+                / (wall_micros as f64 * self.num_cores as f64))
+                .clamp(0.0, 1.0);
+            self.metrics.cpu_utilization.set(utilization);
+        } else {
+            self.metrics.cpu_utilization.set(0.0);
+        }
+        self.wall_start = now_wall;
+        self.cpu_start = now_cpu;
     }
 
     /// Flushes sampled metrics to the reporting pipeline.
@@ -119,5 +173,28 @@ mod tests {
         let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter);
         monitor.update();
         assert!(monitor.report().is_ok());
+    }
+
+    #[test]
+    fn engine_metrics_cpu_utilization_in_range() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let entity_key = controller.register_engine_entity();
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
+
+        let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter);
+
+        // Do a small busy-spin so there is measurable CPU time.
+        let start = Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(10) {
+            let _ = std::hint::black_box(0u64.wrapping_add(1));
+        }
+
+        monitor.update();
+        let util = monitor.metrics.cpu_utilization.get();
+        assert!(
+            (0.0..=1.0).contains(&util),
+            "cpu_utilization should be in [0, 1], got {util}"
+        );
     }
 }
