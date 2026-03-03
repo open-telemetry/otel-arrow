@@ -33,11 +33,7 @@ criterion_main!(benches);
 /// Shapes must stay within u16::MAX total items across NUM_BATCHES batches.
 /// Each batch generates num_resources * scopes_per_resource * items_per_scope
 /// items. Combinations that would overflow u16::MAX are skipped at runtime.
-const INPUT_SHAPES: &[(usize, usize, &str)] = &[
-    (1, 1, "1r1s"),
-    (3, 2, "3r2s"),
-    (5, 3, "5r3s"),
-];
+const INPUT_SHAPES: &[(usize, usize, &str)] = &[(1, 1, "1r1s"), (3, 2, "3r2s")];
 
 fn bench_all(c: &mut Criterion) {
     for &size in BATCH_SIZES {
