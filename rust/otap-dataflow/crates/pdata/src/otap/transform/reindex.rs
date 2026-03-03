@@ -148,7 +148,10 @@ where
             let primary_id_name = info.primary_id.as_ref().map(|p| p.name);
             if primary_id_name != Some(relation.key_col) {
                 check_id_column_for_overflow(
-                    store, payload_type, relation.key_col, id_col.as_ref(),
+                    store,
+                    payload_type,
+                    relation.key_col,
+                    id_col.as_ref(),
                 )?;
             }
 
@@ -259,24 +262,6 @@ where
     Ok(())
 }
 
-/// Returns (min, max) of an ID column, handling nulls and dictionary encoding.
-///
-/// Returns `None` if the column is empty or all null.
-fn id_column_min_max<T>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>>
-where
-    T: ArrowNumericType,
-    T::Native: ArrowNativeTypeOp,
-{
-    let values = materialize_id_values::<T>(col)?;
-    let Some(min) = min_array::<T, _>(values) else {
-        return Ok(None);
-    };
-    // SAFETY: presence of a min value implies at least one non-null element,
-    // so max must also be Some.
-    let max = max_array::<T, _>(values).expect("max must exist when min exists");
-    Ok(Some((min, max)))
-}
-
 /// Two-pass reindexing for an ID column and its corresponding parent_id
 /// columns in child tables.
 ///
@@ -374,6 +359,24 @@ where
     }
 
     Ok(())
+}
+
+/// Returns (min, max) of an ID column, handling nulls and dictionary encoding.
+///
+/// Returns `None` if the column is empty or all null.
+fn id_column_min_max<T>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>>
+where
+    T: ArrowNumericType,
+    T::Native: ArrowNativeTypeOp,
+{
+    let values = materialize_id_values::<T>(col)?;
+    let Some(min) = min_array::<T, _>(values) else {
+        return Ok(None);
+    };
+    // SAFETY: presence of a min value implies at least one non-null element,
+    // so max must also be Some.
+    let max = max_array::<T, _>(values).expect("max must exist when min exists");
+    Ok(Some((min, max)))
 }
 
 /// Fast path: apply a uniform offset to the ID column and all child parent_id
@@ -2355,11 +2358,17 @@ mod tests {
         let mut batches = vec![
             logs!(
                 (Logs, ("resource.id", UInt16, resource_ids_1)),
-                (ResourceAttrs, ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>()))
+                (
+                    ResourceAttrs,
+                    ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>())
+                )
             ),
             logs!(
                 (Logs, ("resource.id", UInt16, resource_ids_2)),
-                (ResourceAttrs, ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>()))
+                (
+                    ResourceAttrs,
+                    ("parent_id", UInt16, (0..HALF_U16).collect::<Vec<u16>>())
+                )
             ),
         ];
 
