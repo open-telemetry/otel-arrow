@@ -7,7 +7,7 @@
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-FROM --platform=$BUILDPLATFORM docker.io/rust:1.93@sha256:4c7eb947d7e078f5c076e086c7b75c36ea0ec7c685f2244b3d79306deb7e44b7 AS dataflow-build
+FROM --platform=$BUILDPLATFORM docker.io/rust:1.93@sha256:51c04d7a2b38418ba23ecbfb373c40d3bd493dec1ddfae00ab5669527320195e AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM

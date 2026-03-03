@@ -937,6 +937,36 @@ impl MetricsConfig {
     }
 }
 
+/// Configuration for generating logs with a specific number of log records.
+#[derive(Debug, Clone)]
+pub struct LogsConfig {
+    /// Number of log records to generate.
+    pub num_logs: usize,
+}
+
+impl LogsConfig {
+    /// Create a new `LogsConfig` with the given number of log records.
+    #[must_use]
+    pub const fn new(num_logs: usize) -> Self {
+        Self { num_logs }
+    }
+}
+
+/// Configuration for generating traces with a specific number of spans.
+#[derive(Debug, Clone)]
+pub struct TracesConfig {
+    /// Number of spans to generate.
+    pub num_spans: usize,
+}
+
+impl TracesConfig {
+    /// Create a new `TracesConfig` with the given number of spans.
+    #[must_use]
+    pub const fn new(num_spans: usize) -> Self {
+        Self { num_spans }
+    }
+}
+
 /// Generator for test data.
 ///
 /// TODO: This is a placeholder, only varies timestamp_offset; add
@@ -952,6 +982,8 @@ pub struct DataGenerator {
     count: usize,
     time_value: u64,
     metrics_config: Option<MetricsConfig>,
+    logs_config: Option<LogsConfig>,
+    traces_config: Option<TracesConfig>,
 }
 
 impl DataGenerator {
@@ -965,6 +997,8 @@ impl DataGenerator {
             // One million nanoseconds past the UTC epoch.
             time_value: 1_000_000_000_000_000,
             metrics_config: None,
+            logs_config: None,
+            traces_config: None,
         }
     }
 
@@ -976,6 +1010,34 @@ impl DataGenerator {
             count: 0,
             time_value: 1_000_000_000_000_000,
             metrics_config: Some(config),
+            logs_config: None,
+            traces_config: None,
+        }
+    }
+
+    /// Create a DataGenerator with a specific logs configuration
+    #[must_use]
+    pub const fn with_logs_config(config: LogsConfig) -> Self {
+        Self {
+            limit: 0,
+            count: 0,
+            time_value: 1_000_000_000_000_000,
+            metrics_config: None,
+            logs_config: Some(config),
+            traces_config: None,
+        }
+    }
+
+    /// Create a DataGenerator with a specific traces configuration
+    #[must_use]
+    pub const fn with_traces_config(config: TracesConfig) -> Self {
+        Self {
+            limit: 0,
+            count: 0,
+            time_value: 1_000_000_000_000_000,
+            metrics_config: None,
+            logs_config: None,
+            traces_config: Some(config),
         }
     }
 }
@@ -1196,6 +1258,72 @@ impl DataGenerator {
             vec![ScopeMetrics::new(
                 InstrumentationScope::build().finish(),
                 metrics,
+            )],
+        )])
+    }
+
+    /// Generate test OTLP logs data using the configured LogsConfig.
+    #[must_use]
+    pub fn generate_logs_from_config(&mut self) -> LogsData {
+        let config = self
+            .logs_config
+            .as_ref()
+            .expect("logs_config must be set")
+            .clone();
+
+        let logs: Vec<LogRecord> = (0..config.num_logs)
+            .map(|_| {
+                LogRecord::build()
+                    .time_unix_nano(self.timestamp())
+                    .observed_time_unix_nano(self.timestamp())
+                    .severity_number(SeverityNumber::Info as i32)
+                    .finish()
+            })
+            .collect();
+
+        LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope".to_string())
+                    .finish(),
+                logs,
+            )],
+        )])
+    }
+
+    /// Generate test OTLP traces data using the configured TracesConfig.
+    #[must_use]
+    pub fn generate_traces_from_config(&mut self) -> TracesData {
+        let config = self
+            .traces_config
+            .as_ref()
+            .expect("traces_config must be set")
+            .clone();
+
+        let spans: Vec<Span> = (0..config.num_spans)
+            .map(|i| {
+                Span::build()
+                    .trace_id(vec![0u8; 16])
+                    .span_id({
+                        let mut id = [0u8; 8];
+                        let bytes = (i as u64 + 1).to_be_bytes();
+                        id.copy_from_slice(&bytes);
+                        id.to_vec()
+                    })
+                    .name(format!("span_{i}"))
+                    .start_time_unix_nano(self.timestamp())
+                    .end_time_unix_nano(self.timestamp())
+                    .status(Status::new(StatusCode::Ok, "ok"))
+                    .finish()
+            })
+            .collect();
+
+        TracesData::new(vec![ResourceSpans::new(
+            Resource::build().finish(),
+            vec![ScopeSpans::new(
+                InstrumentationScope::build().finish(),
+                spans,
             )],
         )])
     }

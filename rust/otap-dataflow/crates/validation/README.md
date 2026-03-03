@@ -198,7 +198,8 @@ count per message; `min/max` optional; `timeout` optional
   - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
 - `AttributeRequireKey { domains, keys }`: specified keys must appear.
   - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
-- `AttributeRequireKeyValue { domains, pairs }`: specified key/value pairs must appear.
+- `AttributeRequireKeyValue { domains, pairs }`: specified key/value pairs must
+  appear.
   - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
   - `pairs` accepts `Vec<KeyValue>`
 - `AttributeNoDuplicate`: check that there are no duplicate attributes

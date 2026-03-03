@@ -13,10 +13,10 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::logs::LogsDataView;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata_views::views::logs::LogsDataView;
 
 use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
@@ -463,12 +463,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        effect_handler
-            .info(&format!(
-                "[AzureMonitorExporter] Starting: endpoint={}, stream={}, dcr={}",
-                self.config.api.dcr_endpoint, self.config.api.stream_name, self.config.api.dcr
-            ))
-            .await;
+        otel_info!(
+            "azure_monitor_exporter.start",
+            endpoint = self.config.api.dcr_endpoint.as_str(),
+            stream = self.config.api.stream_name.as_str(),
+            dcr = self.config.api.dcr.as_str()
+        );
 
         let mut msg_id = 0;
 
