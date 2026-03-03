@@ -72,7 +72,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
-    otel_warn, self_tracing::LogContext,
+    otel_warn, otel_error, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
@@ -1237,6 +1237,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             message: e.to_string(),
                         }));
                     }
+                    otel_error!(
+                        "controller.pipeline_build_failed",
+                        pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
+                        pipeline_id = pipeline_key.pipeline_id.as_ref(),
+                        core_id = core_id.id,
+                        error = %e,
+                        message = "Failed to build runtime pipeline from configuration"
+                    );
                     Error::PipelineRuntimeError {
                         source: Box::new(e),
                     }
@@ -1261,8 +1269,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     pipeline_ctrl_msg_tx,
                     pipeline_ctrl_msg_rx,
                 )
-                .map_err(|e| Error::PipelineRuntimeError {
-                    source: Box::new(e),
+                .map_err(|e| {
+                    otel_error!(
+                        "controller.pipeline_runtime_failed",
+                        core_id = core_id.id,
+                        error = %e,
+                        message = "Pipeline terminated with a runtime error"
+                    );
+                    Error::PipelineRuntimeError {
+                        source: Box::new(e),
+                    }
                 })
         })
     }

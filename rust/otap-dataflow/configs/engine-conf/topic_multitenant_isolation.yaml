@@ -74,7 +74,7 @@ groups:
               count: 3
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               data_source: static
@@ -86,7 +86,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
 
-          stamp_tenant:
+          set_tenant_a:
             type: processor:attribute
             config:
               actions:
@@ -95,17 +95,17 @@ groups:
                   value: tenant-a
               apply_to: ["resource"]
 
-          exporter:
+          ingress:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: receiver
-            to: stamp_tenant
-          - from: stamp_tenant
-            to: exporter
+          - from: traffic_gen
+            to: set_tenant_a
+          - from: set_tenant_a
+            to: ingress
 
       traffic_gen_tenant_b:
         policies:
@@ -115,7 +115,7 @@ groups:
               count: 3
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               data_source: static
@@ -127,7 +127,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
 
-          stamp_tenant:
+          set_tenant_b:
             type: processor:attribute
             config:
               actions:
@@ -136,17 +136,17 @@ groups:
                   value: tenant-b
               apply_to: ["resource"]
 
-          exporter:
+          ingress:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: receiver
-            to: stamp_tenant
-          - from: stamp_tenant
-            to: exporter
+          - from: traffic_gen
+            to: set_tenant_b
+          - from: set_tenant_b
+            to: ingress
 
       traffic_gen_tenant_c:
         policies:
@@ -156,7 +156,7 @@ groups:
               count: 2
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               data_source: static
@@ -168,7 +168,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
 
-          stamp_tenant:
+          set_tenant_c:
             type: processor:attribute
             config:
               actions:
@@ -177,17 +177,17 @@ groups:
                   value: tenant-c
               apply_to: ["resource"]
 
-          exporter:
+          ingress:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: receiver
-            to: stamp_tenant
-          - from: stamp_tenant
-            to: exporter
+          - from: traffic_gen
+            to: set_tenant_c
+          - from: set_tenant_c
+            to: ingress
 
       ingress_router:
         policies:
@@ -197,7 +197,7 @@ groups:
               count: 1
 
         nodes:
-          from_ingress_topic:
+          ingress:
             type: receiver:topic
             config:
               topic: ingress
@@ -218,19 +218,19 @@ groups:
                 tenant-c: tenant_c
               default_output: unmatched
 
-          to_tenant_a:
+          tenant_a:
             type: exporter:topic
             config:
               topic: tenant_a
               queue_on_full: block
 
-          to_tenant_b:
+          tenant_b:
             type: exporter:topic
             config:
               topic: tenant_b
               queue_on_full: block
 
-          to_tenant_c:
+          tenant_c:
             type: exporter:topic
             config:
               topic: tenant_c
@@ -241,18 +241,18 @@ groups:
             config: null
 
         connections:
-          - from: from_ingress_topic
+          - from: ingress
             to: tenant_router
           - from: tenant_router["tenant_a"]
-            to: to_tenant_a
+            to: tenant_a
           - from: tenant_router["tenant_b"]
-            to: to_tenant_b
+            to: tenant_b
           - from: tenant_router["tenant_c"]
-            to: to_tenant_c
+            to: tenant_c
           - from: tenant_router["unmatched"]
             to: unmatched_sink
 
-      tenant_a_processing:
+      tenant_a_pipeline:
         policies:
           resources:
             core_allocation:
@@ -260,7 +260,7 @@ groups:
               count: 1
 
         nodes:
-          from_topic:
+          tenant_a:
             type: receiver:topic
             config:
               topic: tenant_a
@@ -273,17 +273,17 @@ groups:
             config:
               multiplier: 1.5
 
-          sink:
+          backend_a:
             type: exporter:noop
             config: null
 
         connections:
-          - from: from_topic
+          - from: tenant_a
             to: retry
           - from: retry
-            to: sink
+            to: backend_a
 
-      tenant_b_processing:
+      tenant_b_pipeline:
         policies:
           resources:
             core_allocation:
@@ -291,7 +291,7 @@ groups:
               count: 1
 
         nodes:
-          from_topic:
+          tenant_b:
             type: receiver:topic
             config:
               topic: tenant_b
@@ -304,17 +304,17 @@ groups:
             config:
               multiplier: 1.5
 
-          sink:
+          backend_b:
             type: exporter:noop
             config: null
 
         connections:
-          - from: from_topic
+          - from: tenant_b
             to: retry
           - from: retry
-            to: sink
+            to: backend_b
 
-      tenant_c_processing:
+      tenant_c_pipeline:
         policies:
           resources:
             core_allocation:
@@ -322,7 +322,7 @@ groups:
               count: 1
 
         nodes:
-          from_topic:
+          tenant_c:
             type: receiver:topic
             config:
               topic: tenant_c
@@ -335,12 +335,12 @@ groups:
             config:
               multiplier: 1.5
 
-          sink:
+          backend_c:
             type: exporter:noop
             config: null
 
         connections:
-          - from: from_topic
+          - from: tenant_c
             to: retry
           - from: retry
-            to: sink
+            to: backend_c
