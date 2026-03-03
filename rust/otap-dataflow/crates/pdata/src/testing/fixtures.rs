@@ -862,7 +862,7 @@ pub fn metrics_multiple_sums_no_resource() -> MetricsData {
 }
 
 /// Configuration for generating metrics with specific shapes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MetricsConfig {
     /// Number of data points per gauge metric (one gauge per entry)
     pub gauge_points: Vec<usize>,
@@ -874,6 +874,24 @@ pub struct MetricsConfig {
     pub summary_points: Vec<usize>,
     /// Whether to add varying attributes to data points
     pub vary_attributes: bool,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            gauge_points: Vec::new(),
+            sum_points: Vec::new(),
+            histogram_points: Vec::new(),
+            summary_points: Vec::new(),
+            vary_attributes: false,
+            num_resources: 1,
+            scopes_per_resource: 1,
+        }
+    }
 }
 
 impl MetricsConfig {
@@ -918,6 +936,20 @@ impl MetricsConfig {
         self
     }
 
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
+    }
+
     /// Calculate total data point count across all metrics
     #[must_use]
     pub fn total_points(&self) -> usize {
@@ -940,30 +972,74 @@ impl MetricsConfig {
 /// Configuration for generating logs with a specific number of log records.
 #[derive(Debug, Clone)]
 pub struct LogsConfig {
-    /// Number of log records to generate.
-    pub num_logs: usize,
+    /// Number of log records per scope.
+    pub logs_per_scope: usize,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
 }
 
 impl LogsConfig {
-    /// Create a new `LogsConfig` with the given number of log records.
+    /// Create a new `LogsConfig` with the given number of log records per scope.
     #[must_use]
-    pub const fn new(num_logs: usize) -> Self {
-        Self { num_logs }
+    pub const fn new(logs_per_scope: usize) -> Self {
+        Self {
+            logs_per_scope,
+            num_resources: 1,
+            scopes_per_resource: 1,
+        }
+    }
+
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
     }
 }
 
 /// Configuration for generating traces with a specific number of spans.
 #[derive(Debug, Clone)]
 pub struct TracesConfig {
-    /// Number of spans to generate.
-    pub num_spans: usize,
+    /// Number of spans per scope.
+    pub spans_per_scope: usize,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
 }
 
 impl TracesConfig {
-    /// Create a new `TracesConfig` with the given number of spans.
+    /// Create a new `TracesConfig` with the given number of spans per scope.
     #[must_use]
-    pub const fn new(num_spans: usize) -> Self {
-        Self { num_spans }
+    pub const fn new(spans_per_scope: usize) -> Self {
+        Self {
+            spans_per_scope,
+            num_resources: 1,
+            scopes_per_resource: 1,
+        }
+    }
+
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
     }
 }
 
@@ -1253,13 +1329,31 @@ impl DataGenerator {
             );
         }
 
-        MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                metrics,
-            )],
-        )])
+        let resource_metrics: Vec<ResourceMetrics> = (0..config.num_resources)
+            .map(|r| {
+                let scope_metrics: Vec<ScopeMetrics> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        ScopeMetrics::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .finish(),
+                            metrics.clone(),
+                        )
+                    })
+                    .collect();
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new(
+                            "resource.index",
+                            AnyValue::new_int(r as i64),
+                        )])
+                        .finish(),
+                    scope_metrics,
+                )
+            })
+            .collect();
+
+        MetricsData::new(resource_metrics)
     }
 
     /// Generate test OTLP logs data using the configured LogsConfig.
@@ -1271,25 +1365,40 @@ impl DataGenerator {
             .expect("logs_config must be set")
             .clone();
 
-        let logs: Vec<LogRecord> = (0..config.num_logs)
-            .map(|_| {
-                LogRecord::build()
-                    .time_unix_nano(self.timestamp())
-                    .observed_time_unix_nano(self.timestamp())
-                    .severity_number(SeverityNumber::Info as i32)
-                    .finish()
+        let resource_logs: Vec<ResourceLogs> = (0..config.num_resources)
+            .map(|r| {
+                let scope_logs: Vec<ScopeLogs> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        let logs: Vec<LogRecord> = (0..config.logs_per_scope)
+                            .map(|_| {
+                                LogRecord::build()
+                                    .time_unix_nano(self.timestamp())
+                                    .observed_time_unix_nano(self.timestamp())
+                                    .severity_number(SeverityNumber::Info as i32)
+                                    .finish()
+                            })
+                            .collect();
+                        ScopeLogs::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .finish(),
+                            logs,
+                        )
+                    })
+                    .collect();
+                ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new(
+                            "resource.index",
+                            AnyValue::new_int(r as i64),
+                        )])
+                        .finish(),
+                    scope_logs,
+                )
             })
             .collect();
 
-        LogsData::new(vec![ResourceLogs::new(
-            Resource::build().finish(),
-            vec![ScopeLogs::new(
-                InstrumentationScope::build()
-                    .name("scope".to_string())
-                    .finish(),
-                logs,
-            )],
-        )])
+        LogsData::new(resource_logs)
     }
 
     /// Generate test OTLP traces data using the configured TracesConfig.
@@ -1301,31 +1410,50 @@ impl DataGenerator {
             .expect("traces_config must be set")
             .clone();
 
-        let spans: Vec<Span> = (0..config.num_spans)
-            .map(|i| {
-                Span::build()
-                    .trace_id(vec![0u8; 16])
-                    .span_id({
-                        let mut id = [0u8; 8];
-                        let bytes = (i as u64 + 1).to_be_bytes();
-                        id.copy_from_slice(&bytes);
-                        id.to_vec()
+        let mut span_counter: u64 = 0;
+        let resource_spans: Vec<ResourceSpans> = (0..config.num_resources)
+            .map(|r| {
+                let scope_spans: Vec<ScopeSpans> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        let spans: Vec<Span> = (0..config.spans_per_scope)
+                            .map(|_| {
+                                span_counter += 1;
+                                Span::build()
+                                    .trace_id(vec![0u8; 16])
+                                    .span_id({
+                                        let mut id = [0u8; 8];
+                                        let bytes = span_counter.to_be_bytes();
+                                        id.copy_from_slice(&bytes);
+                                        id.to_vec()
+                                    })
+                                    .name(format!("span_{span_counter}"))
+                                    .start_time_unix_nano(self.timestamp())
+                                    .end_time_unix_nano(self.timestamp())
+                                    .status(Status::new(StatusCode::Ok, "ok"))
+                                    .finish()
+                            })
+                            .collect();
+                        ScopeSpans::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .finish(),
+                            spans,
+                        )
                     })
-                    .name(format!("span_{i}"))
-                    .start_time_unix_nano(self.timestamp())
-                    .end_time_unix_nano(self.timestamp())
-                    .status(Status::new(StatusCode::Ok, "ok"))
-                    .finish()
+                    .collect();
+                ResourceSpans::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new(
+                            "resource.index",
+                            AnyValue::new_int(r as i64),
+                        )])
+                        .finish(),
+                    scope_spans,
+                )
             })
             .collect();
 
-        TracesData::new(vec![ResourceSpans::new(
-            Resource::build().finish(),
-            vec![ScopeSpans::new(
-                InstrumentationScope::build().finish(),
-                spans,
-            )],
-        )])
+        TracesData::new(resource_spans)
     }
 
     fn build_gauge_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
