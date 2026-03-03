@@ -22,7 +22,8 @@ foundational unit of test execution (e.g., test suite, scenario, or step).
 - **Lifecycle Hooks**: Attach behaviors (setup, teardown, etc.) at any phase
     using `HookStrategy`.
 - **Lifecycle Phases**: Modeled via the `TestLifecyclePhase` enum.
-- **Extensibility**: Subclass and override `run()` to define specific execution logic.
+- **Extensibility**: Subclass and override `run()` to define specific execution
+  logic.
 
 > All testable entities in the framework derive from `FrameworkElement`.
 
@@ -67,7 +68,8 @@ Defines the smallest executable unit in the test framework.
 
 ### `report.py` - **Test Reporting**
 
-Provides the `Report` class for capturing and serializing results from test executions.
+Provides the `Report` class for capturing and serializing results from test
+executions.
 
 **Features:**
 
@@ -75,7 +77,8 @@ Provides the `Report` class for capturing and serializing results from test exec
 - JSON serialization support for portability and analysis.
 - Report aggregation (comparison, timeseries) for insight and trends.
 
-> Reports capture outcomes, enabling traceability and observability across test executions.
+> Reports capture outcomes, enabling traceability and observability across test
+  executions.
 
 ---
 
@@ -90,7 +93,8 @@ Suite
 
 - `FrameworkElement` is the base for all these layers, enabling common
     lifecycle hook support.
-- Hooks can be applied to any `FrameworkElement` to extend behavior dynamically.
+- Hooks can be applied to any `FrameworkElement` to extend behavior
+  dynamically.
 - `Report` collects results from any level for persistence and analysis.
 
 ---
