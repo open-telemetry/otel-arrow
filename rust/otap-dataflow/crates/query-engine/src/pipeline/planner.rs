@@ -21,10 +21,13 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
+use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
 use crate::pipeline::assign::AssignPipelineStage;
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
+use crate::pipeline::filter::optimize::{
+    AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
+};
 use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
@@ -35,12 +38,22 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// - Which operations can be handled by DataFusion stages
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
-pub struct PipelinePlanner {}
+pub struct PipelinePlanner {
+    plan_for_attributes: bool,
+}
 
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
     pub const fn new() -> Self {
-        Self {}
+        Self {
+            plan_for_attributes: false,
+        }
+    }
+
+    pub const fn new_for_attributes() -> Self {
+        Self {
+            plan_for_attributes: true,
+        }
     }
 
     /// Create pipeline stages from the pipeline definition.
@@ -121,7 +134,7 @@ impl PipelinePlanner {
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
                     let predicate =
-                        Self::plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
+                        self.plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
 
                     let pipeline_stages =
                         self.plan_data_exprs(branch.get_expressions(), session_ctx, otap_batch)?;
@@ -148,6 +161,44 @@ impl PipelinePlanner {
                 }
             },
 
+            DataExpression::Nested(nested_expr) => {
+                // TODO handle no source by returning error no unwrapping
+                let source = nested_expr.get_target().unwrap();
+
+                let values_accessor = source.get_value_accessor();
+                let selectors = values_accessor.get_selectors();
+                let attributes_id = match selectors.len() {
+                    1 => match &selectors[0] {
+                        ScalarExpression::Static(StaticScalarExpression::String(column)) => {
+                            (column.get_value() == ATTRIBUTES_FIELD_NAME)
+                                .then_some(AttributesIdentifier::Root)
+                        }
+                        _ => None,
+                    },
+                    // 2 => match (selectors[1], selectors[0]) {
+                    //     (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
+                    //         AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                    //     ),
+                    //     (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
+                    //         AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                    //     ),
+                    //     _ => None,
+                    // },
+                    _ => None,
+                };
+
+                // TODO handle case we got an invalid attributes ID
+                let attributes_id = attributes_id.unwrap();
+
+                let planner = Self::new_for_attributes();
+                let children_pipeline_stages =
+                    planner.plan_data_exprs(nested_expr.get_children(), session_ctx, otap_batch)?;
+                Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
+                    attributes_id,
+                    children_pipeline_stages,
+                ))])
+            }
+
             // TODO support other DataExpressions
             other => Err(Error::NotYetSupportedError {
                 message: format!("data expression not yet supported {}", other.get_name()),
@@ -161,7 +212,7 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec = Self::plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
+        let filter_exec = self.plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
@@ -169,6 +220,7 @@ impl PipelinePlanner {
 
     /// plan a [`FilterExec`] from a [`LogicalExpression`]
     fn plan_filter_exec(
+        &self,
         logical_expr: &LogicalExpression,
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
@@ -176,7 +228,14 @@ impl PipelinePlanner {
         let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
 
         // optimize the to the plan
-        let filter_plan = AttrsFilterCombineOptimizerRule::optimize(filter_plan);
+        let filter_plan = if self.plan_for_attributes {
+            // TODO comment on why this optimization is chosen
+            AttrValueColumnSelectionOptimizer::optimize(CompositeToBaseFilterPlan::optimize(
+                filter_plan,
+            ))?
+        } else {
+            AttrsFilterCombineOptimizerRule::optimize(filter_plan)
+        };
 
         // transform logical plan into executable plan
         filter_plan.to_exec(session_ctx, otap_batch)

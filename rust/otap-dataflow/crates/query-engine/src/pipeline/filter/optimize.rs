@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::logical_expr::{Expr, and, col, not, or};
+use datafusion::prelude::binary_expr;
+use otap_df_pdata::schema::consts;
+
+use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterPlan};
 
 /// This performs an optimization on the composite [`FilterPlan`] to combine the attribute filters
@@ -193,6 +200,100 @@ impl AttrsFilterCombineOptimizerRule {
             }
 
             input => input,
+        }
+    }
+}
+
+/// TODO comment on what this is doing
+pub struct CompositeToBaseFilterPlan {}
+
+impl CompositeToBaseFilterPlan {
+    pub fn optimize(input: Composite<FilterPlan>) -> Composite<FilterPlan> {
+        Composite::Base(FilterPlan::from(Self::optimize_internal(input)))
+    }
+
+    fn optimize_internal(input: Composite<FilterPlan>) -> Expr {
+        match input {
+            Composite::And(left, right) => {
+                let left = Self::optimize_internal(*left);
+                let right = Self::optimize_internal(*right);
+                and(left, right)
+            }
+            Composite::Or(left, right) => {
+                let left = Self::optimize_internal(*left);
+                let right = Self::optimize_internal(*right);
+                or(left, right)
+            }
+            Composite::Not(inner) => {
+                let inner = Self::optimize_internal(*inner);
+                not(inner)
+            }
+            Composite::Base(base) => {
+                // TODO no unwrap - pretty sure this shouldn't be reachable ...
+                base.source_filter.unwrap()
+            }
+        }
+    }
+}
+
+pub struct AttrValueColumnSelectionOptimizer {}
+
+impl AttrValueColumnSelectionOptimizer {
+    pub fn optimize(input: Composite<FilterPlan>) -> Result<Composite<FilterPlan>> {
+        match input {
+            Composite::Base(filter) => {
+                let expr = filter.source_filter.unwrap();
+
+                let transformed = expr
+                    .transform_up(|expr| match expr {
+                        Expr::BinaryExpr(mut binary) => {
+                            if Self::is_values_col(&binary.left) {
+                                let new_left = Self::lit_to_col_name(&binary.right).unwrap();
+                                binary.left = Box::new(new_left);
+                                return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+                            }
+
+                            if Self::is_values_col(&binary.right) {
+                                let new_right = Self::lit_to_col_name(&binary.left).unwrap();
+                                binary.right = Box::new(new_right);
+                                return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+                            }
+
+                            return Ok(Transformed::no(Expr::BinaryExpr(binary)));
+                        }
+                        _ => Ok(Transformed::no(expr)),
+                    })
+                    .unwrap();
+
+                println!("optimized expr = {:?}", transformed.data);
+                Ok(Composite::Base(FilterPlan::from(transformed.data)))
+            }
+            _ => Ok(input),
+        }
+    }
+
+    fn is_values_col(expr: &Expr) -> bool {
+        match expr {
+            Expr::Column(col) => col.name() == "value",
+            _ => false,
+        }
+    }
+
+    fn lit_to_col_name(expr: &Expr) -> Option<Expr> {
+        match expr {
+            // TODO ... making a big assumption the other side is always a literal ...
+            // TODO - tests
+            Expr::Literal(scalar_val, _) => Some(match scalar_val.data_type() {
+                DataType::Binary => col(consts::ATTRIBUTE_BYTES),
+                DataType::Boolean => col(consts::ATTRIBUTE_BOOL),
+                DataType::Utf8 => col(consts::ATTRIBUTE_STR),
+                DataType::Float64 => col(consts::ATTRIBUTE_DOUBLE),
+                dt if dt.is_integer() => col(consts::ATTRIBUTE_INT),
+                _ => {
+                    todo!("other expr type")
+                }
+            }),
+            _ => None,
         }
     }
 }

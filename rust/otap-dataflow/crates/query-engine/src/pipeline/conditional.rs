@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::BooleanArray;
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, concat_batches, not, or};
 use async_trait::async_trait;

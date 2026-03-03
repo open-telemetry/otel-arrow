@@ -4,10 +4,11 @@
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, LogicalExpression, MapKeyRenameSelector,
-    MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
-    OutputDataExpression, OutputExpression, QueryLocation, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
+    MapSelectionExpression, MapSelector, MutableValueExpression, NestedDataExpression,
+    NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation,
+    ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
+    SetTransformExpression, SourceScalarExpression, StaticScalarExpression, TransformExpression,
+    ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -17,6 +18,7 @@ use pest::iterators::Pair;
 use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::{
     parse_attribute_selection_expression, parse_expression, parse_index_expression,
+    parse_member_expression,
 };
 use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
@@ -35,6 +37,7 @@ pub(crate) fn parse_operator_call(
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
+            Rule::apply_operator_call => parse_apply_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
                 let query_location = to_query_location(&rule);
                 return Err(invalid_child_rule_error(
@@ -350,6 +353,37 @@ pub(crate) fn parse_where_operator_call(
             }
         }
     }
+
+    Ok(())
+}
+
+// TODO need to add unit tests for this ...
+pub(crate) fn parse_apply_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let operator_call_query_location = to_query_location(&operator_call_rule);
+    let mut inner_rules = operator_call_rule.into_inner();
+
+    // get the identifier
+    // TODO no unwrap
+    // TODO check it's actually an identifier rule
+    let target_identifier_rule = inner_rules.next().unwrap();
+    let target_expr: ScalarExpression = parse_member_expression(target_identifier_rule)?.into();
+    let ScalarExpression::Source(target_source_expr) = target_expr else {
+        todo!("invalid parser result")
+    };
+
+    let mut children = Vec::with_capacity(inner_rules.len());
+    for inner_rule in inner_rules {
+        parse_pipeline_stage(inner_rule, &mut children)?;
+    }
+
+    let nested_expr = NestedDataExpression::new(operator_call_query_location)
+        .with_children(children)
+        .with_target(target_source_expr);
+
+    pipeline_builder.push_data_expression(DataExpression::Nested(nested_expr));
 
     Ok(())
 }

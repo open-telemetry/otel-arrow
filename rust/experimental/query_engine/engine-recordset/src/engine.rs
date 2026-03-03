@@ -324,6 +324,14 @@ fn process_record<'a, TRecord: Record + 'static>(
                 );
                 break;
             }
+            DataExpression::Nested(c) => {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Error,
+                    c,
+                    || "Nested Expression not yet supported in record set engine".into(),
+                );
+                break;
+            }
         }
     }
 

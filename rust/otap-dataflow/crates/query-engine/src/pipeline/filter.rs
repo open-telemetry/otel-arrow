@@ -1527,6 +1527,29 @@ impl PipelineStage for FilterPipelineStage {
 
         Ok(otap_batch)
     }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        match &mut self.filter_exec {
+            Composite::Base(filter) => {
+                let predicate = filter.predicate.as_mut().unwrap();
+                let selection_vec = predicate
+                    .evaluate_filter(&attrs_record_batch, session_context)
+                    .unwrap();
+                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec).unwrap();
+                return Ok(new_batch);
+            }
+            _ => {
+                todo!("handle invalid")
+            }
+        }
+    }
 }
 
 #[cfg(test)]

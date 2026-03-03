@@ -3,6 +3,7 @@
 
 //! Implementations of [`PipelineStage`] for processing attributes
 
+use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
