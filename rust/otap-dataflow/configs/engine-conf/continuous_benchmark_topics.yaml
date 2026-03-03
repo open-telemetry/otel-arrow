@@ -57,16 +57,11 @@ groups:
         pdata: 4096
 
     # Topic declarations shared by all pipelines in this benchmark group.
-    # These three topics replace the two ingress gRPC sockets and one backend
-    # gRPC export socket used in continuous_benchmark.yaml.
+    # These two topics replace the ingress and backend gRPC sockets used in
+    # continuous_benchmark.yaml.
     topics:
-      ingress_1:
-        description: "Traffic generator 1 -> SUT ingress"
-        policies:
-          queue_capacity: 4096
-          queue_on_full: block
-      ingress_2:
-        description: "Traffic generator 2 -> SUT ingress"
+      ingress:
+        description: "Traffic generators -> SUT ingress"
         policies:
           queue_capacity: 4096
           queue_on_full: block
@@ -106,7 +101,7 @@ groups:
           to_topic:
             type: exporter:topic
             config:
-              topic: ingress_1
+              topic: ingress
               queue_on_full: block
 
         connections:
@@ -136,7 +131,7 @@ groups:
           to_topic:
             type: exporter:topic
             config:
-              topic: ingress_2
+              topic: ingress
               queue_on_full: block
 
         connections:
@@ -144,79 +139,25 @@ groups:
             to: to_topic
 
       # ======================================================================
-      # System Under Test pipelines (split ingress paths)
+      # System Under Test pipeline
       # ======================================================================
-      sut_ingress_1:
+      sut_pipeline:
         policies:
           resources:
             core_allocation:
               type: core_set
               set:
                 - start: 0
-                  end: 0
-
-        nodes:
-          topic_recv1:
-            type: receiver:topic
-            config:
-              topic: ingress_1
-              subscription:
-                mode: balanced
-                group: sut_ingress_1
-
-          router:
-            type: processor:type_router
-            outputs: ["logs", "metrics", "traces"]
-            config: {}
-
-          retry:
-            type: processor:retry
-            config:
-              multiplier: 1.5
-
-          logs_to_topic:
-            type: exporter:topic
-            config:
-              topic: backend_logs
-              queue_on_full: block
-
-          metrics_exporter:
-            type: exporter:noop
-            config: null
-
-          spans_exporter:
-            type: exporter:noop
-            config: null
-
-        connections:
-          - from: topic_recv1
-            to: router
-          - from: router["logs"]
-            to: retry
-          - from: router["metrics"]
-            to: metrics_exporter
-          - from: router["traces"]
-            to: spans_exporter
-          - from: retry
-            to: logs_to_topic
-
-      sut_ingress_2:
-        policies:
-          resources:
-            core_allocation:
-              type: core_set
-              set:
-                - start: 1
                   end: 1
 
         nodes:
-          topic_recv2:
+          topic_recv:
             type: receiver:topic
             config:
-              topic: ingress_2
+              topic: ingress
               subscription:
                 mode: balanced
-                group: sut_ingress_2
+                group: sut_pipeline
 
           router:
             type: processor:type_router
@@ -243,7 +184,7 @@ groups:
             config: null
 
         connections:
-          - from: topic_recv2
+          - from: topic_recv
             to: router
           - from: router["logs"]
             to: retry
