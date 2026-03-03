@@ -1169,6 +1169,7 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
 mod tests {
     use super::*;
     use crate::pdata::Context;
+    use crate::testing::{next_ack, next_nack};
     use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -2342,7 +2343,7 @@ mod tests {
         let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
 
-        // Simulate downstream exporter acking - in real pipeline, Context::next_ack
+        // Simulate downstream exporter acking - in real pipeline, next_ack
         // would pop the fanout frame and route to fanout
         let mut ack = AckMsg::new(sent.pop().unwrap());
         ack.calldata = ack.accepted.source_calldata().unwrap().into();
@@ -2361,7 +2362,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
         {
             if let PipelineControlMsg::DeliverAck { ack } = msg {
-                let (node_id, ack) = Context::next_ack(ack).expect("expected ack subscriber");
+                let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     // Also verify calldata matches the upstream receiver's calldata
                     let received_calldata: Result<TestCallData, _> = ack.calldata.user.try_into();
@@ -2430,7 +2431,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
         {
             if let PipelineControlMsg::DeliverNack { nack } = msg {
-                let (node_id, nack) = Context::next_nack(nack).expect("expected nack subscriber");
+                let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     let received_calldata: Result<TestCallData, _> = nack.calldata.user.try_into();
                     assert_eq!(

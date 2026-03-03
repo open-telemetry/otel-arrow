@@ -789,6 +789,7 @@ mod tests {
     use super::*;
 
     use crate::compression::CompressionMethod;
+    use crate::testing::{next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;
@@ -1491,7 +1492,7 @@ mod tests {
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -1522,7 +1523,7 @@ mod tests {
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                    next_ack(AckMsg::new(metrics_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -1553,7 +1554,7 @@ mod tests {
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(trace_pdata))
+                    next_ack(AckMsg::new(trace_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -1682,7 +1683,7 @@ mod tests {
                 assert_eq!(&expected_bytes, logs_proto.as_bytes());
 
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -1774,7 +1775,7 @@ mod tests {
                 assert_eq!(&expected_bytes, logs_proto.as_bytes());
 
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -1992,7 +1993,7 @@ mod tests {
                     .expect("No logs message received");
 
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -2211,7 +2212,7 @@ mod tests {
 
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata1))
+                if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata1))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -2224,7 +2225,7 @@ mod tests {
                     .expect("Timed out waiting for second message")
                     .expect("No second message received");
 
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata2))
+                if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata2))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -2308,7 +2309,7 @@ mod tests {
                     .expect("No logs message received");
 
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -2520,7 +2521,7 @@ mod tests {
                     .expect("No logs message received");
 
                 let nack = NackMsg::new("Test nack reason", logs_pdata);
-                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                if let Some((_node_id, nack)) = next_nack(nack) {
                     ctx.send_control_msg(NodeControlMsg::Nack(nack))
                         .await
                         .expect("Failed to send Nack");
@@ -2622,7 +2623,7 @@ mod tests {
                     .expect("No logs message received");
 
                 let nack = NackMsg::new("Test nack reason", logs_pdata);
-                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                if let Some((_node_id, nack)) = next_nack(nack) {
                     ctx.send_control_msg(NodeControlMsg::Nack(nack))
                         .await
                         .expect("Failed to send Nack");
@@ -2793,7 +2794,7 @@ mod tests {
                     .expect("No logs message received");
 
                 if let Some((_node_id, ack)) =
-                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                    next_ack(AckMsg::new(logs_pdata))
                 {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
@@ -3008,7 +3009,7 @@ mod tests {
 
                     // Ack everything so the clients unblock and succeed
                     if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(pdata))
+                        next_ack(AckMsg::new(pdata))
                     {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
@@ -3134,7 +3135,7 @@ mod tests {
                 // Hold the request long enough for the HTTP request to observe permit contention.
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
+                if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("Failed to send Ack");

@@ -542,7 +542,8 @@ mod tests {
     };
     use crate::debug_processor::sampling::SamplingConfig;
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
-    use crate::pdata::{Context, OtapPdata};
+    use crate::pdata::OtapPdata;
+    use crate::testing::{next_ack, next_nack};
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1441,7 +1442,7 @@ mod tests {
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverAck { ack }) => {
                             let (node_id, ack) =
-                                Context::next_ack(ack).expect("expected ack subscriber");
+                                next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
@@ -1495,7 +1496,7 @@ mod tests {
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverNack { nack }) => {
                             let (node_id, nack) =
-                                Context::next_nack(nack).expect("expected nack subscriber");
+                                next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "NACK should route to subscriber's node_id"

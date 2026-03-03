@@ -588,8 +588,7 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineControlMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::TestCallData;
+    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use std::time::{Duration, Instant};
 
     // TODO: Re-enable these imports when zero-copy view tests are uncommented
@@ -743,7 +742,7 @@ mod tests {
                 match pipeline_rx.recv().await.unwrap() {
                     PipelineControlMsg::DeliverAck { ack } => {
                         let (node_id, ack) =
-                            Context::next_ack(ack).expect("expected ack subscriber");
+                            next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, 4242);
                         let got: TestCallData = ack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
@@ -782,7 +781,7 @@ mod tests {
                 match pipeline_rx.recv().await.unwrap() {
                     PipelineControlMsg::DeliverNack { nack } => {
                         let (node_id, nack) =
-                            Context::next_nack(nack).expect("expected nack subscriber");
+                            next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         let got: TestCallData = nack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);

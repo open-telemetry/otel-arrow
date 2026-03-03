@@ -1329,6 +1329,7 @@ mod tests {
     use super::*;
     use crate::pdata::OtapPdata;
     use crate::testing::TestCallData;
+    use crate::testing::{next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
@@ -1738,7 +1739,7 @@ mod tests {
                                 match policy {
                                     AckPolicy::Ack => {
                                         ctx.process(Message::Control(NodeControlMsg::Ack(
-                                            Context::next_ack(AckMsg::new(new_output))
+                                            next_ack(AckMsg::new(new_output))
                                                 .expect("has subs")
                                                 .1,
                                         )))
@@ -1747,7 +1748,7 @@ mod tests {
                                     }
                                     AckPolicy::Nack(reason) => {
                                         ctx.process(Message::Control(NodeControlMsg::Nack(
-                                            Context::next_nack(NackMsg::new(reason, new_output))
+                                            next_nack(NackMsg::new(reason, new_output))
                                                 .expect("has subs")
                                                 .1,
                                         )))
@@ -1767,7 +1768,7 @@ mod tests {
                                 }
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
                                     looped += 1;
-                                    if let Some((_node_id, ack)) = Context::next_ack(ack) {
+                                    if let Some((_node_id, ack)) = next_ack(ack) {
                                         let calldata: TestCallData =
                                             ack.calldata.user.try_into().expect("calldata");
                                         received_acks.push(calldata);
@@ -1775,7 +1776,7 @@ mod tests {
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
-                                    if let Some((_node_id, nack)) = Context::next_nack(nack) {
+                                    if let Some((_node_id, nack)) = next_nack(nack) {
                                         let calldata: TestCallData =
                                             nack.calldata.user.try_into().expect("calldata");
                                         received_nacks.push(calldata);

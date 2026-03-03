@@ -74,48 +74,9 @@ impl Context {
         });
     }
 
-    /// Consume frames to locate the most recent subscriber with ACKS.
-    /// This is a "transfer function" used in the engine for route_ack.
-    ///
-    /// Drains the context stack, recording metrics for intermediate
-    /// frames, until it finds a frame with `ACKS` interest.
-    #[must_use]
-    pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
-        let frame = ack
-            .accepted
-            .context
-            .drain_to_next_subscriber(Interests::ACKS);
-        frame.map(|frame| {
-            if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                let _drop = ack.accepted.take_payload();
-            }
-            ack.calldata = frame.calldata.into();
-            (frame.node_id, ack)
-        })
-    }
-
-    /// Consume frames to locate the most recent subscriber with NACKS.
-    /// This is a "transfer function" used in the engine for route_nack.
-    ///
-    /// Same drain semantics as `next_ack()`.
-    #[must_use]
-    pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
-        let frame = nack
-            .refused
-            .context
-            .drain_to_next_subscriber(Interests::NACKS);
-        frame.map(|frame| {
-            if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                let _drop = nack.refused.take_payload();
-            }
-            nack.calldata = frame.calldata.into();
-            (frame.node_id, nack)
-        })
-    }
-
     /// Drain the context stack to find the first subscriber frame
     /// with the given interest bit.
-    fn drain_to_next_subscriber(&mut self, int: Interests) -> Option<Frame> {
+    pub fn drain_to_next_subscriber(&mut self, int: Interests) -> Option<Frame> {
         while let Some(frame) = self.stack.pop() {
             if frame.interests.contains(int) {
                 return Some(frame);
@@ -411,6 +372,11 @@ impl OtapPdata {
         (self.context, self.payload)
     }
 
+    /// Returns a mutable reference to the context.
+    pub fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
     #[must_use]
@@ -666,7 +632,7 @@ impl otap_df_engine::ReceivedAtNode for OtapPdata {
 mod test {
     use super::*;
 
-    use crate::testing::{TestCallData, create_test_pdata};
+    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::effect_handler::SourceTagging;
@@ -1210,7 +1176,7 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
 
         let (node_id, ack_msg) = result.unwrap();
@@ -1241,7 +1207,7 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
 
         let (node_id, ack_msg) = result.expect("has");
@@ -1267,7 +1233,7 @@ mod test {
         assert!(!pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error".to_string(), pdata);
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
 
         let (node_id, nack_msg) = result.unwrap();
@@ -1298,7 +1264,7 @@ mod test {
 
         let nack = NackMsg::new("test error", pdata);
 
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
 
         let (node_id, nack_msg) = result.unwrap();
@@ -1330,14 +1296,14 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 4);
 
         // Skipped node 3 (Nack) because call to next_ack()
 
-        let result = Context::next_ack(ack_msg);
+        let result = next_ack(ack_msg);
         assert!(result.is_some());
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 2);
@@ -1349,7 +1315,7 @@ mod test {
         let nack = NackMsg::new("nope nope", *ack_msg.accepted);
 
         // Node 1 last, is a Nack.
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
@@ -1363,7 +1329,7 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_none());
     }
 
@@ -1373,7 +1339,7 @@ mod test {
 
         let nack = NackMsg::new("hey now", pdata);
 
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_none());
     }
 
@@ -1417,7 +1383,7 @@ mod test {
 
         // next_ack skips the empty-interests frame and finds node 100.
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find subscriber");
+        let (node_id, ack_msg) = next_ack(ack).expect("should find subscriber");
         assert_eq!(node_id, 100);
         let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv, test_data);
@@ -1462,7 +1428,7 @@ mod test {
 
         // Ack path: next_ack finds node 3 first
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find node 3");
+        let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
         // The payload must be preserved — node 1 needs it for retry.
@@ -1474,7 +1440,7 @@ mod test {
         assert!(!ack_msg.accepted.is_empty());
 
         // Continue to node 1
-        let (node_id, ack_msg) = Context::next_ack(ack_msg).expect("should find node 1");
+        let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
         let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv, test_data);
@@ -1629,7 +1595,7 @@ mod test {
         // Ack from downstream: next_ack should skip node 1 (no frame)
         // and land on node 0.
         let ack = AckMsg::new(pdata);
-        let (node_id, _) = Context::next_ack(ack).expect("should find node 0");
+        let (node_id, _) = next_ack(ack).expect("should find node 0");
         assert_eq!(node_id, 0, "No frame means ack routes past to node 0");
     }
 
@@ -1644,7 +1610,7 @@ mod test {
             .push_entry_frame(1, Interests::CONSUMER_METRICS);
 
         let ack = AckMsg::new(pdata);
-        let (node_id, _) = Context::next_ack(ack).expect("should find node 0");
+        let (node_id, _) = next_ack(ack).expect("should find node 0");
         assert_eq!(
             node_id, 0,
             "CONSUMER_METRICS entry frame is skipped; ack routes to subscriber at node 0"

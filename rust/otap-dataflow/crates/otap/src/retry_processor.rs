@@ -679,8 +679,8 @@ impl RetryProcessor {
 #[cfg(test)]
 mod test {
     use super::{RETRY_PROCESSOR_URN, RetryConfig};
-    use crate::pdata::{Context, OtapPdata};
-    use crate::testing::{TestCallData, create_test_pdata};
+    use crate::pdata::OtapPdata;
+    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
@@ -898,7 +898,7 @@ mod test {
                         NackMsg::new("simulated downstream failure", current_data.clone())
                     };
 
-                    let (_, nack_msg) = Context::next_nack(nack).unwrap();
+                    let (_, nack_msg) = next_nack(nack).unwrap();
 
                     ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     nacks_delivered += 1;
@@ -937,11 +937,11 @@ mod test {
                     // Send final ACK or NACK
                     if let Some(message) = &outcome_failure {
                         let nack = NackMsg::new(format!("TEST {} FAILED", message), current_data);
-                        let (_, nack_msg) = Context::next_nack(nack).unwrap();
+                        let (_, nack_msg) = next_nack(nack).unwrap();
                         ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     } else {
                         let ack = AckMsg::new(current_data);
-                        let (_, ack_msg) = Context::next_ack(ack).unwrap();
+                        let (_, ack_msg) = next_ack(ack).unwrap();
                         ctx.process(Message::ack_ctrl_msg(ack_msg)).await.unwrap();
                     }
 
@@ -957,7 +957,7 @@ mod test {
                 match have_pmsg.expect("retry replied") {
                     PipelineControlMsg::DeliverAck { ack } => {
                         let (node_id, ack) =
-                            Context::next_ack(ack).expect("expected ack subscriber");
+                            next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -973,7 +973,7 @@ mod test {
                     }
                     PipelineControlMsg::DeliverNack { nack } => {
                         let (node_id, nack) =
-                            Context::next_nack(nack).expect("expected nack subscriber");
+                            next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))

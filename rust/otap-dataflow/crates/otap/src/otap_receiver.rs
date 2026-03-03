@@ -391,6 +391,7 @@ mod tests {
     use crate::otap_mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
+    use crate::testing::{next_ack, next_nack};
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -544,7 +545,7 @@ mod tests {
 
                     // Send ACK if wait_for_result is enabled
                     if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
+                        next_ack(AckMsg::new(metrics_pdata))
                     {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
@@ -572,7 +573,7 @@ mod tests {
 
                     // Send ACK if wait_for_result is enabled
                     if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                        next_ack(AckMsg::new(logs_pdata))
                     {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
@@ -600,7 +601,7 @@ mod tests {
 
                     // Send ACK if wait_for_result is enabled
                     if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
+                        next_ack(AckMsg::new(traces_pdata))
                     {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
@@ -733,7 +734,7 @@ mod tests {
                         .expect("No metrics received");
 
                     let nack = NackMsg::new("Test NACK reason for metrics", metrics_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for metrics");
@@ -748,7 +749,7 @@ mod tests {
                         .expect("No logs received");
 
                     let nack = NackMsg::new("Test NACK reason for logs", logs_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for logs");
@@ -763,7 +764,7 @@ mod tests {
                         .expect("No traces received");
 
                     let nack = NackMsg::new("Test NACK reason for traces", traces_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for traces");

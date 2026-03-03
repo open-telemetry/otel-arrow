@@ -750,8 +750,8 @@ mod tests {
 
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::pdata::Context;
-    use crate::testing::TestCallData;
+    use crate::pdata::OtapPdata;
+    use crate::testing::{TestCallData, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
@@ -804,7 +804,7 @@ mod tests {
                         if !expect_ack {
                             return Err(format!("Got Ack but expected Nack {}", context));
                         }
-                        let (node_id, _ack) = Context::next_ack(ack)
+                        let (node_id, _ack) = next_ack(ack)
                             .ok_or_else(|| format!("No ack subscriber found {}", context))?;
                         if node_id != expected_node_id {
                             return Err(format!(
@@ -818,7 +818,7 @@ mod tests {
                         if expect_ack {
                             return Err(format!("Got Nack but expected Ack {}", context));
                         }
-                        let (node_id, _nack) = Context::next_nack(nack)
+                        let (node_id, _nack) = next_nack(nack)
                             .ok_or_else(|| format!("No nack subscriber found {}", context))?;
                         if node_id != expected_node_id {
                             return Err(format!(
