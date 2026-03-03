@@ -281,4 +281,40 @@ nodes:
             .unwrap_err();
         assert!(matches!(err, ValidationError::Config(_)));
     }
+
+    #[test]
+    fn from_file_invalid_path_errors() {
+        let result = Pipeline::from_file("nonexistent/path.yaml");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, ValidationError::Io(_)));
+        assert!(err.to_string().contains("failed to read pipeline yaml"));
+    }
+
+    #[test]
+    fn core_range_sets_values() {
+        let pipeline = Pipeline::from_yaml(sample_yaml()).core_range(3, 7);
+        assert_eq!(pipeline.core_start, 3);
+        assert_eq!(pipeline.core_end, 7);
+    }
+
+    #[test]
+    fn endpoint_kind_node_name() {
+        assert_eq!(
+            EndpointKind::OtlpGrpcReceiver("recv".into()).node_name(),
+            "recv"
+        );
+        assert_eq!(
+            EndpointKind::OtlpGrpcExporter("exp".into()).node_name(),
+            "exp"
+        );
+        assert_eq!(
+            EndpointKind::OtapGrpcReceiver("otap_recv".into()).node_name(),
+            "otap_recv"
+        );
+        assert_eq!(
+            EndpointKind::OtapGrpcExporter("otap_exp".into()).node_name(),
+            "otap_exp"
+        );
+    }
 }

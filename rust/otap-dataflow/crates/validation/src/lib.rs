@@ -3,6 +3,8 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+/// Docker container configuration for validation scenarios
+pub mod container;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
@@ -24,6 +26,7 @@ pub mod validation_exporter;
 /// invariants/checks helpers (attribute diff, filtering detection, etc.)
 pub mod validation_types;
 
+pub use container::ContainerConfig;
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]

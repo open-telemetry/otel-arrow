@@ -4,6 +4,7 @@
 //! Programmatic scenario builder that renders a full pipeline group, runs it,
 //! waits for readiness, and checks validation metrics.
 
+use crate::container::ContainerConfig;
 use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
 use crate::simulate::run_pipelines_with_timeout;
@@ -30,6 +31,7 @@ pub struct Scenario {
     generators: HashMap<String, Generator>,
     captures: HashMap<String, Capture>,
     connections: Vec<(String, String)>,
+    containers: Vec<ContainerConfig>,
     template_path: PathBuf,
     admin_addr: String,
     ready_max_attempts: usize,
@@ -54,6 +56,7 @@ impl Scenario {
             generators: HashMap::new(),
             captures: HashMap::new(),
             connections: Vec::new(),
+            containers: Vec::new(),
             template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
@@ -99,6 +102,14 @@ impl Scenario {
         self
     }
 
+    /// Add a Docker container that will be started before the pipeline runs
+    /// and stopped after it shuts down.
+    #[must_use]
+    pub fn add_container(mut self, container: ContainerConfig) -> Self {
+        self.containers.push(container);
+        self
+    }
+
     /// Set the total runtime budget for the scenario.
     #[must_use]
     pub fn expect_within(mut self, duration: Duration) -> Self {
@@ -107,6 +118,10 @@ impl Scenario {
     }
 
     /// Execute the scenario.
+    ///
+    /// When containers are configured (via [`add_container`](Self::add_container)),
+    /// they are started before the pipeline group runs. After the pipeline
+    /// shuts down, the containers are stopped.
     pub fn run(mut self) -> Result<(), ValidationError> {
         let ready_max_attempts = self.ready_max_attempts;
         let ready_backoff = self.ready_backoff;
@@ -123,11 +138,18 @@ impl Scenario {
             .collect();
 
         let rendered_group = self.render_template()?;
+        let containers = self.containers;
+
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
 
         tokio_rt.block_on(async move {
-            run_pipelines_with_timeout(
+            let mut running_containers = Vec::new();
+            for config in containers {
+                running_containers.push(config.start().await?);
+            }
+
+            let result = run_pipelines_with_timeout(
                 rendered_group,
                 admin_base,
                 generator_signals,
@@ -137,7 +159,15 @@ impl Scenario {
                 metrics_poll,
                 propagation_delay,
             )
-            .await
+            .await;
+
+            for container in running_containers {
+                container.stop().await.map_err(|e| {
+                    ValidationError::Container(format!("failed to stop container: {e}"))
+                })?;
+            }
+
+            result
         })
     }
 
@@ -183,11 +213,28 @@ impl Scenario {
 
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
-        // helper to get port and return error if no ports are found
-        fn pick_port(context: &str) -> Result<u16, ValidationError> {
-            pick_unused_port()
-                .ok_or_else(|| ValidationError::Config(format!("failed to get port for {context}")))
-        }
+        // Collect ports reserved by test containers so we never hand them out.
+        let reserved_ports: std::collections::HashSet<u16> = self
+            .containers
+            .iter()
+            .flat_map(|c| c.exposed_tcp_ports.iter().copied())
+            .collect();
+
+        // helper to get port and return error if no ports are found.
+        // Retries if portpicker returns a port reserved by a container.
+        let pick_port = |context: &str| -> Result<u16, ValidationError> {
+            for _ in 0..100 {
+                let port = pick_unused_port().ok_or_else(|| {
+                    ValidationError::Config(format!("failed to get port for {context}"))
+                })?;
+                if !reserved_ports.contains(&port) {
+                    return Ok(port);
+                }
+            }
+            Err(ValidationError::Config(format!(
+                "failed to get port for {context}: all picked ports conflict with container ports"
+            )))
+        };
 
         // helper to check if generators/captures are missing fields
         fn require_non_empty(s: &str, context: &str) -> Result<(), ValidationError> {
@@ -410,5 +457,117 @@ nodes:
 
         assert!(rendered.contains("gen:"));
         assert!(rendered.contains("cap:"));
+    }
+
+    #[test]
+    fn add_container_stores_config() {
+        let scenario = Scenario::new()
+            .add_container(
+                ContainerConfig::new("redis", "7.2.4")
+                    .expose_tcp(6379)
+                    .env("FOO", "bar"),
+            )
+            .add_container(ContainerConfig::new("kafka", "3.6"));
+
+        assert_eq!(scenario.containers.len(), 2);
+        assert_eq!(scenario.containers[0].image, "redis");
+        assert_eq!(scenario.containers[0].tag, "7.2.4");
+        assert_eq!(scenario.containers[0].exposed_tcp_ports, vec![6379]);
+        assert_eq!(scenario.containers[1].image, "kafka");
+        assert_eq!(scenario.containers[1].tag, "3.6");
+    }
+
+    #[test]
+    fn update_configs_no_generators_errors() {
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_capture("cap", Capture::default().otap_grpc("exporter"));
+
+        let err = scenario
+            .update_configs()
+            .expect_err("should error without generators");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("no generators configured"));
+    }
+
+    #[test]
+    fn update_configs_no_captures_errors() {
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"));
+
+        let err = scenario
+            .update_configs()
+            .expect_err("should error without captures");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("no captures configured"));
+    }
+
+    #[test]
+    fn update_configs_no_pipeline_errors() {
+        let mut scenario = Scenario::new()
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture("cap", Capture::default().otap_grpc("exporter"));
+
+        let err = scenario
+            .update_configs()
+            .expect_err("should error without pipeline");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("pipeline not provided"));
+    }
+
+    #[test]
+    fn unknown_capture_label_errors() {
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture("cap", Capture::default().otap_grpc("exporter"))
+            .connect("gen", "missing_cap");
+
+        let err = scenario
+            .update_configs()
+            .expect_err("unknown capture label should error");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("unknown capture missing_cap"));
+    }
+
+    #[test]
+    fn expect_within_overrides_runtime() {
+        let scenario = Scenario::new().expect_within(Duration::from_secs(42));
+        assert_eq!(scenario.runtime, Duration::from_secs(42));
+    }
+
+    #[test]
+    fn update_configs_avoids_container_ports() {
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture("cap", Capture::default().otap_grpc("exporter"))
+            .connect("gen", "cap")
+            .add_container(ContainerConfig::new("redis", "7.2.4").expose_tcp(4317));
+
+        scenario.update_configs().expect("should succeed");
+
+        // Verify no allocated port matches the container's exposed port.
+        let generator = scenario.generators.get("gen").unwrap();
+        assert_ne!(generator.suv_port, 4317);
+
+        let capture = scenario.captures.get("cap").unwrap();
+        assert_ne!(capture.suv_port, 4317);
+    }
+
+    #[test]
+    fn default_matches_new() {
+        let from_new = Scenario::new();
+        let from_default = Scenario::default();
+        assert_eq!(from_new.runtime, from_default.runtime);
+        assert_eq!(from_new.ready_max_attempts, from_default.ready_max_attempts);
+        assert_eq!(from_new.ready_backoff, from_default.ready_backoff);
+        assert!(from_new.containers.is_empty());
+        assert!(from_default.containers.is_empty());
     }
 }
