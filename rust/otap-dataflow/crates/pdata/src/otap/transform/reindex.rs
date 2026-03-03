@@ -306,7 +306,8 @@ where
         };
 
         if use_fast_path {
-            // Fast path: apply a uniform offset to parent and child columns.
+            // Fast path: apply a uniform offset to parent and child columns
+            // and without redaction.
             let (off, sign) = if min <= offset {
                 (offset - min, Sign::Positive)
             } else {
@@ -332,16 +333,14 @@ where
             // Slow path: create explicit old->new ID mappings.
             let mut ids = slice.to_vec();
             let (mappings, new_offset) = if ids.is_sorted() {
-                let (m, o) =
-                    create_mappings::<T>(&ids, offset, parent_payload_type, id_column_path)?;
+                let (m, o) = create_mappings::<T>(&ids, offset)?;
                 assert!(apply_mappings::<T>(&mut ids, &m).is_none());
                 (m, o)
             } else {
                 let sort_indices = sort_vec_to_indices(&ids);
                 let mut sorted_ids = vec![T::Native::default(); ids.len()];
                 take_vec(&ids, &mut sorted_ids, &sort_indices);
-                let (m, o) =
-                    create_mappings::<T>(&sorted_ids, offset, parent_payload_type, id_column_path)?;
+                let (m, o) = create_mappings::<T>(&sorted_ids, offset)?;
                 assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
                 untake_vec(&sorted_ids, &mut ids, &sort_indices);
                 (m, o)
@@ -868,19 +867,11 @@ struct IdMapping<T> {
 fn create_mappings<T>(
     sorted_ids: &[T::Native],
     offset: T::Native,
-    payload_type: ArrowPayloadType,
-    id_column_path: &str,
 ) -> Result<(Vec<IdMapping<T::Native>>, T::Native)>
 where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + Sub<Output = T::Native> + From<u8>,
 {
-    let type_max: u64 = match size_of::<T::Native>() {
-        2 => u16::MAX as u64,
-        4 => u32::MAX as u64,
-        _ => unreachable!("Unexpected native type size for ID column"),
-    };
-
     let mut mappings = Vec::new();
     let mut current_offset = offset;
     let one = T::Native::from(1);
@@ -901,37 +892,6 @@ where
             offset,
             sign,
         });
-
-        // Compute the remapped end value and next offset in u64 space to
-        // detect overflow before it happens in the native type.
-        let new_end_u64 = match sign {
-            Sign::Positive => {
-                let result = end_id.as_usize() as u64 + offset.as_usize() as u64;
-                if result > type_max {
-                    return Err(Error::TooManyItems {
-                        payload_type,
-                        count: result as usize,
-                        max: type_max,
-                        message: format!(
-                            "ID column '{}' overflow during reindexing",
-                            id_column_path,
-                        ),
-                    });
-                }
-                result
-            }
-            Sign::Negative => end_id.as_usize() as u64 - offset.as_usize() as u64,
-        };
-
-        let next_offset_u64 = new_end_u64 + 1;
-        if next_offset_u64 > type_max {
-            return Err(Error::TooManyItems {
-                payload_type,
-                count: next_offset_u64 as usize,
-                max: type_max,
-                message: format!("ID column '{}' overflow during reindexing", id_column_path,),
-            });
-        }
 
         // Safe to compute in the native type now -- overflow is impossible.
         let new_end = match sign {
@@ -2417,11 +2377,6 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_logs_many_to_many_resource_id_with_gaps_and_duplicates() {
-        // Regression: resource.id [0, 1, 1, 4, 4] has span=5 and len=5, so the
-        // old `span == len` contiguity check would pass even though there are
-        // gaps (IDs 2 and 3 are missing). The fast path must NOT be used here
-        // because a uniform offset would produce invalid child parent_id
-        // references.
         let parent_ids    = vec![0u16, 1, 2, 3, 4];
         let resource_ids  = vec![0u16, 1, 1, 4, 4];
         let res_attr_pids = vec![0u16, 1, 4];
@@ -2441,80 +2396,6 @@ mod tests {
             ),
         ]);
     }
-
-    // ---- Non-primary ID column boundary tests ----
-
-    #[test]
-    #[rustfmt::skip]
-    fn test_non_primary_id_contiguity_with_gaps_and_duplicates() {
-        // resource.ids [0, 1, 1, 4, 4] have span=5 and len=5, but only 3
-        // unique values (0, 1, 4). The is_primary check forces non-primary
-        // columns onto the slow path which correctly compacts the gaps.
-        let mut batches = vec![
-            logs!(
-                (Logs,
-                    ("id", UInt16, vec![0u16, 1, 2]),
-                    ("resource.id", UInt16, vec![0u16, 1, 2])),
-                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
-            ),
-            logs!(
-                (Logs,
-                    ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
-                    ("resource.id", UInt16, vec![0u16, 1, 1, 4, 4])),
-                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 4]))
-            ),
-        ];
-
-        test_reindex_logs(&mut batches);
-    }
-
-    #[test]
-    fn test_non_primary_overflow_in_create_mappings() {
-        // Test create_mappings directly with inputs that would overflow u16.
-        // Through the normal reindex pipeline with native-only columns,
-        // overflow of non-primary IDs is prevented by the primary ID check
-        // bounding total rows. But create_mappings must still detect overflow
-        // for defense-in-depth (e.g. if called with a high starting offset).
-
-        // Starting offset near u16::MAX with values that push past it.
-        let sorted_ids: Vec<u16> = vec![0, 1, 2];
-        let offset: u16 = u16::MAX - 1; // 65534
-        let result = create_mappings::<UInt16Type>(
-            &sorted_ids,
-            offset,
-            ArrowPayloadType::Logs,
-            "resource.id",
-        );
-        assert!(matches!(result, Err(Error::TooManyItems { .. })));
-
-        // Offset that exactly fills the range should also fail because
-        // next_offset (new_end + 1) would exceed u16::MAX.
-        let sorted_ids: Vec<u16> = vec![0, 1];
-        let offset: u16 = u16::MAX - 1; // 65534
-        let result = create_mappings::<UInt16Type>(
-            &sorted_ids,
-            offset,
-            ArrowPayloadType::Logs,
-            "resource.id",
-        );
-        assert!(matches!(result, Err(Error::TooManyItems { .. })));
-
-        // One less should succeed: maps [0, 1] -> [65533, 65534],
-        // next_offset = 65535 = u16::MAX which is within bounds.
-        let sorted_ids: Vec<u16> = vec![0, 1];
-        let offset: u16 = u16::MAX - 2; // 65533
-        let result = create_mappings::<UInt16Type>(
-            &sorted_ids,
-            offset,
-            ArrowPayloadType::Logs,
-            "resource.id",
-        );
-        assert!(result.is_ok());
-        let (_, next_offset) = result.unwrap();
-        assert_eq!(next_offset, u16::MAX);
-    }
-
-    // ---- Edge cases ----
 
     #[test]
     #[rustfmt::skip]

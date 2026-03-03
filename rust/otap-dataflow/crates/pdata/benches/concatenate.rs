@@ -24,7 +24,7 @@ use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig,
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 
 const NUM_BATCHES: usize = 10;
-const BATCH_SIZES: &[usize] = &[100];
+const BATCH_SIZES: &[usize] = &[100, 1000];
 
 criterion_group!(benches, bench_all);
 criterion_main!(benches);
