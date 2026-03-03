@@ -79,7 +79,7 @@ pub type CallData = SmallVec<[Context8u8; 3]>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RouteData {
     /// Component-specific opaque data (formerly the entire `CallData`).
-    pub user: CallData,
+    pub calldata: CallData,
     /// Entry timestamp, see nanos_since_birth().
     pub entry_time_ns: u64,
     /// Producer's output port index.

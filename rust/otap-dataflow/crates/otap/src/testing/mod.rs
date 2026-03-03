@@ -180,14 +180,14 @@ pub fn test_exporter_with_subscription(
                     Ok(PipelineControlMsg::DeliverAck { ack }) => {
                         if let Some((node_id, ack)) = next_ack(ack) {
                             assert_eq!(node_id, 654321);
-                            break (Interests::ACKS, ack.unwind.route.user, Some(ack.accepted), "success".into());
+                            break (Interests::ACKS, ack.unwind.route.calldata, Some(ack.accepted), "success".into());
                         }
                         // No ACKS subscriber — skip, like the controller would.
                     }
                     Ok(PipelineControlMsg::DeliverNack { nack }) => {
                         if let Some((node_id, nack)) = next_nack(nack) {
                             assert_eq!(node_id, 654321);
-                            break (Interests::NACKS, nack.unwind.route.user, Some(nack.refused), nack.reason);
+                            break (Interests::NACKS, nack.unwind.route.calldata, Some(nack.refused), nack.reason);
                         }
                         // No NACKS subscriber — skip, like the controller would.
                     }

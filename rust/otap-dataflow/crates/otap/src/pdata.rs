@@ -52,7 +52,7 @@ impl Context {
                 // Same node → merge interests, replace user data.
                 // Engine fields (time_ns) are preserved.
                 top.interests |= interests;
-                top.route.user = calldata;
+                top.route.calldata = calldata;
                 return;
             }
             // Different node → inherit RETURN_DATA from predecessor.
@@ -67,7 +67,7 @@ impl Context {
             interests,
             node_id,
             route: RouteData {
-                user: calldata,
+                calldata,
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -200,7 +200,7 @@ impl Context {
             interests: frame_interests,
             node_id,
             route: RouteData {
-                user: CallData::new(),
+                calldata: CallData::new(),
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
@@ -239,7 +239,7 @@ impl Context {
             interests,
             node_id,
             route: RouteData {
-                user: CallData::new(),
+                calldata: CallData::new(),
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
@@ -1181,7 +1181,7 @@ mod test {
 
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1212,7 +1212,7 @@ mod test {
 
         let (node_id, ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1238,7 +1238,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1269,7 +1269,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1319,7 +1319,7 @@ mod test {
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
-        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
     }
 
@@ -1385,7 +1385,7 @@ mod test {
         let ack = AckMsg::new(pdata);
         let (node_id, ack_msg) = next_ack(ack).expect("should find subscriber");
         assert_eq!(node_id, 100);
-        let recv: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
     }
 
@@ -1442,7 +1442,7 @@ mod test {
         // Continue to node 1
         let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
-        let recv: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
 
         // Payload still intact for the retry processor

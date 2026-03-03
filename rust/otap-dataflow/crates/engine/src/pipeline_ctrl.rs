@@ -2253,7 +2253,7 @@ mod tests {
             node_id: nodes[0].index,
             interests: Interests::PRODUCER_METRICS | Interests::ACKS | Interests::NACKS,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns: 0,
                 output_port_index: 0,
             },
@@ -2273,7 +2273,7 @@ mod tests {
                 | Interests::ACKS
                 | Interests::NACKS,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -2289,7 +2289,7 @@ mod tests {
             node_id: nodes[2].index,
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -2315,7 +2315,7 @@ mod tests {
             node_id: nodes[0].index,
             interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -2333,7 +2333,7 @@ mod tests {
                 | Interests::PRODUCER_METRICS
                 | Interests::ENTRY_TIMESTAMP,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -2349,7 +2349,7 @@ mod tests {
             node_id: nodes[2].index,
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
             route: RouteData {
-                user: Default::default(),
+                calldata: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
             },
@@ -2707,7 +2707,7 @@ mod tests {
                 node_id: nodes[0].index,
                 interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
                 route: RouteData {
-                    user: Default::default(),
+                    calldata: Default::default(),
                     entry_time_ns: nanos_since_birth(),
                     output_port_index: 0,
                 },

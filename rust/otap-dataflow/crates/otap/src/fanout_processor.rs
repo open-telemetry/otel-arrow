@@ -721,7 +721,7 @@ impl FanoutProcessor {
         ack: AckMsg<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some((request_id, dest_index)) = parse_calldata(&ack.unwind.route.user) else {
+        let Some((request_id, dest_index)) = parse_calldata(&ack.unwind.route.calldata) else {
             return Ok(());
         };
         let (origin, await_ack, primary, mode) = {
@@ -831,7 +831,7 @@ impl FanoutProcessor {
         nack: NackMsg<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some((request_id, dest_index)) = parse_calldata(&nack.unwind.route.user) else {
+        let Some((request_id, dest_index)) = parse_calldata(&nack.unwind.route.calldata) else {
             return Ok(());
         };
         let (origin, await_ack, primary) = {
@@ -980,7 +980,7 @@ impl FanoutProcessor {
         ack: AckMsg<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some((request_id, dest_index)) = parse_calldata(&ack.unwind.route.user) else {
+        let Some((request_id, dest_index)) = parse_calldata(&ack.unwind.route.calldata) else {
             return Ok(());
         };
 
@@ -1004,7 +1004,7 @@ impl FanoutProcessor {
         nack: NackMsg<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some((request_id, dest_index)) = parse_calldata(&nack.unwind.route.user) else {
+        let Some((request_id, dest_index)) = parse_calldata(&nack.unwind.route.calldata) else {
             return Ok(());
         };
 
@@ -2366,7 +2366,7 @@ mod tests {
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     // Also verify calldata matches the upstream receiver's calldata
                     let received_calldata: Result<TestCallData, _> =
-                        ack.unwind.route.user.try_into();
+                        ack.unwind.route.calldata.try_into();
                     assert_eq!(
                         received_calldata.expect("valid calldata"),
                         upstream_calldata,
@@ -2435,7 +2435,7 @@ mod tests {
                 let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     let received_calldata: Result<TestCallData, _> =
-                        nack.unwind.route.user.try_into();
+                        nack.unwind.route.calldata.try_into();
                     assert_eq!(
                         received_calldata.expect("valid calldata"),
                         upstream_calldata,

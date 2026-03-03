@@ -47,7 +47,7 @@ impl AckRegistry {
 /// Routes an Ack message to the appropriate signal's subscription map.
 #[must_use]
 pub fn route_ack_response(states: &AckRegistry, ack: AckMsg<OtapPdata>) -> RouteResponse {
-    let calldata = ack.unwind.route.user;
+    let calldata = ack.unwind.route.calldata;
     let resp = Ok(());
     let state = match ack.accepted.signal_type() {
         SignalType::Logs => states.logs.as_ref(),
@@ -63,7 +63,7 @@ pub fn route_ack_response(states: &AckRegistry, ack: AckMsg<OtapPdata>) -> Route
 /// Routes a Nack message to the appropriate shared state.
 #[must_use]
 pub fn route_nack_response(states: &AckRegistry, mut nack: NackMsg<OtapPdata>) -> RouteResponse {
-    let calldata = std::mem::take(&mut nack.unwind.route.user);
+    let calldata = std::mem::take(&mut nack.unwind.route.calldata);
     let signal_type = nack.refused.signal_type();
     let resp = Err(nack);
     let state = match signal_type {

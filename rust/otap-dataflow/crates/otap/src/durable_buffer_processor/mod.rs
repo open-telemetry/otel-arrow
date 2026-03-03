@@ -1274,7 +1274,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&ack.unwind.route.user) else {
+        let Some(bundle_ref) = decode_bundle_ref(&ack.unwind.route.calldata) else {
             // Invalid calldata, just forward the ACK upstream
             return effect_handler.notify_ack(ack).await;
         };
@@ -1336,7 +1336,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&nack.unwind.route.user) else {
+        let Some(bundle_ref) = decode_bundle_ref(&nack.unwind.route.calldata) else {
             // Invalid calldata, just forward the NACK upstream
             return effect_handler.notify_nack(nack).await;
         };
@@ -1414,7 +1414,7 @@ impl DurableBuffer {
             return Ok(());
         };
 
-        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata.user) else {
+        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata.calldata) else {
             otel_warn!("durable_buffer.retry.invalid_calldata");
             return Ok(());
         };
@@ -1714,8 +1714,8 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
-                    if let Some(calldata) = data.source_calldata() {
-                        if decode_retry_ticket(&calldata.user).is_some() {
+                    if let Some(route) = data.source_calldata() {
+                        if decode_retry_ticket(&route.calldata).is_some() {
                             // This is a retry ticket - handle retry
                             return self.handle_delayed_retry(data, effect_handler).await;
                         }

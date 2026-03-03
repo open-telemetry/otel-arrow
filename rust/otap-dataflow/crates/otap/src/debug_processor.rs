@@ -248,7 +248,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        match DebugCallData::try_from(ackmsg.unwind.route.user.clone()) {
+                        match DebugCallData::try_from(ackmsg.unwind.route.calldata.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -261,7 +261,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "ACK received with unrecognized calldata (len={}): {e}\n",
-                                        ackmsg.unwind.route.user.len()
+                                        ackmsg.unwind.route.calldata.len()
                                     ))
                                     .await?;
                             }
@@ -270,7 +270,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        match DebugCallData::try_from(nackmsg.unwind.route.user.clone()) {
+                        match DebugCallData::try_from(nackmsg.unwind.route.calldata.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -283,7 +283,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "NACK received with unrecognized calldata (len={}): {e}\n",
-                                        nackmsg.unwind.route.user.len()
+                                        nackmsg.unwind.route.calldata.len()
                                     ))
                                     .await?;
                             }
@@ -1447,7 +1447,7 @@ mod tests {
                                 "ACK should route to subscriber's node_id"
                             );
                             let received_calldata: TestCallData =
-                                ack.unwind.route.user.try_into().unwrap();
+                                ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "ACK should contain subscriber's calldata"
@@ -1501,7 +1501,7 @@ mod tests {
                                 "NACK should route to subscriber's node_id"
                             );
                             let received_calldata: TestCallData =
-                                nack.unwind.route.user.try_into().unwrap();
+                                nack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "NACK should contain subscriber's calldata"

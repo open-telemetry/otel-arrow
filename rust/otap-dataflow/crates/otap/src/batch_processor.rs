@@ -983,7 +983,7 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         ack: AckMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.handle_response(*ack.accepted, ack.unwind.route.user, effect, &Ok(()))
+        self.handle_response(*ack.accepted, ack.unwind.route.calldata, effect, &Ok(()))
             .await
     }
 
@@ -993,7 +993,7 @@ impl BatchProcessor {
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
         let res = Err(nack.reason);
-        self.handle_response(*nack.refused, nack.unwind.route.user, effect, &res)
+        self.handle_response(*nack.refused, nack.unwind.route.calldata, effect, &res)
             .await
     }
 
@@ -1768,15 +1768,19 @@ mod tests {
                                     looped += 1;
                                     if let Some((_node_id, ack)) = next_ack(ack) {
                                         let calldata: TestCallData =
-                                            ack.unwind.route.user.try_into().expect("calldata");
+                                            ack.unwind.route.calldata.try_into().expect("calldata");
                                         received_acks.push(calldata);
                                     }
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
                                     if let Some((_node_id, nack)) = next_nack(nack) {
-                                        let calldata: TestCallData =
-                                            nack.unwind.route.user.try_into().expect("calldata");
+                                        let calldata: TestCallData = nack
+                                            .unwind
+                                            .route
+                                            .calldata
+                                            .try_into()
+                                            .expect("calldata");
                                         received_nacks.push(calldata);
                                     }
                                 }
