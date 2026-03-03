@@ -81,19 +81,19 @@ pub struct ChannelReceiverMetrics {
 #[metric_set(name = "channel.consumed")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
-    /// Duration (ns) of the pipeline from entry until the same frame
-    /// is routes its own ack or nack. Detailed level.
+    /// Duration from entry until the corresponding ack or nack is
+    /// routed, in nanoseconds. This is reported at the detailed level.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
-    /// Consumed requests successfully processed (ack received).
+    /// Consumed requests successfully processed.
     #[metric(name = "consumed.success", unit = "{requests}")]
     pub consumed_success: Counter<u64>,
-    /// Consumed requests that failed (transient / retryable, non-permanent nack).
+    /// Consumed requests that failed, this are retryable errors.
     #[metric(name = "consumed.failure", unit = "{requests}")]
     pub consumed_failure: Counter<u64>,
-    /// Consumed requests permanently refused (permanent nack).
+    /// Consumed requests refused, also known as permanent failures.
     #[metric(name = "consumed.refused", unit = "{requests}")]
     pub consumed_refused: Counter<u64>,
 }
@@ -107,10 +107,10 @@ pub struct ProducedMetrics {
     /// Produced requests acknowledged by downstream.
     #[metric(name = "produced.success", unit = "{requests}")]
     pub produced_success: Counter<u64>,
-    /// Produced requests that failed downstream (transient / retryable, non-permanent nack).
+    /// Produced requests that failed, this are retryable errors.
     #[metric(name = "produced.failure", unit = "{requests}")]
     pub produced_failure: Counter<u64>,
-    /// Produced requests permanently refused by downstream (permanent nack).
+    /// Produced requests refused, also known as permanent failures.
     #[metric(name = "produced.refused", unit = "{requests}")]
     pub produced_refused: Counter<u64>,
 }

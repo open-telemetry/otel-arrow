@@ -13,7 +13,6 @@
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
-use crate::control::MetricLevel;
 use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
 };
@@ -21,6 +20,7 @@ use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
+use otap_df_config::MetricLevel;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
@@ -549,8 +549,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         RequestOutcome::Failure => input.consumed_failure.inc(),
                         RequestOutcome::Refused => input.consumed_refused.inc(),
                     }
-                    if calldata.time_ns > 0 && now_ns > 0 {
-                        let duration_ns = now_ns.saturating_sub(calldata.time_ns);
+                    if calldata.entry_time_ns > 0 && now_ns > 0 {
+                        let duration_ns = now_ns.saturating_sub(calldata.entry_time_ns);
                         input.consumed_duration_ns.record(duration_ns as f64);
                     }
                 }
@@ -657,7 +657,9 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
             RequestOutcome::Success,
             Interests::ACKS,
         ) {
-            ack.calldata = calldata;
+            let mut ret: crate::control::ReturnData = calldata.into();
+            ret.return_time_ns = now_ns;
+            ack.calldata = ret;
             self.send(node_id, NodeControlMsg::Ack(ack)).await;
         }
     }
@@ -676,7 +678,9 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         if let Some((node_id, calldata)) =
             self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS)
         {
-            nack.calldata = calldata;
+            let mut ret: crate::control::ReturnData = calldata.into();
+            ret.return_time_ns = now_ns;
+            nack.calldata = ret;
             self.send(node_id, NodeControlMsg::Nack(nack)).await;
         }
     }
@@ -2267,14 +2271,14 @@ mod tests {
             interests: Interests::PRODUCER_METRICS | Interests::ACKS | Interests::NACKS,
             calldata: RouteData {
                 user: Default::default(),
-                time_ns: 0,
+                entry_time_ns: 0,
                 output_port_index: 0,
                 ..Default::default()
             },
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
-        let time_ns = if with_timestamp {
+        let entry_time_ns = if with_timestamp {
             nanos_since_epoch()
         } else {
             0
@@ -2288,14 +2292,14 @@ mod tests {
                 | Interests::NACKS,
             calldata: RouteData {
                 user: Default::default(),
-                time_ns,
+                entry_time_ns,
                 output_port_index: 0,
                 ..Default::default()
             },
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
-        let time_ns = if with_timestamp {
+        let entry_time_ns = if with_timestamp {
             nanos_since_epoch()
         } else {
             0
@@ -2305,7 +2309,7 @@ mod tests {
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
             calldata: RouteData {
                 user: Default::default(),
-                time_ns,
+                entry_time_ns,
                 output_port_index: 0,
                 ..Default::default()
             },
@@ -2438,7 +2442,7 @@ mod tests {
     }
 
     /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
-    /// when time_ns > 0 and return_time_ns > 0.
+    /// when entry_time_ns > 0 and return_time_ns > 0.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
         let harness = setup_test_manager_with_metrics();
@@ -2467,7 +2471,7 @@ mod tests {
         assert!(snap.min > 0.0, "Processor duration should be > 0");
     }
 
-    /// Verify that when time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
+    /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
     #[tokio::test]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -2483,14 +2487,14 @@ mod tests {
         let snap = assert_mmsc(exp, CONSUMED_DURATION, "Exporter duration");
         assert_eq!(
             snap.count, 0,
-            "No duration should be recorded when time_ns == 0"
+            "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         let snap = assert_mmsc(proc_c, CONSUMED_DURATION, "Processor duration");
         assert_eq!(
             snap.count, 0,
-            "No duration should be recorded when time_ns == 0"
+            "No duration should be recorded when entry_time_ns == 0"
         );
     }
 

@@ -10,7 +10,7 @@ use crate::{
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    control::{AckMsg, CallData, MetricLevel, NackMsg},
+    control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
@@ -28,6 +28,7 @@ pub use channel_metrics::RequestOutcome;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
+use otap_df_config::MetricLevel;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,

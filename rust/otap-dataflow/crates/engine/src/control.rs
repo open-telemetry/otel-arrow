@@ -74,21 +74,41 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
-/// Re-export from config crate.
-pub use otap_df_config::policy::MetricLevel;
-
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
-/// containing timestamp.
+/// containing timestamp. Lives on the forward path (in context stack frames).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RouteData {
     /// Component-specific opaque data (formerly the entire `CallData`).
     pub user: CallData,
-    /// Receive timestamp, see nanos_since_epoch().
-    pub time_ns: u64,
-    /// Return-path timestamp (monotonic nanos since process epoch).
-    pub return_time_ns: u64,
+    /// Entry timestamp, see nanos_since_epoch().
+    pub entry_time_ns: u64,
     /// Producer's output port index.
     pub output_port_index: u16,
+}
+
+/// Return-path data carried in AckMsg/NackMsg. Contains all the fields
+/// from the forward-path RouteData plus a return-path timestamp.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReturnData {
+    /// Component-specific data.
+    pub user: CallData,
+    /// Entry timestamp, see nanos_since_epoch().
+    pub entry_time_ns: u64,
+    /// Sender's output port index.
+    pub output_port_index: u16,
+    /// Return-path timestamp, see nanos_since_epoch().
+    pub return_time_ns: u64,
+}
+
+impl From<RouteData> for ReturnData {
+    fn from(rd: RouteData) -> Self {
+        Self {
+            user: rd.user,
+            entry_time_ns: rd.entry_time_ns,
+            output_port_index: rd.output_port_index,
+            return_time_ns: 0,
+        }
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -113,7 +133,7 @@ pub struct AckMsg<PData> {
     pub accepted: Box<PData>,
 
     /// Subscriber information returned.
-    pub calldata: RouteData,
+    pub calldata: ReturnData,
 }
 
 impl<PData> AckMsg<PData> {
@@ -121,7 +141,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: RouteData::default(),
+            calldata: ReturnData::default(),
         }
     }
 }
@@ -133,7 +153,7 @@ pub struct NackMsg<PData> {
     pub reason: String,
 
     /// Subscriber information returned.
-    pub calldata: RouteData,
+    pub calldata: ReturnData,
 
     /// Refused pdata being returned.
     pub refused: Box<PData>,
@@ -156,7 +176,7 @@ impl<PData> NackMsg<PData> {
     fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
-            calldata: RouteData::default(),
+            calldata: ReturnData::default(),
             refused: Box::new(refused),
             permanent,
         }

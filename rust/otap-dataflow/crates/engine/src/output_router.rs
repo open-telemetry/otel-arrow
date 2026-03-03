@@ -47,19 +47,18 @@ impl<T> OutputSend for crate::shared::message::SharedSender<T> {
     }
 }
 
-/// Port-routing state and message-sending logic shared by all
-/// processor and receiver EffectHandlers.
+/// Port-routing state shared by all processor and receiver effect handlers.
 #[derive(Clone)]
 pub struct OutputRouter<S> {
     node_id: NodeId,
-    /// Combined map of port name → (sender, port_index).
+    /// Map of port name to sender and port_index.
     ports: HashMap<PortName, (S, u16)>,
-    /// Cached default output (sender, port_index).
+    /// The default port.
     default: Option<(S, u16)>,
 }
 
 impl<S: Clone> OutputRouter<S> {
-    /// Create a new router, resolving the default sender and indexing.
+    /// Create a new router, indexing the ports and resolving the default sender.
     pub fn new(
         node_id: NodeId,
         msg_senders: HashMap<PortName, S>,

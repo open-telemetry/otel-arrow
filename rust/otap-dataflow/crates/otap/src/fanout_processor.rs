@@ -25,7 +25,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, RouteData};
+use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, ReturnData};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
@@ -635,7 +635,7 @@ impl FanoutProcessor {
         // No fallback, produce a nack using original pdata for correct upstream routing.
         Some(NackMsg {
             reason,
-            calldata: RouteData::default(),
+            calldata: ReturnData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
             permanent: false, // Timeout is retriable
         })
@@ -789,7 +789,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ack_to_return = AckMsg {
                     accepted: Box::new(inflight.original_pdata),
-                    calldata: RouteData::default(),
+                    calldata: ReturnData::default(),
                 };
                 effect_handler.notify_ack(ack_to_return).await?;
             }
@@ -818,7 +818,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ackmsg = AckMsg {
                     accepted: Box::new(original_pdata),
-                    calldata: RouteData::default(),
+                    calldata: ReturnData::default(),
                 };
                 effect_handler.notify_ack(ackmsg).await?;
             }
@@ -947,7 +947,7 @@ impl FanoutProcessor {
                     "fanout: max_inflight limit ({}) exceeded",
                     self.config.max_inflight
                 ),
-                calldata: RouteData::default(),
+                calldata: ReturnData::default(),
                 refused: Box::new(pdata),
                 permanent: false, // Backpressure is retriable
             };
@@ -1018,7 +1018,7 @@ impl FanoutProcessor {
             self.metrics.nacked.add(1);
             let nackmsg = NackMsg {
                 reason: nack.reason,
-                calldata: RouteData::default(),
+                calldata: ReturnData::default(),
                 refused: Box::new(original_pdata),
                 permanent: nack.permanent, // Propagate from downstream
             };
@@ -1101,7 +1101,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
                             "fanout: max_inflight limit ({}) exceeded",
                             self.config.max_inflight
                         ),
-                        calldata: RouteData::default(),
+                        calldata: ReturnData::default(),
                         refused: Box::new(pdata),
                         permanent: false, // Backpressure is retriable
                     };
@@ -1598,7 +1598,7 @@ mod tests {
         let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
         let mut ack = AckMsg::new(sent.pop().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -1663,7 +1663,7 @@ mod tests {
 
         for (_, mut msgs) in all {
             let mut ack = AckMsg::new(msgs.pop().unwrap());
-            ack.calldata = ack.accepted.source_calldata().unwrap();
+            ack.calldata = ack.accepted.source_calldata().unwrap().into();
             h.fanout
                 .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
                 .await
@@ -1704,7 +1704,7 @@ mod tests {
 
         // Nack from p1 - should trigger fail-fast without waiting for p2.
         let mut nack = NackMsg::new("p1 failed", p1.pop().unwrap());
-        nack.calldata = nack.refused.source_calldata().unwrap();
+        nack.calldata = nack.refused.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
@@ -1753,7 +1753,7 @@ mod tests {
         assert!(second.is_empty());
 
         let mut ack_first = AckMsg::new(first.into_iter().next().unwrap());
-        ack_first.calldata = ack_first.accepted.source_calldata().unwrap();
+        ack_first.calldata = ack_first.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(ack_first)),
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(next.len(), 1);
 
         let mut ack_second = AckMsg::new(next.into_iter().next().unwrap());
-        ack_second.calldata = ack_second.accepted.source_calldata().unwrap();
+        ack_second.calldata = ack_second.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(ack_second)),
@@ -1795,7 +1795,7 @@ mod tests {
         let mut primary_msg = drain(h.outputs.get_mut("primary").expect("primary"));
         assert_eq!(primary_msg.len(), 1);
         let mut nack = NackMsg::new("fail", primary_msg.pop().unwrap());
-        nack.calldata = nack.refused.source_calldata().unwrap();
+        nack.calldata = nack.refused.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
@@ -1804,7 +1804,7 @@ mod tests {
         let backup = drain(h.outputs.get_mut("backup").expect("backup"));
         assert_eq!(backup.len(), 1);
         let mut ack = AckMsg::new(backup.into_iter().next().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -1853,7 +1853,7 @@ mod tests {
         let backup = drain(h.outputs.get_mut("backup").expect("backup"));
         assert_eq!(backup.len(), 1);
         let mut ack = AckMsg::new(backup.into_iter().next().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -1893,7 +1893,7 @@ mod tests {
         // Nack a, nack b, ack c.
         let mut a_msg = drain(h.outputs.get_mut("a").expect("a"));
         let mut nack_a = NackMsg::new("a failed", a_msg.pop().unwrap());
-        nack_a.calldata = nack_a.refused.source_calldata().unwrap();
+        nack_a.calldata = nack_a.refused.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Nack(nack_a)),
@@ -1904,7 +1904,7 @@ mod tests {
 
         let mut b_msg = drain(h.outputs.get_mut("b").expect("b"));
         let mut nack_b = NackMsg::new("b failed", b_msg.pop().unwrap());
-        nack_b.calldata = nack_b.refused.source_calldata().unwrap();
+        nack_b.calldata = nack_b.refused.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Nack(nack_b)),
@@ -1916,7 +1916,7 @@ mod tests {
         let c_msg = drain(h.outputs.get_mut("c").expect("c"));
         assert_eq!(c_msg.len(), 1);
         let mut ack_c = AckMsg::new(c_msg.into_iter().next().unwrap());
-        ack_c.calldata = ack_c.accepted.source_calldata().unwrap();
+        ack_c.calldata = ack_c.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack_c)), &mut h.effect)
             .await
@@ -1990,7 +1990,7 @@ mod tests {
         let mut primary_msg = drain(h.outputs.get_mut("primary").expect("primary"));
         assert_eq!(primary_msg.len(), 1);
         let mut nack = NackMsg::new("fail primary", primary_msg.pop().unwrap());
-        nack.calldata = nack.refused.source_calldata().unwrap();
+        nack.calldata = nack.refused.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
@@ -2000,7 +2000,7 @@ mod tests {
         let mut backup = drain(h.outputs.get_mut("backup").expect("backup"));
         assert_eq!(backup.len(), 1);
         let mut nack_fb = NackMsg::new("fail backup", backup.pop().unwrap());
-        nack_fb.calldata = nack_fb.refused.source_calldata().unwrap();
+        nack_fb.calldata = nack_fb.refused.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Nack(nack_fb)),
@@ -2086,7 +2086,7 @@ mod tests {
 
         // Ack from primary clears slim_inflight.
         let mut ack = AckMsg::new(p1.pop().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -2156,7 +2156,7 @@ mod tests {
         assert_eq!(sec.len(), 1);
 
         let mut nack = NackMsg::new("secondary fail", sec.pop().unwrap());
-        nack.calldata = nack.refused.source_calldata().unwrap();
+        nack.calldata = nack.refused.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
@@ -2165,7 +2165,7 @@ mod tests {
         assert!(!h.fanout.slim_inflight.is_empty());
 
         let mut ack = AckMsg::new(prim.pop().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -2224,7 +2224,7 @@ mod tests {
 
         // Primary still acks successfully
         let mut ack = AckMsg::new(prim.pop().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -2269,7 +2269,7 @@ mod tests {
         assert!(s2_msgs.is_empty());
 
         let mut ack_first = AckMsg::new(s1_msgs[0].clone());
-        ack_first.calldata = s1_msgs[0].source_calldata().unwrap();
+        ack_first.calldata = s1_msgs[0].source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(ack_first)),
@@ -2281,7 +2281,7 @@ mod tests {
         assert_eq!(s2_after_first.len(), 1);
 
         let mut ack_second = AckMsg::new(s1_msgs[1].clone());
-        ack_second.calldata = s1_msgs[1].source_calldata().unwrap();
+        ack_second.calldata = s1_msgs[1].source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(ack_second)),
@@ -2297,7 +2297,7 @@ mod tests {
             .chain(s2_after_second.into_iter())
         {
             let mut ack = AckMsg::new(msg.clone());
-            ack.calldata = msg.source_calldata().unwrap();
+            ack.calldata = msg.source_calldata().unwrap().into();
             h.fanout
                 .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
                 .await
@@ -2345,7 +2345,7 @@ mod tests {
         // Simulate downstream exporter acking - in real pipeline, Context::next_ack
         // would pop the fanout frame and route to fanout
         let mut ack = AckMsg::new(sent.pop().unwrap());
-        ack.calldata = ack.accepted.source_calldata().unwrap();
+        ack.calldata = ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
@@ -2414,7 +2414,7 @@ mod tests {
 
         // Simulate downstream exporter nacking
         let mut nack = NackMsg::new("downstream failed", sent.pop().unwrap());
-        nack.calldata = nack.refused.source_calldata().unwrap();
+        nack.calldata = nack.refused.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
@@ -2709,7 +2709,7 @@ mod tests {
         // Now send a LATE ack from the original primary (after timeout triggered fallback)
         // This should be IGNORED because the destination is marked TimedOut
         let mut late_ack = AckMsg::new(primary_pdata);
-        late_ack.calldata = late_ack.accepted.source_calldata().unwrap();
+        late_ack.calldata = late_ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(late_ack)),
@@ -2727,7 +2727,7 @@ mod tests {
 
         // Now backup acks - this should complete the request
         let mut backup_ack = AckMsg::new(backup_msgs.into_iter().next().unwrap());
-        backup_ack.calldata = backup_ack.accepted.source_calldata().unwrap();
+        backup_ack.calldata = backup_ack.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(
                 Message::Control(NodeControlMsg::Ack(backup_ack)),
@@ -2792,7 +2792,7 @@ mod tests {
 
         // Ack 'a' - this should mark 'b' as Skipped and dispatch 'c'
         let mut ack_a = AckMsg::new(a_msgs.into_iter().next().unwrap());
-        ack_a.calldata = ack_a.accepted.source_calldata().unwrap();
+        ack_a.calldata = ack_a.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack_a)), &mut h.effect)
             .await
@@ -2811,7 +2811,7 @@ mod tests {
 
         // Ack 'c' to complete
         let mut ack_c = AckMsg::new(c_msgs.into_iter().next().unwrap());
-        ack_c.calldata = ack_c.accepted.source_calldata().unwrap();
+        ack_c.calldata = ack_c.accepted.source_calldata().unwrap().into();
         h.fanout
             .process(Message::Control(NodeControlMsg::Ack(ack_c)), &mut h.effect)
             .await
