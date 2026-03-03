@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 /// Used for duration calculations in pipeline component metrics.
 ///
 /// TODO: This could be perhaps more platform-specific.
-pub fn nanos_since_epoch() -> u64 {
+pub fn nanos_since_birth() -> u64 {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
     epoch.elapsed().as_nanos() as u64
@@ -80,7 +80,7 @@ pub type CallData = SmallVec<[Context8u8; 3]>;
 pub struct RouteData {
     /// Component-specific opaque data (formerly the entire `CallData`).
     pub user: CallData,
-    /// Entry timestamp, see nanos_since_epoch().
+    /// Entry timestamp, see nanos_since_birth().
     pub entry_time_ns: u64,
     /// Producer's output port index.
     pub output_port_index: u16,
@@ -89,24 +89,19 @@ pub struct RouteData {
 /// Return-path data carried in AckMsg/NackMsg. Contains all the fields
 /// from the forward-path RouteData plus a return-path timestamp.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct ReturnData {
-    /// Component-specific data.
-    pub user: CallData,
-    /// Entry timestamp, see nanos_since_epoch().
-    pub entry_time_ns: u64,
-    /// Sender's output port index.
-    pub output_port_index: u16,
-    /// Return-path timestamp, see nanos_since_epoch().
+pub struct UnwindData {
+    /// The route we are returning through.
+    pub route: RouteData,
+    /// Ack or Nack timestamp, see nanos_since_birth().
     pub return_time_ns: u64,
 }
 
-impl From<RouteData> for ReturnData {
-    fn from(rd: RouteData) -> Self {
+impl UnwindData {
+    /// Build new return route data.
+    pub fn new(route: RouteData, return_time_ns: u64) -> Self {
         Self {
-            user: rd.user,
-            entry_time_ns: rd.entry_time_ns,
-            output_port_index: rd.output_port_index,
-            return_time_ns: 0,
+            route,
+            return_time_ns,
         }
     }
 }
@@ -120,8 +115,8 @@ impl From<RouteData> for ReturnData {
 pub struct Frame {
     /// Declares the set of interests this node has (Acks, Nacks, ...)
     pub interests: crate::Interests,
-    /// The caller's data returns via AckMsg.calldata or NackMsg.calldata.
-    pub calldata: RouteData,
+    /// The caller's route data.
+    pub route: RouteData,
     /// The caller's node_id for routing.
     pub node_id: usize,
 }
@@ -132,8 +127,8 @@ pub struct AckMsg<PData> {
     /// Accepted pdata being returned.
     pub accepted: Box<PData>,
 
-    /// Subscriber information returned.
-    pub calldata: ReturnData,
+    /// Routing information returned.
+    pub unwind: UnwindData,
 }
 
 impl<PData> AckMsg<PData> {
@@ -141,7 +136,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: ReturnData::default(),
+            unwind: UnwindData::default(),
         }
     }
 }
@@ -152,11 +147,11 @@ pub struct NackMsg<PData> {
     /// Human-readable reason for the NACK.
     pub reason: String,
 
-    /// Subscriber information returned.
-    pub calldata: ReturnData,
-
     /// Refused pdata being returned.
     pub refused: Box<PData>,
+
+    /// Subscriber information returned.
+    pub unwind: UnwindData,
 
     /// Permanent status.
     pub permanent: bool,
@@ -176,8 +171,8 @@ impl<PData> NackMsg<PData> {
     fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
-            calldata: ReturnData::default(),
             refused: Box::new(refused),
+            unwind: UnwindData::default(),
             permanent,
         }
     }

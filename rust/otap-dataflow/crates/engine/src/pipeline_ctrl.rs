@@ -13,6 +13,8 @@
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
+use crate::control::RouteData;
+use crate::control::UnwindData;
 use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
 };
@@ -522,7 +524,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         &mut self,
         node_id: usize,
         interests: Interests,
-        calldata: &crate::control::RouteData,
+        route: &RouteData,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -535,15 +537,15 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         RequestOutcome::Failure => input.consumed_failure.inc(),
                         RequestOutcome::Refused => input.consumed_refused.inc(),
                     }
-                    if calldata.entry_time_ns > 0 && now_ns > 0 {
-                        let duration_ns = now_ns.saturating_sub(calldata.entry_time_ns);
+                    if route.entry_time_ns > 0 && now_ns > 0 {
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
                         input.consumed_duration_ns.record(duration_ns as f64);
                     }
                 }
             }
             // Record produced metrics on the node's output channel.
             if interests.contains(Interests::PRODUCER_METRICS) {
-                let port = calldata.output_port_index as usize;
+                let port = route.output_port_index as usize;
                 if let Some(output) = handles.outputs.get_mut(port) {
                     match outcome {
                         RequestOutcome::Success => output.produced_success.inc(),
@@ -553,10 +555,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     // Record produced duration only when CONSUMER_METRICS is
                     // NOT set on this frame. Processors skip consumer metrics.
                     if !interests.contains(Interests::CONSUMER_METRICS)
-                        && calldata.entry_time_ns > 0
+                        && route.entry_time_ns > 0
                         && now_ns > 0
                     {
-                        let duration_ns = now_ns.saturating_sub(calldata.entry_time_ns);
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
                         output.produced_duration_ns.record(duration_ns as f64);
                     }
                 }
@@ -608,7 +610,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
         now_ns: u64,
         outcome: RequestOutcome,
         interest: Interests,
-    ) -> Option<(usize, crate::control::RouteData)> {
+    ) -> Option<(usize, RouteData)> {
         loop {
             match pdata.pop_frame() {
                 None => return None,
@@ -617,7 +619,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
                         self.record_frame_metrics(
                             frame.node_id,
                             frame.interests,
-                            &frame.calldata,
+                            &frame.route,
                             outcome,
                             now_ns,
                         );
@@ -626,7 +628,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
                         if !frame.interests.contains(Interests::RETURN_DATA) {
                             pdata.drop_payload();
                         }
-                        return Some((frame.node_id, frame.calldata));
+                        return Some((frame.node_id, frame.route));
                     }
                 }
             }
@@ -635,34 +637,30 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
 
     /// Unwind the context stack for an ACK.
     async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
-        let now_ns = ack.calldata.return_time_ns;
-        if let Some((node_id, calldata)) = self.unwind_frames(
+        let now_ns = ack.unwind.return_time_ns;
+        if let Some((node_id, route)) = self.unwind_frames(
             &mut ack.accepted,
             now_ns,
             RequestOutcome::Success,
             Interests::ACKS,
         ) {
-            let mut ret: crate::control::ReturnData = calldata.into();
-            ret.return_time_ns = now_ns;
-            ack.calldata = ret;
+            ack.unwind = UnwindData::new(route, now_ns);
             self.send(node_id, NodeControlMsg::Ack(ack)).await;
         }
     }
 
     /// Unwind the context stack for a NACK.
     async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
-        let now_ns = nack.calldata.return_time_ns;
+        let now_ns = nack.unwind.return_time_ns;
         let outcome = if nack.permanent {
             RequestOutcome::Refused
         } else {
             RequestOutcome::Failure
         };
-        if let Some((node_id, calldata)) =
+        if let Some((node_id, route)) =
             self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS)
         {
-            let mut ret: crate::control::ReturnData = calldata.into();
-            ret.return_time_ns = now_ns;
-            nack.calldata = ret;
+            nack.unwind = UnwindData::new(route, now_ns);
             self.send(node_id, NodeControlMsg::Nack(nack)).await;
         }
     }
@@ -1989,7 +1987,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
-    use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_epoch};
+    use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otap_df_telemetry::registry::MetricSetKey;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -2254,7 +2252,7 @@ mod tests {
         pdata.push_frame(Frame {
             node_id: nodes[0].index,
             interests: Interests::PRODUCER_METRICS | Interests::ACKS | Interests::NACKS,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns: 0,
                 output_port_index: 0,
@@ -2263,7 +2261,7 @@ mod tests {
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
         let entry_time_ns = if with_timestamp {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
@@ -2274,7 +2272,7 @@ mod tests {
                 | Interests::ENTRY_TIMESTAMP
                 | Interests::ACKS
                 | Interests::NACKS,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
@@ -2283,14 +2281,14 @@ mod tests {
 
         // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
         let entry_time_ns = if with_timestamp {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
         pdata.push_frame(Frame {
             node_id: nodes[2].index,
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
@@ -2309,14 +2307,14 @@ mod tests {
 
         // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
         let entry_time_ns = if with_timestamp {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
         pdata.push_frame(Frame {
             node_id: nodes[0].index,
             interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
@@ -2325,7 +2323,7 @@ mod tests {
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
         let entry_time_ns = if with_timestamp {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
@@ -2334,7 +2332,7 @@ mod tests {
             interests: Interests::CONSUMER_METRICS
                 | Interests::PRODUCER_METRICS
                 | Interests::ENTRY_TIMESTAMP,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
@@ -2343,14 +2341,14 @@ mod tests {
 
         // Node 2 (exporter): consumer metrics only.
         let entry_time_ns = if with_timestamp {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
         pdata.push_frame(Frame {
             node_id: nodes[2].index,
             interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
-            calldata: RouteData {
+            route: RouteData {
                 user: Default::default(),
                 entry_time_ns,
                 output_port_index: 0,
@@ -2491,7 +2489,7 @@ mod tests {
         let snapshots = run_and_collect(harness, |nodes| {
             let pdata = build_3node_pdata(nodes, true);
             let mut ack = AckMsg::new(pdata);
-            ack.calldata.return_time_ns = nanos_since_epoch();
+            ack.unwind.return_time_ns = nanos_since_birth();
             vec![PipelineControlMsg::DeliverAck { ack }]
         })
         .await;
@@ -2532,7 +2530,7 @@ mod tests {
         let snapshots = run_and_collect(harness, |nodes| {
             let pdata = build_3node_pdata_no_subscribers(nodes, true);
             let mut ack = AckMsg::new(pdata);
-            ack.calldata.return_time_ns = nanos_since_epoch();
+            ack.unwind.return_time_ns = nanos_since_birth();
             vec![PipelineControlMsg::DeliverAck { ack }]
         })
         .await;
@@ -2701,21 +2699,21 @@ mod tests {
             // --- Pass 1: full 3-node stack (processor subscribes to ACKS) ---
             let pdata_full = build_3node_pdata(nodes, true);
             let mut ack1 = AckMsg::new(pdata_full);
-            ack1.calldata.return_time_ns = nanos_since_epoch();
+            ack1.unwind.return_time_ns = nanos_since_birth();
 
             // --- Pass 2: only the receiver frame remains (processor re-notified) ---
             let mut pdata_recv_only = TestPData::new();
             pdata_recv_only.push_frame(Frame {
                 node_id: nodes[0].index,
                 interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
-                calldata: RouteData {
+                route: RouteData {
                     user: Default::default(),
-                    entry_time_ns: nanos_since_epoch(),
+                    entry_time_ns: nanos_since_birth(),
                     output_port_index: 0,
                 },
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
-            ack2.calldata.return_time_ns = nanos_since_epoch();
+            ack2.unwind.return_time_ns = nanos_since_birth();
 
             vec![
                 PipelineControlMsg::DeliverAck { ack: ack1 },

@@ -151,7 +151,7 @@ impl OTAPReceiver {
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
-        let calldata = ack.calldata.user;
+        let calldata = ack.unwind.route.user;
         let resp = Ok(());
         let state = match ack.accepted.signal_type() {
             SignalType::Logs => states.logs.as_ref(),
@@ -169,7 +169,7 @@ impl OTAPReceiver {
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
-        let calldata = std::mem::take(&mut nack.calldata.user);
+        let calldata = std::mem::take(&mut nack.unwind.route.user);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
         let state = match signal_type {
@@ -544,9 +544,7 @@ mod tests {
                     assert!(matches!(metrics_records, _expected_metrics_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        next_ack(AckMsg::new(metrics_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(metrics_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for metrics");
@@ -572,9 +570,7 @@ mod tests {
                     assert!(matches!(logs_records, _expected_logs_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        next_ack(AckMsg::new(logs_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for logs");
@@ -600,9 +596,7 @@ mod tests {
                     assert!(matches!(traces_records, _expected_traces_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        next_ack(AckMsg::new(traces_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(traces_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for traces");

@@ -248,7 +248,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        match DebugCallData::try_from(ackmsg.calldata.user.clone()) {
+                        match DebugCallData::try_from(ackmsg.unwind.route.user.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -261,7 +261,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "ACK received with unrecognized calldata (len={}): {e}\n",
-                                        ackmsg.calldata.user.len()
+                                        ackmsg.unwind.route.user.len()
                                     ))
                                     .await?;
                             }
@@ -270,7 +270,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        match DebugCallData::try_from(nackmsg.calldata.user.clone()) {
+                        match DebugCallData::try_from(nackmsg.unwind.route.user.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -283,7 +283,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "NACK received with unrecognized calldata (len={}): {e}\n",
-                                        nackmsg.calldata.user.len()
+                                        nackmsg.unwind.route.user.len()
                                     ))
                                     .await?;
                             }
@@ -1441,14 +1441,13 @@ mod tests {
 
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverAck { ack }) => {
-                            let (node_id, ack) =
-                                next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
                             );
                             let received_calldata: TestCallData =
-                                ack.calldata.user.try_into().unwrap();
+                                ack.unwind.route.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "ACK should contain subscriber's calldata"
@@ -1502,7 +1501,7 @@ mod tests {
                                 "NACK should route to subscriber's node_id"
                             );
                             let received_calldata: TestCallData =
-                                nack.calldata.user.try_into().unwrap();
+                                nack.unwind.route.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "NACK should contain subscriber's calldata"

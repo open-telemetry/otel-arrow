@@ -5,7 +5,7 @@
 
 use crate::pdata::OtapPdata;
 use bytes::Bytes;
-use otap_df_engine::control::{AckMsg, NackMsg};
+use otap_df_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
@@ -17,8 +17,8 @@ use serde_json::Value;
 use std::ops::Add;
 use std::time::Instant;
 
-/// Consume frames to locate the most recent subscriber with ACKS interest.
-/// Drains the context stack until it finds a frame with `ACKS` interest.
+/// Consume frames to locate the most recent subscriber with ACKS
+/// interest in test scenarios, simulating the pipeline controller.
 #[must_use]
 pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
     let frame = ack
@@ -29,13 +29,13 @@ pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)
         if (frame.interests & Interests::RETURN_DATA).is_empty() {
             let _drop = ack.accepted.take_payload();
         }
-        ack.calldata = frame.calldata.into();
+        ack.unwind = UnwindData::new(frame.route, nanos_since_birth());
         (frame.node_id, ack)
     })
 }
 
-/// Consume frames to locate the most recent subscriber with NACKS interest.
-/// Same drain semantics as `next_ack()`.
+/// Consume frames to locate the most recent subscriber with NACKS
+/// interest in test scenarios, simulating the pipeline controller.
 #[must_use]
 pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
     let frame = nack
@@ -46,7 +46,7 @@ pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPda
         if (frame.interests & Interests::RETURN_DATA).is_empty() {
             let _drop = nack.refused.take_payload();
         }
-        nack.calldata = frame.calldata.into();
+        nack.unwind = UnwindData::new(frame.route, nanos_since_birth());
         (frame.node_id, nack)
     })
 }
@@ -180,14 +180,14 @@ pub fn test_exporter_with_subscription(
                     Ok(PipelineControlMsg::DeliverAck { ack }) => {
                         if let Some((node_id, ack)) = next_ack(ack) {
                             assert_eq!(node_id, 654321);
-                            break (Interests::ACKS, ack.calldata.user, Some(ack.accepted), "success".into());
+                            break (Interests::ACKS, ack.unwind.route.user, Some(ack.accepted), "success".into());
                         }
                         // No ACKS subscriber — skip, like the controller would.
                     }
                     Ok(PipelineControlMsg::DeliverNack { nack }) => {
                         if let Some((node_id, nack)) = next_nack(nack) {
                             assert_eq!(node_id, 654321);
-                            break (Interests::NACKS, nack.calldata.user, Some(nack.refused), nack.reason);
+                            break (Interests::NACKS, nack.unwind.route.user, Some(nack.refused), nack.reason);
                         }
                         // No NACKS subscriber — skip, like the controller would.
                     }

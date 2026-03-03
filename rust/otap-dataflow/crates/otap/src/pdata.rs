@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_epoch};
+use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
@@ -44,7 +44,7 @@ impl Context {
     pub(crate) fn subscribe_to(
         &mut self,
         mut interests: Interests,
-        user_calldata: CallData,
+        calldata: CallData,
         node_id: usize,
     ) {
         if let Some(top) = self.stack.last_mut() {
@@ -52,24 +52,24 @@ impl Context {
                 // Same node → merge interests, replace user data.
                 // Engine fields (time_ns) are preserved.
                 top.interests |= interests;
-                top.calldata.user = user_calldata;
+                top.route.user = calldata;
                 return;
             }
             // Different node → inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
-        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            nanos_since_epoch()
+        let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_birth()
         } else {
             0
         };
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: RouteData {
-                user: user_calldata,
-                entry_time_ns: time_ns,
-                ..Default::default()
+            route: RouteData {
+                user: calldata,
+                entry_time_ns,
+                output_port_index: 0,
             },
         });
     }
@@ -107,7 +107,7 @@ impl Context {
     /// sent by the source node.
     #[must_use]
     pub fn source_calldata(&self) -> Option<RouteData> {
-        self.stack.last().map(|f| f.calldata.clone())
+        self.stack.last().map(|f| f.route.clone())
     }
 
     /// Are there any subscribers with actual interests (ACKS or NACKS)?
@@ -156,7 +156,7 @@ impl Context {
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: RouteData::default(),
+            route: RouteData::default(),
         });
     }
 
@@ -164,7 +164,7 @@ impl Context {
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn stamp_top_time(&mut self, time_ns: u64) {
         if let Some(top) = self.stack.last_mut() {
-            top.calldata.entry_time_ns = time_ns;
+            top.route.entry_time_ns = time_ns;
         }
     }
 
@@ -181,7 +181,7 @@ impl Context {
             if top.node_id == node_id {
                 top.interests |= interests;
                 if interests.contains(Interests::ENTRY_TIMESTAMP) {
-                    top.calldata.entry_time_ns = nanos_since_epoch();
+                    top.route.entry_time_ns = nanos_since_birth();
                 }
                 return;
             }
@@ -192,14 +192,14 @@ impl Context {
             frame_interests |= last.interests & Interests::RETURN_DATA;
         }
         let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
         self.stack.push(Frame {
             interests: frame_interests,
             node_id,
-            calldata: RouteData {
+            route: RouteData {
                 user: CallData::new(),
                 entry_time_ns: time_ns,
                 ..Default::default()
@@ -212,7 +212,7 @@ impl Context {
     /// carries the correct producer output port index on the return path.
     pub(crate) fn stamp_output_port_index(&mut self, index: u16) {
         if let Some(top) = self.stack.last_mut() {
-            top.calldata.output_port_index = index;
+            top.route.output_port_index = index;
         }
     }
 
@@ -231,14 +231,14 @@ impl Context {
         interests |= node_interests & (Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
         // Timestamp: only when ENTRY_TIMESTAMP is requested.
         let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
-            nanos_since_epoch()
+            nanos_since_birth()
         } else {
             0
         };
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: RouteData {
+            route: RouteData {
                 user: CallData::new(),
                 entry_time_ns: time_ns,
                 ..Default::default()
@@ -519,14 +519,14 @@ macro_rules! impl_consumer_ext {
         impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
             async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
                 if ack.accepted.has_pending_metrics(Interests::ACKS) {
-                    ack.calldata.return_time_ns = nanos_since_epoch();
+                    ack.unwind.return_time_ns = nanos_since_birth();
                 }
                 self.route_ack(ack).await
             }
 
             async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
                 if nack.refused.has_pending_metrics(Interests::NACKS) {
-                    nack.calldata.return_time_ns = nanos_since_epoch();
+                    nack.unwind.return_time_ns = nanos_since_birth();
                 }
                 self.route_nack(nack).await
             }
@@ -1181,7 +1181,7 @@ mod test {
 
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.user.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1212,7 +1212,7 @@ mod test {
 
         let (node_id, ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.user.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1238,7 +1238,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1269,7 +1269,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1319,7 +1319,7 @@ mod test {
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
-        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
     }
 
@@ -1385,7 +1385,7 @@ mod test {
         let ack = AckMsg::new(pdata);
         let (node_id, ack_msg) = next_ack(ack).expect("should find subscriber");
         assert_eq!(node_id, 100);
-        let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv, test_data);
     }
 
@@ -1442,7 +1442,7 @@ mod test {
         // Continue to node 1
         let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
-        let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.user.try_into().expect("has");
         assert_eq!(recv, test_data);
 
         // Payload still intact for the retry processor
@@ -1482,7 +1482,7 @@ mod test {
             "CONSUMER_METRICS should NOT auto-subscribe NACKS"
         );
         assert_eq!(
-            frames[0].calldata.entry_time_ns, 0,
+            frames[0].unwind.route.entry_time_ns, 0,
             "CONSUMER_METRICS alone should not stamp time"
         );
     }
@@ -1497,7 +1497,7 @@ mod test {
         assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
         assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
         assert_eq!(
-            frames[0].calldata.entry_time_ns, 0,
+            frames[0].unwind.route.entry_time_ns, 0,
             "Entry frame without ENTRY_TIMESTAMP should not stamp time"
         );
     }
@@ -1511,7 +1511,7 @@ mod test {
         assert_eq!(frames.len(), 1);
         assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
         assert!(
-            frames[0].calldata.entry_time_ns > 0,
+            frames[0].unwind.route.entry_time_ns > 0,
             "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
         );
     }
@@ -1544,7 +1544,7 @@ mod test {
         // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
         let mut ctx = Context::default();
         ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
-        let original_time = ctx.frames()[0].calldata.entry_time_ns;
+        let original_time = ctx.frames()[0].unwind.route.entry_time_ns;
         assert!(original_time > 0);
 
         // Component subscribes on the same node — should merge, preserving time_ns.
@@ -1560,7 +1560,7 @@ mod test {
         assert!(frames[0].interests.contains(Interests::NACKS));
         assert!(frames[0].interests.contains(Interests::RETURN_DATA));
         assert_eq!(
-            frames[0].calldata.entry_time_ns, original_time,
+            frames[0].unwind.route.entry_time_ns, original_time,
             "merge must preserve engine entry_time_ns"
         );
     }
@@ -1571,15 +1571,15 @@ mod test {
         let mut ctx = Context::default();
         ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
         assert_eq!(
-            ctx.frames()[0].calldata.entry_time_ns,
+            ctx.frames()[0].unwind.route.entry_time_ns,
             0,
             "initially no time"
         );
 
         // Simulate processor subscribe_to stamping time.
-        ctx.stamp_top_time(nanos_since_epoch());
+        ctx.stamp_top_time(nanos_since_birth());
         assert!(
-            ctx.frames()[0].calldata.entry_time_ns > 0,
+            ctx.frames()[0].unwind.route.entry_time_ns > 0,
             "after stamp_top_time, should have non-zero time"
         );
     }

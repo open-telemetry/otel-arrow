@@ -1274,7 +1274,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&ack.calldata.user) else {
+        let Some(bundle_ref) = decode_bundle_ref(&ack.unwind.route.user) else {
             // Invalid calldata, just forward the ACK upstream
             return effect_handler.notify_ack(ack).await;
         };
@@ -1336,7 +1336,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&nack.calldata.user) else {
+        let Some(bundle_ref) = decode_bundle_ref(&nack.unwind.route.user) else {
             // Invalid calldata, just forward the NACK upstream
             return effect_handler.notify_nack(nack).await;
         };

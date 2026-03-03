@@ -455,7 +455,7 @@ impl RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = ack.accepted.signal_type();
-        let calldata = ack.calldata.user.clone();
+        let calldata = ack.unwind.route.user.clone();
 
         let num_items = match calldata.try_into() {
             Err(_err) => {
@@ -480,7 +480,7 @@ impl RetryProcessor {
     ) -> Result<(), Error> {
         let signal = nack.refused.signal_type();
 
-        let mut rstate: RetryState = match nack.calldata.user.clone().try_into() {
+        let mut rstate: RetryState = match nack.unwind.route.user.clone().try_into() {
             Err(_err) => {
                 // Malformed context error: we don't know what this is.
                 effect_handler.notify_nack(nack).await?;
@@ -956,8 +956,7 @@ mod test {
 
                 match have_pmsg.expect("retry replied") {
                     PipelineControlMsg::DeliverAck { ack } => {
-                        let (node_id, ack) =
-                            next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -965,15 +964,14 @@ mod test {
                         assert_eq!(node_id, 4444);
 
                         let ackdata: TestCallData =
-                            ack.calldata.user.try_into().expect("my calldata");
+                            ack.unwind.route.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), ackdata);
 
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineControlMsg::DeliverNack { nack } => {
-                        let (node_id, nack) =
-                            next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))
@@ -981,7 +979,7 @@ mod test {
                         assert_eq!(node_id, 4444);
 
                         let nackdata: TestCallData =
-                            nack.calldata.user.try_into().expect("my calldata");
+                            nack.unwind.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), nackdata);
 
                         // Requested RETURN_DATA, check item count match
