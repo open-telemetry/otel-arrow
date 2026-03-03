@@ -195,7 +195,7 @@ impl AssignPipelineStage {
         let root_payload_type = otap_batch.root_payload_type();
         otap_batch.set(
             root_payload_type,
-            upsert_column(dest_column_name, values, root_batch)?,
+            try_upsert_column(dest_column_name, values, root_batch)?,
         );
 
         Ok(otap_batch)
@@ -464,8 +464,11 @@ fn eval_result_to_array(
 }
 
 /// Inserts the column into the record batch if the column does not exist, otherwise replaces the
-/// exiting column with the new one.
-fn upsert_column(
+/// existing column with the new one.
+///
+/// Note that if the column exists, and is not nullable, but the new column contains nulls, this
+/// will return an error
+fn try_upsert_column(
     column_name: &str,
     new_column: ArrayRef,
     record_batch: &RecordBatch,
@@ -473,10 +476,17 @@ fn upsert_column(
     let mut columns = record_batch.columns().to_vec();
     let schema = record_batch.schema();
     let fields = schema.fields();
-    let target_col_index = fields.find(column_name).map(|(position, _)| position);
+    let maybe_found_column = fields.find(column_name);
     let mut fields = fields.to_vec();
 
-    if let Some(target_col_index) = target_col_index {
+    if let Some((target_col_index, current_field)) = maybe_found_column {
+        // check that we're not assigning a column with nulls to a non-nullable column
+        if !current_field.is_nullable() && new_column.null_count() != 0 {
+            return Err(Error::ExecutionError {
+                cause: format!("cannot assign null result to non-nullable column {column_name}"),
+            });
+        }
+
         // replace field if the datatype has changed. Note, we wont have changed the logical
         // type of the field, but the dictionary encoding may be what has changed
         let needs_field_update = fields[target_col_index].data_type() != new_column.data_type();
@@ -1056,7 +1066,7 @@ mod test {
         // double check the input column has the expected type
         let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         let str_val = log_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
-        let log_attrs = super::upsert_column(
+        let log_attrs = super::try_upsert_column(
             consts::ATTRIBUTE_STR,
             cast(&str_val, &DataType::Utf8).unwrap(),
             log_attrs,
@@ -1097,7 +1107,7 @@ mod test {
         // double check the input column has the expected type
         let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         let str_val = log_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
-        let log_attrs = super::upsert_column(
+        let log_attrs = super::try_upsert_column(
             consts::ATTRIBUTE_STR,
             cast(&str_val, &DataType::Utf8).unwrap(),
             log_attrs,
@@ -1138,6 +1148,39 @@ mod test {
             logs.column_by_name(consts::SEVERITY_TEXT).is_none(),
             "expected severity_text column to have been removed"
         )
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_wont_assign_null_to_non_nullable_column() {
+        let traces_data = to_traces_data(vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("event"))])
+                .name("hello")
+                .finish(),
+            // this one doesn't have the attribute, so it will evaluate to null and the assignment
+            // should fail
+            Span::build().name("world").finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+
+        let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        match pipeline.execute(otap_batch).await {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("cannot assign null result to non-nullable column name"),
+                    "unexpected error message {:?}",
+                    err_msg
+                );
+            }
+            Ok(_) => {
+                panic!("expected error, received Ok")
+            }
+        }
     }
 
     #[tokio::test]
