@@ -104,11 +104,10 @@ impl EngineMetricsMonitor {
         let now_cpu = ProcessTime::now();
         let wall_delta = now_wall.duration_since(self.wall_start);
         let cpu_delta = now_cpu.duration_since(self.cpu_start);
-        let wall_micros = wall_delta.as_micros();
-        if wall_micros > 0 {
-            let utilization = (cpu_delta.as_micros() as f64
-                / (wall_micros as f64 * self.num_cores as f64))
-                .clamp(0.0, 1.0);
+        let wall_secs = wall_delta.as_secs_f64();
+        if wall_secs > 0.0 {
+            let utilization =
+                (cpu_delta.as_secs_f64() / (wall_secs * self.num_cores as f64)).clamp(0.0, 1.0);
             self.metrics.cpu_utilization.set(utilization);
         } else {
             self.metrics.cpu_utilization.set(0.0);
