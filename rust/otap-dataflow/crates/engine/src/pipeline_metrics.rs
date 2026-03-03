@@ -30,12 +30,6 @@
 //!   share of that core; summing `cpu_utilization` across co-pinned pipelines
 //!   approximates total core load.
 //!
-//! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
-//!   Process-wide Resident Set Size — physical memory currently held in RAM.
-//!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
-//!   **Note:** This is a process-wide value duplicated across all pipeline instances.
-//!   Do not sum across pipelines; use `max` or `last` to query the true RSS.
-//!
 //! - `memory_usage` (`ObserveUpDownCounter<u64>`, `{By}`, jemalloc only):
 //!   Current heap bytes in use by the pipeline thread:
 //!   `memory_allocated - memory_freed`. A rising long-term trend indicates a leak
@@ -166,17 +160,6 @@ pub struct PipelineMetrics {
     /// The time the pipeline instance has been running.
     #[metric(unit = "{s}")]
     pub uptime: Gauge<f64>,
-
-    /// Process-wide Resident Set Size — physical RAM currently used by the process.
-    /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
-    ///
-    /// **Note:** This value is process-wide and identical across all pipeline instances.
-    /// Do not sum across pipelines; use `max` or `last` to get the true RSS.
-    // ToDo: Consider moving this (and other process-wide metrics like virtual memory, process CPU,
-    // open FDs, thread count) to a dedicated `ProcessMetrics` struct with its own entity and
-    // reporting loop, so they are emitted once per process rather than duplicated per pipeline.
-    #[metric(unit = "{By}")]
-    pub memory_rss: ObserveUpDownCounter<u64>,
 
     /// The amount of heap memory in use by the pipeline instance running on a specific core.
     #[metric(unit = "{By}")]
@@ -525,9 +508,6 @@ impl PipelineMetricsMonitor {
     /// These metrics include CPU usage and, where available, per-thread scheduling/page-fault
     /// signals and jemalloc-derived heap metrics.
     pub fn update_pipeline_metrics(&mut self) {
-        // === Update process-wide RSS metric ===
-        self.metrics.memory_rss.observe(get_rss_bytes());
-
         // === Update thread memory allocation metrics (jemalloc only) ===
         #[cfg(all(not(windows), feature = "jemalloc"))]
         if self.jemalloc_supported {
@@ -783,13 +763,6 @@ impl PipelineMetricsMonitor {
     }
 }
 
-/// Returns the current process-wide RSS (Resident Set Size) in bytes.
-fn get_rss_bytes() -> u64 {
-    memory_stats::memory_stats()
-        .map(|stats| stats.physical_mem as u64)
-        .unwrap_or(0)
-}
-
 impl Drop for PipelineMetricsMonitor {
     fn drop(&mut self) {
         let _ = self
@@ -859,10 +832,6 @@ mod jemalloc_tests {
 
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
         assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
-        assert!(
-            monitor.metrics.memory_rss.get() > 0,
-            "memory_rss should report non-zero process RSS"
-        );
         assert!(monitor.metrics.memory_allocated.get() >= mem0);
         assert!(monitor.metrics.memory_allocated_delta.get() > 0);
 
@@ -930,12 +899,6 @@ mod non_jemalloc_tests {
         // CPU metrics should still update.
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
         assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
-
-        // RSS metric should be populated regardless of jemalloc.
-        assert!(
-            monitor.metrics.memory_rss.get() > 0,
-            "memory_rss should report non-zero process RSS"
-        );
 
         // Scheduling / page fault metrics should be monotonic when supported.
         if monitor.rusage_thread_supported {
