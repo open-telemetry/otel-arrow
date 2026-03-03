@@ -240,9 +240,15 @@ pub struct Interests: u8 {
     /// consumed-outcome metrics. Does NOT subscribe to ACKS/NACKS.
     const CONSUMER_METRICS = 1 << 4;
 
-    /// Producer-metrics interest — when set, the subscriber frame records
-    /// produced-outcome metrics. Set by `subscribe_to()` alongside ACKS/NACKS.
+    /// Producer-metrics interest — when set, the frame records
+    /// produced-outcome metrics during context unwinding.
+    /// Does NOT auto-subscribe to ACKS/NACKS.
     const PRODUCER_METRICS = 1 << 5;
+
+    /// Source-tagging interest — when set, `prepare_source_send`
+    /// ensures a source frame is pushed for the sending node.
+    /// Derived from `SourceTagging::Enabled` on the effect handler.
+    const SOURCE_TAGGING = 1 << 6;
 
     /// Pipeline-metrics interest — compound alias for
     /// `CONSUMER_METRICS | PRODUCER_METRICS`.

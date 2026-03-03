@@ -58,11 +58,17 @@ impl Context {
             // Different node → inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
+        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_epoch()
+        } else {
+            0
+        };
         self.stack.push(Frame {
             interests,
             node_id,
             calldata: RouteData {
                 user: user_calldata,
+                entry_time_ns: time_ns,
                 ..Default::default()
             },
         });
@@ -193,11 +199,51 @@ impl Context {
         });
     }
 
-    /// Stamp the top frame's receive time.
+    /// Stamp the top frame's receive time (test-only).
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn stamp_top_time(&mut self, time_ns: u64) {
         if let Some(top) = self.stack.last_mut() {
             top.calldata.entry_time_ns = time_ns;
         }
+    }
+
+    /// Ensure a source frame for `node_id` and merge `interests` into it.
+    ///
+    /// If the top frame already belongs to `node_id`, the given interests
+    /// are merged without touching user calldata.  Otherwise a new frame
+    /// is pushed, inheriting `RETURN_DATA` from the predecessor.
+    ///
+    /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
+    /// entry timestamp is captured automatically.
+    pub(crate) fn update_send_context(&mut self, node_id: usize, interests: Interests) {
+        if let Some(top) = self.stack.last_mut() {
+            if top.node_id == node_id {
+                top.interests |= interests;
+                if interests.contains(Interests::ENTRY_TIMESTAMP) {
+                    top.calldata.entry_time_ns = nanos_since_epoch();
+                }
+                return;
+            }
+        }
+        // Different node (or empty stack) → push new frame.
+        let mut frame_interests = interests;
+        if let Some(last) = self.stack.last() {
+            frame_interests |= last.interests & Interests::RETURN_DATA;
+        }
+        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_epoch()
+        } else {
+            0
+        };
+        self.stack.push(Frame {
+            interests: frame_interests,
+            node_id,
+            calldata: RouteData {
+                user: CallData::new(),
+                entry_time_ns: time_ns,
+                ..Default::default()
+            },
+        });
     }
 
     /// Stamp the top frame's output port index.
@@ -436,28 +482,19 @@ impl OtapPdata {
 
     /// Prepare the context for a message-source send.
     ///
-    /// When `node_interests` includes `PRODUCER_METRICS` a subscriber
-    /// frame is pushed so the pipeline controller can record
-    /// produced-outcome metrics during ack/nack unwinding.  Otherwise,
-    /// if source-tagging is enabled, a lightweight tag frame is pushed
-    /// instead.
-    fn prepare_source_send(
-        &mut self,
-        node_interests: Interests,
-        source_tagging_enabled: bool,
-        node_id: usize,
-    ) {
-        if node_interests.contains(Interests::PRODUCER_METRICS) {
-            let mut int = Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
-            if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
-                int |= Interests::ENTRY_TIMESTAMP;
-            }
-            self.context.subscribe_to(int, CallData::new(), node_id);
-            if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
-                self.context.stamp_top_time(nanos_since_epoch());
-            }
-        } else if source_tagging_enabled {
-            self.context.set_source_node(node_id);
+    /// When `node_interests` includes `SOURCE_TAGGING`, `PRODUCER_METRICS`,
+    /// or `ENTRY_TIMESTAMP`, a source frame is ensured for `node_id` and
+    /// the relevant interests are merged into it.
+    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
+        let trigger = node_interests
+            & (Interests::SOURCE_TAGGING
+                | Interests::PRODUCER_METRICS
+                | Interests::ENTRY_TIMESTAMP);
+        if !trigger.is_empty() {
+            self.context.update_send_context(
+                node_id,
+                node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
+            );
         }
     }
 
@@ -476,17 +513,11 @@ macro_rules! impl_producer_ext {
     ($handler:ty, $id_method:ident) => {
         #[async_trait(?Send)]
         impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
-            fn subscribe_to(&self, mut int: Interests, ctx: CallData, data: &mut OtapPdata) {
-                let interests = self.node_interests();
-                // At Basic+, auto-subscribe for outcome counting and delivery.
-                if interests.contains(Interests::PRODUCER_METRICS) {
-                    int |= Interests::ACKS | Interests::NACKS | Interests::PRODUCER_METRICS;
-                }
-                data.context.subscribe_to(int, ctx, self.$id_method().index);
-                // At Detailed, stamp receive time.
-                if interests.contains(Interests::ENTRY_TIMESTAMP) {
-                    data.context.stamp_top_time(nanos_since_epoch());
-                }
+            fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+                let engine_int = self.node_interests()
+                    & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP);
+                data.context
+                    .subscribe_to(int | engine_int, ctx, self.$id_method().index);
             }
         }
     };
@@ -561,7 +592,6 @@ macro_rules! impl_message_source_ext {
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(
                     self.node_interests(),
-                    self.source_tagging().enabled(),
                     self.$id_method().index,
                 );
                 self.router.send_default_stamped(data).await
@@ -573,7 +603,6 @@ macro_rules! impl_message_source_ext {
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(
                     self.node_interests(),
-                    self.source_tagging().enabled(),
                     self.$id_method().index,
                 );
                 self.router.try_send_default_stamped(data)
@@ -589,7 +618,6 @@ macro_rules! impl_message_source_ext {
             {
                 data.prepare_source_send(
                     self.node_interests(),
-                    self.source_tagging().enabled(),
                     self.$id_method().index,
                 );
                 self.router.send_to_stamped(port, data).await
@@ -605,7 +633,6 @@ macro_rules! impl_message_source_ext {
             {
                 data.prepare_source_send(
                     self.node_interests(),
-                    self.source_tagging().enabled(),
                     self.$id_method().index,
                 );
                 self.router.try_send_to_stamped(port, data)
