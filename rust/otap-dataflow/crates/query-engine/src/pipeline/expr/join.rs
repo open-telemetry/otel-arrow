@@ -32,9 +32,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use arrow::array::{
-    Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array, UInt32Array,
-};
+use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use datafusion::logical_expr::ColumnarValue;

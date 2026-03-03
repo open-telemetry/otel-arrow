@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::compute::take;
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use data_engine_expressions::{ScalarExpression, SourceScalarExpression};
 use datafusion::config::ConfigOptions;
@@ -23,7 +23,9 @@ use otap_df_pdata::otap::Logs;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::join::{JoinExec, RootToAttributesJoin};
-use crate::pipeline::expr::types::{ExprLogicalType, root_field_type};
+use crate::pipeline::expr::types::{
+    ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
+};
 use crate::pipeline::expr::{
     DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult, ScopedLogicalExpr,
     ScopedPhysicalExpr,
@@ -74,15 +76,26 @@ impl AssignPipelineStage {
             }
         };
 
+        // check that the result type of the expr eval can be assigned to this field
         // TODO explain why we can expect here
         let expected_column_type = root_field_type(target_col_name)
             .expect("TODO")
             .datatype()
             .expect("TODO");
         let eval_result_column_type = eval_result.values.data_type();
+        let column_supports_dict_encoding = root_field_supports_dict_encoding(target_col_name);
+        let mut type_compatible = expected_column_type == eval_result_column_type;
+        if !type_compatible && column_supports_dict_encoding {
+            // if the field can be dictionary encoded, check if the eval result is also dictionary
+            // encoded. If so, we're allowed to make the assignment
+            if let DataType::Dictionary(_, val) = &eval_result_column_type {
+                if val.as_ref() == &expected_column_type {
+                    type_compatible = true
+                }
+            }
+        }
 
-        // TODO - here we actually need to check the logical types
-        if expected_column_type != eval_result_column_type {
+        if !type_compatible {
             return Err(Error::ExecutionError {
                 cause: format!(
                     "cannot assign expression result of type {:?} to column expecting type {:?}",
@@ -91,26 +104,35 @@ impl AssignPipelineStage {
             });
         }
 
+        // convert the result values into an array that has the same row order as the root batch.
         let already_aligned = eval_result.data_scope.is_scalar()
             || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
 
         let values = if already_aligned {
+            // if we're here, either the expression returned a scalar, or it returned an array
+            // that already has the correct row order, so just covert to an arrow array.
             eval_result.values.to_array(root_batch.num_rows())?
         } else {
+            // if we're here, it means we have received a column value that has the row order
+            // of something other than the root attribute batch, meaning the result was computed
+            // from attributes. We'll need to join the result's values column to the root column
+            // to get the values in the correct order
             let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
-                // TODO comment on why this is unreachable
-                unreachable!("unreachable")
+                // safety: if the data_scope were anything other than attributes, we'd have taken
+                // the if branch (not the else branch) above when we checked if the data was
+                // already aligned
+                unreachable!("unexpected data_scope")
             };
 
-            // TODO comment on what this code does
+            // create a JoinExec implementation that will compute a join of root to attrs on
+            // `root.id =attrs.parent_id`` and use this to get the rows to take from the result
             let join_exec = RootToAttributesJoin::new(attrs_id.clone());
-            let root_as_join_arg = PhysicalExprEvalResult::new(
-                ColumnarValue::Scalar(ScalarValue::Null), // placeholder,
-                self.dest_scope.clone(),
-                root_batch,
-            );
             let vals_take_indices = join_exec.rows_to_take(
-                &root_as_join_arg,
+                &PhysicalExprEvalResult::new(
+                    ColumnarValue::Scalar(ScalarValue::Null), // placeholder,
+                    self.dest_scope.clone(),
+                    root_batch,
+                ),
                 &eval_result,
                 &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
             )?;
@@ -214,7 +236,7 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
     }
 
     match dest_type {
-        ExprLogicalType::Binary | ExprLogicalType::Boolean | ExprLogicalType::String => {
+        ExprLogicalType::Boolean | ExprLogicalType::String => {
             source_type == &ExprLogicalType::AnyValue
         }
         ExprLogicalType::Float64 => {
@@ -227,17 +249,18 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
             | ExprLogicalType::ScalarInt => true,
             _ => false,
         },
-        ExprLogicalType::AnyValue => match source_type {
-            ExprLogicalType::AnyValue
-            | ExprLogicalType::AnyValueNumeric
-            | ExprLogicalType::ScalarInt
-            | ExprLogicalType::Binary
-            | ExprLogicalType::Boolean
-            | ExprLogicalType::String
-            | ExprLogicalType::Float64
-            | ExprLogicalType::Int64 => true,
-            _ => false,
-        },
+
+        // TODO - leave this for later when we implement other assignments?
+        // ExprLogicalType::AnyValue => match source_type {
+        //     ExprLogicalType::AnyValue
+        //     | ExprLogicalType::AnyValueNumeric
+        //     | ExprLogicalType::ScalarInt
+        //     | ExprLogicalType::Boolean
+        //     | ExprLogicalType::String
+        //     | ExprLogicalType::Float64
+        //     | ExprLogicalType::Int64 => true,
+        //     _ => false,
+        // },
         _ => false,
     }
 }
@@ -272,7 +295,7 @@ impl PipelineStage for AssignPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use data_engine_kql_parser::Parser;
+    use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
@@ -290,15 +313,13 @@ mod test {
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 
-    #[tokio::test]
-    async fn test_insert_root_column_from_scalar() {
+    async fn test_insert_root_column_from_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().finish(),
             LogRecord::build().finish(),
         ]);
         let result =
-            exec_logs_pipeline::<OplParser>("logs | set severity_text = \"ERROR\"", logs_data)
-                .await;
+            exec_logs_pipeline::<P>("logs | extend severity_text = \"ERROR\"", logs_data).await;
 
         let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
         assert_eq!(logs_records.len(), 2);
@@ -308,14 +329,22 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_upsert_root_column_from_scalar() {
+    async fn test_insert_root_column_from_scalar_opl_parser() {
+        test_insert_root_column_from_scalar::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_scalar_kql_parser() {
+        test_insert_root_column_from_scalar::<KqlParser>().await
+    }
+
+    async fn test_upsert_root_column_from_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().severity_text("INFO").finish(),
             LogRecord::build().finish(),
         ]);
         let result =
-            exec_logs_pipeline::<OplParser>("logs | set severity_text = \"ERROR\"", logs_data)
-                .await;
+            exec_logs_pipeline::<P>("logs | extend severity_text = \"ERROR\"", logs_data).await;
 
         let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
         assert_eq!(logs_records.len(), 2);
@@ -325,7 +354,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_insert_root_column_from_other_column() {
+    async fn test_upsert_root_column_from_scalar_opl_parser() {
+        test_upsert_root_column_from_scalar::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upsert_root_column_from_scalar_kql_parser() {
+        test_upsert_root_column_from_scalar::<KqlParser>().await
+    }
+
+    async fn test_insert_root_column_from_other_column<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().severity_text("INFO").finish(),
             LogRecord::build().severity_text("DEBUG").finish(),
@@ -333,8 +371,7 @@ mod test {
 
         // kind of a silly example, but just need two cols that have the same type for the test
         let result =
-            exec_logs_pipeline::<OplParser>("logs | set event_name = severity_text", logs_data)
-                .await;
+            exec_logs_pipeline::<P>("logs | extend event_name = severity_text", logs_data).await;
 
         let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
 
@@ -344,7 +381,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_upsert_root_column_from_other_column() {
+    async fn test_insert_root_column_from_other_column_opl_parser() {
+        test_insert_root_column_from_other_column::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_other_column_kql_parser() {
+        test_insert_root_column_from_other_column::<KqlParser>().await
+    }
+
+    async fn test_upsert_root_column_from_other_column<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .severity_text("INFO")
@@ -355,8 +401,7 @@ mod test {
 
         // kind of a silly example, but just need two cols that have the same type for the test
         let result =
-            exec_logs_pipeline::<OplParser>("logs | set event_name = severity_text", logs_data)
-                .await;
+            exec_logs_pipeline::<P>("logs | extend event_name = severity_text", logs_data).await;
 
         let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
 
@@ -366,7 +411,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_root_column_from_attribute() {
+    async fn test_upsert_root_column_from_other_column_opl_parser() {
+        test_upsert_root_column_from_other_column::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upsert_root_column_from_other_column_kql_parser() {
+        test_upsert_root_column_from_other_column::<KqlParser>().await
+    }
+
+    async fn test_set_root_column_from_attribute<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("hello"))])
@@ -380,8 +434,8 @@ mod test {
             LogRecord::build().event_name("replaceme").finish(),
         ]);
 
-        let result = exec_logs_pipeline::<OplParser>(
-            "logs | set event_name = attributes[\"event\"]",
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend event_name = attributes[\"event\"]",
             logs_data,
         )
         .await;
@@ -396,7 +450,56 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_root_column_from_non_root_attribute() {
+    async fn test_set_root_column_from_attribute_opl_parser() {
+        test_set_root_column_from_attribute::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_attribute_kql_parser() {
+        test_set_root_column_from_attribute::<KqlParser>().await
+    }
+
+    async fn test_set_root_column_from_arithmetic_expression<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_number(2)
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(1))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(3)
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(2))])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
+        ]);
+
+        // kind of a weird expression in practice, but this is just checking if the expr evaluates
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend severity_number = 5 + severity_number * 10",
+            logs_data,
+        )
+        .await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+
+        assert_eq!(logs_records.len(), 4);
+        assert_eq!(logs_records[0].severity_number, 25);
+        assert_eq!(logs_records[1].severity_number, 35);
+        assert_eq!(logs_records[2].severity_number, 0);
+        assert_eq!(logs_records[3].severity_number, 0);
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_arithmetic_expression_opl_parser() {
+        test_set_root_column_from_arithmetic_expression::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_arithmetic_expression_kql_parser() {
+        test_set_root_column_from_arithmetic_expression::<KqlParser>().await
+    }
+
+    async fn test_set_root_column_from_non_root_attribute<P: Parser>() {
         let logs_data = LogsData::new(vec![ResourceLogs::new(
             Resource::build().finish(),
             vec![
@@ -415,8 +518,8 @@ mod test {
             ],
         )]);
 
-        let result = exec_logs_pipeline::<OplParser>(
-            "logs | set event_name = instrumentation_scope.attributes[\"attr1\"]",
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend event_name = instrumentation_scope.attributes[\"attr1\"]",
             logs_data,
         )
         .await;
@@ -430,10 +533,17 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_root_column_rejects_invalid_type_during_planning() {
-        let pipeline = OplParser::parse("logs | set event_name = 1")
-            .unwrap()
-            .pipeline;
+    async fn test_set_root_column_from_non_root_attribute_opl_parser() {
+        test_set_root_column_from_non_root_attribute::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_from_non_root_attribute_kql_parser() {
+        test_set_root_column_from_non_root_attribute::<KqlParser>().await
+    }
+
+    async fn test_set_root_column_rejects_invalid_type_during_planning<P: Parser>() {
+        let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let planner = PipelinePlanner::new();
@@ -453,10 +563,17 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_root_column_rejects_invalid_column_during_planning() {
-        let pipeline = OplParser::parse("logs | set bad_column = 1")
-            .unwrap()
-            .pipeline;
+    async fn test_set_root_column_rejects_invalid_type_during_planning_opl_parser() {
+        test_set_root_column_rejects_invalid_type_during_planning::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_rejects_invalid_type_during_planning_kql_parser() {
+        test_set_root_column_rejects_invalid_type_during_planning::<OplParser>().await
+    }
+
+    async fn test_set_root_column_rejects_invalid_column_during_planning<P: Parser>() {
+        let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let planner = PipelinePlanner::new();
@@ -476,7 +593,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_root_invalid_expr_result_type_rejected_at_runtime() {
+    async fn test_set_root_column_rejects_invalid_column_during_planning_opl_parser() {
+        test_set_root_column_rejects_invalid_column_during_planning::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_rejects_invalid_column_during_planning_kql_parser() {
+        test_set_root_column_rejects_invalid_column_during_planning::<KqlParser>().await
+    }
+
+    async fn test_set_root_invalid_expr_result_type_rejected_at_runtime<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("attr", AnyValue::new_int(1))])
@@ -486,7 +612,7 @@ mod test {
                 .finish(),
         ]);
 
-        let pipeline_expr = OplParser::parse("logs | set event_name = attributes[\"attr\"]")
+        let pipeline_expr = P::parse("logs | extend event_name = attributes[\"attr\"]")
             .unwrap()
             .pipeline;
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
@@ -507,6 +633,17 @@ mod test {
         }
     }
 
-    // TODO test validation assigning dict column result?
-    // TODO test on empty batch
+    #[tokio::test]
+    async fn test_set_root_invalid_expr_result_type_rejected_at_runtime_opl_parser() {
+        test_set_root_invalid_expr_result_type_rejected_at_runtime::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_invalid_expr_result_type_rejected_at_runtime_kql_parser() {
+        test_set_root_invalid_expr_result_type_rejected_at_runtime::<KqlParser>().await
+    }
+
+    // TODO - make these tests dynamic over parser
+    // TODO - test on empty batch
+    // TODO - test all attribute types to root ...
 }

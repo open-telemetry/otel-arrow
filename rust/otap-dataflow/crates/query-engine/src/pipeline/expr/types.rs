@@ -6,7 +6,7 @@
 use crate::pipeline::expr::ScopedLogicalExpr;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::cast;
-use otap_df_pdata::{proto::opentelemetry::metrics::v1::metric::Data, schema::consts};
+use otap_df_pdata::schema::consts;
 
 /// Identifier of the logical type of some expression/column.
 ///
@@ -33,7 +33,6 @@ pub enum ExprLogicalType {
     ScalarInt,
 
     Boolean,
-    Binary,
     FixedSizeBinary(usize),
     Float64,
     Int32,
@@ -41,6 +40,7 @@ pub enum ExprLogicalType {
     UInt8,
     UInt32,
     String,
+    DurationNanoSecond,
     TimestampNanosecond,
 }
 
@@ -51,10 +51,6 @@ impl ExprLogicalType {
 
     fn is_signed_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64)
-    }
-
-    fn is_unsigned_integer(&self) -> bool {
-        matches!(self, Self::UInt8 | Self::UInt32)
     }
 
     /// Returns the bit width of integer types
@@ -71,7 +67,6 @@ impl ExprLogicalType {
     /// is not associated with a single datatype, such as with AnyValue* and ScalarInt
     pub fn datatype(&self) -> Option<DataType> {
         Some(match self {
-            Self::Binary => DataType::Binary,
             Self::Boolean => DataType::Boolean,
             Self::FixedSizeBinary(len) => DataType::FixedSizeBinary(*len as i32),
             Self::Float64 => DataType::Float64,
@@ -79,6 +74,7 @@ impl ExprLogicalType {
             Self::Int64 => DataType::Int64,
             Self::String => DataType::Utf8,
             Self::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
+            Self::DurationNanoSecond => DataType::Duration(TimeUnit::Nanosecond),
             Self::UInt32 => DataType::UInt32,
             Self::UInt8 => DataType::UInt8,
 
@@ -110,8 +106,9 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         consts::EVENT_NAME => ExprLogicalType::String,
 
         // traces fields
+        consts::DURATION_TIME_UNIX_NANO => ExprLogicalType::DurationNanoSecond,
         consts::TRACE_STATE => ExprLogicalType::String,
-        consts::PARENT_ID => ExprLogicalType::FixedSizeBinary(8),
+        consts::PARENT_SPAN_ID => ExprLogicalType::FixedSizeBinary(8),
         consts::KIND => ExprLogicalType::Int32,
         consts::DROPPED_EVENTS_COUNT => ExprLogicalType::UInt32,
         consts::DROPPED_LINKS_COUNT => ExprLogicalType::UInt32,
@@ -125,6 +122,27 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
 
         _ => return None,
     })
+}
+
+/// Returns true if the field on the root batch can be a dictionary encoded type
+pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+    match field_name {
+        consts::SCHEMA_URL => true,
+        consts::TRACE_ID => true,
+        consts::SPAN_ID => true,
+        consts::SEVERITY_NUMBER => true,
+        consts::SEVERITY_TEXT => true,
+        consts::EVENT_NAME => true,
+        consts::TRACE_STATE => true,
+        consts::KIND => true,
+        consts::DURATION_TIME_UNIX_NANO => true,
+        consts::NAME => true,
+        consts::DESCRIPTION => true,
+        consts::UNIT => true,
+        consts::AGGREGATION_TEMPORALITY => true,
+
+        _ => false,
+    }
 }
 
 /// Return the type from a nested struct field on the root OTAP record batch such as resource/scope

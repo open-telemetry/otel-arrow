@@ -421,43 +421,41 @@ impl PipelinePlanner {
             });
         };
 
-        // TODO - we could use attrs insert as case ...
-        let assign_pipeline_stage = AssignPipelineStage::try_new(dest, set_expr.get_source())?;
-        Ok(vec![Box::new(assign_pipeline_stage)])
+        let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
+        match dest_accessor {
+            // TODO [albertlockett]: Attributes is still handled as a special case because
+            // AssignPipelineStage does not yet handle assigning attributes. This capability will
+            //  soon be added to  AssignPipelineStage, at which point we can simplify this planning
+            ColumnAccessor::Attributes(attrs_id, key) => {
+                let ScalarExpression::Static(static_val) = set_expr.get_source() else {
+                    return Err(Error::NotYetSupportedError {
+                        message: "set expression only supports static scalar values".to_string(),
+                    });
+                };
+                let literal_value = Self::static_scalar_to_literal(static_val)?;
 
-        // let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
-        // let ColumnAccessor::Attributes(attrs_id, key) = dest_accessor else {
-        //     return Err(Error::NotYetSupportedError {
-        //         message: format!(
-        //             "set expression not supported for destination {:?}",
-        //             dest_accessor
-        //         ),
-        //     });
-        // };
+                let mut entries = std::collections::BTreeMap::new();
+                let _ = entries.insert(key, literal_value);
+                let insert_transform = InsertTransform::new(entries);
+                let transform = AttributesTransform::default().with_insert(insert_transform);
 
-        // let ScalarExpression::Static(static_val) = set_expr.get_source() else {
-        //     return Err(Error::NotYetSupportedError {
-        //         message: "set expression only supports static scalar values".to_string(),
-        //     });
-        // };
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute insert transform: {e}"),
+                        query_location: Some(set_expr.get_query_location().clone()),
+                    })?;
 
-        // let literal_value = Self::static_scalar_to_literal(static_val)?;
-
-        // let mut entries = std::collections::BTreeMap::new();
-        // let _ = entries.insert(key, literal_value);
-        // let insert_transform = InsertTransform::new(entries);
-        // let transform = AttributesTransform::default().with_insert(insert_transform);
-
-        // transform
-        //     .validate()
-        //     .map_err(|e| Error::InvalidPipelineError {
-        //         cause: format!("invalid attribute insert transform: {e}"),
-        //         query_location: Some(set_expr.get_query_location().clone()),
-        //     })?;
-
-        // Ok(vec![Box::new(AttributeTransformPipelineStage::new(
-        //     attrs_id, transform,
-        // ))])
+                Ok(vec![Box::new(AttributeTransformPipelineStage::new(
+                    attrs_id, transform,
+                ))])
+            }
+            _ => {
+                let assign_pipeline_stage =
+                    AssignPipelineStage::try_new(dest, set_expr.get_source())?;
+                Ok(vec![Box::new(assign_pipeline_stage)])
+            }
+        }
     }
 
     // TODO this can be deleted, there's another method that does exactly the same thing
