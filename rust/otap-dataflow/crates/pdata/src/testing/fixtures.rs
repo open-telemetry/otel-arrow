@@ -1155,7 +1155,12 @@ pub struct DataGenerator {
 /// Generate `count` synthetic KeyValue attributes with the given prefix.
 fn generate_attrs(prefix: &str, count: usize) -> Vec<KeyValue> {
     (0..count)
-        .map(|i| KeyValue::new(format!("{prefix}.attr_{i}"), AnyValue::new_string(format!("value_{i}"))))
+        .map(|i| {
+            KeyValue::new(
+                format!("{prefix}.attr_{i}"),
+                AnyValue::new_string(format!("value_{i}")),
+            )
+        })
         .collect()
 }
 
@@ -1446,15 +1451,9 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new(
-                    "resource.index",
-                    AnyValue::new_int(r as i64),
-                )];
+                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
                 attrs.extend(resource_attrs.iter().cloned());
-                ResourceMetrics::new(
-                    Resource::build().attributes(attrs).finish(),
-                    scope_metrics,
-                )
+                ResourceMetrics::new(Resource::build().attributes(attrs).finish(), scope_metrics)
             })
             .collect();
 
@@ -1496,15 +1495,9 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new(
-                    "resource.index",
-                    AnyValue::new_int(r as i64),
-                )];
+                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
                 attrs.extend(resource_attrs.iter().cloned());
-                ResourceLogs::new(
-                    Resource::build().attributes(attrs).finish(),
-                    scope_logs,
-                )
+                ResourceLogs::new(Resource::build().attributes(attrs).finish(), scope_logs)
             })
             .collect();
 
@@ -1556,15 +1549,9 @@ impl DataGenerator {
                         )
                     })
                     .collect();
-                let mut attrs = vec![KeyValue::new(
-                    "resource.index",
-                    AnyValue::new_int(r as i64),
-                )];
+                let mut attrs = vec![KeyValue::new("resource.index", AnyValue::new_int(r as i64))];
                 attrs.extend(resource_attrs.iter().cloned());
-                ResourceSpans::new(
-                    Resource::build().attributes(attrs).finish(),
-                    scope_spans,
-                )
+                ResourceSpans::new(Resource::build().attributes(attrs).finish(), scope_spans)
             })
             .collect();
 
