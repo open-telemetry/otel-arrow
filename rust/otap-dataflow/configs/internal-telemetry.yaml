@@ -72,6 +72,16 @@ groups:
                     value: "MyCustomPipelineName"
                     brief: "Custom pipeline name for identification"
                   node_sequence: 1
+          debug:
+            type: processor:debug
+            config: {}
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 2
           noop:
             type: exporter:noop
             config: {}
@@ -81,7 +91,9 @@ groups:
                   pipeline_name:
                     value: "MyCustomPipelineName"
                     brief: "Custom pipeline name for identification"
-                  node_sequence: 2
+                  node_sequence: 3
         connections:
           - from: generator
+            to: debug
+          - from: debug
             to: noop
