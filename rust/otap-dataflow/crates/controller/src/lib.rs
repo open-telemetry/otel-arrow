@@ -284,10 +284,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 use std::time::Duration;
                 use tokio::time::{MissedTickBehavior, interval};
 
+                // TODO: Make this interval configurable via engine config.
+                const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
+
                 let mut monitor =
                     EngineMetricsMonitor::new(engine_registry, engine_entity_key, engine_reporter);
 
-                let mut ticker = interval(Duration::from_secs(5));
+                let mut ticker = interval(ENGINE_METRICS_INTERVAL);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
                 loop {
