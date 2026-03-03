@@ -1,7 +1,8 @@
 version: otel_dataflow/v1
 
 # Multitenant isolation scenario:
-# - ingress pipeline with content router splits traffic into tenant topics
+# - traffic generators publish into a shared ingress topic
+# - ingress router consumes ingress topic and splits traffic into tenant topics
 # - one topic per tenant
 # - three independent tenant pipelines consume/process/export their own topic
 
@@ -43,6 +44,11 @@ engine:
 groups:
   topic_multitenant_isolation:
     topics:
+      ingress:
+        description: "Shared ingress topic between traffic generators and ingress router"
+        policies:
+          queue_capacity: 8192
+          queue_on_full: block
       tenant_a:
         description: "Tenant A isolated topic"
         policies:
@@ -84,18 +90,16 @@ groups:
             type: processor:attribute
             config:
               actions:
-                - action: delete
-                  key: service.namespace
                 - action: insert
                   key: service.namespace
                   value: tenant-a
               apply_to: ["resource"]
 
           exporter:
-            type: exporter:otlp
+            type: exporter:topic
             config:
-              grpc_endpoint: "http://127.0.0.1:4537"
-              max_in_flight: 6
+              topic: ingress
+              queue_on_full: block
 
         connections:
           - from: receiver
@@ -127,18 +131,16 @@ groups:
             type: processor:attribute
             config:
               actions:
-                - action: delete
-                  key: service.namespace
                 - action: insert
                   key: service.namespace
                   value: tenant-b
               apply_to: ["resource"]
 
           exporter:
-            type: exporter:otlp
+            type: exporter:topic
             config:
-              grpc_endpoint: "http://127.0.0.1:4537"
-              max_in_flight: 6
+              topic: ingress
+              queue_on_full: block
 
         connections:
           - from: receiver
@@ -170,18 +172,16 @@ groups:
             type: processor:attribute
             config:
               actions:
-                - action: delete
-                  key: service.namespace
                 - action: insert
                   key: service.namespace
                   value: tenant-c
               apply_to: ["resource"]
 
           exporter:
-            type: exporter:otlp
+            type: exporter:topic
             config:
-              grpc_endpoint: "http://127.0.0.1:4537"
-              max_in_flight: 6
+              topic: ingress
+              queue_on_full: block
 
         connections:
           - from: receiver
@@ -197,13 +197,13 @@ groups:
               count: 1
 
         nodes:
-          otlp_recv:
-            type: receiver:otlp
+          from_ingress_topic:
+            type: receiver:topic
             config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4537"
-                  wait_for_result: true
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: ingress_router
 
           tenant_router:
             type: processor:content_router
@@ -241,7 +241,7 @@ groups:
             config: null
 
         connections:
-          - from: otlp_recv
+          - from: from_ingress_topic
             to: tenant_router
           - from: tenant_router["tenant_a"]
             to: to_tenant_a
@@ -273,17 +273,15 @@ groups:
             config:
               multiplier: 1.5
 
-          exporter:
-            type: exporter:otlp
-            config:
-              grpc_endpoint: "http://127.0.0.1:4538"
-              max_in_flight: 4
+          sink:
+            type: exporter:noop
+            config: null
 
         connections:
           - from: from_topic
             to: retry
           - from: retry
-            to: exporter
+            to: sink
 
       tenant_b_processing:
         policies:
@@ -306,17 +304,15 @@ groups:
             config:
               multiplier: 1.5
 
-          exporter:
-            type: exporter:otlp
-            config:
-              grpc_endpoint: "http://127.0.0.1:4539"
-              max_in_flight: 4
+          sink:
+            type: exporter:noop
+            config: null
 
         connections:
           - from: from_topic
             to: retry
           - from: retry
-            to: exporter
+            to: sink
 
       tenant_c_processing:
         policies:
@@ -339,86 +335,12 @@ groups:
             config:
               multiplier: 1.5
 
-          exporter:
-            type: exporter:otlp
-            config:
-              grpc_endpoint: "http://127.0.0.1:4540"
-              max_in_flight: 4
+          sink:
+            type: exporter:noop
+            config: null
 
         connections:
           - from: from_topic
             to: retry
           - from: retry
-            to: exporter
-
-      tenant_a_backend:
-        policies:
-          resources:
-            core_allocation:
-              type: core_count
-              count: 1
-
-        nodes:
-          otlp_recv:
-            type: receiver:otlp
-            config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4538"
-                  wait_for_result: true
-
-          sink:
-            type: exporter:noop
-            config: null
-
-        connections:
-          - from: otlp_recv
-            to: sink
-
-      tenant_b_backend:
-        policies:
-          resources:
-            core_allocation:
-              type: core_count
-              count: 1
-
-        nodes:
-          otlp_recv:
-            type: receiver:otlp
-            config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4539"
-                  wait_for_result: true
-
-          sink:
-            type: exporter:noop
-            config: null
-
-        connections:
-          - from: otlp_recv
-            to: sink
-
-      tenant_c_backend:
-        policies:
-          resources:
-            core_allocation:
-              type: core_count
-              count: 1
-
-        nodes:
-          otlp_recv:
-            type: receiver:otlp
-            config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4540"
-                  wait_for_result: true
-
-          sink:
-            type: exporter:noop
-            config: null
-
-        connections:
-          - from: otlp_recv
             to: sink
