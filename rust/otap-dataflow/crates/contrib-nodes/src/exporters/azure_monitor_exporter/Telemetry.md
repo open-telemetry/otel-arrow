@@ -64,12 +64,19 @@ It includes metric instruments registered by the crate and log events emitted vi
 When adding or changing telemetry in this crate:
 
 1. **Metrics**
-   - If you add a field under `#[metric_set(name = "azure_monitor_exporter.metrics")]`, add or update its row in the **Metrics** table.
-   - Use metric names in the form `azure_monitor_exporter.metrics.<field_name>` unless the field has an explicit metric-name override.
+   - If you add a field under
+     `#[metric_set(name = "azure_monitor_exporter.metrics")]`, add or
+     update its row in the **Metrics** table.
+   - Use metric names in the form
+     `azure_monitor_exporter.metrics.<field_name>` unless the field has
+     an explicit metric-name override.
 
 2. **Logs**
-   - If you add `otel_trace!`, `otel_debug!`, `otel_info!`, `otel_warn!`, or `otel_error!`, add or update the corresponding row in the **Logs** table.
-   - Keep the event name exact (first macro argument), include level, and file path.
+   - If you add `otel_trace!`, `otel_debug!`, `otel_info!`, `otel_warn!`,
+     or `otel_error!`, add or update the corresponding row in the
+     **Logs** table.
+   - Keep the event name exact (first macro argument), include level, and
+     file path.
 
 3. **Quick review checklist**
    - Search metric sets: `#[metric_set(` in `crates/contrib-nodes/src/exporters/azure_monitor_exporter/*.rs`.
