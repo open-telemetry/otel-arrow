@@ -45,7 +45,7 @@ pub enum ExprLogicalType {
 }
 
 impl ExprLogicalType {
-    fn is_integer(&self) -> bool {
+    pub fn is_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
     }
 

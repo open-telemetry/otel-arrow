@@ -1,22 +1,34 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains code for assigning the evaluation of an expression to the
-//! TODO - are these the docs we want for REAL?
+//! This module contains the implementation of a [`PipelineStage`] for assigning the result of
+//! the evaluation of an expression to a column in an OTAP record batch.
+//!
+//! It services queries such as:
+//! ```text
+//! logs | set severity_text = "INFO"
+//! ```
+//!
+//! Note: implementation is currently a work in progress, and not all destinations are supported
+//!
+//! TODO
+//! - support assigning to more destinations (struct fields, attributes)
+//! - attempt automatic result type coercion (binary -> FSB, int types) (not sure if needed/wanted)
+//! -
 
 use std::rc::Rc;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, DictionaryArray, RecordBatch, UInt8Array, cast};
+use arrow::array::{ArrayRef, DictionaryArray, RecordBatch, UInt8Array};
 use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
-use data_engine_expressions::{ScalarExpression, SourceScalarExpression};
+use data_engine_expressions::{
+    Expression, QueryLocation, ScalarExpression, SourceScalarExpression,
+};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
-use datafusion::functions_aggregate::count::Count;
-use datafusion::logical_expr::function::AccumulatorArgs;
-use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, ColumnarValue};
+use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
@@ -36,24 +48,34 @@ use crate::pipeline::expr::{
 use crate::pipeline::planner::ColumnAccessor;
 use crate::pipeline::state::ExecutionState;
 
+/// Pipeline stage for assigning the result of an expression evaluation to an OTAP column
 pub(crate) struct AssignPipelineStage {
-    ///
+    /// Identifier of the destination column
     dest_column: ColumnAccessor,
 
+    /// Data Scope of the destination column.
+    ///
+    /// This is used at execution time to join the results which may have been computed using data
+    /// that has a different row order from the destination column. Although this type can be
+    /// computed from dest_column, we create it up-front to avoid cloning data during evaluation
     dest_scope: Rc<DataScope>,
 
-    /// expression that will produce the data to be assigned to the destination
+    /// Expression that will produce the data to be assigned to the destination
     source: ScopedPhysicalExpr,
 }
 
 impl AssignPipelineStage {
+    /// Create a new instance of [`AssignPipelineStage`]
     pub fn try_new(dest: &SourceScalarExpression, source: &ScalarExpression) -> Result<Self> {
-        let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
-
         let logical_planner = ExprLogicalPlanner::default();
         let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
 
-        validate_assign(&dest_column, &source_logical_plan)?;
+        let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
+        validate_assign(
+            &dest_column,
+            dest.get_query_location(),
+            &source_logical_plan,
+        )?;
 
         let physical_planner = ExprPhysicalPlanner::default();
         let physical_expr = physical_planner.plan(source_logical_plan)?;
@@ -65,11 +87,12 @@ impl AssignPipelineStage {
         })
     }
 
+    /// Assign the result of the expression evaluation to a column on the root record batch.
     fn assign_to_root(
         &self,
         mut otap_batch: OtapArrowRecords,
-        eval_result: PhysicalExprEvalResult,
-        target_col_name: &str,
+        mut eval_result: PhysicalExprEvalResult,
+        dest_column_name: &str,
     ) -> Result<OtapArrowRecords> {
         let root_batch = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -80,19 +103,42 @@ impl AssignPipelineStage {
         };
 
         // check that the result type of the expr eval can be assigned to this field
-        // TODO explain why we can expect here
-        let expected_column_type = root_field_type(target_col_name)
-            .expect("TODO")
+        let expected_column_logical_type = root_field_type(dest_column_name)
+            // safety: this will only return None if the destination column does not exist in OTAP
+            // data model, but this has been validated in the constructor of this type, so it's
+            // safe to expect here
+            .expect("dest column found");
+
+        let expected_column_data_type = expected_column_logical_type
             .datatype()
-            .expect("TODO");
-        let eval_result_column_type = eval_result.values.data_type();
-        let column_supports_dict_encoding = root_field_supports_dict_encoding(target_col_name);
-        let mut type_compatible = expected_column_type == eval_result_column_type;
+            // safety: this will only return None if the logical data type for the field is
+            // ambiguous, which is the case for attributes/AnyValues, but all the fields on the
+            // root batch are known/un-ambiguous, so this will return Some and is safe to expect
+            .expect("dest column data type");
+
+        // coerce static scalar int ...
+        // if the result was a static scalar integer, it will have been produced as an int64 by
+        // default, however the expression tree doesn't actually specify the type, so we assume the
+        // type should have matched the expected type
+        let mut eval_result_column_type = eval_result.values.data_type();
+        if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
+            && eval_result_column_type.is_integer()
+            && expected_column_data_type.is_integer()
+        {
+            eval_result.values = eval_result
+                .values
+                .cast_to(&expected_column_data_type, None)?;
+            eval_result_column_type = expected_column_data_type.clone();
+        }
+
+        // check that the result type of the expr eval can be assigned to this field
+        let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
+        let mut type_compatible = expected_column_data_type == eval_result_column_type;
         if !type_compatible && column_supports_dict_encoding {
             // if the field can be dictionary encoded, check if the eval result is also dictionary
             // encoded. If so, we're allowed to make the assignment
             if let DataType::Dictionary(_, val) = &eval_result_column_type {
-                if val.as_ref() == &expected_column_type {
+                if val.as_ref() == &expected_column_data_type {
                     type_compatible = true
                 }
             }
@@ -102,18 +148,20 @@ impl AssignPipelineStage {
             return Err(Error::ExecutionError {
                 cause: format!(
                     "cannot assign expression result of type {:?} to column expecting type {:?}",
-                    eval_result_column_type, expected_column_type
+                    eval_result_column_type, expected_column_data_type
                 ),
             });
         }
 
+        // convert the expression evaluation result to an array, with the correct dict encoding if
+        // the destination column supports it
         let mut values = eval_result_to_array(
             &eval_result.values,
             column_supports_dict_encoding,
             root_batch.num_rows(),
         )?;
 
-        // convert the result values into an array that has the same row order as the root batch.
+        // align the rows in the new values with the rows in the root batch, if not already aligned
         let already_aligned = eval_result.data_scope.is_scalar()
             || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
 
@@ -134,7 +182,7 @@ impl AssignPipelineStage {
             let join_exec = RootToAttributesJoin::new(attrs_id.clone());
             let vals_take_indices = join_exec.rows_to_take(
                 &PhysicalExprEvalResult::new(
-                    ColumnarValue::Scalar(ScalarValue::Null), // placeholder,
+                    ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
                     self.dest_scope.clone(),
                     root_batch,
                 ),
@@ -145,27 +193,31 @@ impl AssignPipelineStage {
             values = take(&values, &vals_take_indices, None)?;
         };
 
+        // build the new record batch ..
         let mut columns = root_batch.columns().to_vec();
         let schema = root_batch.schema();
         let fields = schema.fields();
-        let target_col_index = fields.find(target_col_name).map(|(position, _)| position);
+        let target_col_index = fields.find(dest_column_name).map(|(position, _)| position);
         let mut fields = fields.to_vec();
 
         if let Some(target_col_index) = target_col_index {
-            // replace field
-            // TODO - this might not be needed if the datatype didn't change ...
-            fields
-                .iter_mut()
-                .enumerate()
-                .for_each(|(curr_index, field)| {
-                    if target_col_index == curr_index {
-                        let new_field = field
-                            .as_ref()
-                            .clone()
-                            .with_data_type(values.data_type().clone());
-                        *field = Arc::new(new_field)
-                    }
-                });
+            // replace field if the datatype has changed. Note, we wont have changed the logical
+            // type of the field, but the dictionary encoding may be what has changed
+            let needs_field_update = fields[target_col_index].data_type() != values.data_type();
+            if needs_field_update {
+                fields
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(curr_index, field)| {
+                        if target_col_index == curr_index {
+                            let new_field = field
+                                .as_ref()
+                                .clone()
+                                .with_data_type(values.data_type().clone());
+                            *field = Arc::new(new_field)
+                        }
+                    });
+            }
 
             // replace column
             columns
@@ -178,88 +230,27 @@ impl AssignPipelineStage {
                 });
         } else {
             // just insert the new column at the end
-            // Note: assuming if the column is optional, it is nullable
             fields.push(Arc::new(Field::new(
-                target_col_name,
+                dest_column_name,
                 values.data_type().clone(),
+                // Note: here we're assuming that since the column was missing that it was an
+                // optional column which means that it is nullable
                 true,
             )));
             columns.push(values)
         }
 
-        // TODO comment about why we can expect here
-        let new_root_batch =
-            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("TODO");
+        // safety: try_new will only fail here if the column types are invalid for the schema, or
+        // if the columns don't all have the same length, but we've computed the fields/columns in
+        // such a way that they should be valid and this should return Ok
+        let new_root_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("can create record batch");
+
+        // replace the root record batch with the new one
         let root_payload_type = otap_batch.root_payload_type();
         otap_batch.set(root_payload_type, new_root_batch);
 
         Ok(otap_batch)
-    }
-}
-
-fn validate_assign(
-    dest_column: &ColumnAccessor,
-    source_logical_plan: &ScopedLogicalExpr,
-) -> Result<()> {
-    match dest_column {
-        ColumnAccessor::ColumnName(col_name) => {
-            let dest_type =
-                root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
-                    cause: format!("cannot assign to non-existent column '{col_name}'"),
-                    query_location: None,
-                })?;
-            let source_type = &source_logical_plan.expr_type;
-            if !can_assign_type(&dest_type, source_type) {
-                return Err(Error::InvalidPipelineError {
-                    cause: format!(
-                        "cannot assign expression of type {source_type:?} to type {dest_type:?}"
-                    ),
-                    query_location: None, // TODO it'd be good to put a location here
-                });
-            }
-        }
-        _ => {
-            // TODO check 1:many
-            todo!()
-        }
-    }
-
-    return Ok(());
-}
-
-// TODO put more unit tests for this
-fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -> bool {
-    if dest_type == source_type {
-        return true;
-    }
-
-    match dest_type {
-        ExprLogicalType::Boolean | ExprLogicalType::String => {
-            source_type == &ExprLogicalType::AnyValue
-        }
-        ExprLogicalType::Float64 => {
-            source_type == &ExprLogicalType::AnyValue
-                || source_type == &ExprLogicalType::AnyValueNumeric
-        }
-        ExprLogicalType::Int64 => match source_type {
-            ExprLogicalType::AnyValue
-            | ExprLogicalType::AnyValueNumeric
-            | ExprLogicalType::ScalarInt => true,
-            _ => false,
-        },
-
-        // TODO - leave this for later when we implement other assignments?
-        // ExprLogicalType::AnyValue => match source_type {
-        //     ExprLogicalType::AnyValue
-        //     | ExprLogicalType::AnyValueNumeric
-        //     | ExprLogicalType::ScalarInt
-        //     | ExprLogicalType::Boolean
-        //     | ExprLogicalType::String
-        //     | ExprLogicalType::Float64
-        //     | ExprLogicalType::Int64 => true,
-        //     _ => false,
-        // },
-        _ => false,
     }
 }
 
@@ -280,14 +271,120 @@ impl PipelineStage for AssignPipelineStage {
                 ColumnAccessor::ColumnName(col_name) => {
                     self.assign_to_root(otap_batch, eval_result, col_name)
                 }
-                _ => {
-                    todo!()
+                other_dest => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "assignment to column destination {:?} not yet supported",
+                            other_dest
+                        ),
+                    });
                 }
             },
             None => {
                 todo!() // remove data
             }
         }
+    }
+}
+
+/// Validate that the results of the passed expression can be assigned to the destination.
+/// This validates three things:
+///
+/// 1. that the destination exists, that it is a known column in OTAP
+///
+/// 2. This will validate the types:
+///
+/// Specifically it will check that the type could possibly be
+/// assigned to the destination, but it does not guarantee that the expression will produce
+/// a valid type for the assignment. For example, in an expression like:
+/// ```text
+/// severity_text = attributes["x"]
+/// ```
+/// This would pass validation because `attributes["x"]` could be a string, which is what the
+/// destination `severity_text` expects. However, when this is evaluated, we may find that
+/// `attributes["x"]` is not a string, in which case this would fail at runtime.
+///
+/// 3. This validates that there is not ambiguity in the assignment based on the cardinality of
+/// the relationship between source and destination. Specifically, if the dest:source relationship
+/// is one:many, then we cannot do the assignment because it's unclear which of the many source
+/// values should be assigned to the destination.
+///
+/// Here is an example of this type of invalid assignment:
+/// ```text
+/// logs | set resource.attributes["x"] = severity_text
+/// ```
+/// because there are many logs w/ possibly different severities for any given resource, we
+/// consider this assignment invalid.
+///
+fn validate_assign(
+    dest_column: &ColumnAccessor,
+    dest_query_location: &QueryLocation,
+    source_logical_plan: &ScopedLogicalExpr,
+) -> Result<()> {
+    match dest_column {
+        ColumnAccessor::ColumnName(col_name) => {
+            // No relationship cardinality validation needs to happen for these columns which
+            // are on the root record because they are not one:many with anything else in that
+            // could be assigned, so validation only checks the types:
+
+            let dest_type =
+                root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
+                    cause: format!("cannot assign to non-existent column '{col_name}'"),
+                    query_location: Some(dest_query_location.clone()),
+                })?;
+
+            let source_type = &source_logical_plan.expr_type;
+            if !can_assign_type(&dest_type, source_type) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign expression of type {source_type:?} to type {dest_type:?}"
+                    ),
+                    query_location: Some(dest_query_location.clone()),
+                });
+            }
+        }
+        other_dest => {
+            // TODO other assignment destinations will be supported soon
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "assignment to column destination {:?} not yet supported",
+                    other_dest
+                ),
+            });
+        }
+    }
+
+    return Ok(());
+}
+
+/// Determine if the source type could be assigned to the destination
+fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -> bool {
+    if dest_type == source_type {
+        return true;
+    }
+
+    // scalar int type can be converted to any integer type
+    if dest_type.is_integer() && source_type == &ExprLogicalType::ScalarInt {
+        return true;
+    }
+
+    match dest_type {
+        ExprLogicalType::Boolean | ExprLogicalType::String => {
+            source_type == &ExprLogicalType::AnyValue
+        }
+        ExprLogicalType::Float64 => {
+            source_type == &ExprLogicalType::AnyValue
+                || source_type == &ExprLogicalType::AnyValueNumeric
+        }
+        ExprLogicalType::Int64 => match source_type {
+            ExprLogicalType::AnyValue
+            | ExprLogicalType::AnyValueNumeric
+            | ExprLogicalType::ScalarInt => true,
+            _ => false,
+        },
+
+        // TODO - handle other cases as we support a greater variety of destinations
+        _ => false,
     }
 }
 
@@ -300,6 +397,7 @@ fn eval_result_to_array(
     match expr_eval_result {
         ColumnarValue::Scalar(scalar_val) => {
             if accept_dict_encoding {
+                // create a dictionary with a single value, and all keys selecting this value
                 let dict_values = scalar_val.to_array()?;
                 let dict_keys = UInt8Array::from_iter_values(std::iter::repeat_n(0, dest_num_rows));
                 Ok(Arc::new(DictionaryArray::new(dict_keys, dict_values)))
@@ -309,6 +407,8 @@ fn eval_result_to_array(
         }
         ColumnarValue::Array(array_vals) => {
             if accept_dict_encoding {
+                // here we're going to try to select the smallest dictionary key that could contain
+                // all the unique values
                 match array_vals.data_type() {
                     DataType::Dictionary(k, v) => match k.as_ref() {
                         DataType::UInt8 => {
@@ -326,7 +426,7 @@ fn eval_result_to_array(
                                 Ok(cast(
                                     &array_vals,
                                     &DataType::Dictionary(
-                                        Box::new(k.as_ref().clone()),
+                                        Box::new(DataType::UInt8),
                                         Box::new(v.as_ref().clone()),
                                     ),
                                 )?)
@@ -441,6 +541,30 @@ mod test {
     #[tokio::test]
     async fn test_upsert_root_column_from_scalar_kql_parser() {
         test_upsert_root_column_from_scalar::<KqlParser>().await
+    }
+
+    async fn test_insert_root_column_from_int_scalar<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let result = exec_logs_pipeline::<P>("logs | extend severity_number = 1", logs_data).await;
+
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 2);
+        for logs_record in logs_records {
+            assert_eq!(logs_record.severity_number, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_int_scalar_opl_parser() {
+        test_insert_root_column_from_int_scalar::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_int_scalar_kql_parser() {
+        test_insert_root_column_from_int_scalar::<KqlParser>().await
     }
 
     async fn test_insert_root_column_from_other_column<P: Parser>() {
@@ -723,6 +847,16 @@ mod test {
         test_set_root_invalid_expr_result_type_rejected_at_runtime::<KqlParser>().await
     }
 
-    // TODO - test on empty batch
+    #[tokio::test]
+    async fn test_assign_empty_batch() {
+        let pipeline_expr = OplParser::parse("logs | set severity_number = 1")
+            .unwrap()
+            .pipeline;
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
     // TODO - test all attribute types to root ...
 }
