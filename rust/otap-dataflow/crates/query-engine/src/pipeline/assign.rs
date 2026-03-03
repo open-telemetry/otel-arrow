@@ -7,7 +7,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use arrow::array::{DictionaryArray, RecordBatch, cast};
+use arrow::array::{ArrayRef, DictionaryArray, RecordBatch, UInt8Array, cast};
 use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
@@ -107,15 +107,17 @@ impl AssignPipelineStage {
             });
         }
 
+        let mut values = eval_result_to_array(
+            &eval_result.values,
+            column_supports_dict_encoding,
+            root_batch.num_rows(),
+        )?;
+
         // convert the result values into an array that has the same row order as the root batch.
         let already_aligned = eval_result.data_scope.is_scalar()
             || eval_result.data_scope.as_ref() == self.dest_scope.as_ref();
 
-        let mut values = if already_aligned {
-            // if we're here, either the expression returned a scalar, or it returned an array
-            // that already has the correct row order, so just covert to an arrow array.
-            eval_result.values.to_array(root_batch.num_rows())?
-        } else {
+        if !already_aligned {
             // if we're here, it means we have received a column value that has the row order
             // of something other than the root attribute batch, meaning the result was computed
             // from attributes. We'll need to join the result's values column to the root column
@@ -140,65 +142,8 @@ impl AssignPipelineStage {
                 &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
             )?;
 
-            match eval_result.values {
-                ColumnarValue::Array(arr) => take(&arr, &vals_take_indices, None)?,
-                ColumnarValue::Scalar(_) => {
-                    todo!("error or unreachable here") // err probably better
-                }
-            }
+            values = take(&values, &vals_take_indices, None)?;
         };
-
-        // TODO - need to attempt to cast to dictionary
-        if column_supports_dict_encoding {
-            match values.data_type() {
-                DataType::Dictionary(k, v) => match k.as_ref() {
-                    DataType::UInt8 => {
-                        // nothing to do
-                    }
-                    DataType::UInt16 => {
-                        let values_as_dict = values
-                            .as_any()
-                            .downcast_ref::<DictionaryArray<UInt16Type>>()
-                            .expect("can downcast to dict");
-                        if values_as_dict.values().len() <= 255 {
-                            values = cast(
-                                &values,
-                                &DataType::Dictionary(
-                                    Box::new(k.as_ref().clone()),
-                                    Box::new(v.as_ref().clone()),
-                                ),
-                            )?;
-                        }
-                    }
-                    other_key_type => {
-                        return Err(Error::ExecutionError {
-                            cause: format!(
-                                "invalid dictionary key in evaluation result {other_key_type:?}"
-                            ),
-                        });
-                    }
-                },
-                _ => {
-                    let field_info = FieldInfo::try_new_from_array(&values);
-                    let cardinality = estimate_cardinality(&field_info);
-                    let key_type = match cardinality {
-                        Cardinality::WithinU8 => Some(DataType::UInt8),
-                        Cardinality::WithinU16 => Some(DataType::UInt16),
-                        _ => None,
-                    };
-
-                    if let Some(key_type) = key_type {
-                        values = cast(
-                            &values,
-                            &DataType::Dictionary(
-                                Box::new(key_type),
-                                Box::new(values.data_type().clone()),
-                            ),
-                        )?;
-                    }
-                }
-            }
-        }
 
         let mut columns = root_batch.columns().to_vec();
         let schema = root_batch.schema();
@@ -341,6 +286,88 @@ impl PipelineStage for AssignPipelineStage {
             },
             None => {
                 todo!() // remove data
+            }
+        }
+    }
+}
+
+// TOOD comment on what this does
+fn eval_result_to_array(
+    expr_eval_result: &ColumnarValue,
+    accept_dict_encoding: bool,
+    dest_num_rows: usize,
+) -> Result<ArrayRef> {
+    match expr_eval_result {
+        ColumnarValue::Scalar(scalar_val) => {
+            if accept_dict_encoding {
+                let dict_values = scalar_val.to_array()?;
+                let dict_keys = UInt8Array::from_iter_values(std::iter::repeat_n(0, dest_num_rows));
+                Ok(Arc::new(DictionaryArray::new(dict_keys, dict_values)))
+            } else {
+                Ok(scalar_val.to_array_of_size(dest_num_rows)?)
+            }
+        }
+        ColumnarValue::Array(array_vals) => {
+            if accept_dict_encoding {
+                match array_vals.data_type() {
+                    DataType::Dictionary(k, v) => match k.as_ref() {
+                        DataType::UInt8 => {
+                            // already smallest dict size
+                            Ok(Arc::clone(array_vals))
+                        }
+                        DataType::UInt16 => {
+                            // check if we can use a smaller dictionary key
+                            let values_as_dict = array_vals
+                                .as_any()
+                                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                                .expect("can downcast to dict");
+                            if values_as_dict.values().len() <= 255 {
+                                // values can fit in a smaller dict
+                                Ok(cast(
+                                    &array_vals,
+                                    &DataType::Dictionary(
+                                        Box::new(k.as_ref().clone()),
+                                        Box::new(v.as_ref().clone()),
+                                    ),
+                                )?)
+                            } else {
+                                // values already a dict, but won't fit in a smaller dict
+                                Ok(Arc::clone(array_vals))
+                            }
+                        }
+                        other_key_type => Err(Error::ExecutionError {
+                            cause: format!(
+                                "invalid dictionary key in evaluation result {other_key_type:?}"
+                            ),
+                        }),
+                    },
+                    _ => {
+                        // array is not dictionary encoded -- determine if we should convert it
+                        let field_info = FieldInfo::try_new_from_array(&array_vals);
+                        let cardinality = estimate_cardinality(&field_info);
+                        let key_type = match cardinality {
+                            Cardinality::WithinU8 => Some(DataType::UInt8),
+                            Cardinality::WithinU16 => Some(DataType::UInt16),
+                            _ => None,
+                        };
+
+                        if let Some(key_type) = key_type {
+                            // convert to smallest dictionary key allowed by cardinality
+                            Ok(cast(
+                                &array_vals,
+                                &DataType::Dictionary(
+                                    Box::new(key_type),
+                                    Box::new(array_vals.data_type().clone()),
+                                ),
+                            )?)
+                        } else {
+                            Ok(Arc::clone(array_vals))
+                        }
+                    }
+                }
+            } else {
+                // TODO - do we need to remove dictionary encoding?
+                Ok(Arc::clone(array_vals))
             }
         }
     }

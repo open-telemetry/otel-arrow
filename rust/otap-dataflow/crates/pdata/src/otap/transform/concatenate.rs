@@ -298,8 +298,17 @@ pub struct FieldInfo<'a> {
 }
 
 impl<'a> FieldInfo<'a> {
-    pub fn try_new_from_array(array: &ArrayRef) -> Self {
-        todo!()
+    pub fn try_new_from_array(array: &'a ArrayRef) -> Self {
+        Self {
+            value_type: array.data_type(),
+            nullable: array.nulls().is_some(),
+            smallest_key_type: None,
+            struct_index: None,
+            total_element_count: array.len(),
+            total_value_count: array.len() - array.null_count(),
+            largest_value_count: array.len(),
+            values: vec![Arc::clone(array)],
+        }
     }
 }
 
