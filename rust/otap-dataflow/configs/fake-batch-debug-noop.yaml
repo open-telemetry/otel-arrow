@@ -30,8 +30,8 @@ groups:
                 # every 10 seconds.
                 min_size: 1000
                 sizer: items
-              # The timeout causes 100/s, so we produce around 300 signals/batch.
-              flush_timeout: 3s
+              # The interval causes 100/s, so we produce around 300 signals/batch.
+              flush_interval: 3s
           debug:
             type: processor:debug
             config:
