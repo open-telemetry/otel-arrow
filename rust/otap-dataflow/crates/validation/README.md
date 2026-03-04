@@ -48,7 +48,7 @@ e.g. `receiver`, `exporter`.
 
    let capture = Capture::default()
        .otlp_grpc("exporter") // or .otap_grpc()
-       .control_streams(["traffic_gen"]) // generator labels whose unmodified signals this capture should receive
+       .control_streams(["traffic_gen"]) // generator whose unmodified signals this capture should receive
        .validate(vec![
            ValidationInstructions::Equivalence, // control vs SUV outputs match
            ValidationInstructions::SignalDrop { // detect signal drop
@@ -168,7 +168,7 @@ e.g. `receiver`, `exporter`.
 > NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
 the keys under `nodes:` in your pipeline YAML.
 
-## TLS / mTLS
+### TLS / mTLS
 
 > Requires the `experimental-tls` feature flag.
 
@@ -177,7 +177,7 @@ connects to a TLS-enabled receiver in the SUV pipeline. Use `${VAR}` placeholder
 in your SUV pipeline YAML so cert/key paths can be injected at test time via
 `Pipeline::from_file_with_vars`.
 
-### TlsConfig
+#### TlsConfig
 
 ```rust
 use otap_df_validation::traffic::TlsConfig;
@@ -190,7 +190,7 @@ use otap_df_validation::traffic::TlsConfig;
 - `.with_server_name("name")` - override the server name used for TLS verification
   - default: `"localhost"`
 
-### SUV pipeline setup
+#### SUV pipeline setup
 
 Your SUV pipeline YAML should include TLS configuration on the receiver with
 `${VAR}` placeholders for the cert/key paths:
@@ -223,7 +223,7 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
           include_system_ca_certs_pool: false
   ```
 
-### Example: TLS scenario
+#### Example: TLS scenario
 
 ```rust
 use otap_df_validation::pipeline::Pipeline;
@@ -264,7 +264,7 @@ Scenario::new()
     .expect("TLS validation scenario failed");
 ```
 
-### Example: mTLS scenario
+#### Example: mTLS scenario
 
 ```rust
 use otap_df_validation::pipeline::Pipeline;
