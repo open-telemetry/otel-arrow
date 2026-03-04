@@ -31,8 +31,8 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
 interpreted as described in
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
-See [Appendix F: Glossary](#appendix-f-glossary) for terminology and
-[Appendix G: References](#appendix-g-references) for reference material.
+See [Appendix A: Glossary](#appendix-ashould-glossary) for terminology and
+[Appendix B: References](#appendix-b-references) for reference material.
 
 ---
 
@@ -76,7 +76,7 @@ friendly to operate on with SIMD instruction sets.
 
 ## 3. Transport and Service Definitions
 
-OTAP uses gRPC for its transport mechanism and defines data exchange as three 
+OTAP uses gRPC for its transport mechanism and defines data exchange as three
 signal-specific
 [service definitions](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
 
@@ -97,8 +97,8 @@ service ArrowMetricsService {
 Clients create an OTAP connection by intiating a gRPC connection and starting a
 gRPC stream for one or more services. `BatchArrowRecords` (BAR) messages are
 streamed from the client with corresponding `BatchStatus` acknowledgments
-streamed back from the server. The bi-directional statefule streaming pattern 
-allows the client to continue sending BARs while waiting for acknowledgments, 
+streamed back from the server. The bi-directional statefule streaming pattern
+allows the client to continue sending BARs while waiting for acknowledgments,
 which may come out of order enabling high throughput with backpressure control.
 
 ### 3.1 BatchArrowRecords
@@ -126,10 +126,10 @@ message BatchArrowRecords {
 }
 ```
 
-The `batch_id` is an identifier used for the server to ack or nack successful 
+The `batch_id` is an identifier used for the server to ack or nack successful
 receipt of the batch and MUST be unique within a gRPC stream.
 
-The `headers` field can contain additional application level metadata and MUST 
+The `headers` field can contain additional application level metadata and MUST
 (TODO: MAY?) be HPACK compressed if present.
 
 Each `ArrowPayload` in the `arrow_payloads` field contains data for one Payload
@@ -157,13 +157,13 @@ message ArrowPayload {
 The `schema_id` is an indicator of the schema being used for this Payload Type
 and is discussed in more detail in section 4.
 
-The `record` field contains the telemetry data for this Payload Type. Data for 
+The `record` field contains the telemetry data for this Payload Type. Data for
 each Payload Type is transmitted in this field as Arrow Record Batches using the
-Apache Arrow IPC protocol. The `record` field MUST contain at least one valid 
+Apache Arrow IPC protocol. The `record` field MUST contain at least one valid
 Encapsulated Arrow IPC message.
 
-Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only 
-send ArrowPayloads with allowed ArrowPayload types for that Signal according to 
+Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only
+send ArrowPayloads with allowed ArrowPayload types for that Signal according to
 the tables defined in this section.
 
 `arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS,
