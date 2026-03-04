@@ -366,7 +366,7 @@ async fn add_system_trust_anchors_if_enabled(
     // Best-effort: accept that some system certs might not parse.
     let (added, ignored) = store.add_parsable_certificates(roots);
     otel_debug!(
-        "loaded.system.ca.certificates",
+        "tls.native_cert.loaded",
         added = added,
         ignored = ignored,
         message = "Loaded system CA certificates"
