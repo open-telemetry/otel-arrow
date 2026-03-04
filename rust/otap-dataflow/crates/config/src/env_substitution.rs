@@ -40,30 +40,30 @@ use crate::error::Error;
 /// `:-default` was provided.
 pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
     let mut output = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
+    let mut rest = input;
 
-    while i < len {
+    while let Some(pos) = rest.find('$') {
+        // Emit everything before the `$`.
+        output.push_str(&rest[..pos]);
+        rest = &rest[pos..];
+
         // `$$` → literal `$`
-        if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'$' {
+        if rest.starts_with("$$") {
             output.push('$');
-            i += 2;
+            rest = &rest[2..];
             continue;
         }
 
-        // Possible `${...}` placeholder
-        if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
-            // Find the matching `}`
-            let start = i + 2; // first char after `${`
-            if let Some(end) = find_closing_brace(bytes, start) {
-                let inner = &input[start..end]; // content between `${` and `}`
+        // Possible `${...}` placeholder.
+        if rest.starts_with("${") {
+            if let Some(close) = rest[2..].find('}') {
+                let inner = &rest[2..2 + close]; // content between `${` and `}`
 
-                if let Some(rest) = inner.strip_prefix("env:") {
+                if let Some(spec) = inner.strip_prefix("env:") {
                     // Split on the first `:-` to allow an optional default.
-                    let (var_name, default) = match rest.find(":-") {
-                        Some(pos) => (&rest[..pos], Some(&rest[pos + 2..])),
-                        None => (rest, None),
+                    let (var_name, default) = match spec.find(":-") {
+                        Some(p) => (&spec[..p], Some(&spec[p + 2..])),
+                        None => (spec, None),
                     };
 
                     let value = match std::env::var(var_name) {
@@ -79,35 +79,24 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
                     };
 
                     output.push_str(&value);
-                    i = end + 1; // skip past `}`
+                    rest = &rest[2 + close + 1..]; // skip past `}`
                 } else {
                     // Not an `env:` provider — pass through verbatim.
-                    output.push_str(&input[i..end + 1]);
-                    i = end + 1;
+                    output.push_str(&rest[..2 + close + 1]);
+                    rest = &rest[2 + close + 1..];
                 }
                 continue;
             }
-            // No matching `}` found — pass the `$` through as-is and advance
-            // by one so we do not loop forever.
-            output.push(bytes[i] as char);
-            i += 1;
-            continue;
         }
 
-        output.push(bytes[i] as char);
-        i += 1;
+        // Bare `$` with no recognised pattern — emit and advance.
+        output.push('$');
+        rest = &rest[1..];
     }
 
+    // Emit any remaining text after the last `$`.
+    output.push_str(rest);
     Ok(output)
-}
-
-/// Return the index of the first `}` at or after `start` in `bytes`,
-/// or `None` if none exists.
-fn find_closing_brace(bytes: &[u8], start: usize) -> Option<usize> {
-    bytes[start..]
-        .iter()
-        .position(|&b| b == b'}')
-        .map(|p| start + p)
 }
 
 #[cfg(test)]
@@ -236,6 +225,20 @@ mod tests {
                     substitute_env_vars("${env:ATTRIBUTE1_NAME}: ${env:ATTRIBUTE1_VALUE}").unwrap();
                 assert_eq!(result, "service.instance.id: 1");
             });
+        });
+    }
+
+    #[test]
+    fn test_non_ascii_characters() {
+        with_var("GREETING", "こんにちは", || {
+            let result = substitute_env_vars(
+                "message: \"${env:GREETING}\", endpoint: \"château-élève.example.com:4317\"",
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                "message: \"こんにちは\", endpoint: \"château-élève.example.com:4317\""
+            );
         });
     }
 }
