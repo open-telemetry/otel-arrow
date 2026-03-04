@@ -200,6 +200,60 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filtering_attributes_using_and_in_logical_expr() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+
+        let query = r#"
+            logs | apply attributes {
+                where key == "k1" and value == "va"
+            }"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("va"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("va"))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_filtering_attributes_using_or_in_logical_expr() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+
+        let query = r#"
+            logs | apply attributes {
+                where key == "k1" or key == "k2"
+            }"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
     async fn test_removing_resource_attributes() {
         let logs_data = LogsData::new(vec![ResourceLogs::new(
             Resource::build()

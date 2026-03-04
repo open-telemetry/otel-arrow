@@ -237,19 +237,6 @@ impl Pipeline {
         }
     }
 
-    /// Create a new  [`Pipeline`] instance that contains pipeline stages that were planned
-    /// externally.
-    #[must_use]
-    pub const fn new_planned(
-        pipeline_definition: PipelineExpression,
-        planned_pipeline: PlannedPipeline,
-    ) -> Self {
-        Self {
-            pipeline_definition,
-            planned_pipeline: Some(planned_pipeline),
-        }
-    }
-
     /// Execute the pipeline on a batch of telemetry data.
     ///
     /// # Arguments
