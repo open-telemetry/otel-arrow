@@ -333,11 +333,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let pipeline = pipeline_entry.pipeline;
 
             let num_cores = requested_cores.len();
+            let core_allocation = pipeline_entry.policies.core_allocation.to_string();
             otel_info!(
                 "pipeline.core_allocation",
                 pipeline_group_id = pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_id.as_ref(),
-                num_cores = num_cores
+                num_cores = num_cores,
+                core_allocation = core_allocation
             );
             for core_id in requested_cores {
                 let pipeline_key = DeployedPipelineKey {
