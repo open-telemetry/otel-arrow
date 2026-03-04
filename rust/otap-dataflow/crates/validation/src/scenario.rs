@@ -9,7 +9,7 @@ use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
 use crate::simulate::run_pipelines_with_timeout;
 use crate::traffic::MessageType;
-use crate::traffic::{Capture, Generator};
+use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::{Environment, context};
 use portpicker::pick_unused_port;
 use std::collections::HashMap;
@@ -30,7 +30,6 @@ pub struct Scenario {
     pipeline: Option<Pipeline>,
     generators: HashMap<String, Generator>,
     captures: HashMap<String, Capture>,
-    connections: Vec<(String, String)>,
     containers: Vec<ContainerConfig>,
     template_path: PathBuf,
     admin_addr: String,
@@ -55,7 +54,6 @@ impl Scenario {
             pipeline: None,
             generators: HashMap::new(),
             captures: HashMap::new(),
-            connections: Vec::new(),
             containers: Vec::new(),
             template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
@@ -87,18 +85,6 @@ impl Scenario {
     pub fn add_capture(mut self, label: impl Into<String>, capture: Capture) -> Self {
         let key = label.into();
         let _ = self.captures.insert(key, capture);
-        self
-    }
-
-    /// Connect a generator to a capture for control path wiring.
-    #[must_use]
-    pub fn connect(
-        mut self,
-        generator_label: impl Into<String>,
-        capture_label: impl Into<String>,
-    ) -> Self {
-        self.connections
-            .push((generator_label.into(), capture_label.into()));
         self
     }
 
@@ -199,6 +185,7 @@ impl Scenario {
         let tmpl = env
             .get_template("template")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
+
         let ctx = context! {
             suv_pipeline => pipeline_yaml,
             admin_bind_address => &self.admin_addr,
@@ -274,7 +261,9 @@ impl Scenario {
             pipeline.apply_endpoint(endpoint, port)?;
         }
 
-        // Allocate an exporter port per capture and configure the pipeline.
+        // Allocate an exporter port per capture, configure the pipeline,
+        // and wire control paths to the corresponding generators.
+        let generators = &mut self.generators;
         for capture in self.captures.values_mut() {
             require_non_empty(
                 &capture.suv_receiver_node,
@@ -290,23 +279,18 @@ impl Scenario {
                 MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
             };
             pipeline.apply_endpoint(endpoint, port)?;
-        }
 
-        // Connect control paths between each generator–capture pair.
-        for (gen_label, cap_label) in &self.connections {
-            let control_port = pick_port("control wiring")?;
-
-            self.generators
-                .get_mut(gen_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown generator {gen_label}")))?
-                .control_ports
-                .push(control_port);
-
-            self.captures
-                .get_mut(cap_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown capture {cap_label}")))?
-                .control_ports
-                .push(control_port);
+            for gen_label in &capture.control_streams {
+                let control_port = pick_port("control wiring")?;
+                capture.control_ports.push(control_port);
+                generators
+                    .get_mut(gen_label.as_str())
+                    .ok_or_else(|| {
+                        ValidationError::Config(format!("unknown generator: {gen_label}"))
+                    })?
+                    .control_ports
+                    .push(control_port);
+            }
         }
 
         self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
@@ -363,6 +347,30 @@ impl Scenario {
         let mut generators_rendered: Vec<String> = vec![];
 
         for (label, generator) in generators.iter() {
+            let tls_enabled = generator.tls.is_some();
+            let tls_ca_cert = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::ca_cert_str)
+                .transpose()?
+                .unwrap_or("");
+            let tls_client_cert = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::client_cert_str)
+                .transpose()?
+                .unwrap_or("");
+            let tls_client_key = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::client_key_str)
+                .transpose()?
+                .unwrap_or("");
+            let mtls_enabled = generator.tls.as_ref().is_some_and(TlsConfig::is_mtls);
+            let tls_server_name = generator
+                .tls
+                .as_ref()
+                .map_or("localhost", |t| t.server_name.as_str());
             let ctx = context! {
                 suv_exporter_type => &generator.suv_exporter_type,
                 control_ports => generator.control_ports,
@@ -376,7 +384,13 @@ impl Scenario {
                 generator_core_start => generator.core_start,
                 generator_core_end => generator.core_end,
                 generator_label => label,
-                data_source => &generator.data_source
+                data_source => &generator.data_source,
+                tls_enabled => tls_enabled,
+                tls_ca_cert => tls_ca_cert,
+                tls_client_cert => tls_client_cert,
+                tls_client_key => tls_client_key,
+                mtls_enabled => mtls_enabled,
+                tls_server_name => tls_server_name
             };
             generators_rendered.push(
                 tmpl.render(ctx)
@@ -426,32 +440,34 @@ nodes:
     fn render_template_requires_connected_labels() {
         let pipeline = Pipeline::from_yaml(sample_yaml());
         let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default().otap_grpc("exporter");
+        let capture = Capture::default()
+            .otap_grpc("exporter")
+            .control_streams(["missing_gen"]);
         let mut scenario = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
-            .add_capture("cap", capture)
-            .connect("missing_gen", "cap");
+            .add_capture("cap", capture);
 
         let err = scenario
             .update_configs()
             .expect_err("unknown generator label should error");
 
         assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("unknown generator missing_gen"));
+        assert!(err.to_string().contains("unknown generator: missing_gen"));
     }
 
     #[test]
     fn render_template_includes_added_generator_and_capture() {
         let pipeline = Pipeline::from_yaml(sample_yaml());
         let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default().otap_grpc("exporter");
+        let capture = Capture::default()
+            .otap_grpc("exporter")
+            .control_streams(["gen"]);
 
         let rendered = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
             .add_capture("cap", capture)
-            .connect("gen", "cap")
             .render_template()
             .expect("template should render");
 
@@ -519,22 +535,6 @@ nodes:
     }
 
     #[test]
-    fn unknown_capture_label_errors() {
-        let pipeline = Pipeline::from_yaml(sample_yaml());
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture("cap", Capture::default().otap_grpc("exporter"))
-            .connect("gen", "missing_cap");
-
-        let err = scenario
-            .update_configs()
-            .expect_err("unknown capture label should error");
-        assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("unknown capture missing_cap"));
-    }
-
-    #[test]
     fn expect_within_overrides_runtime() {
         let scenario = Scenario::new().expect_within(Duration::from_secs(42));
         assert_eq!(scenario.runtime, Duration::from_secs(42));
@@ -546,8 +546,7 @@ nodes:
         let mut scenario = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture("cap", Capture::default().otap_grpc("exporter"))
-            .connect("gen", "cap")
+            .add_capture("cap", Capture::default().otap_grpc("exporter").control_streams(["gen"]))
             .add_container(ContainerConfig::new("redis", "7.2.4").expose_tcp(4317));
 
         scenario.update_configs().expect("should succeed");

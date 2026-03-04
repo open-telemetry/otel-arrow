@@ -104,7 +104,11 @@ async fn wait_for_ready(
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
     client
         .get(format!("{base}/telemetry/metrics"))
-        .query(&[("reset", false), ("keep_all_zeroes", true)])
+        .query(&[
+            ("reset", "false"),
+            ("keep_all_zeroes", "true"),
+            ("format", "json"),
+        ])
         .send()
         .await
         .map_err(|_| ValidationError::Http(format!("No Response from {base}/telemetry/metrics")))?
