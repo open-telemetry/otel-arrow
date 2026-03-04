@@ -911,8 +911,10 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let mut policies = Policies::default();
-        policies.resources = Some(ResourcesPolicy { core_allocation });
+        let policies = Policies {
+            resources: Some(ResourcesPolicy { core_allocation }),
+            ..Default::default()
+        };
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
