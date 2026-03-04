@@ -29,7 +29,6 @@ pub struct Scenario {
     pipeline: Option<Pipeline>,
     generators: HashMap<String, Generator>,
     captures: HashMap<String, Capture>,
-    connections: Vec<(String, String)>,
     template_path: PathBuf,
     admin_addr: String,
     ready_max_attempts: usize,
@@ -53,7 +52,6 @@ impl Scenario {
             pipeline: None,
             generators: HashMap::new(),
             captures: HashMap::new(),
-            connections: Vec::new(),
             template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
@@ -84,18 +82,6 @@ impl Scenario {
     pub fn add_capture(mut self, label: impl Into<String>, capture: Capture) -> Self {
         let key = label.into();
         let _ = self.captures.insert(key, capture);
-        self
-    }
-
-    /// Connect a generator to a capture for control path wiring.
-    #[must_use]
-    pub fn connect(
-        mut self,
-        generator_label: impl Into<String>,
-        capture_label: impl Into<String>,
-    ) -> Self {
-        self.connections
-            .push((generator_label.into(), capture_label.into()));
         self
     }
 
@@ -227,7 +213,9 @@ impl Scenario {
             pipeline.apply_endpoint(endpoint, port)?;
         }
 
-        // Allocate an exporter port per capture and configure the pipeline.
+        // Allocate an exporter port per capture, configure the pipeline,
+        // and wire control paths to the corresponding generators.
+        let generators = &mut self.generators;
         for capture in self.captures.values_mut() {
             require_non_empty(
                 &capture.suv_receiver_node,
@@ -243,23 +231,18 @@ impl Scenario {
                 MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
             };
             pipeline.apply_endpoint(endpoint, port)?;
-        }
 
-        // Connect control paths between each generator–capture pair.
-        for (gen_label, cap_label) in &self.connections {
-            let control_port = pick_port("control wiring")?;
-
-            self.generators
-                .get_mut(gen_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown generator {gen_label}")))?
-                .control_ports
-                .push(control_port);
-
-            self.captures
-                .get_mut(cap_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown capture {cap_label}")))?
-                .control_ports
-                .push(control_port);
+            for gen_label in &capture.control_streams {
+                let control_port = pick_port("control wiring")?;
+                capture.control_ports.push(control_port);
+                generators
+                    .get_mut(gen_label.as_str())
+                    .ok_or_else(|| {
+                        ValidationError::Config(format!("unknown generator: {gen_label}"))
+                    })?
+                    .control_ports
+                    .push(control_port);
+            }
         }
 
         self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
@@ -379,32 +362,34 @@ nodes:
     fn render_template_requires_connected_labels() {
         let pipeline = Pipeline::from_yaml(sample_yaml());
         let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default().otap_grpc("exporter");
+        let capture = Capture::default()
+            .otap_grpc("exporter")
+            .control_streams(["missing_gen"]);
         let mut scenario = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
-            .add_capture("cap", capture)
-            .connect("missing_gen", "cap");
+            .add_capture("cap", capture);
 
         let err = scenario
             .update_configs()
             .expect_err("unknown generator label should error");
 
         assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("unknown generator missing_gen"));
+        assert!(err.to_string().contains("unknown generator: missing_gen"));
     }
 
     #[test]
     fn render_template_includes_added_generator_and_capture() {
         let pipeline = Pipeline::from_yaml(sample_yaml());
         let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default().otap_grpc("exporter");
+        let capture = Capture::default()
+            .otap_grpc("exporter")
+            .control_streams(["gen"]);
 
         let rendered = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
             .add_capture("cap", capture)
-            .connect("gen", "cap")
             .render_template()
             .expect("template should render");
 

@@ -74,6 +74,8 @@ pub struct Capture {
     pub(crate) suv_port: u16,
     /// Listening ports for control receivers (one per connected generator).
     pub(crate) control_ports: Vec<u16>,
+    /// Generator labels whose control streams this capture should receive.
+    pub(crate) control_streams: Vec<String>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
 }
@@ -209,6 +211,16 @@ impl Capture {
         self
     }
 
+    /// Set the generator labels whose control streams this capture should
+    /// receive. Each label must correspond to a generator added to the
+    /// [`Scenario`](crate::scenario::Scenario) so that the control path can
+    /// be wired during configuration.
+    #[must_use]
+    pub fn control_streams(mut self, labels: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.control_streams = labels.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Set the core range for this capture pipeline.
     #[must_use]
     pub fn core_range(mut self, start: u16, end: u16) -> Self {
@@ -236,6 +248,7 @@ impl Default for Capture {
             core_end: 1,
             suv_port: DEFAULT_SUV_PORT,
             control_ports: vec![],
+            control_streams: vec![],
             validate: vec![],
         }
     }
@@ -268,6 +281,7 @@ mod tests {
         assert_eq!(c.suv_receiver_type, MessageType::Otlp);
         assert_eq!(c.suv_port, DEFAULT_SUV_PORT);
         assert_eq!(c.control_ports, Vec::<u16>::new());
+        assert_eq!(c.control_streams, Vec::<String>::new());
         assert_eq!(c.validate, vec![]);
         assert_eq!(c.core_start, 1);
         assert_eq!(c.core_end, 1);

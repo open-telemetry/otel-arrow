@@ -48,6 +48,7 @@ e.g. `receiver`, `exporter`.
 
    let capture = Capture::default()
        .otlp_grpc("exporter") // or .otap_grpc()
+       .control_streams(["traffic_gen"]) // generator labels whose unmodified signals this capture should receive
        .validate(vec![
            ValidationInstructions::Equivalence, // control vs SUV outputs match
            ValidationInstructions::SignalDrop { // detect signal drop
@@ -72,9 +73,8 @@ e.g. `receiver`, `exporter`.
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
-       .add_generator("input", generator)       // add your configured generator pipeline
-       .add_capture("output", capture).         // add your configured capture pipeline
-       .connect("input", "output")              // connect generator and capture to compare input vs output signals from suv pipeline
+       .add_generator("traffic_gen", generator)       // add your configured generator pipeline
+       .add_capture("validate", capture)          // add your configured capture pipeline
        .expect_within(Duration::from_secs(200)) // optional timeout; default 140
        .run()
        .expect("validation scenario failed");
@@ -90,9 +90,8 @@ e.g. `receiver`, `exporter`.
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
-      .add_generator("input", generator)                 // required: Generator config
-      .add_capture("output", capture)                 // required: Capture config
-      .connect("input", "output")                // required for certain validation checks that require a control signal to compare to
+      .add_generator("traffic_gen", generator)                 // required: Generator config
+      .add_capture("validate", capture)                 // required: Capture config
       .expect_within(Duration::from_secs(180)) // optional; default 140s
       .run()
       .expect("validation scenario failed");
@@ -101,17 +100,12 @@ e.g. `receiver`, `exporter`.
 - `Scenario::new()` - create a new Scenario
 - `pipeline(Pipeline)` - provide the system-under-validation pipeline
   - required
-- `add_generator("label", Generator)` - add traffic generation config
+- `add_generator("gen_key", Generator)` - add traffic generation config
   - required, at least one generator must be configured
   - add support multiple if your pipeline has multiple receivers
-- `add_capture("label", Capture)` - add capture/validation config
+- `add_capture("cap_key", Capture)` - add capture/validation config
   - required, at least one capture must be configured
   - can support multiple if your pipeline has multiple exporters
-- `connect("generator_label", "capture_label")` - connect generator and capture pipelines
-  - allow capture to use original signals from the generator for validation
-  - multiple connections can be made if there are multiple generators/captures
-    - required for certain validation methods that require signal to compare to
-      - e.g. ValidationInstructions::Equivalence
 - `expect_within(Duration)` - set max runtime
   - optional; default: 140s
 - `run()` - renders template, launches pipelines, waits for readiness
@@ -176,6 +170,7 @@ the keys under `nodes:` in your pipeline YAML.
 
   let capture = Capture::default()
       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+      .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
       .core_range(3, 5)    // optional; default 1-1
       .validate(vec![           // required; define your validation instructions
           ValidationInstructions::Equivalence,
@@ -187,13 +182,18 @@ the keys under `nodes:` in your pipeline YAML.
       ]);
   ```
 
-- `Generator::default()` - create a Generator
+- `Capture::default()` - create a Capture
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
   - required
   - specifies which exporter in suv pipeline to send data to
   - also sets the receiver type of the capture
     - receiver type must match the exporter type
       - OTLP -> OTLP or OTAP -> OTAP
+- `control_streams(labels)` - declare which generators this capture should receive control signals from
+  - accepts a list of generator labels (e.g. `["input"]` or `["input1", "input2"]`)
+  - required for validation methods that compare against unmodified reference signals
+    - e.g. `ValidationInstructions::Equivalence`, `ValidationInstructions::SignalDrop`
+  - default: [] (no control streams)
 - `validate(Vec<ValidationInstructions>)` - define validation instructions
   - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
@@ -225,27 +225,28 @@ count per message; `min/max` optional; `timeout` optional
 
 (see `validation_types::attributes` and `validation_types`)
 
-> NOTE: Some ValidationInstructions require control signals make sure to
-connect the generator(s) -> capture(s) if needed
+> NOTE: Some ValidationInstructions require control signals. Use
+`control_streams` on the Capture to declare which generator(s) should
+provide reference signals.
 
 ## Troubleshooting
 
 - **Missing wire**: Ensure generator and capture are connected properly to
 your system-under-validation pipeline, the node names must match
-- **Invalid Validation**: Ensure generator and capture pipelines are connected to
-allow the validation instructions to have control signals to validate against
+- **Invalid Validation**: Ensure the capture has `control_streams` configured with
+the appropriate generator labels so validation instructions have control signals
+to validate against
 
 ## New Feature Update
 
 ### Support multiple input/output connections
 
 - You can define multiple Generator(s)/Capture(s) and add them to your Scenario
-  - call add_generator("label1", Generator)/add_capture("label2", Generator)
+  - call add_generator("label1", Generator)/add_capture("label2", Capture)
     - labels for each generator/capture should be unique
   - one Generator/Capture per receiver/exporter node in suv pipeline
-- You can make multiple connections between Generator and Capture
-  - make connections to control the flow of control signals
-  - call connect("label1", "label2") to connect a Generator to Capture
-    - you can make multiple connections per Generator/Capture
+- Use `control_streams` on each Capture to declare which generators it should receive control signals from
+  - e.g. `Capture::default().control_streams(["traffic_gen1", "traffic_gen2"])` to receive from two generators
+  - each generator label must match a label passed to `add_generator`
 
 ### Test containers (WIP)

@@ -83,7 +83,7 @@ pub enum ValidationInstructions {
 impl ValidationInstructions {
     /// Evaluate this validation against control and system-under-validation messages.
     #[must_use]
-    pub fn validate(
+    pub(crate) fn validate(
         &self,
         control: &[OtlpProtoMessage],
         suv: &[(OtlpProtoMessage, Duration)],

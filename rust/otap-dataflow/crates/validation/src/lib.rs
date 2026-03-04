@@ -43,7 +43,7 @@ mod tests {
                     .expect("failed to read in pipeline yaml"),
             )
             .add_generator(
-                "input",
+                "traffic_gen",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver")
@@ -51,13 +51,13 @@ mod tests {
                     .static_signals(),
             )
             .add_capture(
-                "output",
+                "validate",
                 Capture::default()
                     .otlp_grpc("exporter")
                     .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .connect("input", "output")
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("validation scenario failed");
@@ -71,7 +71,7 @@ mod tests {
                     .expect("failed to read in pipeline yaml"),
             )
             .add_generator(
-                "input",
+                "traffic_gen",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver")
@@ -79,13 +79,13 @@ mod tests {
                     .static_signals(),
             )
             .add_capture(
-                "output",
+                "validate",
                 Capture::default()
                     .otap_grpc("exporter")
                     .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .connect("input", "output")
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("validation scenario failed");
@@ -107,7 +107,7 @@ mod tests {
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
-                "input",
+                "traffic_gen",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver")
@@ -115,7 +115,7 @@ mod tests {
                     .core_range(1, 1),
             )
             .add_capture(
-                "output",
+                "validate",
                 Capture::default()
                     .otap_grpc("exporter")
                     .validate(vec![deny, require])
@@ -142,7 +142,7 @@ mod tests {
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
-                "input",
+                "traffic_gen",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver")
@@ -150,7 +150,7 @@ mod tests {
                     .static_signals(),
             )
             .add_capture(
-                "output",
+                "validate",
                 Capture::default()
                     .otap_grpc("exporter")
                     .validate(vec![
@@ -160,9 +160,9 @@ mod tests {
                         },
                         attr_check,
                     ])
+                    .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .connect("input", "output")
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("filter processor validation failed");
@@ -176,27 +176,26 @@ mod tests {
                     .expect("failed to read in pipeline yaml"),
             )
             .add_generator(
-                "input1",
+                "traffic_gen1",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver1")
                     .static_signals(),
             )
             .add_generator(
-                "input2",
+                "traffic_gen2",
                 Generator::logs()
                     .fixed_count(500)
                     .otlp_grpc("receiver2")
                     .static_signals(),
             )
             .add_capture(
-                "output1",
+                "validate1",
                 Capture::default()
                     .otlp_grpc("exporter1")
-                    .validate(vec![ValidationInstructions::Equivalence]),
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen1", "traffic_gen2"]),
             )
-            .connect("input1", "output1")
-            .connect("input2", "output1")
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("validation scenario failed");
