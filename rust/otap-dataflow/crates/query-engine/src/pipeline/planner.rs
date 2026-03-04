@@ -8,7 +8,8 @@ use data_engine_expressions::{
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
+    SourceScalarExpression, StaticScalarExpression, StringValue, TransformExpression,
+    ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -162,40 +163,24 @@ impl PipelinePlanner {
             },
 
             DataExpression::Nested(nested_expr) => {
-                // TODO handle no source by returning error no unwrapping
-                let source = nested_expr.get_target().unwrap();
-
-                let values_accessor = source.get_value_accessor();
-                let selectors = values_accessor.get_selectors();
-                let attributes_id = match selectors.len() {
-                    1 => match &selectors[0] {
-                        ScalarExpression::Static(StaticScalarExpression::String(column)) => {
-                            (column.get_value() == ATTRIBUTES_FIELD_NAME)
-                                .then_some(AttributesIdentifier::Root)
-                        }
-                        _ => None,
-                    },
-                    // 2 => match (selectors[1], selectors[0]) {
-                    //     (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
-                    //         AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
-                    //     ),
-                    //     (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
-                    //         AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
-                    //     ),
-                    //     _ => None,
-                    // },
-                    _ => None,
-                };
-
-                // TODO handle case we got an invalid attributes ID
-                let attributes_id = attributes_id.unwrap();
+                let attributes_id = nested_expr
+                    .get_target()
+                    .and_then(Self::source_to_apply_attrs_id)
+                    .ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!(
+                            "Invalid source for nested apply pipeline to attributes {:?}",
+                            nested_expr.get_target()
+                        ),
+                        query_location: Some(nested_expr.get_query_location().clone()),
+                    })?;
 
                 let planner = Self::new_for_attributes();
-                let children_pipeline_stages =
+                let child_pipeline =
                     planner.plan_data_exprs(nested_expr.get_children(), session_ctx, otap_batch)?;
+
                 Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
                     attributes_id,
-                    children_pipeline_stages,
+                    child_pipeline,
                 ))])
             }
 
@@ -529,6 +514,45 @@ impl PipelinePlanner {
                     static_val
                 ),
             }),
+        }
+    }
+
+    /// when we receive an expression representing a nested pipeline, we currently assume it is
+    /// being applied to attributes. This attempts to determine to which set of attributes the
+    /// pipeline should be applied. Returns an error if the source does not identify a set of
+    /// attributes.
+    ///
+    /// Example valid inputs would include: attributes, resource/scope.attributes
+    ///
+    fn source_to_apply_attrs_id(
+        source_expr: &SourceScalarExpression,
+    ) -> Option<AttributesIdentifier> {
+        let values_accessor = source_expr.get_value_accessor();
+        let selectors = values_accessor.get_selectors();
+        match selectors.len() {
+            1 => match &selectors[0] {
+                ScalarExpression::Static(StaticScalarExpression::String(column)) => {
+                    (column.get_value() == ATTRIBUTES_FIELD_NAME)
+                        .then_some(AttributesIdentifier::Root)
+                }
+                _ => None,
+            },
+            2 => match (&selectors[1], &selectors[0]) {
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(column0)),
+                    ScalarExpression::Static(StaticScalarExpression::String(column1)),
+                ) => match (column0.get_value(), column1.get_value()) {
+                    (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
+                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                    ),
+                    (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => {
+                        Some(AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
