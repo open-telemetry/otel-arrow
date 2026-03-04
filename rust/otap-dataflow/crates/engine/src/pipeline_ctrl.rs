@@ -452,12 +452,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::DeliverAck {
                             ack,
                         } => {
-                            self.unwind_ack(ack).await;
+                            self.unwind_ack(ack);
                         }
                         PipelineControlMsg::DeliverNack {
                             nack,
                         } => {
-                            self.unwind_nack(nack).await;
+                            self.unwind_nack(nack);
                         }
                     }
                 }
@@ -716,7 +716,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     }
 
     /// Unwind the context stack for an ACK.
-    async fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
+    fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
         let now_ns = ack.unwind.return_time_ns;
         if let Some((node_id, route)) = self.unwind_frames(
             &mut ack.accepted,
@@ -730,7 +730,7 @@ impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
     }
 
     /// Unwind the context stack for a NACK.
-    async fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
+    fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
         let now_ns = nack.unwind.return_time_ns;
         let outcome = if nack.permanent {
             RequestOutcome::Refused
@@ -2856,11 +2856,28 @@ mod tests {
     ///      - Neither can make progress.
     ///   5. DeliverAck{B} sits in the pipeline ctrl queue — never processed.
     ///
-    /// The test asserts Node B receives its ack within 500 ms.  On the current
-    /// code this **times out**, proving the circular-wait stall.
+    /// The test asserts Node B receives its ack within 500 ms.  The non-blocking
+    /// `try_send` + `pending_sends` buffering in `send()` prevents the manager
+    /// from blocking on Node A's full control channel, so Node B's ack is
+    /// delivered promptly.
     #[tokio::test]
     async fn test_circular_wait_between_node_and_manager() {
         use crate::control::AckMsg;
+
+        // Build a TestPData whose single frame routes the ack to `node_id`.
+        fn pdata_for_node(node_id: usize) -> TestPData {
+            let mut pdata = TestPData::new();
+            pdata.push_frame(Frame {
+                node_id,
+                interests: Interests::ACKS,
+                route: RouteData {
+                    calldata: Default::default(),
+                    entry_time_ns: 0,
+                    output_port_index: 0,
+                },
+            });
+            pdata
+        }
 
         let local = LocalSet::new();
 
@@ -2875,7 +2892,8 @@ mod tests {
                 let node_b = nodes[1].clone();
 
                 // Node A: control channel capacity 1 — fills up after one message
-                let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(1);
+                let (tx_a, rx_a) =
+                    tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
                 control_senders.register(
                     node_a.clone(),
                     NodeType::Processor,
@@ -2883,7 +2901,8 @@ mod tests {
                 );
 
                 // Node B: control channel capacity 10 — plenty of room
-                let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(10);
+                let (tx_b, rx_b) =
+                    tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
                 control_senders.register(
                     node_b.clone(),
                     NodeType::Processor,
@@ -2926,28 +2945,26 @@ mod tests {
                     metrics_reporter,
                     TelemetryPolicy::default(),
                     Vec::new(),
+                    Vec::new(),
                 );
 
                 // Pre-load pipeline ctrl: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
                 // This fills the channel (cap=3) before anyone starts consuming.
                 pipeline_tx
                     .send(PipelineControlMsg::DeliverAck {
-                        node_id: node_a.index,
-                        ack: AckMsg::new("a1".to_owned()),
+                        ack: AckMsg::new(pdata_for_node(node_a.index)),
                     })
                     .await
                     .unwrap();
                 pipeline_tx
                     .send(PipelineControlMsg::DeliverAck {
-                        node_id: node_a.index,
-                        ack: AckMsg::new("a2".to_owned()),
+                        ack: AckMsg::new(pdata_for_node(node_a.index)),
                     })
                     .await
                     .unwrap();
                 pipeline_tx
                     .send(PipelineControlMsg::DeliverAck {
-                        node_id: node_b.index,
-                        ack: AckMsg::new("b1".to_owned()),
+                        ack: AckMsg::new(pdata_for_node(node_b.index)),
                     })
                     .await
                     .unwrap();
@@ -2961,14 +2978,13 @@ mod tests {
                 // drains its own control channel (rx_a), the manager can't
                 // deliver acks to it either.
                 let node_a_tx = pipeline_tx.clone();
-                let node_a_id = node_a.index;
+                let node_a_index = node_a.index;
                 let _node_a_handle = tokio::task::spawn_local(async move {
                     let _rx_a = rx_a; // keep A's ctrl channel open (not closed)
                     loop {
                         if node_a_tx
                             .send(PipelineControlMsg::DeliverAck {
-                                node_id: node_a_id,
-                                ack: AckMsg::new("batch_ack".to_owned()),
+                                ack: AckMsg::new(pdata_for_node(node_a_index)),
                             })
                             .await
                             .is_err()
@@ -2982,10 +2998,9 @@ mod tests {
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Assert Node B receives its ack within 500 ms.
-                // This will time out because of the circular wait:
-                //   Manager → blocked on A's full ctrl channel
-                //   Node A  → blocked on full pipeline ctrl channel
-                //   DeliverAck{B} is stuck in the pipeline ctrl queue, unprocessed.
+                // With the non-blocking try_send fix, the manager buffers
+                // messages for Node A's full channel and keeps processing,
+                // so Node B's ack arrives promptly.
                 let mut receiver_b = Receiver::Shared(SharedReceiver::mpsc(rx_b));
                 let received = timeout(Duration::from_millis(500), receiver_b.recv()).await;
 

@@ -1227,7 +1227,9 @@ mod tests {
             let local_set = tokio::task::LocalSet::new();
             let mr = metrics_reporter.clone();
             let _exporter_fut = local_set.spawn_local(async move {
-                let _ = exporter.start(pipeline_ctrl_msg_tx, mr).await;
+                let _ = exporter
+                    .start(pipeline_ctrl_msg_tx, mr, Interests::empty())
+                    .await;
             });
 
             tokio::join!(local_set, async {
