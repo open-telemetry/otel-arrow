@@ -749,9 +749,9 @@ the following values:
 | `encoding` | `"plain"`, `"delta"`, `"quasidelta"` | Indicated encoding applied |
 
 If there is no value listed, the column is by default encoded using the 
-appropriate delta encoding type for that column.Which fields use which encodings
-are listed in summarized in 6.4.3, but also listed completely in the Payload 
-Specifications in section 5.
+appropriate delta encoding type for that column. Which fields use which
+encodings are listed in summarized in 6.4.3, but also listed completely in the
+Payload Specifications in section 5.
 
 #### 6.4.1 Plain Encoding
 
@@ -763,6 +763,8 @@ The entire column is delta-encoded. Decode by computing a prefix sum - each
 decoded value equals the previous decoded value plus the current encoded value.
 This is used on `id` columns and on `parent_id` columns of data point batches 
 (where the parent IDs are already sorted).
+
+Null values are excluded from the delta encoding.
 
 ### Example
 
