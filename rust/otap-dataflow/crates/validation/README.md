@@ -124,6 +124,12 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Pipeline::from_file(path)` / `from_yaml(str)` - load the SUV pipeline YAML.
+- `Pipeline::from_file_with_vars(path, vars)` - load the SUV pipeline YAML with
+  `${VAR}` placeholder substitution.
+  - `vars` is a `&[(&str, &str)]` slice of `(key, value)` pairs
+  - each `${KEY}` in the YAML is replaced with the corresponding value
+  - returns an error if any `${...}` placeholders remain unresolved
+  - useful for injecting TLS cert/key paths at test time (see [TLS / mTLS](#tls--mtls))
 
 ## Generator
 
@@ -155,9 +161,152 @@ e.g. `receiver`, `exporter`.
   - default: static
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 2-2
+- `with_tls(TlsConfig)` - enable TLS on the generator's exporter
+  - optional; see [TLS / mTLS](#tls--mtls) for details
+  - requires the `experimental-tls` feature flag
 
 > NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
 the keys under `nodes:` in your pipeline YAML.
+
+## TLS / mTLS
+
+> Requires the `experimental-tls` feature flag.
+
+TLS support is configured on the **Generator** side. The generator's exporter
+connects to a TLS-enabled receiver in the SUV pipeline. Use `${VAR}` placeholders
+in your SUV pipeline YAML so cert/key paths can be injected at test time via
+`Pipeline::from_file_with_vars`.
+
+### TlsConfig
+
+```rust
+use otap_df_validation::traffic::TlsConfig;
+```
+
+- `TlsConfig::tls_only(ca_cert_path)` - create a TLS config with CA verification only
+  - the generator trusts the server using the provided CA certificate
+- `TlsConfig::mtls(ca_cert_path, client_cert_path, client_key_path)` - create a mutual TLS config
+  - the generator trusts the server via the CA cert and presents a client certificate
+- `.with_server_name("name")` - override the server name used for TLS verification
+  - default: `"localhost"`
+
+### SUV pipeline setup
+
+Your SUV pipeline YAML should include TLS configuration on the receiver with
+`${VAR}` placeholders for the cert/key paths:
+
+- **TLS** (server-side only):
+
+  ```yaml
+  nodes:
+    receiver:
+      type: otlp.grpc.receiver
+      config:
+        endpoint: '127.0.0.1:4317'
+        tls:
+          cert_file: '${TLS_SERVER_CERT}'
+          key_file: '${TLS_SERVER_KEY}'
+  ```
+
+- **mTLS** (server + client verification):
+
+  ```yaml
+  nodes:
+    receiver:
+      type: otlp.grpc.receiver
+      config:
+        endpoint: '127.0.0.1:4317'
+        tls:
+          cert_file: '${TLS_SERVER_CERT}'
+          key_file: '${TLS_SERVER_KEY}'
+          client_ca_file: '${TLS_CLIENT_CA}'
+          include_system_ca_certs_pool: false
+  ```
+
+### Example: TLS scenario
+
+```rust
+use otap_df_validation::pipeline::Pipeline;
+use otap_df_validation::scenario::Scenario;
+use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
+use std::time::Duration;
+
+let server_cert_path = "path/to/server.crt";
+let server_key_path = "path/to/server.key";
+let ca_cert_path = "path/to/ca.crt";
+
+Scenario::new()
+    .pipeline(
+        Pipeline::from_file_with_vars(
+            "./validation_pipelines/tls-no-processor.yaml",
+            &[
+                ("TLS_SERVER_CERT", server_cert_path),
+                ("TLS_SERVER_KEY", server_key_path),
+            ],
+        )
+        .expect("load pipeline"),
+    )
+    .add_generator(
+        "traffic_gen",
+        Generator::logs()
+            .fixed_count(500)
+            .otlp_grpc("receiver")
+            .with_tls(TlsConfig::tls_only(ca_cert_path)),
+    )
+    .add_capture(
+        "validate",
+        Capture::default()
+            .otlp_grpc("exporter")
+            .control_streams(["traffic_gen"]),
+    )
+    .expect_within(Duration::from_secs(140))
+    .run()
+    .expect("TLS validation scenario failed");
+```
+
+### Example: mTLS scenario
+
+```rust
+use otap_df_validation::pipeline::Pipeline;
+use otap_df_validation::scenario::Scenario;
+use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
+use std::time::Duration;
+
+let server_cert_path = "path/to/server.crt";
+let server_key_path = "path/to/server.key";
+let ca_cert_path = "path/to/ca.crt";
+let client_cert_path = "path/to/client.crt";
+let client_key_path = "path/to/client.key";
+
+Scenario::new()
+    .pipeline(
+        Pipeline::from_file_with_vars(
+            "./validation_pipelines/mtls-no-processor.yaml",
+            &[
+                ("TLS_SERVER_CERT", server_cert_path),
+                ("TLS_SERVER_KEY", server_key_path),
+                ("TLS_CLIENT_CA", ca_cert_path),
+            ],
+        )
+        .expect("load pipeline"),
+    )
+    .add_generator(
+        "traffic_gen",
+        Generator::logs()
+            .fixed_count(500)
+            .otlp_grpc("receiver")
+            .with_tls(TlsConfig::mtls(ca_cert_path, client_cert_path, client_key_path)),
+    )
+    .add_capture(
+        "validate",
+        Capture::default()
+            .otlp_grpc("exporter")
+            .control_streams(["traffic_gen"]),
+    )
+    .expect_within(Duration::from_secs(140))
+    .run()
+    .expect("mTLS validation scenario failed");
+```
 
 ## Capture
 

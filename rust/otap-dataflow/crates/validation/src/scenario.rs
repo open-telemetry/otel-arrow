@@ -8,7 +8,7 @@ use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
 use crate::simulate::run_pipelines_with_timeout;
 use crate::traffic::MessageType;
-use crate::traffic::{Capture, Generator};
+use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::{Environment, context};
 use portpicker::pick_unused_port;
 use std::collections::HashMap;
@@ -111,7 +111,7 @@ impl Scenario {
         let rendered_group = self.render_template()?;
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
-
+        println!("{rendered_group}");
         tokio_rt.block_on(async move {
             run_pipelines_with_timeout(
                 rendered_group,
@@ -155,6 +155,7 @@ impl Scenario {
         let tmpl = env
             .get_template("template")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
+
         let ctx = context! {
             suv_pipeline => pipeline_yaml,
             admin_bind_address => &self.admin_addr,
@@ -299,6 +300,30 @@ impl Scenario {
         let mut generators_rendered: Vec<String> = vec![];
 
         for (label, generator) in generators.iter() {
+            let tls_enabled = generator.tls.is_some();
+            let tls_ca_cert = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::ca_cert_str)
+                .transpose()?
+                .unwrap_or("");
+            let tls_client_cert = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::client_cert_str)
+                .transpose()?
+                .unwrap_or("");
+            let tls_client_key = generator
+                .tls
+                .as_ref()
+                .map(TlsConfig::client_key_str)
+                .transpose()?
+                .unwrap_or("");
+            let mtls_enabled = generator.tls.as_ref().is_some_and(TlsConfig::is_mtls);
+            let tls_server_name = generator
+                .tls
+                .as_ref()
+                .map_or("localhost", |t| t.server_name.as_str());
             let ctx = context! {
                 suv_exporter_type => &generator.suv_exporter_type,
                 control_ports => generator.control_ports,
@@ -312,7 +337,13 @@ impl Scenario {
                 generator_core_start => generator.core_start,
                 generator_core_end => generator.core_end,
                 generator_label => label,
-                data_source => &generator.data_source
+                data_source => &generator.data_source,
+                tls_enabled => tls_enabled,
+                tls_ca_cert => tls_ca_cert,
+                tls_client_cert => tls_client_cert,
+                tls_client_key => tls_client_key,
+                mtls_enabled => mtls_enabled,
+                tls_server_name => tls_server_name
             };
             generators_rendered.push(
                 tmpl.render(ctx)
