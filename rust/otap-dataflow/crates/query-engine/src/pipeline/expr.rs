@@ -40,10 +40,6 @@
 //!
 //! *Current status* - for now this only supports a small set of binary arithmetic operations.
 
-// TODO we'll use this eventually when evaluating attribute insertions and advanced filtering
-// but for now, this isn't called anywhere, so override the dead_code warning.
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -78,8 +74,8 @@ use crate::pipeline::expr::types::{
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
-mod join;
-mod types;
+pub(crate) mod join;
+pub(crate) mod types;
 
 pub(crate) const VALUE_COLUMN_NAME: &str = "value";
 pub(crate) const LEFT_COLUMN_NAME: &str = "left";
@@ -92,7 +88,7 @@ pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 /// the record batch, and which rows may have been selected from it.
 ///
 #[derive(Clone, Debug, PartialEq)]
-enum DataScope {
+pub(crate) enum DataScope {
     /// Main telemetry batch (e.g., Logs with columns like severity_number, severity_text)
     Root,
 
@@ -118,8 +114,19 @@ impl DataScope {
     }
 
     /// Returns true if this scope represents a static scalar value.
-    fn is_scalar(&self) -> bool {
+    pub fn is_scalar(&self) -> bool {
         *self == Self::StaticScalar
+    }
+}
+
+impl From<&ColumnAccessor> for DataScope {
+    fn from(value: &ColumnAccessor) -> Self {
+        match value {
+            ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => Self::Root,
+            ColumnAccessor::Attributes(attrs_id, attrs_key) => {
+                Self::Attributes(*attrs_id, attrs_key.clone())
+            }
+        }
     }
 }
 
@@ -138,7 +145,7 @@ enum LogicalExprDataSource {
 /// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
 #[derive(Debug)]
-struct ScopedLogicalExpr {
+pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     logical_expr: Expr,
 
@@ -151,7 +158,7 @@ struct ScopedLogicalExpr {
     /// note: type checking during planning is best-effort and there are some expressions where the
     /// expression's type validity cannot be guaranteed before we see the data. this is especially
     /// true for expressions involving AnyValues (attributes/logs body).
-    expr_type: ExprLogicalType,
+    pub expr_type: ExprLogicalType,
 
     /// identifies the source for the incoming data
     source: LogicalExprDataSource,
@@ -200,10 +207,14 @@ impl ScopedLogicalExpr {
 }
 
 /// Logical planner that converts AST expressions into ScopedLogicalExpr.
-struct ExprLogicalPlanner {}
+#[derive(Default)]
+pub(crate) struct ExprLogicalPlanner {}
 
 impl ExprLogicalPlanner {
-    fn plan_scalar_expr(&self, scalar_expression: &ScalarExpression) -> Result<ScopedLogicalExpr> {
+    pub fn plan_scalar_expr(
+        &self,
+        scalar_expression: &ScalarExpression,
+    ) -> Result<ScopedLogicalExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();
@@ -377,11 +388,12 @@ impl ExprLogicalPlanner {
 ///
 /// This is just a thin wrapper that delegates to ScopedLogicalExpr::into_physical().
 /// Could potentially be removed, but provides a clear separation of concerns.
-struct ExprPhysicalPlanner {}
+#[derive(Default)]
+pub(crate) struct ExprPhysicalPlanner {}
 
 impl ExprPhysicalPlanner {
     /// Converts a ScopedLogicalExpr into an executable ScopedPhysicalExpr.
-    fn plan(&self, logical_expr: ScopedLogicalExpr) -> Result<ScopedPhysicalExpr> {
+    pub fn plan(&self, logical_expr: ScopedLogicalExpr) -> Result<ScopedPhysicalExpr> {
         logical_expr.into_physical()
     }
 }
@@ -398,7 +410,7 @@ impl ExprPhysicalPlanner {
 /// - recursively evaluate left/right child expressions and join them
 /// - create a dummy empty record batch (special case for scalar-only expressions)
 ///
-struct ScopedPhysicalExpr {
+pub(crate) struct ScopedPhysicalExpr {
     /// Identifier of the data source from which the input to the PhysicalExpr will be crafted
     source: PhysicalExprDataSource,
 
@@ -437,7 +449,7 @@ static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
     LazyLock::new(|| RecordBatch::new_empty(Arc::new(Schema::new(Vec::<Field>::new()))));
 
 impl ScopedPhysicalExpr {
-    fn execute(
+    pub fn execute(
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_context: &SessionContext,
@@ -680,11 +692,11 @@ impl ScopedPhysicalExpr {
 #[derive(Debug)]
 pub(crate) struct PhysicalExprEvalResult {
     /// expression evaluation result values
-    values: ColumnarValue,
+    pub values: ColumnarValue,
 
     /// identifies with which arrow record batch should be associated, as well as which rows were
     /// selected (in the case of attributes)
-    data_scope: Rc<DataScope>,
+    pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
     ids: Option<ArrayRef>,
@@ -694,7 +706,7 @@ pub(crate) struct PhysicalExprEvalResult {
 }
 
 impl PhysicalExprEvalResult {
-    fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
+    pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
         let is_root = *data_scope == DataScope::Root;
 
         let mut result = Self {
