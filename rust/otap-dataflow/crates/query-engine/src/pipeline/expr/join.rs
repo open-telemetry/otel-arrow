@@ -328,7 +328,15 @@ fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> Result<
     )?)
 }
 
-trait JoinExec {
+pub trait JoinExec {
+    /// produce the rows that should be taken
+    fn rows_to_take(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array>;
+
     fn join(
         &self,
         left: &PhysicalExprEvalResult,
@@ -346,6 +354,19 @@ trait JoinExec {
 struct EqualScopeJoin {}
 
 impl JoinExec for EqualScopeJoin {
+    fn rows_to_take(
+        &self,
+        _left: &PhysicalExprEvalResult,
+        _right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        // Not implemented - if joining two results with the same row order, can just append
+        // the valued directly into a vec of columns to form a joined record batch.
+        Err(Error::ExecutionError {
+            cause: "rows_to_take not implemented for EqualScopeJoin".into(),
+        })
+    }
+
     fn join(
         &self,
         left: &PhysicalExprEvalResult,
@@ -371,23 +392,23 @@ impl JoinExec for EqualScopeJoin {
 
 /// Joins root record batch (logs/metrics/traces) to a child attributes record batch
 /// on root.id == attributes.parent_id
-struct RootToAttributesJoin {
+pub struct RootToAttributesJoin {
     attrs_id: AttributesIdentifier,
 }
 
 impl RootToAttributesJoin {
-    fn new(attrs_id: AttributesIdentifier) -> Self {
+    pub fn new(attrs_id: AttributesIdentifier) -> Self {
         Self { attrs_id }
     }
 }
 
 impl JoinExec for RootToAttributesJoin {
-    fn join(
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build the lookup for the right side of the join by parent ID
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let right_lookup = IdJoinLookup::new(right_parent_ids);
@@ -408,7 +429,18 @@ impl JoinExec for RootToAttributesJoin {
             },
         };
         let left_parent_ids = extract_u16_array(left_id_col.as_ref(), consts::ID)?;
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+
+        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+    }
+
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
@@ -427,12 +459,12 @@ impl RootAttrsToRootJoin {
 }
 
 impl JoinExec for RootAttrsToRootJoin {
-    fn join(
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build the lookup for the right side of the join by ID column
         let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
         let right_lookup = IdJoinLookup::new(right_ids);
@@ -440,7 +472,18 @@ impl JoinExec for RootAttrsToRootJoin {
         // scan the parent_ID column from the attributes to determine which rows from the
         // right values should be taken
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+
+        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+    }
+
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
         let right_values = right.values.to_array(right_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
@@ -468,12 +511,13 @@ impl NonRootAttrsToRootReverseJoin {
 }
 
 impl JoinExec for NonRootAttrsToRootReverseJoin {
-    fn join(
+    /// produce the rows that should be taken
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build a lookup of ID to index for the left side
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
         let left_lookup = IdJoinLookup::new(left_parent_ids);
@@ -497,14 +541,17 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
 
         // map right-side IDs to indices to take from left side values
-        let to_take = Int32Array::from_iter(
-            right_ids
-                .iter()
-                .map(|id| id.and_then(|id| left_lookup.lookup(id).map(|i| i as i32))),
-        );
+        Ok(Int32Array::from_iter(right_ids.iter().map(|id| {
+            id.and_then(|id| left_lookup.lookup(id).map(|i| i as i32))
+        })))
+    }
 
-        // build the result record batch:
-
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         // pre-allocate with enough space for right/left + ID columns
         let mut fields = Vec::with_capacity(5);
         let mut columns = Vec::with_capacity(5);
@@ -542,6 +589,8 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             columns.push(Arc::new(struct_arr));
         }
 
+        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
         let left_values = left.values.to_array(left_parent_ids.len())?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
@@ -551,6 +600,23 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         ));
         columns.push(joined_vals);
 
+        let right_ids = match self.attrs_payload_type {
+            ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
+            ArrowPayloadType::ScopeAttrs => right.scope_ids.as_ref(),
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "NonRootAttrsToRootReverseJoin received invalid attrs id payload type {other:?}"
+                    ),
+                });
+            }
+        };
+
+        let right_ids = right_ids.ok_or_else(|| missing_column_err(consts::ID))?;
+        let right_ids = right_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
         let child_col = right.values.to_array(right_ids.len())?;
         fields.push(Field::new(
             RIGHT_COLUMN_NAME,
@@ -579,21 +645,32 @@ impl AttributeToSameAttributeJoin {
 }
 
 impl JoinExec for AttributeToSameAttributeJoin {
-    fn join(
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build a mapping of right-side parent_ids to right-side indices
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let right_lookup = IdJoinLookup::new(right_parent_ids);
 
         // determine which rows to take from the right side values
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+
+        Ok(build_simple_join_indices(left_parent_ids, &right_lookup))
+    }
+
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
 
         // take right side values and produce result
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
         to_join_result(left, joined_arr)
@@ -621,12 +698,12 @@ impl AttributeToDifferentAttributeJoin {
 }
 
 impl JoinExec for AttributeToDifferentAttributeJoin {
-    fn join(
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build mapping of the right side parent_id to right side index
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let right_lookup = IdJoinLookup::new(right_parent_ids);
@@ -646,12 +723,23 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
 
         // determine indices of right side values to take
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let to_take = build_two_hop_join_indices(
+
+        Ok(build_two_hop_join_indices(
             left_parent_ids,
             &inter_join_lookup,
             right_root_ids,
             &right_lookup,
-        );
+        ))
+    }
+
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
 
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
@@ -679,12 +767,12 @@ impl AttributeToDifferentAttributeReverseJoin {
 }
 
 impl JoinExec for AttributeToDifferentAttributeReverseJoin {
-    fn join(
+    fn rows_to_take(
         &self,
         left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
+    ) -> Result<Int32Array> {
         // build mapping of the left side parent_id to left side index
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
         let left_lookup = IdJoinLookup::new(left_parent_ids);
@@ -704,13 +792,21 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
 
         // determine indices of left side values to take
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let to_take = build_two_hop_join_indices(
+
+        Ok(build_two_hop_join_indices(
             right_parent_ids,
             &inter_join_lookup,
             left_root_ids,
             &left_lookup,
-        );
+        ))
+    }
 
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         let mut fields = Vec::with_capacity(3);
         let mut columns = Vec::with_capacity(3);
 
@@ -723,7 +819,9 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
                 .clone(),
         );
 
+        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
         let left_values = left.values.to_array(left_parent_ids.len())?;
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
             LEFT_COLUMN_NAME,
@@ -732,6 +830,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         ));
         columns.push(joined_vals);
 
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let child_col = right.values.to_array(right_parent_ids.len())?;
         fields.push(Field::new(
             RIGHT_COLUMN_NAME,
