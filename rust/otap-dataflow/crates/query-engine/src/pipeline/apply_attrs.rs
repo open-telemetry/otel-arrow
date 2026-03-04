@@ -81,7 +81,11 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
         }
 
         // replace record batch with pipeline result
-        otap_batch.set(attrs_payload_type, curr_batch);
+        if curr_batch.num_rows() > 0 {
+            otap_batch.set(attrs_payload_type, curr_batch);
+        } else {
+            otap_batch.remove(attrs_payload_type);
+        }
 
         Ok(otap_batch)
     }
@@ -97,6 +101,7 @@ mod test {
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
+                arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 resource::v1::Resource,
@@ -324,6 +329,25 @@ mod test {
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_removes_attrs_record_batch_when_all_attrs_removed() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("a", AnyValue::new_int(6))])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let query = r#"
+            logs | apply attributes {
+                where value < 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
     }
 
     #[tokio::test]
