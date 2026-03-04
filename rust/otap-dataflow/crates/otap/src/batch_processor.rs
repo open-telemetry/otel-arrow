@@ -262,14 +262,18 @@ impl Config {
         let immediate_flush = self.flush_interval == Duration::ZERO;
         match self.format {
             BatchingFormat::Otap => {
-                self.otap.validate(SignalFormat::OtapRecords, immediate_flush)?;
+                self.otap
+                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
             }
             BatchingFormat::Otlp => {
-                self.otlp.validate(SignalFormat::OtlpBytes, immediate_flush)?;
+                self.otlp
+                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
             }
             BatchingFormat::Preserve => {
-                self.otap.validate(SignalFormat::OtapRecords, immediate_flush)?;
-                self.otlp.validate(SignalFormat::OtlpBytes, immediate_flush)?;
+                self.otap
+                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
+                self.otlp
+                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
             }
         };
 
