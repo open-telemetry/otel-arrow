@@ -1232,7 +1232,13 @@ mod tests {
             let local_set = tokio::task::LocalSet::new();
             let mr = metrics_reporter.clone();
             let _exporter_fut = local_set.spawn_local(async move {
-                let _ = exporter.start(pipeline_ctrl_msg_tx, mr).await;
+                let _ = exporter
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        mr,
+                        otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    )
+                    .await;
             });
 
             tokio::join!(local_set, async {
