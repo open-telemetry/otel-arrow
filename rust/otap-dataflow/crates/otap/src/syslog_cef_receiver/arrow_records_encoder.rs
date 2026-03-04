@@ -2193,10 +2193,7 @@ mod tests {
             log1_attrs.get("syslog.message"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
-        assert_eq!(
-            log1_attrs.get("input.format"),
-            Some(&"rfc5424".to_string())
-        );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
         // Ensure no unexpected attributes are present (exactly 8 attributes expected)
         assert_eq!(log1.attributes.len(), 8);
@@ -2249,10 +2246,7 @@ mod tests {
             log2_attrs.get("syslog.message"),
             Some(&"Application started successfully".to_string())
         );
-        assert_eq!(
-            log2_attrs.get("input.format"),
-            Some(&"rfc5424".to_string())
-        );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
         // Ensure no unexpected attributes are present (exactly 11 attributes expected with numeric proc_id)
         assert_eq!(log2.attributes.len(), 11);
@@ -2296,10 +2290,7 @@ mod tests {
             log3_attrs.get("syslog.message"),
             Some(&"Kernel panic - not syncing: VFS".to_string())
         );
-        assert_eq!(
-            log3_attrs.get("input.format"),
-            Some(&"rfc5424".to_string())
-        );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
         // // Ensure no unexpected attributes are present (exactly 7 attributes expected)
         assert_eq!(log3.attributes.len(), 7);
@@ -2471,10 +2462,7 @@ mod tests {
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
         assert_eq!(log1_attrs.get("syslog.app_name"), Some(&"su".to_string()));
-        assert_eq!(
-            log1_attrs.get("input.format"),
-            Some(&"rfc3164".to_string())
-        );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
         // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name)
         assert_eq!(log1.attributes.len(), 7);
@@ -2512,10 +2500,7 @@ mod tests {
             log2_attrs.get("syslog.process_id"),
             Some(&"1234".to_string())
         );
-        assert_eq!(
-            log2_attrs.get("input.format"),
-            Some(&"rfc3164".to_string())
-        );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
         // Ensure no unexpected attributes are present (exactly 8 attributes expected with app_name and proc_id)
         assert_eq!(log2.attributes.len(), 8);
@@ -2588,10 +2573,7 @@ mod tests {
             log3_attrs.get("syslog.app_name"),
             Some(&"kernel".to_string())
         );
-        assert_eq!(
-            log3_attrs.get("input.format"),
-            Some(&"rfc3164".to_string())
-        );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
         // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name)
         assert_eq!(log3.attributes.len(), 7);
@@ -2711,10 +2693,7 @@ mod tests {
         assert_eq!(log1_attrs.get("src"), Some(&"10.0.0.1".to_string()));
         assert_eq!(log1_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
         assert_eq!(log1_attrs.get("spt"), Some(&"1232".to_string()));
-        assert_eq!(
-            log1_attrs.get("input.format"),
-            Some(&"cef".to_string())
-        );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"cef".to_string()));
 
         // Ensure no unexpected attributes are present (7 core + 3 extensions + 1 input.format = 11 attributes expected)
         assert_eq!(log1.attributes.len(), 11);
@@ -2780,10 +2759,7 @@ mod tests {
             Some(&"Successful Login".to_string())
         );
         assert_eq!(log2_attrs.get("cef.severity"), Some(&"3".to_string()));
-        assert_eq!(
-            log2_attrs.get("input.format"),
-            Some(&"cef".to_string())
-        );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"cef".to_string()));
 
         // Ensure no unexpected attributes are present (only 7 core attributes + 1 input.format expected, no extensions)
         assert_eq!(log2.attributes.len(), 8);
@@ -2869,10 +2845,7 @@ mod tests {
         assert_eq!(log3_attrs.get("requestMethod"), Some(&"GET".to_string()));
         assert_eq!(log3_attrs.get("cs1"), Some(&"value1".to_string()));
         assert_eq!(log3_attrs.get("cs2"), Some(&"value2".to_string()));
-        assert_eq!(
-            log3_attrs.get("input.format"),
-            Some(&"cef".to_string())
-        );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"cef".to_string()));
 
         // Ensure no unexpected attributes are present (7 core + 10 extensions + 1 input.format = 18 attributes expected)
         assert_eq!(log3.attributes.len(), 18);
@@ -3003,10 +2976,7 @@ mod tests {
             log1_attrs.get("syslog.message"),
             Some(&"Application started successfully".to_string())
         );
-        assert_eq!(
-            log1_attrs.get("input.format"),
-            Some(&"rfc5424".to_string())
-        );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
         // Ensure no unexpected attributes are present for RFC5424 (exactly 11 attributes expected with numeric proc_id)
         assert_eq!(log1.attributes.len(), 11);
@@ -3077,10 +3047,7 @@ mod tests {
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
         assert_eq!(log2_attrs.get("syslog.app_name"), Some(&"su".to_string()));
-        assert_eq!(
-            log2_attrs.get("input.format"),
-            Some(&"rfc3164".to_string())
-        );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
         // Ensure no unexpected attributes are present for RFC3164 (exactly 7 attributes expected with app_name)
         assert_eq!(log2.attributes.len(), 7);
@@ -3150,10 +3117,7 @@ mod tests {
         assert_eq!(log3_attrs.get("src"), Some(&"10.0.0.1".to_string()));
         assert_eq!(log3_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
         assert_eq!(log3_attrs.get("spt"), Some(&"1232".to_string()));
-        assert_eq!(
-            log3_attrs.get("input.format"),
-            Some(&"cef".to_string())
-        );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"cef".to_string()));
 
         // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions + 1 input.format = 11 attributes expected)
         assert_eq!(log3.attributes.len(), 11);
