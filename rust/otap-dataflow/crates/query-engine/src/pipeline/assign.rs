@@ -406,7 +406,7 @@ fn eval_result_to_array(
                                 .as_any()
                                 .downcast_ref::<DictionaryArray<UInt16Type>>()
                                 .expect("can downcast to dict");
-                            if values_as_dict.values().len() <= 255 {
+                            if values_as_dict.values().len() <= 256 {
                                 // values can fit in a smaller dict
                                 Ok(cast(
                                     &array_vals,
