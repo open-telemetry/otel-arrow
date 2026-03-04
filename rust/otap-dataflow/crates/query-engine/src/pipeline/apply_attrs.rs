@@ -83,30 +83,19 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use data_engine_expressions::{PipelineExpression, PipelineExpressionBuilder};
-    use data_engine_kql_parser::Parser;
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
-                arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, KeyValue},
                 logs::v1::LogRecord,
             },
         },
-        testing::{
-            equiv::assert_equivalent,
-            round_trip::{otlp_to_otap, to_logs_data},
-        },
+        testing::{equiv::assert_equivalent, round_trip::to_logs_data},
     };
 
-    use crate::pipeline::{
-        Pipeline, PlannedPipeline,
-        apply_attrs::ApplyToAttributesPipelineStage,
-        planner::{AttributesIdentifier, PipelinePlanner},
-        test::exec_logs_pipeline,
-    };
+    use crate::pipeline::test::exec_logs_pipeline;
 
     fn gen_logs_records_with_string_attrs() -> Vec<LogRecord> {
         vec![

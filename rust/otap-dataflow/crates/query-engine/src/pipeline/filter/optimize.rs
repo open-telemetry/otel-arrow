@@ -4,7 +4,6 @@
 use arrow::datatypes::DataType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::logical_expr::{Expr, and, col, not, or};
-use datafusion::prelude::binary_expr;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
