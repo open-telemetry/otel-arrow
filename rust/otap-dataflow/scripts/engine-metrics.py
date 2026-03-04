@@ -5,7 +5,7 @@ Engine metrics console viewer.
 Polls the otap-dataflow engine metrics endpoint and displays all reported
 metrics with per-core breakdown and aggregated totals.  Metric sets,
 metric names, and attributes are discovered dynamically from the JSON
-response — no hard-coded metric names — so the script stays current
+response -- no hard-coded metric names -- so the script stays current
 as the engine evolves.
 
 Usage:
@@ -17,9 +17,9 @@ Kinds (for -k / --kind):
     pipeline   per-pipeline metrics (memory, CPU, uptime, context switches)
     tokio      per-pipeline Tokio runtime stats
     channel    inter-node channel sender/receiver counters
-    receiver   receiver component metrics (otap, syslog/cef, fake_data_gen, …)
-    processor  processor component metrics (batch, retry, router, filter, …)
-    exporter   exporter component metrics (otap, parquet, geneva, …)
+    receiver   receiver component metrics (otap, syslog/cef, fake_data_gen, ...)
+    processor  processor component metrics (batch, retry, router, filter, ...)
+    exporter   exporter component metrics (otap, parquet, geneva, ...)
 
     Combine with commas:  -k receiver,exporter  (default)
     Use 'all' to show everything.
@@ -45,11 +45,11 @@ from collections import OrderedDict
 from datetime import datetime
 
 
-# ─── value helpers ──────────────────────────────────────────────────
+# --- value helpers --------------------------------------------------
 
 
 def attr_val(attrs, key):
-    """Unwrap typed attribute value, e.g. ``{"UInt": 0}`` → ``0``.
+    """Unwrap typed attribute value, e.g. ``{"UInt": 0}`` -> ``0``.
 
     Returns ``None`` when *key* is absent.
     """
@@ -85,7 +85,7 @@ def fmt(v, unit="", instrument=""):
             f"min={v['min']:.1f} max={v['max']:.1f} "
             f"avg={avg:.1f} n={_fmt_num(c)}"
         )
-    # Bytes → human-readable
+    # Bytes -> human-readable
     if unit and "By" in unit:
         mb = v / (1024 * 1024)
         if mb >= 1024:
@@ -93,7 +93,7 @@ def fmt(v, unit="", instrument=""):
         if mb >= 1:
             return f"{mb:.1f} MB"
         return f"{v:,} B"
-    # Ratio [0,1] → percentage
+    # Ratio [0,1] -> percentage
     if instrument == "gauge" and unit in ("1", "{1}"):
         return f"{v * 100:.1f}%"
     # Seconds
@@ -102,7 +102,7 @@ def fmt(v, unit="", instrument=""):
     return _fmt_num(v)
 
 
-# ─── OS-level stats (optional enrichment) ──────────────────────────
+# --- OS-level stats (optional enrichment) --------------------------
 
 
 def find_engine_pids():
@@ -150,7 +150,7 @@ def get_os_cpu_pct(pids):
         return None
 
 
-# ─── fetch ──────────────────────────────────────────────────────────
+# --- fetch ----------------------------------------------------------
 
 
 def fetch(url):
@@ -169,7 +169,7 @@ def fetch(url):
         return None
 
 
-# ─── parse & group ──────────────────────────────────────────────────
+# --- parse & group --------------------------------------------------
 
 
 def _gkey(ms):
@@ -189,9 +189,9 @@ def _gkey(ms):
 def parse(data):
     """Parse the JSON response into groups keyed by :func:`_gkey`.
 
-    Returns ``OrderedDict[key] → {name, attrs, cores, meta}`` where
-    *cores* maps ``core_id → {metric_name: value}`` and *meta* maps
-    ``metric_name → {instrument, unit}``.
+    Returns ``OrderedDict[key] -> {name, attrs, cores, meta}`` where
+    *cores* maps ``core_id -> {metric_name: value}`` and *meta* maps
+    ``metric_name -> {instrument, unit}``.
     """
     groups = OrderedDict()
     for ms in data.get("metric_sets", []):
@@ -230,11 +230,11 @@ def parse(data):
 
 
 def _agg(group):
-    """Aggregate metrics across cores → ``{metric_name: total}``.
+    """Aggregate metrics across cores -> ``{metric_name: total}``.
 
-    Counters / up-down-counters → sum.  Gauges → sum (useful for
+    Counters / up-down-counters -> sum.  Gauges -> sum (useful for
     CPU-utilization; per-core breakdown shows individual values).
-    MMSC snapshots → merged (min of mins, max of maxes, sum of sums,
+    MMSC snapshots -> merged (min of mins, max of maxes, sum of sums,
     sum of counts).
     """
     cores = group["cores"]
@@ -256,7 +256,7 @@ def _agg(group):
     return out
 
 
-# ─── kind classification ────────────────────────────────────────────
+# --- kind classification --------------------------------------------
 
 ALL_KINDS = ("engine", "pipeline", "tokio", "channel", "receiver", "processor", "exporter")
 
@@ -294,7 +294,7 @@ def classify(name):
     return "other"
 
 
-# ─── display ordering ──────────────────────────────────────────────
+# --- display ordering ----------------------------------------------
 
 # Controls the order kinds are printed in.
 _KIND_ORDER = ["engine", "pipeline", "tokio", "channel", "receiver", "processor", "exporter", "other"]
@@ -323,7 +323,7 @@ def _sortkey(item):
     return (ki, n, item[0][1])
 
 
-# ─── printing ───────────────────────────────────────────────────────
+# --- printing -------------------------------------------------------
 
 
 def _print_section(grp, prev, key, show_pc):
@@ -337,14 +337,14 @@ def _print_section(grp, prev, key, show_pc):
     real_cores = sorted(c for c in cores if c is not None)
     nc = len(real_cores)
 
-    # ── header — show node.id (or metric-set name) plus core count
+    # -- header -- show node.id (or metric-set name) plus core count
     node_id = attrs.get("node.id", "")
     hdr = f"{name}  [{node_id}]" if node_id else name
     if nc > 1:
         hdr += f"  ({nc} cores)"
     print(f"  {hdr}")
 
-    # ── aggregated metrics, two per line for compactness
+    # -- aggregated metrics, two per line for compactness
     entries = []
     for mn in sorted(totals):
         v = totals[mn]
@@ -377,7 +377,7 @@ def _print_section(grp, prev, key, show_pc):
             print(col)
             i += 1
 
-    # ── per-core breakdown (skip zero-valued and MMSC metrics)
+    # -- per-core breakdown (skip zero-valued and MMSC metrics)
     if show_pc and nc > 1:
         for mn in sorted(totals):
             v = totals[mn]
@@ -398,12 +398,12 @@ def _print_section(grp, prev, key, show_pc):
     print()
 
 
-# ─── main ───────────────────────────────────────────────────────────
+# --- main -----------------------------------------------------------
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="otap-dataflow engine metrics — console viewer",
+        description="otap-dataflow engine metrics -- console viewer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -477,7 +477,7 @@ def main():
                 file=sys.stderr,
             )
 
-    prev = {}  # (group_key, metric_name) → previous value (for deltas)
+    prev = {}  # (group_key, metric_name) -> previous value (for deltas)
     pids = find_engine_pids()
 
     kind_msg = f"  kinds={','.join(sorted(kinds))}" if kinds else ""
@@ -515,9 +515,9 @@ def main():
                     )
                 )
 
-            print(f"[{now}] {'─' * 60}")
+            print(f"[{now}] {'-' * 60}")
 
-            # ── compact summary line (engine + pipeline + OS) ───────
+            # -- compact summary line (engine + pipeline + OS) -------
             # Always consult *all_groups* so the summary shows regardless
             # of --kind / --filter selection.
             parts = []
@@ -563,18 +563,18 @@ def main():
                 print(f"  {'  '.join(parts)}")
             print()
 
-            # ── all metric-set sections, grouped by kind ───────────
+            # -- all metric-set sections, grouped by kind -----------
             sorted_items = sorted(groups.items(), key=_sortkey)
             last_kind = None
             for key, grp in sorted_items:
                 kind = classify(grp["name"])
                 if kind != last_kind:
                     label = _KIND_LABELS.get(kind, kind.title())
-                    print(f"  ── {label} {'─' * max(1, 56 - len(label))}")
+                    print(f"  -- {label} {'-' * max(1, 56 - len(label))}")
                     last_kind = kind
                 _print_section(grp, prev, key, show_pc)
 
-            print(f"{'═' * 64}")
+            print(f"{'=' * 64}")
             sys.stdout.flush()
             time.sleep(interval)
     except KeyboardInterrupt:
