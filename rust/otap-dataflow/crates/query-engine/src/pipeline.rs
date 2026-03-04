@@ -313,21 +313,23 @@ impl Pipeline {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
 
     use data_engine_expressions::PipelineExpression;
 
     use data_engine_parser_abstractions::Parser;
+    use datafusion::catalog::streaming::StreamingTable;
+    use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
     use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
     use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
-    use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_otap_logs};
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
     use super::*;
-
-    // This module just contains some helpers that are used in other tests on PipelineStage impls
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
@@ -363,5 +365,89 @@ mod test {
         let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(otap_batch).await.unwrap();
         otap_to_logs_data(result)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_execute_multi_batch() {
+        // TODO eventually we might want to drive this test from a pipeline expression, which we
+        // can do once we have the query planning implemented. For now, we are manually creating
+        // the `PlannedPipeline` and its `PipelineStage`s and any additional datafusion context
+        // they need
+
+        let otap_batch1 = to_otap_logs(vec![
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "1".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "2".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(),
+                event_name: "3".into(),
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch2 = to_otap_logs(vec![
+            LogRecord {
+                severity_text: "DEBUG".into(),
+                event_name: "4".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "TRACE".into(),
+                event_name: "5".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "6".into(),
+                ..Default::default()
+            },
+        ]);
+
+        let schema = otap_batch1.get(ArrowPayloadType::Logs).unwrap().schema();
+        let rb_stream = Arc::new(RecordBatchPartitionStream::new(schema.clone()));
+        let table = StreamingTable::try_new(schema.clone(), vec![rb_stream.clone()]).unwrap();
+
+        let ctx = Pipeline::create_session_context();
+        _ = ctx.register_table("logs", Arc::new(table)).unwrap();
+        let query = ctx
+            .table("logs")
+            .await
+            .unwrap()
+            .filter(col("severity_text").eq(lit("ERROR")))
+            .unwrap();
+
+        let state = ctx.state();
+        let logical_plan = state.optimize(query.logical_plan()).unwrap();
+        let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
+
+        let stage = DataFusionPipelineStage {
+            payload_type: ArrowPayloadType::Logs,
+            record_batch_stream: rb_stream,
+            execution_plan: physical_plan,
+        };
+
+        let planned_pipeline = PlannedPipeline::new(vec![Box::new(stage)], ctx);
+
+        let mut pipeline = Pipeline {
+            pipeline_definition: PipelineExpression::default(),
+            planned_pipeline: Some(planned_pipeline),
+        };
+
+        let input1_logs = otap_batch1.get(ArrowPayloadType::Logs).unwrap().clone();
+        let result1 = pipeline.execute(otap_batch1).await.unwrap();
+        let result1_logs = result1.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(result1_logs, &input1_logs.slice(0, 2));
+
+        let input2_logs = otap_batch2.get(ArrowPayloadType::Logs).unwrap().clone();
+        let result2 = pipeline.execute(otap_batch2).await.unwrap();
+        let result2_logs = result2.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(result2_logs, &input2_logs.slice(2, 1));
     }
 }
