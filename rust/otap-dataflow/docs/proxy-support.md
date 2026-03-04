@@ -50,6 +50,18 @@ bi-directional tunnel through the proxy:
 +-----------+                                          +-----------+
 ```
 
+If the proxy URL is `https://...`, the exporter first establishes TLS to the
+proxy, then sends CONNECT over that TLS channel:
+
+```text
++-----------+                                          +-----------+
+|  Exporter | --- TCP + TLS handshake to proxy ----->  |   Proxy   |
+|           |                                          |           |
+|           | ---- CONNECT backend:4317 HTTP/1.1 --->  |           |
+|           | <--- HTTP/1.1 200 Connection established |           |
++-----------+                                          +-----------+
+```
+
 #### Step 2: Data Tunnel (Opaque Byte Stream)
 
 Once the 200 response is received, the exporter uses the same TCP socket for
@@ -79,6 +91,10 @@ bytes without interpretation:
      | HTTP/2 Cleartext (h2c)                  |
      | |- HTTP/2 + gRPC frames (unencrypted)   |
      +-----------------------------------------+
+
+     Optional outer transport:
+     - http://proxy => plaintext between exporter and proxy
+     - https://proxy => TLS between exporter and proxy
 ```
 
 ### Key Design Points
@@ -104,7 +120,7 @@ Standard proxy environment variables are supported:
 # Proxy for HTTP targets
 export HTTP_PROXY=http://proxy.corp.com:8080
 
-# Proxy for HTTPS targets (connection to proxy is still HTTP)
+# Proxy for HTTPS targets
 export HTTPS_PROXY=http://proxy.corp.com:8080
 
 # Fallback proxy for all targets
@@ -128,9 +144,12 @@ grpc_client:
   # Proxy configuration
   proxy:
     http_proxy: "http://proxy.corp.com:8080"
-    https_proxy: "http://proxy.corp.com:8080"
+    https_proxy: "https://proxy.corp.com:8443"
     all_proxy: "http://proxy.corp.com:8080"
     no_proxy: "localhost,127.0.0.1,*.internal"
+    tls:
+      ca_file: "/etc/ssl/certs/proxy-ca.pem"
+      include_system_ca_certs_pool: true
 
   # TCP socket options (applied to proxy connection)
   tcp_nodelay: true
@@ -227,14 +246,7 @@ Example log output:
 
 ### Current Limitations
 
-1. **No HTTPS to proxy**
-   - Only `http://` proxy URLs are supported
-   - Connection to the proxy server itself is always plain HTTP
-   - TLS is supported for the target endpoint (inside the tunnel)
-   - See [#1710](https://github.com/open-telemetry/otel-arrow/issues/1710) for
-     HTTPS proxy support
-
-2. **SOCKS proxy not supported**
+1. **SOCKS proxy not supported**
    - Only HTTP CONNECT method is supported
    - SOCKS4/SOCKS5 proxies are not supported
 
@@ -250,21 +262,16 @@ Example log output:
 
 ## Future Enhancements
 
-1. **HTTPS proxy support**
-   ([#1710](https://github.com/open-telemetry/otel-arrow/issues/1710))
-   - TLS connection to proxy server
-   - Required for some enterprise environments
-
-2. **NO_PROXY pre-parsing**
+1. **NO_PROXY pre-parsing**
    ([#1711](https://github.com/open-telemetry/otel-arrow/issues/1711))
    - Parse patterns once at startup
    - Eliminate allocations in request path
 
-3. **SOCKS proxy support**
+2. **SOCKS proxy support**
    - Alternative to HTTP CONNECT
    - Common in some environments
 
-4. **Proxy connection pooling**
+3. **Proxy connection pooling**
    - Reuse CONNECT tunnels across multiple gRPC channels
    - Reduce connection overhead
 
