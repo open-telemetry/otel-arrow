@@ -569,7 +569,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry.policies.effective_resources().core_allocation,
+                    &pipeline_entry
+                        .policies
+                        .effective_resources()
+                        .core_allocation,
                 )
             })
             .collect()
