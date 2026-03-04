@@ -1536,18 +1536,26 @@ impl PipelineStage for FilterPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        let planning_error = || {
+            // we shouldn't end up here, unless there was a bug in the planner and it didn't call
+            // the correct optimizers on the FilterPlan to turn it into something that can operate
+            // directly on the attrs record batch
+            Error::InvalidPipelineError {
+                cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                query_location: None,
+            }
+        };
+
         match &mut self.filter_exec {
             Composite::Base(filter) => {
-                let predicate = filter.predicate.as_mut().unwrap();
-                let selection_vec = predicate
-                    .evaluate_filter(&attrs_record_batch, session_context)
-                    .unwrap();
-                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec).unwrap();
-                return Ok(new_batch);
+                let predicate = filter.predicate.as_mut().ok_or_else(planning_error)?;
+                let selection_vec =
+                    predicate.evaluate_filter(&attrs_record_batch, session_context)?;
+                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
+
+                Ok(new_batch)
             }
-            _ => {
-                todo!("handle invalid")
-            }
+            _ => Err(planning_error()),
         }
     }
 }

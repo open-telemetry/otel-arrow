@@ -204,33 +204,48 @@ impl AttrsFilterCombineOptimizerRule {
     }
 }
 
-/// TODO comment on what this is doing
+/// Composes the filter plan into a single Datafusion logical expression by combining all
+/// `And`/`Or`/`Not` variants of the `Composite` enum into their equivalent `logical_expr::Expr`
+/// variants. This then assigns the resulting `Expr` as the source filter Composite `Base` variant.
+///
+/// The nominal use case for this is for when we plan filtering that we know will always apply to
+/// a single record batch, for example when creating a filter plan for attributes. In this case,
+/// there are no nested attribute filters, so it makes more sense to drop these and have the filter
+/// just be a single logical `Expr`
 pub struct CompositeToBaseFilterPlan {}
 
 impl CompositeToBaseFilterPlan {
-    pub fn optimize(input: Composite<FilterPlan>) -> Composite<FilterPlan> {
-        Composite::Base(FilterPlan::from(Self::optimize_internal(input)))
+    pub fn optimize(input: Composite<FilterPlan>) -> Result<Composite<FilterPlan>> {
+        Self::optimize_internal(input)
+            .map(FilterPlan::from)
+            .map(Composite::Base)
     }
 
-    fn optimize_internal(input: Composite<FilterPlan>) -> Expr {
+    fn optimize_internal(input: Composite<FilterPlan>) -> Result<Expr> {
         match input {
             Composite::And(left, right) => {
-                let left = Self::optimize_internal(*left);
-                let right = Self::optimize_internal(*right);
-                and(left, right)
+                let left = Self::optimize_internal(*left)?;
+                let right = Self::optimize_internal(*right)?;
+                Ok(and(left, right))
             }
             Composite::Or(left, right) => {
-                let left = Self::optimize_internal(*left);
-                let right = Self::optimize_internal(*right);
-                or(left, right)
+                let left = Self::optimize_internal(*left)?;
+                let right = Self::optimize_internal(*right)?;
+                Ok(or(left, right))
             }
             Composite::Not(inner) => {
-                let inner = Self::optimize_internal(*inner);
-                not(inner)
+                let inner = Self::optimize_internal(*inner)?;
+                Ok(not(inner))
             }
             Composite::Base(base) => {
-                // TODO no unwrap - pretty sure this shouldn't be reachable ...
-                base.source_filter.unwrap()
+                // Note: from where this is currently being called in the planner, we should have
+                // a source_filter here, since it's for filtering attributes as the source, so 
+                // these filter plans have source_filter None in favor of filtering on children
+                // attrs because there are no children
+                base.source_filter.ok_or_else(|| Error::InvalidPipelineError { 
+                    cause: "No source filter found on base Composite<FilterPlan> in CompositeToBaseFilterPlan".into(), 
+                    query_location: None
+                })
             }
         }
     }

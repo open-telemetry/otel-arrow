@@ -214,10 +214,16 @@ impl PipelinePlanner {
 
         // optimize the to the plan
         let filter_plan = if self.plan_for_attributes {
-            // TODO comment on why this optimization is chosen
-            AttrValueColumnSelectionOptimizer::optimize(CompositeToBaseFilterPlan::optimize(
-                filter_plan,
-            ))?
+            // Currently using a two step transformation of the FilterPlan to turn this into
+            // something that can be applied directly to the attributes record batch.
+            // First, we combine all the filter expressions in some Composite<FilterPlan> into
+            // a single Composite::Base containing a single expression.
+            // Next, we look for any places we are doing a binary expression like `value == "x"`,
+            // and determining the _actual_ values column (str, int, bool, etc.) to use in this
+            // expression, as "value" is just being treated as a logical column to make it easier
+            // to write the expressions
+            CompositeToBaseFilterPlan::optimize(filter_plan)
+                .and_then(AttrValueColumnSelectionOptimizer::optimize)?
         } else {
             AttrsFilterCombineOptimizerRule::optimize(filter_plan)
         };
