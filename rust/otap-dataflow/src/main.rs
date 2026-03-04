@@ -154,7 +154,6 @@ fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        println!("CLI override: core allocation set to {core_allocation}");
         engine_cfg.policies.resources = Some(ResourcesPolicy { core_allocation });
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
