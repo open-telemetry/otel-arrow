@@ -183,11 +183,15 @@ in your SUV pipeline YAML so cert/key paths can be injected at test time via
 use otap_df_validation::traffic::TlsConfig;
 ```
 
-- `TlsConfig::tls_only(ca_cert_path)` - create a TLS config with CA verification only
+- `TlsConfig::tls_only(ca_cert_path)` - create a TLS config with
+CA verification only
   - the generator trusts the server using the provided CA certificate
-- `TlsConfig::mtls(ca_cert_path, client_cert_path, client_key_path)` - create a mutual TLS config
-  - the generator trusts the server via the CA cert and presents a client certificate
-- `.with_server_name("name")` - override the server name used for TLS verification
+- `TlsConfig::mtls(ca_cert_path, client_cert_path, client_key_path)`
+  - create a mutual TLS config
+  - the generator trusts the server via the CA cert
+  and presents a client certificate
+- `.with_server_name("name")` - override the server name used
+for TLS verification
   - default: `"localhost"`
 
 #### SUV pipeline setup
@@ -338,7 +342,8 @@ Scenario::new()
   - also sets the receiver type of the capture
     - receiver type must match the exporter type
       - OTLP -> OTLP or OTAP -> OTAP
-- `control_streams(labels)` - declare which generators this capture should receive control signals from
+- `control_streams(labels)` - declare which generators this capture
+should receive control signals from
   - accepts a list of generator labels (e.g. `["input"]` or `["input1", "input2"]`)
   - required for validation methods that compare against unmodified reference signals
     - e.g. `ValidationInstructions::Equivalence`, `ValidationInstructions::SignalDrop`
@@ -394,8 +399,10 @@ to validate against
   - call add_generator("label1", Generator)/add_capture("label2", Capture)
     - labels for each generator/capture should be unique
   - one Generator/Capture per receiver/exporter node in suv pipeline
-- Use `control_streams` on each Capture to declare which generators it should receive control signals from
-  - e.g. `Capture::default().control_streams(["traffic_gen1", "traffic_gen2"])` to receive from two generators
+- Use `control_streams` on each Capture to declare which generators
+it should receive control signals from
+  - e.g. `Capture::default().control_streams(["traffic_gen1", "traffic_gen2"])`
+  to receive from two generators
   - each generator label must match a label passed to `add_generator`
 
 ### Test containers (WIP)
