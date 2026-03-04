@@ -1558,6 +1558,10 @@ impl PipelineStage for FilterPipelineStage {
             _ => Err(planning_error()),
         }
     }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

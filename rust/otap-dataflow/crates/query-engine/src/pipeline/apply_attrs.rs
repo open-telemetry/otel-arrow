@@ -83,8 +83,11 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 
 #[cfg(test)]
 mod test {
+    use data_engine_kql_parser::Parser;
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
+        OtapArrowRecords,
+        otap::Logs,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -95,7 +98,7 @@ mod test {
         testing::{equiv::assert_equivalent, round_trip::to_logs_data},
     };
 
-    use crate::pipeline::test::exec_logs_pipeline;
+    use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 
     fn gen_logs_records_with_string_attrs() -> Vec<LogRecord> {
         vec![
@@ -179,5 +182,34 @@ mod test {
             &[OtlpProtoMessage::Logs(result)],
             &[OtlpProtoMessage::Logs(expected)],
         )
+    }
+
+    #[test]
+    fn test_pipeline_stages_that_dont_support_attribute_exec_is_planning_error() {
+        let query = r#"
+            logs | apply attributes {
+                project-rename attributes["x"] = attributes["y"]
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let planner = PipelinePlanner::new();
+
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let result = planner.plan_stages(&pipeline_expr, &session_ctx, &otap_batch);
+
+        match result {
+            Err(err) => {
+                let err_msg = err.to_string();
+
+                assert!(
+                    err_msg.contains("Data expression not supported on attributes stream: Transform(RenameMapKeys(RenameMapKeysTransformExpression"),
+                    "unexpected error: {}",
+                    err_msg
+                );
+            }
+            Ok(_) => {
+                panic!("expected OK")
+            }
+        }
     }
 }

@@ -66,7 +66,11 @@ pub trait PipelineStage {
         exec_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords>;
 
-    /// TODO comments about what this is
+    /// Execute this stage of the pipeline on a [`RecordBatch`] containing a set of attributes.
+    ///
+    /// Not all pipeline stages are required to support this, and the default is that it is not
+    /// supported. If an type chooses to implement this, it should also implement
+    /// `supports_exec_on_attributes` and return `true`.
     async fn execute_on_attributes(
         &mut self,
         _attrs_record_batch: RecordBatch,
@@ -78,6 +82,16 @@ pub trait PipelineStage {
         return Err(Error::ExecutionError {
             cause: "Unexpected invocation of pipeline stage that does not support processing attributes".into()
         });
+    }
+
+    /// Returns a flag indicating that this stage of the pipeline on a [`RecordBatch`] containing
+    /// a set of attributes. This will be used during planning to determine if invalid pipeline
+    /// stages have been specified in a pipeline handling attributes record batches.
+    ///
+    /// If a type chooses to implement this method and return true, it should also add an
+    /// implementation for `execute_on_attributes`.
+    fn supports_exec_on_attributes(&self) -> bool {
+        false
     }
 }
 

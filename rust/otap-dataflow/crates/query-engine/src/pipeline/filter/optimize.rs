@@ -238,10 +238,10 @@ impl CompositeToBaseFilterPlan {
             }
             Composite::Base(base) => {
                 // Note: from where this is currently being called in the planner, we should have
-                // a source_filter here, since it's for filtering attributes as the source, so 
+                // a source_filter here, since it's for filtering attributes as the source, so
                 // these filter plans have source_filter None in favor of filtering on children
                 // attrs because there are no children
-                base.source_filter.ok_or_else(|| Error::InvalidPipelineError { 
+                base.source_filter.ok_or_else(|| Error::InvalidPipelineError {
                     cause: "No source filter found on base Composite<FilterPlan> in CompositeToBaseFilterPlan".into(), 
                     query_location: None
                 })

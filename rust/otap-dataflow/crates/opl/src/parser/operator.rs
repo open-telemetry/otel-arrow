@@ -17,8 +17,8 @@ use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::{
-    parse_attribute_selection_expression, parse_expression, parse_index_expression,
-    parse_member_expression,
+    no_inner_rule_error, parse_attribute_selection_expression, parse_expression,
+    parse_index_expression, parse_member_expression,
 };
 use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
@@ -362,24 +362,34 @@ pub(crate) fn parse_apply_operator_call(
     operator_call_rule: Pair<'_, Rule>,
     pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
-    let operator_call_query_location = to_query_location(&operator_call_rule);
+    let query_location = to_query_location(&operator_call_rule);
     let mut inner_rules = operator_call_rule.into_inner();
 
-    // get the identifier
-    // TODO no unwrap
-    // TODO check it's actually an identifier rule
-    let target_identifier_rule = inner_rules.next().unwrap();
+    // parse the target of the nested pipeline application:
+    let target_identifier_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
     let target_expr: ScalarExpression = parse_member_expression(target_identifier_rule)?.into();
-    let ScalarExpression::Source(target_source_expr) = target_expr else {
-        todo!("invalid parser result")
+    let target_source_expr = match target_expr {
+        ScalarExpression::Source(source_expr) => source_expr,
+        other => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!(
+                    "invalid parser result parsing member_expression. Expected ScalarExpression, got {:?}",
+                    other
+                ),
+            ));
+        }
     };
 
+    // parse the child stages of the nested pipeline
     let mut children = Vec::with_capacity(inner_rules.len());
     for inner_rule in inner_rules {
         parse_pipeline_stage(inner_rule, &mut children)?;
     }
 
-    let nested_expr = NestedDataExpression::new(operator_call_query_location)
+    let nested_expr = NestedDataExpression::new(query_location)
         .with_children(children)
         .with_target(target_source_expr);
 

@@ -84,6 +84,22 @@ impl PipelinePlanner {
         let mut results = Vec::new();
         for data_expr in data_exprs {
             let mut expr_results = self.plan_data_expr(data_expr, session_ctx, otap_batch)?;
+
+            // validate the pipeline stages are valid for attributes if planning pipeline to apply
+            // to attrs batches only
+            if self.plan_for_attributes {
+                for stage in &expr_results {
+                    if !stage.supports_exec_on_attributes() {
+                        return Err(Error::InvalidPipelineError {
+                            cause: format!(
+                                "Data expression not supported on attributes stream: {data_expr:?}"
+                            ),
+                            query_location: Some(data_expr.get_query_location().clone()),
+                        });
+                    }
+                }
+            }
+
             results.append(&mut expr_results);
         }
 
