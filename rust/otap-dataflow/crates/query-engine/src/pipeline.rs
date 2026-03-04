@@ -5,18 +5,24 @@
 //! streaming telemetry data in the OTAP columnar format.
 
 use arrow::array::RecordBatch;
+use arrow::compute::concat_batches;
 use async_trait::async_trait;
 use data_engine_expressions::PipelineExpression;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
+use datafusion::physical_plan::common::collect;
+use datafusion::physical_plan::streaming::PartitionStream;
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::planner::PipelinePlanner;
 use crate::pipeline::state::ExecutionState;
+use crate::table::RecordBatchPartitionStream;
 
 mod apply_attrs;
 mod assign;
@@ -76,6 +82,93 @@ pub trait PipelineStage {
 }
 
 type BoxedPipelineStage = Box<dyn PipelineStage>;
+
+/// Implementation of pipeline that executes a datafusion `ExecutionPlan` on the record batch
+/// associated with the payload type
+pub struct DataFusionPipelineStage {
+    /// The payload in the OtapArrowRecords this stage reads from and writes to.
+    payload_type: ArrowPayloadType,
+
+    /// Input source for the execution plan. Updated with new data before each execution
+    /// to inject the current batch for the payload type into DataFusion's streaming model.
+    record_batch_stream: Arc<RecordBatchPartitionStream>,
+
+    /// The DataFusion query plan to execute. Reads from record_batch_stream and produces
+    /// the transformed output batch.
+    execution_plan: Arc<dyn ExecutionPlan>,
+}
+
+#[async_trait(?Send)]
+impl PipelineStage for DataFusionPipelineStage {
+    async fn execute(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        _session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        _execution_options: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        let rb = match otap_batch.get(self.payload_type) {
+            Some(rb) => rb,
+            None => {
+                // TODO eventually we'll need to handle when an optional RecordBatch is no longer
+                // present in the OTAP batch. How this is handled depends on the type of operation.
+                // For example, if we're filtering then no action is required because all the
+                // records have already been filtered out. By contrast, if we're inserting an
+                // attribute we may need to create a new empty attributes RecordBatch
+                return Err(Error::NotYetSupportedError {
+                    message: "missing RecordBatch for payload type".into(),
+                });
+            }
+        };
+
+        // validate that the schema hasn't changed
+        if rb.schema_ref() != self.record_batch_stream.schema() {
+            // TODO we may need to make slight adjustments to the plan in cases where the order of
+            // the columns have changed, the presence of optional columns has changed, or if some
+            // columns have changed types.
+            //
+            // How we'll handle this depends on the nature of the schema change, and the query plan.
+            // For example if columns are just changing order, we could add a `ProjectionExec`.
+            // By contrast if we're filtering on attributes that are no longer present, we could
+            // possibly optimize the query plan into a simple [`EmptyExec`].
+            return Err(Error::NotYetSupportedError {
+                message: "adapting plan for RecordBatch schema change".into(),
+            });
+        }
+
+        // update the record batch stream to produce the current batch
+        self.record_batch_stream.update_batch(rb.clone());
+
+        // execute the physical plan
+        let stream = execute_stream(self.execution_plan.clone(), task_context)?;
+        let batches = collect(stream).await?;
+
+        // update the OTAP batch
+        match batches.len() {
+            0 => {
+                // TODO: handle this properly. This would happen if say, a filtering query returns
+                // no records. The logic we should use is:
+                // - for non-root payload type to `None` in `OtapArrowRecords` and also maybe drop
+                //   the ID column on the parent record batch.
+                // - for root payload type, we would just return an empty OtapArrowRecords
+                return Err(Error::NotYetSupportedError {
+                    message: "queries returning empty result set".into(),
+                });
+            }
+            1 => {
+                let new_rb = batches.into_iter().next().expect("batches not empty");
+                otap_batch.set(self.payload_type, new_rb)
+            }
+            _ => {
+                let new_rb = concat_batches(batches[0].schema_ref(), &batches)?;
+                otap_batch.set(self.payload_type, new_rb)
+            }
+        };
+
+        Ok(otap_batch)
+    }
+}
 
 /// A compiled pipeline ready for execution. Contains all the state needed for execution
 /// and adapting the pipeline between OTAP batches
