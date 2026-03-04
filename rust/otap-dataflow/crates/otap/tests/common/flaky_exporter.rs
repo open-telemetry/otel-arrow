@@ -186,13 +186,16 @@ impl Exporter<OtapPdata> for FlakyExporter {
                         .map(|f| f.load(Ordering::SeqCst))
                         .unwrap_or(false);
 
+                    // The counters are used by tests for shutdown triggers,
+                    // so we need to ensure the the ACK/NACK is queued before observers
+                    // see the counters change.
                     if should_ack {
-                        // ACK mode: count and acknowledge
+                        // ACK mode: acknowledge first, then count.
                         let items = data.num_items() as u64;
+                        effect_handler.notify_ack(AckMsg::new(data)).await?;
                         if let Some(ref counter) = self.counter {
                             let _ = counter.fetch_add(items, Ordering::Relaxed);
                         }
-                        effect_handler.notify_ack(AckMsg::new(data)).await?;
                     } else {
                         // NACK mode: check if permanent or transient
                         let is_permanent = self
@@ -202,22 +205,22 @@ impl Exporter<OtapPdata> for FlakyExporter {
                             .unwrap_or(false);
 
                         if is_permanent {
-                            if let Some(ref pc) = self.permanent_nack_count {
-                                let _ = pc.fetch_add(1, Ordering::Relaxed);
-                            }
                             effect_handler
                                 .notify_nack(NackMsg::new_permanent(
                                     "simulated permanent failure",
                                     data,
                                 ))
                                 .await?;
-                        } else {
-                            if let Some(ref nack_count) = self.nack_count {
-                                let _ = nack_count.fetch_add(1, Ordering::Relaxed);
+                            if let Some(ref pc) = self.permanent_nack_count {
+                                let _ = pc.fetch_add(1, Ordering::Release);
                             }
+                        } else {
                             effect_handler
                                 .notify_nack(NackMsg::new("simulated transient failure", data))
                                 .await?;
+                            if let Some(ref nack_count) = self.nack_count {
+                                let _ = nack_count.fetch_add(1, Ordering::Release);
+                            }
                         }
                     }
                 }

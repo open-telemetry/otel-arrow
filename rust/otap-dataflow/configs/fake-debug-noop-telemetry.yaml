@@ -18,6 +18,7 @@ engine:
           description: "Count of logs produced"
     resource:
       service.name: "fake-debug-noop-service"
+      service.instance.id: "${env:STATEFULSET_ORDINAL:-unknown}"
 groups:
   default:
     pipelines:
