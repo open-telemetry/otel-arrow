@@ -31,7 +31,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
 interpreted as described in
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
-See [Appendix A: Glossary](#appendix-ashould-glossary) for terminology and
+See [Appendix A: Glossary](#appendix-a-glossary) for terminology and
 [Appendix B: References](#appendix-b-references) for reference material.
 
 ---
