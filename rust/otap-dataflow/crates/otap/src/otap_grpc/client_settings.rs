@@ -264,7 +264,7 @@ impl GrpcClientSettings {
         proxy: Arc<ProxyConfig>,
     ) -> impl tower::Service<
         http::Uri,
-        Response = TokioIo<tokio::net::TcpStream>,
+        Response = TokioIo<crate::otap_grpc::proxy::ProxyTcpStream>,
         Error = io::Error,
         Future = impl Send + 'static,
     > + Send

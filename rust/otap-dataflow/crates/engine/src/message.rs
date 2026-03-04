@@ -228,6 +228,24 @@ impl<PData> MessageChannel<PData> {
     /// Returns a [`RecvError`] if both channels are closed, or if the
     /// shutdown deadline has passed.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
+        self.recv_when(true).await
+    }
+
+    /// Like [`recv()`](Self::recv), but with an `accept_pdata` guard.
+    ///
+    /// When `accept_pdata` is `false`, only control messages are
+    /// returned. Pipeline data stays in the channel, providing
+    /// natural backpressure to upstream nodes.
+    ///
+    /// During shutdown draining the guard is ignored — pdata is
+    /// always drained until the deadline, regardless of
+    /// `accept_pdata`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RecvError`] if both channels are closed, or if the
+    /// shutdown deadline has passed.
+    pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
         let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
 
         loop {
@@ -236,13 +254,38 @@ impl<PData> MessageChannel<PData> {
                 return Err(RecvError::Closed);
             }
 
+            // When pdata is guarded (!accept_pdata), detect a closed pdata
+            // channel eagerly so we don't block forever on control-only select.
+            // We only probe when the buffer is empty — try_recv on an empty
+            // channel distinguishes Closed from Empty without consuming data.
+            if !accept_pdata
+                && self
+                    .pdata_rx
+                    .as_ref()
+                    .expect("pdata_rx must exist")
+                    .is_empty()
+            {
+                if let Err(RecvError::Closed) = self
+                    .pdata_rx
+                    .as_mut()
+                    .expect("pdata_rx must exist")
+                    .try_recv()
+                {
+                    self.shutdown();
+                    return Ok(Message::Control(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_secs(1)),
+                        reason: "pdata channel closed".to_owned(),
+                    }));
+                }
+            }
+
             // Draining mode: Shutdown pending
             if let Some(dl) = self.shutting_down_deadline {
                 // If shutdown pending and no pdata left, return Shutdown immediately
                 if self
                     .pdata_rx
                     .as_ref()
-                    .expect("pdata_rs must exist")
+                    .expect("pdata_rx must exist")
                     .is_empty()
                 {
                     let shutdown = self
@@ -310,8 +353,8 @@ impl<PData> MessageChannel<PData> {
                     Err(e)  => return Err(e),
                 },
 
-                // B) Then pdata
-                pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
+                // B) Then pdata (guarded by accept_pdata)
+                pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if accept_pdata => {
                     match pdata {
                         Ok(pdata) => {
                             return Ok(Message::PData(pdata));
