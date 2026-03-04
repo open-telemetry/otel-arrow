@@ -285,7 +285,7 @@ impl<PData> MessageChannel<PData> {
                 if self
                     .pdata_rx
                     .as_ref()
-                    .expect("pdata_rs must exist")
+                    .expect("pdata_rx must exist")
                     .is_empty()
                 {
                     let shutdown = self
