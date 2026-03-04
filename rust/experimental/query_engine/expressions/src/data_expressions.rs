@@ -366,13 +366,17 @@ pub enum OutputExpression {
     NamedSink(StringScalarExpression),
 }
 
+/// Nested data expression represents a sequence of data transformations that can be applied to a
+/// portion of the incoming data. For example, if some element being handled by a data expression
+/// has list of nested objects, this expression can be used to express a transformation to the list
 #[derive(Clone, Debug, PartialEq)]
 pub struct NestedDataExpression {
     query_location: QueryLocation,
 
+    /// steps to process the nested data
     children: Vec<DataExpression>,
 
-    // TODO need to add this to fmt_with_indent
+    // selector of the input to the nested data pipeline
     target: Option<SourceScalarExpression>,
 }
 
@@ -423,6 +427,16 @@ impl Expression for NestedDataExpression {
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Nested:")?;
+        match &self.target {
+            Some(target) => {
+                writeln!(f, "{indent}├── Target:")?;
+                write!(f, "{indent}|   └── ")?;
+                target.fmt_with_indent(f, &format!("|{indent}        "))?
+            }
+            None => {
+                writeln!(f, "{indent}├── Target: None")?;
+            }
+        }
         if self.children.is_empty() {
             writeln!(f, "{indent}└── Children: []")?;
         } else {
@@ -512,6 +526,43 @@ mod test {
         assert_eq!(
             output,
             "Nested:
+├── Target: None
+└── Children:
+    ├── Discard
+    │   └── Predicate:
+    │       └── EqualTo
+    │           ├── Left(Scalar): Integer: 1
+    │           └── Right(Scalar): Integer: 2
+    └── Discard
+        └── Predicate:
+            └── EqualTo
+                ├── Left(Scalar): Integer: 1
+                └── Right(Scalar): Integer: 2\n"
+        );
+
+        // test it formats properly with multiple children
+        let expr = DataExpression::Nested(
+            NestedDataExpression::new(QueryLocation::new_fake())
+                .with_children(children.clone())
+                .with_target(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "attributes",
+                        )),
+                    )]),
+                )),
+        );
+        let output = format!("{}", DisplayWrapper(&expr, ""));
+
+        assert_eq!(
+            output,
+            "Nested:
+├── Target:
+|   └── Source
+|        └── Accessor: 
+|            └── String: \"attributes\"
 └── Children:
     ├── Discard
     │   └── Predicate:
@@ -535,6 +586,7 @@ mod test {
         assert_eq!(
             output,
             "Nested:
+├── Target: None
 └── Children:
     └── Discard
         └── Predicate:
@@ -547,6 +599,6 @@ mod test {
         let expr = DataExpression::Nested(NestedDataExpression::new(QueryLocation::new_fake()));
         let output = format!("{}", DisplayWrapper(&expr, ""));
 
-        assert_eq!(output, "Nested:\n└── Children: []\n",)
+        assert_eq!(output, "Nested:\n├── Target: None\n└── Children: []\n",)
     }
 }
