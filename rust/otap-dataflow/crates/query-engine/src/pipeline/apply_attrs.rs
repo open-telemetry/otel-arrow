@@ -356,6 +356,40 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_invalid_apply_targets_are_planning_errors() {
+        let bad_targets = ["attributes.attrs.attrs", "resource.name", "severity_text"];
+
+        for bad_target in bad_targets {
+            let query = format!(
+                "logs | apply {bad_target} {{
+                    project-rename attributes[\"x\"] = attributes[\"y\"]
+                }}"
+            );
+            let pipeline_expr = OplParser::parse(&query).unwrap().pipeline;
+            let planner = PipelinePlanner::new();
+
+            let session_ctx = Pipeline::create_session_context();
+            let otap_batch = OtapArrowRecords::Logs(Logs::default());
+            let result = planner.plan_stages(&pipeline_expr, &session_ctx, &otap_batch);
+
+            match result {
+                Err(err) => {
+                    let err_msg = err.to_string();
+
+                    assert!(
+                        err_msg.contains("Invalid source for nested apply pipeline to attributes"),
+                        "unexpected error: {}",
+                        err_msg
+                    );
+                }
+                Ok(_) => {
+                    panic!("expected OK")
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_pipeline_works_correctly_on_empty_batch() {
         let query = r#"
