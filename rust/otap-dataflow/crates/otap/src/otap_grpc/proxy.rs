@@ -38,10 +38,14 @@ use std::borrow::Cow;
 use std::env;
 use std::io;
 use std::net::IpAddr;
+#[cfg(feature = "experimental-tls")]
+use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+#[cfg(feature = "experimental-tls")]
+use tokio::sync::OnceCell;
 #[cfg(feature = "experimental-tls")]
 use tokio_rustls::TlsConnector;
 
@@ -130,7 +134,11 @@ pub enum ProxyError {
 
     /// TCP connection to proxy failed
     #[error("failed to connect to proxy: {0}")]
-    ProxyConnectionFailed(#[from] io::Error),
+    ProxyConnectionFailed(io::Error),
+
+    /// TCP connection to target failed (when no proxy is configured)
+    #[error("failed to connect to target: {0}")]
+    TargetConnectionFailed(io::Error),
 
     /// HTTP CONNECT request failed
     #[error("HTTP CONNECT failed with status {status}: {message}")]
@@ -529,6 +537,42 @@ fn tls_server_name_for_proxy(
 }
 
 #[cfg(feature = "experimental-tls")]
+async fn read_proxy_tls_file(path: &Path, field: &str) -> Result<Vec<u8>, ProxyError> {
+    read_file_with_limit_async(path).await.map_err(|e| {
+        ProxyError::InvalidProxyUrl(format!(
+            "failed to read proxy.tls.{field} from {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(feature = "experimental-tls")]
+async fn load_proxy_system_root_certs() -> Result<Vec<CertificateDer<'static>>, ProxyError> {
+    // Cache system roots for the process lifetime to avoid repeated blocking OS/keychain reads.
+    static SYSTEM_ROOTS: OnceCell<Vec<CertificateDer<'static>>> = OnceCell::const_new();
+
+    let roots = SYSTEM_ROOTS
+        .get_or_try_init(|| async {
+            let native = tokio::task::spawn_blocking(load_native_certs)
+                .await
+                .map_err(|e| {
+                    ProxyError::InvalidProxyUrl(format!(
+                        "failed to load system CA certificates (join error): {e}"
+                    ))
+                })?;
+
+            for error in native.errors {
+                otel_warn!("otap_grpc_exporter.proxy.tls.native_cert.load_error", error = ?error);
+            }
+
+            Ok::<Vec<CertificateDer<'static>>, ProxyError>(native.certs)
+        })
+        .await?;
+
+    Ok(roots.clone())
+}
+
+#[cfg(feature = "experimental-tls")]
 async fn build_proxy_tls_connector(
     proxy_host: &str,
     tls: Option<&TlsClientConfig>,
@@ -561,11 +605,7 @@ async fn build_proxy_tls_connector(
         .unwrap_or(true);
 
     if include_system {
-        let native = load_native_certs();
-        for error in native.errors {
-            otel_warn!("otap_grpc_exporter.proxy.tls.native_cert.load_error", error = ?error);
-        }
-        for cert in native.certs {
+        for cert in load_proxy_system_root_certs().await? {
             if let Err(err) = roots.add(cert) {
                 otel_warn!(
                     "otap_grpc_exporter.proxy.tls.native_cert.add_error",
@@ -577,9 +617,7 @@ async fn build_proxy_tls_connector(
 
     if let Some(cfg) = tls {
         if let Some(ca_file) = &cfg.ca_file {
-            let ca_pem = read_file_with_limit_async(ca_file)
-                .await
-                .map_err(ProxyError::ProxyConnectionFailed)?;
+            let ca_pem = read_proxy_tls_file(ca_file.as_path(), "ca_file").await?;
             for cert in CertificateDer::pem_slice_iter(&ca_pem) {
                 let cert = cert.map_err(|e| {
                     ProxyError::InvalidProxyUrl(format!(
@@ -640,9 +678,7 @@ async fn build_proxy_tls_connector(
             }
 
             let cert_pem = match (&cfg.config.cert_file, &cfg.config.cert_pem) {
-                (Some(path), _) => read_file_with_limit_async(path)
-                    .await
-                    .map_err(ProxyError::ProxyConnectionFailed)?,
+                (Some(path), _) => read_proxy_tls_file(path.as_path(), "cert_file").await?,
                 (None, Some(pem)) => pem.as_bytes().to_vec(),
                 (None, None) => {
                     return Err(ProxyError::InvalidProxyUrl(
@@ -652,9 +688,7 @@ async fn build_proxy_tls_connector(
             };
 
             let key_pem = match (&cfg.config.key_file, &cfg.config.key_pem) {
-                (Some(path), _) => read_file_with_limit_async(path)
-                    .await
-                    .map_err(ProxyError::ProxyConnectionFailed)?,
+                (Some(path), _) => read_proxy_tls_file(path.as_path(), "key_file").await?,
                 (None, Some(pem)) => pem.as_bytes().to_vec(),
                 (None, None) => {
                     return Err(ProxyError::InvalidProxyUrl(
@@ -710,7 +744,9 @@ async fn http_connect_tunnel(
     target_port: u16,
 ) -> Result<TcpStream, ProxyError> {
     // Connect to the proxy
-    let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
+    let stream = TcpStream::connect((proxy_host, proxy_port))
+        .await
+        .map_err(ProxyError::ProxyConnectionFailed)?;
 
     http_connect_tunnel_on_stream(stream, target_host, target_port, None).await
 }
@@ -756,12 +792,20 @@ where
         has_auth = proxy_auth.is_some()
     );
 
-    stream.write_all(connect_request.as_bytes()).await?;
+    stream
+        .write_all(connect_request.as_bytes())
+        .await
+        .map_err(ProxyError::ProxyConnectionFailed)?;
 
     // Read the response status line
     let mut buf_reader = BufReader::new(stream);
     let mut status_line = String::new();
-    if buf_reader.read_line(&mut status_line).await? == 0 {
+    if buf_reader
+        .read_line(&mut status_line)
+        .await
+        .map_err(ProxyError::ProxyConnectionFailed)?
+        == 0
+    {
         return Err(ProxyError::InvalidResponse(
             "unexpected EOF while reading status line".to_string(),
         ));
@@ -797,7 +841,10 @@ where
     loop {
         let mut header_line = String::new();
         let mut limited_reader = (&mut buf_reader).take(MAX_HEADER_SIZE);
-        let bytes_read = limited_reader.read_line(&mut header_line).await?;
+        let bytes_read = limited_reader
+            .read_line(&mut header_line)
+            .await
+            .map_err(ProxyError::ProxyConnectionFailed)?;
 
         if bytes_read == 0 {
             return Err(ProxyError::InvalidResponse(
@@ -917,7 +964,8 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
             tcp_keepalive,
             tcp_keepalive_interval,
             tcp_keepalive_retries,
-        )?;
+        )
+        .map_err(ProxyError::ProxyConnectionFailed)?;
 
         let stream = match proxy_scheme {
             ProxyScheme::Http => {
@@ -941,14 +989,17 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
 
         Ok(Box::new(stream))
     } else {
-        let stream = TcpStream::connect((host, port)).await?;
+        let stream = TcpStream::connect((host, port))
+            .await
+            .map_err(ProxyError::TargetConnectionFailed)?;
         let stream = apply_socket_options(
             stream,
             tcp_nodelay,
             tcp_keepalive,
             tcp_keepalive_interval,
             tcp_keepalive_retries,
-        )?;
+        )
+        .map_err(ProxyError::TargetConnectionFailed)?;
         Ok(Box::new(stream))
     }
 }
@@ -1262,6 +1313,31 @@ mod tests {
 
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
+    async fn test_build_proxy_tls_connector_reports_ca_file_read_error_as_config_error() {
+        use std::path::PathBuf;
+
+        let tls = TlsClientConfig {
+            ca_file: Some(PathBuf::from(
+                "/tmp/otap-dataflow-missing-proxy-ca-file.pem",
+            )),
+            include_system_ca_certs_pool: Some(false),
+            ..TlsClientConfig::default()
+        };
+        let err = match build_proxy_tls_connector("proxy.example.com", Some(&tls)).await {
+            Ok(_) => panic!("expected proxy TLS config file read error"),
+            Err(err) => err,
+        };
+        match err {
+            ProxyError::InvalidProxyUrl(msg) => {
+                assert!(msg.contains("failed to read proxy.tls.ca_file"));
+                assert!(msg.contains("/tmp/otap-dataflow-missing-proxy-ca-file.pem"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_partial_mtls_config() {
         use otap_df_config::tls::TlsConfig;
         use otap_test_tls_certs::generate_ca;
@@ -1343,6 +1419,32 @@ mod tests {
         }
 
         proxy_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_connect_tcp_stream_with_proxy_config_direct_connect_error_maps_to_target() {
+        // Force immediate DNS resolution failure in direct-connect (no proxy) path.
+        let target_uri: Uri = "http://nonexistent.invalid:4317".parse().unwrap();
+        let proxy_config = ProxyConfig::default();
+
+        let err = match connect_tcp_stream_with_proxy_config(
+            &target_uri,
+            &proxy_config,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("expected direct target connect failure"),
+            Err(err) => err,
+        };
+
+        match err {
+            ProxyError::TargetConnectionFailed(_) => {}
+            other => panic!("expected TargetConnectionFailed, got {other:?}"),
+        }
     }
 
     #[test]

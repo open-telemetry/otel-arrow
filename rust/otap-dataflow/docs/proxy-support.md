@@ -53,6 +53,9 @@ bi-directional tunnel through the proxy:
 If the proxy URL is `https://...`, the exporter first establishes TLS to the
 proxy, then sends CONNECT over that TLS channel:
 
+> Note: `https://` proxy transport requires building with the
+> `experimental-tls` feature.
+
 ```text
 +-----------+                                          +-----------+
 |  Exporter | --- TCP + TLS handshake to proxy ----->  |   Proxy   |
@@ -130,12 +133,22 @@ export ALL_PROXY=http://proxy.corp.com:8080
 export NO_PROXY=localhost,127.0.0.1,*.internal,192.168.0.0/16
 ```
 
+`HTTPS_PROXY` (and `proxy.https_proxy` in YAML) may be either:
+- `http://...` for plaintext exporter-to-proxy transport
+- `https://...` for TLS exporter-to-proxy transport (requires `experimental-tls`)
+
 **Note**: Variable names are case-insensitive. Both `HTTP_PROXY` and
 `http_proxy` are recognized.
 
 ### YAML Configuration
 
 Explicit proxy configuration in YAML overrides environment variables:
+
+`proxy.tls` and `https://` proxy URLs require building with the
+`experimental-tls` feature.
+`proxy.tls` is only used for `https://` proxy URLs; with `http://` proxy URLs it
+is ignored. In non-`experimental-tls` builds, `proxy.tls` is an unknown field
+and configuration deserialization fails (due to `deny_unknown_fields`).
 
 ```yaml
 grpc_client:
