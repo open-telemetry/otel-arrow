@@ -1,6 +1,5 @@
 # OpenTelemetry Arrow Protocol (OTAP) Formal Specification
 
-**Version:** 0.2
 **Status:** Draft
 
 ## Table of Contents
@@ -65,19 +64,20 @@ The allowed Payload Types for each signal can be found in section 3.
 
 OTAP leverages the the
 [Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html#arrow-columnar-format)
-to transmit the payloads described in the previous section. The Arrow Columnar 
+to transmit the payloads described in the previous section. The Arrow Columnar
 Format defines a Serialization and Interprocess Communication (IPC) protocol for
 exchanging data as "Record Batches".
 
-Record Batches have a columnar data structure that can be exchanged and 
+Record Batches have a columnar data structure that can be exchanged and
 processed without deserializing to a language specific construct.
 
-Columnar data has advantages such as being beneficial for compression and 
+Columnar data has advantages such as being beneficial for compression and
 friendly to operate on with SIMD instruction sets.
 
 ## 3. Transport and Service Definitions
 
-OTAP uses gRPC for its transport mechanism and defines data exchange as three signal-specific
+OTAP uses gRPC for its transport mechanism and defines data exchange as three 
+signal-specific
 [service definitions](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
 
 ```protobuf
@@ -129,10 +129,6 @@ message BatchArrowRecords {
 The `batch_id` is an identifier used for the server to ack or nack successful 
 receipt of the batch and MUST be unique within a gRPC stream.
 
-TODO: Should we require batch_ids be strictly increasing? Is there a reason we'd 
-like to know which messages came first/second from a client? What if a schema 
-reset occurs and then we get a nack and need to re-transmit?
-
 The `headers` field can contain additional application level metadata and MUST 
 (TODO: MAY?) be HPACK compressed if present.
 
@@ -173,8 +169,7 @@ the tables defined in this section.
 `arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS,
 or UNIVARIATE_METRICS) and SHOULD omit payloads with 0 rows.
 
-A `type` MUST NOT be sent as `UNKNOWN` (value 0) // TODO: What's the practical 
-use of this value?
+A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
 #### 3.1.1 Logs Allowed Payload Types
 
@@ -542,7 +537,7 @@ properties for the `resource` column's `id` field.
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | No | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
+| start_time_unix_nano | Timestamp(Nanosecond) | — | No | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | count | UInt64 | — | Yes | No | — | — | Count of observations |
 | sum | Float64 | — | Yes | No | — | — | Sum of observations |
@@ -637,9 +632,6 @@ In OTAP this is implemented via multiple "value" columns either `str`, `int`,
 discriminant and note that multiple AnyValue types can map to the `bytes` 
 column. See the below table for the exact mappings.
 
-// TODO: I see some mention of Arrow Sparse and Dense Unions in the Go code,
-is that out of date or am I missing some details there?
-
 This technique is used in all Payload Types that utilize Attribute16 and 
 Attribute32 schemas as well as the LOGS `body` field.
 
@@ -669,8 +661,11 @@ In the case of the LOGS payload, note that the AnyValue is contained in the
 `body` column which is also nullable. In this case a null entry is semantically
 equivalent to a `type` of `0`.
 
-If the column for the Active Field is not present, or the `type` falls outside 
-of the allowed range, then the value for the key is also interpreted as empty.
+If the column for the Active Field is not present, then the value for the key 
+is also interpreted as empty. 
+
+If the `type` falls outside of the allowed range (0-7), then the data is
+considered invalid and SHOULD be rejected.
 
 ---
 
@@ -851,50 +846,10 @@ SPAN_EVENTS uses a quasidelta encoding with just its `name` column.
 
 ## 7. Error Handling
 
-Robust error handling is critical for reliable telemetry collection. OTAP uses 
-gRPC status codes to signal different error conditions, allowing clients to
-distinguish between transient failures (that should be retried) and permanent
-failures (that indicate bugs or misconfigurations).
+### 7.1 Status Codes
 
-Error handling in OTAP operates at two levels:
-
-1. **BAR-level errors**: Reported via BatchStatus messages with non-OK status
-  codes
-2. **Stream-level errors**: Reported by closing the gRPC stream with an error
-  status
-
-Understanding which errors are retryable versus non-retryable is essential for
-implementing correct client behavior. Retrying non-retryable errors wastes
-resources, while failing to retry retryable errors can lead to data loss.
-
-### 7.1 Error Categories
-
-#### 7.1.1 Retryable Errors
-
-Errors that MAY resolve with retry:
-
-- **UNAVAILABLE**: Service temporarily unavailable
-- **RESOURCE_EXHAUSTED**: Server temporarily overloaded
-- **DEADLINE_EXCEEDED**: Request timeout, may succeed if retried
-- **ABORTED**: Operation aborted, typically safe to retry
-- **CANCELED**: Operation canceled by client
-
-**Client behavior**: Clients SHOULD implement exponential backoff retry for
-these errors.
-
-#### 7.1.2 Non-Retryable Errors
-
-Errors indicating client problems or invalid data:
-
-- **INVALID_ARGUMENT**: Malformed data or protocol violation
-- **UNAUTHENTICATED**: Missing or invalid authentication
-- **PERMISSION_DENIED**: Insufficient permissions
-- **INTERNAL**: Internal server error (typically not recoverable by retry)
-
-**Client behavior**: Clients SHOULD NOT retry these errors without corrective
-action.
-
-### 7.2 Status Codes
+Error codes are returned as a part of BatchStatus messages and map to their
+[gRPC counterparts](https://grpc.io/docs/guides/status-codes/).
 
 ```protobuf
 enum StatusCode {
@@ -911,194 +866,42 @@ enum StatusCode {
 }
 ```
 
-These match gRPC status codes for consistency.
+---
 
-### 7.3 Error Handling Rules
+## Appendix A: Glossary
 
-// TODO: We probably need to triage all of these
-
-#### 7.3.1 Schema Errors
-
-// TODO
-
-#### 7.3.2 Data Errors
-
-**Dictionary key overflow**:
-- **Cause**: Dictionary key exceeds maximum for key type
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST perform schema reset with larger key type
-
-**Unknown field**:
-- **Cause**: RecordBatch contains field not in schema
-- **Action**: Server SHOULD ignore unknown fields and continue processing
-
-**Unrecognized payload type**:
-- **Cause**: ArrowPayloadType is unknown or unsupported
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST use valid payload type
-
-**Unrecognized attribute type**:
-- **Cause**: Attribute `type` field has unknown value
-- **Action**: Server SHOULD skip unknown attribute types and continue processing
-
-#### 7.3.3 Resource Errors
-
-**Memory limit exceeded**:
-- **Cause**: Server memory allocator limit reached
-- **Status**: RESOURCE_EXHAUSTED
-- **Action**: Client SHOULD retry with backoff or reduce BAR size
-
-**Empty BAR**:
-- **Cause**: BatchArrowRecords contains no payloads
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST send non-empty BARs
-
-#### 7.3.4 Stream Errors
-
-**Schema reset without schema message**:
-- **Cause**: New schema_id used without sending Schema message first
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST send Schema message when schema_id changes
-
-**RecordBatch before schema**:
-- **Cause**: RecordBatch sent before Schema message for new schema_id
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST send Schema message first
-
-**Dictionary used before definition**:
-- **Cause**: RecordBatch references dictionary not yet sent
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST send DictionaryBatch before referencing in RecordBatch
+- **Apache Arrow IPC Format**:
+  https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
+- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message
+- **Client/Producer**: The sender of telemetry data
+- **gRPC**: https://grpc.io/
+- **Items**: The item type of a Signal e.g. Log, Data Point(s), or Span
+- **OTLP Specification**: OpenTelemetry Protocol specification
+- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
+- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to
+  a distinct table in the OTAP data model
+- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
+- **Schema Reset**: The act of changing the Arrow schema for a Payload Type
+- **Server/Consumer**: The receiver of telemetry data
+- **Signal**: One of Logs, Metrics, or Traces
 
 ---
 
-### 7.5 Interoperability
+## Appendix B: References
 
-// TODO: Forward/backward compatibility
-// TODO: Capability negotiation?
-
----
-
-## Appendix A: Default Encodings Summary
-
-When transport optimization is **enabled**, the following defaults are recommended:
-
-| Payload Type | Default Optimizations |
-|--------------|----------------------|
-| Primary tables (LOGS, SPANS, METRICS) | Delta-encode `id`, `resource.id`, `scope.id` |
-| Attribute tables | Quasi-delta encode `parent_id`, dictionary-encode `key` and `str` |
-| Data point tables | Delta-encode `id` and `parent_id` |
-| Event/Link tables | Delta-encode `id`, columnar quasi-delta encode `parent_id` |
-| Exemplar tables | Delta-encode `id`, columnar quasi-delta encode `parent_id` |
-
-When transport optimization is **disabled**:
-- Use **PLAIN** encoding for all fields
-- Dictionary encoding MAY still be applied for efficiency
+1. Apache Arrow IPC Format: https://arrow.apache.org/docs/format/Columnar.html
+2. OTLP Specification: https://opentelemetry.io/docs/specs/otlp/
+3. gRPC Status Codes: https://grpc.io/docs/guides/status-codes/
+4. OTEP 0156: https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md
+5. Reference Implementation (Go):
+   [Producer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/producer.go),
+   [Consumer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/consumer.go)
+6. Rust Implementation: otap-dataflow/crates/pdata
+7. RFC 2119: https://www.rfc-editor.org/rfc/rfc2119
 
 ---
 
-## Appendix B: Example Flows
-
-### B.1 First BAR (Schema Initialization)
-
-**Client sends**:
-```
-BatchArrowRecords {
-  batch_id: 0
-  arrow_payloads: [
-    {
-      schema_id: "id:U16,time_unix_nano:Tns,body_str:Str"
-      type: LOGS
-      record: <Schema message><RecordBatch message>
-    },
-    {
-      schema_id: "parent_id:U16,key:Str,type:U8,str:Dic<U16,Str>,..."
-      type: LOG_ATTRS
-      record: <Schema message><DictionaryBatch message><RecordBatch message>
-    }
-  ]
-}
-```
-
-**Server responds**:
-```
-BatchStatus {
-  batch_id: 0
-  status_code: OK
-  status_message: ""
-}
-```
-
-### B.2 Subsequent BAR (Delta Dictionary)
-
-**Client sends**:
-```
-BatchArrowRecords {
-  batch_id: 1
-  arrow_payloads: [
-    {
-      schema_id: "id:U16,time_unix_nano:Tns,body_str:Str"  // same as before
-      type: LOGS
-      record: <RecordBatch message>  // no Schema needed
-    },
-    {
-      schema_id: "parent_id:U16,key:Str,type:U8,str:Dic<U16,Str>,..."  // same as before
-      type: LOG_ATTRS
-      record: <DictionaryBatch message (delta)><RecordBatch message>  // delta dictionary
-    }
-  ]
-}
-```
-
-### B.3 Schema Reset (Dictionary Overflow)
-
-**Client sends**:
-```
-BatchArrowRecords {
-  batch_id: 10
-  arrow_payloads: [
-    {
-      schema_id: "id:U16,time_unix_nano:Tns,body_str:Str"  // same
-      type: LOGS
-      record: <RecordBatch message>
-    },
-    {
-      schema_id: "parent_id:U16,key:Str,type:U8,str:Dic<U32,Str>,..."  // NEW: U32 dictionary
-      type: LOG_ATTRS
-      record: <Schema message><DictionaryBatch message><RecordBatch message>  // full reset
-    }
-  ]
-}
-```
-
----
-
-## Appendix C: Implementation Notes
-
-### C.1 Performance Considerations
-
-1. **BAR sizing**: Larger BARs improve compression but increase memory usage
-2. **Dictionary encoding**: Most effective for low-to-medium cardinality 
-   (10-10,000 unique values)
-3. **Transport encoding**: Most effective when data has strong sequential
-   patterns
-4. **Memory pooling**: Reuse Arrow allocators and buffers across BARs
-
----
-
-## Appendix D: Changes from OTLP
-
-Major differences from OTLP:
-
-1. **Format**: Columnar (Arrow) vs row-based (Protobuf)
-3. **Schema evolution**: Dynamic schemas with schema_id vs fixed protobuf schema
-4. **Dictionaries**: Stateful dictionary encoding vs no dictionary support
-5. **Normalization**: Related tables vs nested messages
-6. **Transport optimization**: Built-in encodings vs no optimization
-
----
-
-## Appendix E: Load Balancing
+## Appendix C: Load Balancing
 
 OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges 
 that do not arise with stateless unary RPCs. Because gRPC multiplexes streams
@@ -1112,38 +915,7 @@ server-side), and recommended baseline configurations, see
 
 ---
 
-## Appendix F: Glossary
-
-- **Apache Arrow IPC Format**:
-  https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
-- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message
-- **Client/Producer**: The sender of telemetry data
-- **gRPC**: https://grpc.io/
-- **Items**: The item type of a Signal e.g. Log, Data Point(s), or Span
-- **OTLP Specification**: OpenTelemetry Protocol specification
-- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
-- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table in
-  the OTAP data model
-- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
-- **Schema Reset**: The act of changing the Arrow schema for a Payload Type
-- **Server/Consumer**: The receiver of telemetry data
-- **Signal**: One of Logs, Metrics, or Traces
-
----
-
-## Appendix G: References
-
-1. Apache Arrow IPC Format: https://arrow.apache.org/docs/format/Columnar.html
-2. OTLP Specification: https://opentelemetry.io/docs/specs/otlp/
-3. gRPC Status Codes: https://grpc.io/docs/guides/status-codes/
-4. OTEP 0156: https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md
-5. Reference Implementation (Go):
-   [Producer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/producer.go),
-   [Consumer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/consumer.go)
-6. Rust Implementation: otap-dataflow/crates/pdata
-7. RFC 2119: https://www.rfc-editor.org/rfc/rfc2119
-
-## Appendix H: Example Schema ID Generation Algorithm
+## Appendix E: Example Schema ID Generation Algorithm
 
 1. Sort fields by name at each nesting level
 2. Generate compact representation:
