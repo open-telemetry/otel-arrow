@@ -175,7 +175,7 @@ A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
 | Payload Type   | Description                 | Parent Payload Type |
 | -------------- | --------------------------- | ------------------- |
-| LOGS           | Core log record data (Root) | —                   |
+| LOGS           | Core log record data (Root) | -                   |
 | LOG_ATTRS      | Log-level attributes        | LOGS                |
 | RESOURCE_ATTRS | Resource attributes         | LOGS                |
 | SCOPE_ATTRS    | Scope attributes            | LOGS                |
@@ -184,7 +184,7 @@ A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
 | Payload Type                    | Description                                               | Parent Payload Type        |
 | ------------------------------- | --------------------------------------------------------- | -------------------------- |
-| UNIVARIATE_METRICS              | Definition of univariate metrics (Root)                   | —                          |
+| UNIVARIATE_METRICS              | Definition of univariate metrics (Root)                   | -                          |
 | NUMBER_DATA_POINTS              | Gauge and sum data points                                 | METRICS                    |
 | SUMMARY_DATA_POINTS             | Summary data points                                       | METRICS                    |
 | HISTOGRAM_DATA_POINTS           | Histogram data points                                     | METRICS                    |
@@ -207,7 +207,7 @@ A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
 | Payload Type     | Description           | Parent Payload Type |
 | ---------------- | --------------------- | ------------------- |
-| SPANS            | Core span data (Root) | —                   |
+| SPANS            | Core span data (Root) | -                   |
 | SPAN_ATTRS       | Span attributes       | SPANS               |
 | SPAN_EVENTS      | Span events           | SPANS               |
 | SPAN_EVENT_ATTRS | Event attributes      | SPAN_EVENTS         |
@@ -396,34 +396,34 @@ properties for the `resource` column's `id` field.
 
 | Name                              | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                       |
 | --------------------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | ------------------------------------------------- |
-| id                                | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Log record identifier (primary key)               |
-| resource                          | Struct                | -                   | Yes      | No       | —                            | —        | Resource information                              |
-| resource.id                       | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                     |
-| resource.schema_url               | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Resource schema URL                               |
-| resource.dropped_attributes_count | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped resource attributes             |
-| scope                             | Struct                | -                   | Yes      | No       | —                            | —        | Instrumentation scope                             |
-| scope.id                          | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPR_ATTRS                        |
-| scope.name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Instrumentation scope name                        |
-| scope.version                     | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Instrumentation scope version                     |
-| scope.dropped_attributes_count    | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped scope attributes                |
-| schema_url                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Log schema URL                                    |
-| time_unix_nano                    | Timestamp(Nanosecond) | —                   | No       | Yes      | —                            | —        | Log timestamp in Unix nanoseconds                 |
-| observed_time_unix_nano           | Timestamp(Nanosecond) | —                   | No       | Yes      | —                            | —        | Observation timestamp in Unix nanoseconds         |
-| trace_id                          | FixedSizeBinary(16)   | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Trace id for correlation                          |
-| span_id                           | FixedSizeBinary(8)    | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Span id for correlation                           |
-| severity_number                   | Int32                 | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Numeric severity level                            |
-| severity_text                     | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Textual severity level                            |
-| event_name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Event name                                        |
+| id                                | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Log record identifier (primary key)               |
+| resource                          | Struct                | -                   | Yes      | No       | -                            | -        | Resource information                              |
+| resource.id                       | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                     |
+| resource.schema_url               | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Resource schema URL                               |
+| resource.dropped_attributes_count | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped resource attributes             |
+| scope                             | Struct                | -                   | Yes      | No       | -                            | -        | Instrumentation scope                             |
+| scope.id                          | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPR_ATTRS                        |
+| scope.name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Instrumentation scope name                        |
+| scope.version                     | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Instrumentation scope version                     |
+| scope.dropped_attributes_count    | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped scope attributes                |
+| schema_url                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Log schema URL                                    |
+| time_unix_nano                    | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Log timestamp in Unix nanoseconds                 |
+| observed_time_unix_nano           | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Observation timestamp in Unix nanoseconds         |
+| trace_id                          | FixedSizeBinary(16)   | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Trace id for correlation                          |
+| span_id                           | FixedSizeBinary(8)    | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Span id for correlation                           |
+| severity_number                   | Int32                 | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Numeric severity level                            |
+| severity_text                     | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Textual severity level                            |
+| event_name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Event name                                        |
 | body                              | Struct                | -                   | Yes      | Yes      | -                            | -        | Log body                                          |
-| body.type                         | UInt8                 | —                   | No       | Yes      | —                            | —        | Body value type (same encoding as attribute type) |
-| body.str                          | Utf8                  | Dict(u8), Dict(u16) | No       | Yes      | —                            | —        | String body (may be empty)                        |
-| body.int                          | Int64                 | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Integer body (when body.type=3)                   |
-| body.double                       | Float64               | —                   | Yes      | No       | —                            | —        | Double body (when body.type=4)                    |
-| body.bool                         | Boolean               | —                   | Yes      | No       | —                            | —        | Boolean body (when body.type=2)                   |
-| body.bytes                        | Binary                | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Bytes body (when body.type=5)                     |
-| body_ser                          | Binary                | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | CBOR-encoded complex body (when body.type=6 or 7) |
-| dropped_attributes_count          | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped log attributes                  |
-| flags                             | UInt32                | —                   | Yes      | No       | —                            | —        | Trace flags                                       |
+| body.type                         | UInt8                 | -                   | No       | Yes      | -                            | -        | Body value type (same encoding as attribute type) |
+| body.str                          | Utf8                  | Dict(u8), Dict(u16) | No       | Yes      | -                            | -        | String body (may be empty)                        |
+| body.int                          | Int64                 | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Integer body (when body.type=3)                   |
+| body.double                       | Float64               | -                   | Yes      | No       | -                            | -        | Double body (when body.type=4)                    |
+| body.bool                         | Boolean               | -                   | Yes      | No       | -                            | -        | Boolean body (when body.type=2)                   |
+| body.bytes                        | Binary                | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Bytes body (when body.type=5)                     |
+| body_ser                          | Binary                | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | CBOR-encoded complex body (when body.type=6 or 7) |
+| dropped_attributes_count          | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped log attributes                  |
+| flags                             | UInt32                | -                   | Yes      | No       | -                            | -        | Trace flags                                       |
 
 ### 5.2 Traces
 
@@ -431,52 +431,52 @@ properties for the `resource` column's `id` field.
 
 | Name                              | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                           |
 | --------------------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | ------------------------------------- |
-| id                                | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Span identifier (primary key)         |
-| resource                          | Struct                | -                   | Yes      | No       | —                            | —        | Resource information                  |
-| resource.id                       | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS         |
-| resource.schema_url               | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Resource schema URL                   |
-| resource.dropped_attributes_count | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped resource attributes |
-| scope                             | Struct                | -                   | Yes      | No       | —                            | —        | Instrumentation scope                 |
-| scope.id                          | UInt16                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS            |
-| scope.name                        | Utf8                  | —                   | Yes      | No       | —                            | —        | Instrumentation scope name            |
-| scope.version                     | Utf8                  | —                   | Yes      | No       | —                            | —        | Instrumentation scope version         |
-| scope.dropped_attributes_count    | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped scope attributes    |
-| schema_url                        | Utf8                  | —                   | Yes      | No       | —                            | —        | Span schema URL                       |
-| start_time_unix_nano              | Timestamp(Nanosecond) | —                   | No       | Yes      | —                            | —        | Span start time in Unix nanoseconds   |
-| duration_time_unix_nano           | Duration(Nanosecond)  | —                   | No       | Yes      | —                            | —        | Span duration in nanoseconds          |
-| trace_id                          | FixedSizeBinary(16)   | —                   | No       | Yes      | —                            | —        | Trace id                              |
-| span_id                           | FixedSizeBinary(8)    | —                   | No       | Yes      | —                            | —        | Span id                               |
-| trace_state                       | Utf8                  | —                   | Yes      | No       | —                            | —        | W3C trace state                       |
-| parent_span_id                    | FixedSizeBinary(8)    | —                   | Yes      | No       | —                            | —        | Parent span id                        |
-| name                              | Utf8                  | —                   | No       | Yes      | —                            | —        | Span name                             |
-| kind                              | Int32                 | —                   | Yes      | No       | —                            | —        | Span kind enum                        |
-| dropped_attributes_count          | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped span attributes     |
-| dropped_events_count              | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped events              |
-| dropped_links_count               | UInt32                | —                   | Yes      | No       | —                            | —        | Number of dropped links               |
+| id                                | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Span identifier (primary key)         |
+| resource                          | Struct                | -                   | Yes      | No       | -                            | -        | Resource information                  |
+| resource.id                       | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS         |
+| resource.schema_url               | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Resource schema URL                   |
+| resource.dropped_attributes_count | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped resource attributes |
+| scope                             | Struct                | -                   | Yes      | No       | -                            | -        | Instrumentation scope                 |
+| scope.id                          | UInt16                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS            |
+| scope.name                        | Utf8                  | -                   | Yes      | No       | -                            | -        | Instrumentation scope name            |
+| scope.version                     | Utf8                  | -                   | Yes      | No       | -                            | -        | Instrumentation scope version         |
+| scope.dropped_attributes_count    | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped scope attributes    |
+| schema_url                        | Utf8                  | -                   | Yes      | No       | -                            | -        | Span schema URL                       |
+| start_time_unix_nano              | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Span start time in Unix nanoseconds   |
+| duration_time_unix_nano           | Duration(Nanosecond)  | -                   | No       | Yes      | -                            | -        | Span duration in nanoseconds          |
+| trace_id                          | FixedSizeBinary(16)   | -                   | No       | Yes      | -                            | -        | Trace id                              |
+| span_id                           | FixedSizeBinary(8)    | -                   | No       | Yes      | -                            | -        | Span id                               |
+| trace_state                       | Utf8                  | -                   | Yes      | No       | -                            | -        | W3C trace state                       |
+| parent_span_id                    | FixedSizeBinary(8)    | -                   | Yes      | No       | -                            | -        | Parent span id                        |
+| name                              | Utf8                  | -                   | No       | Yes      | -                            | -        | Span name                             |
+| kind                              | Int32                 | -                   | Yes      | No       | -                            | -        | Span kind enum                        |
+| dropped_attributes_count          | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped span attributes     |
+| dropped_events_count              | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped events              |
+| dropped_links_count               | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped links               |
 | status                            | Struct                | -                   | Yes      | No       | -                            | -        | Span status                           |
-| status.code                       | Int32                 | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Span status code                      |
-| status.status_message             | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | —                            | —        | Status message                        |
+| status.code                       | Int32                 | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Span status code                      |
+| status.status_message             | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Status message                        |
 
 #### 5.2.2 SPAN_EVENTS
 
 | Name                     | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                                       | Metadata | Description                                         |
 | ------------------------ | --------------------- | ------------------- | -------- | -------- | ------------------------------------------------- | -------- | --------------------------------------------------- |
-| id                       | UInt32                | —                   | Yes      | No       | [DELTA](#642-delta-encoding)                      | encoding | Event identifier (primary key)                      |
-| parent_id                | UInt16                | —                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (`name`) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
-| time_unix_nano           | Timestamp(Nanosecond) | —                   | Yes      | No       | —                                                 | —        | Event timestamp in Unix nanoseconds                 |
-| name                     | Utf8                  | —                   | No       | Yes      | —                                                 | —        | Event name                                          |
-| dropped_attributes_count | UInt32                | —                   | Yes      | No       | —                                                 | —        | Number of dropped event attributes                  |
+| id                       | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding)                      | encoding | Event identifier (primary key)                      |
+| parent_id                | UInt16                | -                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (`name`) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
+| time_unix_nano           | Timestamp(Nanosecond) | -                   | Yes      | No       | -                                                 | -        | Event timestamp in Unix nanoseconds                 |
+| name                     | Utf8                  | -                   | No       | Yes      | -                                                 | -        | Event name                                          |
+| dropped_attributes_count | UInt32                | -                   | Yes      | No       | -                                                 | -        | Number of dropped event attributes                  |
 
 #### 5.2.3 SPAN_LINKS
 
 | Name                     | Native Type         | Optimized Encodings | Nullable | Required | Id Encoding                                         | Metadata | Description                                         |
 | ------------------------ | ------------------- | ------------------- | -------- | -------- | --------------------------------------------------- | -------- | --------------------------------------------------- |
-| id                       | UInt32              | —                   | Yes      | No       | [DELTA](#642-delta-encoding)                        | encoding | Link identifier (primary key)                       |
-| parent_id                | UInt16              | —                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
-| trace_id                 | FixedSizeBinary(16) | —                   | Yes      | No       | —                                                   | —        | Linked trace `id`                                   |
-| span_id                  | FixedSizeBinary(8)  | —                   | Yes      | No       | —                                                   | —        | Linked span `id`                                    |
-| trace_state              | Utf8                | —                   | Yes      | No       | —                                                   | —        | Linked trace state                                  |
-| dropped_attributes_count | UInt32              | —                   | Yes      | No       | —                                                   | —        | Number of dropped link attributes                   |
+| id                       | UInt32              | -                   | Yes      | No       | [DELTA](#642-delta-encoding)                        | encoding | Link identifier (primary key)                       |
+| parent_id                | UInt16              | -                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
+| trace_id                 | FixedSizeBinary(16) | -                   | Yes      | No       | -                                                   | -        | Linked trace `id`                                   |
+| span_id                  | FixedSizeBinary(8)  | -                   | Yes      | No       | -                                                   | -        | Linked span `id`                                    |
+| trace_state              | Utf8                | -                   | Yes      | No       | -                                                   | -        | Linked trace state                                  |
+| dropped_attributes_count | UInt32              | -                   | Yes      | No       | -                                                   | -        | Number of dropped link attributes                   |
 
 ### 5.3 Metrics
 
@@ -484,87 +484,87 @@ properties for the `resource` column's `id` field.
 
 | Name                              | Native Type | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                    |
 | --------------------------------- | ----------- | ------------------- | -------- | -------- | ---------------------------- | -------- | ---------------------------------------------- |
-| id                                | UInt16      | —                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Metric identifier (primary key)                |
-| resource                          | Struct      | -                   | Yes      | No       | —                            | —        | Resource information                           |
-| resource.id                       | UInt16      | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                  |
-| resource.schema_url               | Utf8        | —                   | Yes      | No       | —                            | —        | Resource schema URL                            |
-| resource.dropped_attributes_count | UInt32      | —                   | Yes      | No       | —                            | —        | Number of dropped resource attributes          |
-| scope                             | Struct      | -                   | Yes      | No       | —                            | —        | Instrumentation scope information              |
-| scope.id                          | UInt16      | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS                     |
-| scope.name                        | Utf8        | —                   | Yes      | No       | —                            | —        | Instrumentation scope name                     |
-| scope.version                     | Utf8        | —                   | Yes      | No       | —                            | —        | Instrumentation scope version                  |
-| scope.dropped_attributes_count    | UInt32      | —                   | Yes      | No       | —                            | —        | Number of dropped scope attributes             |
-| schema_url                        | Utf8        | —                   | Yes      | No       | —                            | —        | Metric schema URL                              |
-| metric_type                       | UInt8       | —                   | No       | Yes      | —                            | —        | Metric type enum (Gauge, Sum, Histogram, etc.) |
-| name                              | Utf8        | —                   | No       | Yes      | —                            | —        | Metric name                                    |
-| description                       | Utf8        | —                   | Yes      | No       | —                            | —        | Metric description                             |
-| unit                              | Utf8        | —                   | Yes      | No       | —                            | —        | Metric unit                                    |
-| aggregation_temporality           | Int32       | —                   | Yes      | No       | —                            | —        | Aggregation temporality enum                   |
-| is_monotonic                      | Boolean     | —                   | Yes      | No       | —                            | —        | Whether the metric is monotonic                |
+| id                                | UInt16      | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Metric identifier (primary key)                |
+| resource                          | Struct      | -                   | Yes      | No       | -                            | -        | Resource information                           |
+| resource.id                       | UInt16      | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                  |
+| resource.schema_url               | Utf8        | -                   | Yes      | No       | -                            | -        | Resource schema URL                            |
+| resource.dropped_attributes_count | UInt32      | -                   | Yes      | No       | -                            | -        | Number of dropped resource attributes          |
+| scope                             | Struct      | -                   | Yes      | No       | -                            | -        | Instrumentation scope information              |
+| scope.id                          | UInt16      | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS                     |
+| scope.name                        | Utf8        | -                   | Yes      | No       | -                            | -        | Instrumentation scope name                     |
+| scope.version                     | Utf8        | -                   | Yes      | No       | -                            | -        | Instrumentation scope version                  |
+| scope.dropped_attributes_count    | UInt32      | -                   | Yes      | No       | -                            | -        | Number of dropped scope attributes             |
+| schema_url                        | Utf8        | -                   | Yes      | No       | -                            | -        | Metric schema URL                              |
+| metric_type                       | UInt8       | -                   | No       | Yes      | -                            | -        | Metric type enum (Gauge, Sum, Histogram, etc.) |
+| name                              | Utf8        | -                   | No       | Yes      | -                            | -        | Metric name                                    |
+| description                       | Utf8        | -                   | Yes      | No       | -                            | -        | Metric description                             |
+| unit                              | Utf8        | -                   | Yes      | No       | -                            | -        | Metric unit                                    |
+| aggregation_temporality           | Int32       | -                   | Yes      | No       | -                            | -        | Aggregation temporality enum                   |
+| is_monotonic                      | Boolean     | -                   | Yes      | No       | -                            | -        | Whether the metric is monotonic                |
 
 #### 5.3.2 NUMBER_DATA_POINTS
 
 | Name                 | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                   |
 | -------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
-| id                   | UInt32                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
-| parent_id            | UInt16                | —                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | —                   | No       | Yes      | —                            | —        | Start time in Unix nanoseconds                |
-| time_unix_nano       | Timestamp(Nanosecond) | —                   | No       | Yes      | —                            | —        | Timestamp in Unix nanoseconds                 |
-| int_value            | Int64                 | —                   | No       | Yes      | —                            | —        | Integer value                                 |
-| double_value         | Float64               | —                   | No       | Yes      | —                            | —        | Double value                                  |
-| flags                | UInt32                | —                   | Yes      | No       | —                            | —        | Data point flags                              |
+| id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
+| parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
+| start_time_unix_nano | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Start time in Unix nanoseconds                |
+| time_unix_nano       | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Timestamp in Unix nanoseconds                 |
+| int_value            | Int64                 | -                   | No       | Yes      | -                            | -        | Integer value                                 |
+| double_value         | Float64               | -                   | No       | Yes      | -                            | -        | Double value                                  |
+| flags                | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.3 SUMMARY_DATA_POINTS
 
 | Name                 | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                   |
 | -------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
-| id                   | UInt32                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
-| parent_id            | UInt16                | —                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | —                   | Yes      | No       | —                            | —        | Start time in Unix nanoseconds                |
-| time_unix_nano       | Timestamp(Nanosecond) | —                   | Yes      | No       | —                            | —        | Timestamp in Unix nanoseconds                 |
-| count                | UInt64                | —                   | Yes      | No       | —                            | —        | Count of observations                         |
-| sum                  | Float64               | —                   | Yes      | No       | —                            | —        | Sum of observations                           |
-| quantile             | List(Struct)          | -                   | Yes      | No       | —                            | —        | List of quantil values                        |
-| quantile[].quantile  | Float64               | Float64             | Yes      | No       | —                            | —        | Quantile quantile                             |
-| quantile[].value     | Float64               | Float64             | Yes      | No       | —                            | —        | Quantile value                                |
-| value                | Float64               | List(Float64)       | Yes      | No       | —                            | —        | Quantile observation values                   |
-| flags                | UInt32                | —                   | Yes      | No       | —                            | —        | Data point flags                              |
+| id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
+| parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
+| start_time_unix_nano | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Start time in Unix nanoseconds                |
+| time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| count                | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
+| sum                  | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
+| quantile             | List(Struct)          | -                   | Yes      | No       | -                            | -        | List of quantil values                        |
+| quantile[].quantile  | Float64               | Float64             | Yes      | No       | -                            | -        | Quantile quantile                             |
+| quantile[].value     | Float64               | Float64             | Yes      | No       | -                            | -        | Quantile value                                |
+| value                | Float64               | List(Float64)       | Yes      | No       | -                            | -        | Quantile observation values                   |
+| flags                | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.4 HISTOGRAM_DATA_POINTS
 
 | Name                 | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                   |
 | -------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
-| id                   | UInt32                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
-| parent_id            | UInt16                | —                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | —                   | No       | No       | —                            | —        | Start time in Unix nanoseconds                |
-| time_unix_nano       | Timestamp(Nanosecond) | —                   | Yes      | No       | —                            | —        | Timestamp in Unix nanoseconds                 |
-| count                | UInt64                | —                   | Yes      | No       | —                            | —        | Count of observations                         |
-| sum                  | Float64               | —                   | Yes      | No       | —                            | —        | Sum of observations                           |
-| bucket_counts        | UInt64                | List(UInt64)        | Yes      | No       | —                            | —        | Count per bucket                              |
-| explicit_bounds      | Float64               | List(Float64)       | Yes      | No       | —                            | —        | Histogram bucket boundaries                   |
-| flags                | UInt32                | —                   | Yes      | No       | —                            | —        | Data point flags                              |
-| min                  | Float64               | —                   | Yes      | No       | —                            | —        | Minimum value                                 |
-| max                  | Float64               | —                   | Yes      | No       | —                            | —        | Maximum value                                 |
+| id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
+| parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
+| start_time_unix_nano | Timestamp(Nanosecond) | -                   | No       | No       | -                            | -        | Start time in Unix nanoseconds                |
+| time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| count                | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
+| sum                  | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
+| bucket_counts        | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Count per bucket                              |
+| explicit_bounds      | Float64               | List(Float64)       | Yes      | No       | -                            | -        | Histogram bucket boundaries                   |
+| flags                | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
+| min                  | Float64               | -                   | Yes      | No       | -                            | -        | Minimum value                                 |
+| max                  | Float64               | -                   | Yes      | No       | -                            | -        | Maximum value                                 |
 
 #### 5.3.5 EXP_HISTOGRAM_DATA_POINTS
 
 | Name                   | Native Type           | Optimized Encodings | Nullable | Required | Id Encoding                  | Metadata | Description                                   |
 | ---------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
-| id                     | UInt32                | —                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
-| parent_id              | UInt16                | —                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano   | Timestamp(Nanosecond) | —                   | Yes      | No       | —                            | —        | Start time in Unix nanoseconds                |
-| time_unix_nano         | Timestamp(Nanosecond) | —                   | Yes      | No       | —                            | —        | Timestamp in Unix nanoseconds                 |
-| count                  | UInt64                | —                   | Yes      | No       | —                            | —        | Count of observations                         |
-| sum                    | Float64               | —                   | Yes      | No       | —                            | —        | Sum of observations                           |
-| scale                  | Int32                 | —                   | Yes      | No       | —                            | —        | Exponential histogram scale                   |
-| zero_count             | UInt64                | —                   | Yes      | No       | —                            | —        | Count of zero values                          |
-| positive_offset        | Int32                 | —                   | Yes      | No       | —                            | —        | Positive bucket offset                        |
-| positive_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | —                            | —        | Positive bucket counts                        |
-| negative_offset        | Int32                 | —                   | Yes      | No       | —                            | —        | Negative bucket offset                        |
-| negative_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | —                            | —        | Negative bucket counts                        |
-| flags                  | UInt32                | —                   | Yes      | No       | —                            | —        | Data point flags                              |
-| min                    | Float64               | —                   | Yes      | No       | —                            | —        | Minimum value                                 |
-| max                    | Float64               | —                   | Yes      | No       | —                            | —        | Maximum value                                 |
+| id                     | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
+| parent_id              | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
+| start_time_unix_nano   | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Start time in Unix nanoseconds                |
+| time_unix_nano         | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| count                  | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
+| sum                    | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
+| scale                  | Int32                 | -                   | Yes      | No       | -                            | -        | Exponential histogram scale                   |
+| zero_count             | UInt64                | -                   | Yes      | No       | -                            | -        | Count of zero values                          |
+| positive_offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Positive bucket offset                        |
+| positive_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Positive bucket counts                        |
+| negative_offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Negative bucket offset                        |
+| negative_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Negative bucket counts                        |
+| flags                  | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
+| min                    | Float64               | -                   | Yes      | No       | -                            | -        | Minimum value                                 |
+| max                    | Float64               | -                   | Yes      | No       | -                            | -        | Maximum value                                 |
 
 #### 5.3.6 NUMBER_DP_EXEMPLARS / HISTOGRAM_DP_EXEMPLARS / EXP_HISTOGRAM_DP_EXEMPLARS
 
@@ -592,14 +592,14 @@ EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
 | Name      | Native Type | Optimized Encodings | Nullable | Required | Id Encoding                              | Metadata | Description                                                                     |
 | --------- | ----------- | ------------------- | -------- | -------- | ---------------------------------------- | -------- | ------------------------------------------------------------------------------- |
 | parent_id | UInt32      | Dict(u8), Dict(u16) | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*\_DP_EXEMPLARS `id` column                   |
-| key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | —                                        | —        | Attribute key name                                                              |
-| type      | UInt8       | —                   | No       | Yes      | —                                        | —        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | String value (when type=1)                                                      |
-| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | Integer value (when type=3)                                                     |
-| double    | Float64     | —                   | Yes      | No       | —                                        | —        | Double value (when type=4)                                                      |
-| bool      | Boolean     | —                   | Yes      | No       | —                                        | —        | Boolean value (when type=2)                                                     |
-| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | Bytes value (when type=5)                                                       |
-| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
+| key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | -                                        | -        | Attribute key name                                                              |
+| type      | UInt8       | -                   | No       | Yes      | -                                        | -        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
+| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
+| double    | Float64     | -                   | Yes      | No       | -                                        | -        | Double value (when type=4)                                                      |
+| bool      | Boolean     | -                   | Yes      | No       | -                                        | -        | Boolean value (when type=2)                                                     |
+| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
+| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
 
 #### 5.4.2 U16 Attributes
 
@@ -607,15 +607,15 @@ Applies to: RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS
 
 | Name      | Native Type | Optimized Encodings | Nullable | Required | Id Encoding                              | Metadata | Description                                                                     |
 | --------- | ----------- | ------------------- | -------- | -------- | ---------------------------------------- | -------- | ------------------------------------------------------------------------------- |
-| parent_id | UInt16      | —                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id`, `scope.id`, or `id` column         |
-| key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | —                                        | —        | Attribute key name                                                              |
-| type      | UInt8       | —                   | No       | Yes      | —                                        | —        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | String value (when type=1)                                                      |
-| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | Integer value (when type=3)                                                     |
-| double    | Float64     | —                   | Yes      | No       | —                                        | —        | Double value (when type=4)                                                      |
-| bool      | Boolean     | —                   | Yes      | No       | —                                        | —        | Boolean value (when type=2)                                                     |
-| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | Bytes value (when type=5)                                                       |
-| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | —                                        | —        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
+| parent_id | UInt16      | -                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id`, `scope.id`, or `id` column         |
+| key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | -                                        | -        | Attribute key name                                                              |
+| type      | UInt8       | -                   | No       | Yes      | -                                        | -        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
+| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
+| double    | Float64     | -                   | Yes      | No       | -                                        | -        | Double value (when type=4)                                                      |
+| bool      | Boolean     | -                   | Yes      | No       | -                                        | -        | Boolean value (when type=2)                                                     |
+| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
+| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
 
 ### 5.5 Special Field Rules
 
