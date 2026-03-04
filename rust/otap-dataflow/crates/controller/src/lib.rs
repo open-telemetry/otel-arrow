@@ -326,6 +326,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
         {
+            let core_allocation = pipeline_entry
+                .policies
+                .effective_resources()
+                .core_allocation
+                .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
@@ -333,7 +338,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let pipeline = pipeline_entry.pipeline;
 
             let num_cores = requested_cores.len();
-            let core_allocation = pipeline_entry.policies.core_allocation.to_string();
             otel_info!(
                 "pipeline.core_allocation",
                 pipeline_group_id = pipeline_group_id.as_ref(),
