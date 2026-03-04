@@ -925,4 +925,61 @@ mod tests {
         let msg = channel.recv().await.unwrap();
         assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
     }
+
+    /// recv_when(false) detects a closed pdata channel and generates a
+    /// synthetic Shutdown instead of blocking forever.
+    #[tokio::test]
+    async fn test_recv_when_false_detects_pdata_closed() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Close the pdata channel
+        drop(pdata_tx);
+
+        // recv_when(false) should detect the closed channel and return
+        // a synthetic Shutdown, not block forever.
+        let msg = tokio::time::timeout(Duration::from_millis(100), channel.recv_when(false))
+            .await
+            .expect("recv_when(false) should not block when pdata channel is closed")
+            .unwrap();
+
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+
+        drop(control_tx);
+    }
+
+    /// recv_when(false) with a closed pdata channel that still has
+    /// buffered data should not trigger synthetic shutdown until the
+    /// data is drained.
+    #[tokio::test]
+    async fn test_recv_when_false_closed_with_buffered_data() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        // Close the channel — data is still buffered
+        drop(pdata_tx);
+
+        // recv_when(false) should NOT trigger shutdown because there's
+        // still buffered data (is_empty() is false).
+        // It should time out waiting for control.
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "should block — pdata has data, no control available"
+        );
+
+        // Now drain the data with recv_when(true)
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+
+        // Now recv_when(false) should detect closed+empty and return shutdown
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
 }
