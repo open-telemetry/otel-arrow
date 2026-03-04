@@ -262,6 +262,15 @@ impl std::fmt::Display for ProxyConfig {
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + ?Sized> AsyncReadWrite for T {}
 
+/// Connected proxy stream (plain TCP or TLS-wrapped TCP).
+///
+/// We intentionally use a boxed trait object for simplicity and extensibility.
+/// This adds one allocation per connection and dynamic dispatch per I/O poll.
+/// In this path, gRPC runs over long-lived HTTP/2 connections, so that overhead is
+/// usually amortized and negligible compared with network/TLS work.
+///
+/// If profiling shows this as a bottleneck, switch to an enum-based stream type
+/// to remove allocation/dispatch overhead.
 pub(crate) type ProxyTcpStream = Box<dyn AsyncReadWrite + Send + Unpin>;
 
 impl ProxyConfig {
