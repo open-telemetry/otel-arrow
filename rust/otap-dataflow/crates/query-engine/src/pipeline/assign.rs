@@ -834,7 +834,7 @@ mod test {
 
     #[tokio::test]
     async fn test_set_root_column_rejects_invalid_type_during_planning_kql_parser() {
-        test_set_root_column_rejects_invalid_type_during_planning::<OplParser>().await
+        test_set_root_column_rejects_invalid_type_during_planning::<KqlParser>().await
     }
 
     async fn test_set_root_column_rejects_invalid_column_during_planning<P: Parser>() {
