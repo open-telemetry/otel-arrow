@@ -275,9 +275,27 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         let mut is_draining = false;
         let mut draining_deadline: Option<Instant> = None;
 
+        // Single reusable timer for retrying buffered sends. Created once,
+        // reset only when `pending_sends` transitions from empty to non-empty.
+        // This avoids allocating a new Sleep future on every loop iteration
+        // (the standard tokio::select! pinned-sleep pattern).
+        let retry_delay = tokio::time::sleep(Duration::from_millis(5));
+        tokio::pin!(retry_delay);
+        let mut retry_armed = false;
+
         loop {
             // Drain any buffered sends before processing new messages.
             self.drain_pending_sends();
+
+            // Arm the retry timer when pending sends appear; disarm when drained.
+            if !self.pending_sends.is_empty() && !retry_armed {
+                retry_delay
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_millis(5));
+                retry_armed = true;
+            } else if self.pending_sends.is_empty() {
+                retry_armed = false;
+            }
 
             // Check if we've exceeded the draining deadline
             if let Some(deadline) = draining_deadline {
@@ -482,8 +500,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 // Placed last so incoming messages and timers are always
                 // prioritized — incoming acks may be exactly what unblocks
                 // the congested node.
-                _ = tokio::time::sleep(Duration::from_millis(5)),
-                    if !self.pending_sends.is_empty() => {
+                // Uses a pinned/reused sleep to avoid allocating a new timer
+                // future on every loop iteration.
+                _ = &mut retry_delay, if retry_armed => {
+                    retry_armed = false;
                     // drain_pending_sends() runs at loop top; just wake up.
                     continue;
                 }
