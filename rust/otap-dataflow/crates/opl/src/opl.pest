@@ -200,7 +200,7 @@ route_to_operator_call = {
 }
 
 apply_operator_call = {
-    "apply" ~ member_expression ~ "{"  ~ pipeline_stage ~ ("|" ~ pipeline_stage)* ~ "}"
+    "apply" ~ member_expression ~ "{" ~ pipeline_stage ~ ("|" ~ pipeline_stage)* ~ "}"
 }
 
 operator_call = {
