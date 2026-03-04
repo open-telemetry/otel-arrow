@@ -24,7 +24,7 @@ use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter}
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Maximum time buffer between the end of draining and the shutdown deadline.
@@ -32,6 +32,10 @@ use std::time::{Duration, Instant};
 /// This is a best-effort attempt to ensure that `PipelineCtrlMsgManager` exits before
 /// the caller's timeout fires, avoiding a race where both expire simultaneously.
 const MAX_DRAINING_BUFFER_DURATION: Duration = Duration::from_secs(1);
+
+/// Threshold for the pending sends buffer. When the buffer exceeds this size,
+/// a warning is logged to help operators diagnose sustained backpressure.
+const PENDING_SENDS_WARN_THRESHOLD: usize = 100;
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
@@ -204,6 +208,12 @@ pub struct PipelineCtrlMsgManager<PData> {
 
     /// Flags controlling capture of internal engine metrics.
     telemetry: TelemetryPolicy,
+
+    /// Messages that could not be delivered because the target node's control
+    /// channel was full. Buffered here instead of blocking the event loop,
+    /// which would cause a circular-wait stall on the single-threaded
+    /// LocalSet runtime.
+    pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
@@ -233,6 +243,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             metrics_reporter,
             channel_metrics,
             telemetry: telemetry_policy,
+            pending_sends: VecDeque::new(),
         }
     }
 
@@ -272,7 +283,28 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         let mut is_draining = false;
         let mut draining_deadline: Option<Instant> = None;
 
+        // Single reusable timer for retrying buffered sends. Created once,
+        // reset only when `pending_sends` transitions from empty to non-empty.
+        // This avoids allocating a new Sleep future on every loop iteration
+        // (the standard tokio::select! pinned-sleep pattern).
+        let retry_delay = tokio::time::sleep(Duration::from_millis(5));
+        tokio::pin!(retry_delay);
+        let mut retry_armed = false;
+
         loop {
+            // Drain any buffered sends before processing new messages.
+            self.drain_pending_sends();
+
+            // Arm the retry timer when pending sends appear; disarm when drained.
+            if !self.pending_sends.is_empty() && !retry_armed {
+                retry_delay
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_millis(5));
+                retry_armed = true;
+            } else if self.pending_sends.is_empty() {
+                retry_armed = false;
+            }
+
             // Check if we've exceeded the draining deadline
             if let Some(deadline) = draining_deadline {
                 if Instant::now() >= deadline {
@@ -297,7 +329,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
             tokio::select! {
                 biased;
+
                 // Handle incoming control messages from nodes.
+                // Placed first (biased) so incoming messages — especially acks
+                // that could unblock congested nodes — are always prioritized
+                // over retry attempts.
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
@@ -383,10 +419,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             }
                         }
                         PipelineControlMsg::DeliverAck { node_id, ack } => {
-                            self.send(node_id, NodeControlMsg::Ack(ack)).await;
+                            self.send(node_id, NodeControlMsg::Ack(ack));
                         }
                         PipelineControlMsg::DeliverNack { node_id, nack } => {
-                            self.send(node_id, NodeControlMsg::Nack(nack)).await;
+                            self.send(node_id, NodeControlMsg::Nack(nack));
                         }
                     }
                 }
@@ -464,8 +500,20 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        self.send(node_id, msg).await;
+                        self.send(node_id, msg);
                     }
+                }
+
+                // Retry buffered sends after a short delay.
+                // Placed last so incoming messages and timers are always
+                // prioritized — incoming acks may be exactly what unblocks
+                // the congested node.
+                // Uses a pinned/reused sleep to avoid allocating a new timer
+                // future on every loop iteration.
+                _ = &mut retry_delay, if retry_armed => {
+                    retry_armed = false;
+                    // drain_pending_sends() runs at loop top; just wake up.
+                    continue;
                 }
             }
         }
@@ -500,20 +548,53 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     }
 
     async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+    /// Non-blocking send: try to deliver immediately, buffer on backpressure.
+    ///
+    /// Previously this method was `async` and fell back to `sender.send(msg).await`
+    /// when the channel was full, which blocked the entire single-threaded event
+    /// loop and caused a circular-wait stall.
+    ///
+    /// Now we never block: on `Full` the message is pushed to `pending_sends` and
+    /// retried on subsequent loop iterations via `drain_pending_sends()`.
+    fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
         if let Some(sender) = self.control_senders.get(node_id) {
-            // Use try_send as a fast path:
-            // - avoids allocating/awaiting a future when the channel has capacity
-            // - keeps the event loop responsive and reduces timer jitter
-            // - isolates backpressure to congested channels (only await on Full)
-            // On Full, fall back to send(msg).await to preserve delivery
             match sender.try_send(msg) {
                 Ok(()) => {}
                 Err(otap_df_channel::error::SendError::Full(msg)) => {
-                    // Channel backpressured: await until space is available
-                    let _ = sender.send(msg).await;
+                    self.pending_sends.push_back((node_id, msg));
+                    if self.pending_sends.len() == PENDING_SENDS_WARN_THRESHOLD {
+                        otel_warn!(
+                            "pipeline.ctrl.pending_sends.high",
+                            count = self.pending_sends.len(),
+                            "Pending sends buffer reached threshold; \
+                             a node's control channel may be persistently full"
+                        );
+                    }
                 }
                 Err(otap_df_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
+                }
+            }
+        }
+    }
+
+    /// Best-effort drain of buffered sends.  Messages that still cannot be
+    /// delivered are re-queued at the back of the same deque (no allocation).
+    fn drain_pending_sends(&mut self) {
+        let n = self.pending_sends.len();
+        for _ in 0..n {
+            let Some((node_id, msg)) = self.pending_sends.pop_front() else {
+                break;
+            };
+            if let Some(sender) = self.control_senders.get(node_id) {
+                match sender.try_send(msg) {
+                    Ok(()) => {}
+                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                        self.pending_sends.push_back((node_id, msg));
+                    }
+                    Err(otap_df_channel::error::SendError::Closed(_)) => {
+                        // Drop message for closed channel
+                    }
                 }
             }
         }
@@ -1858,6 +1939,190 @@ mod tests {
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Demonstrates a realistic circular wait between the manager and an active
+    /// node task.
+    ///
+    /// This models what happens in production with an exporter like
+    /// `AzureMonitorExporter`, which, after a successful export, sends multiple
+    /// acks in a tight loop:
+    ///
+    /// ```ignore
+    /// for (_, context, payload) in completed_messages {
+    ///     effect_handler.notify_ack(AckMsg::new(…)).await?;
+    ///     //             ^^^^^^^^^ sends DeliverAck to pipeline ctrl channel
+    /// }
+    /// ```
+    ///
+    /// Setup:
+    ///   - Pipeline ctrl channel (nodes → manager): capacity 3
+    ///   - Node A control channel (manager → A):    capacity 1
+    ///   - Node B control channel (manager → B):    capacity 10
+    ///
+    /// The circular wait forms as follows:
+    ///   1. Pre-load pipeline ctrl with [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}].
+    ///   2. Spawn Node A as an active task that loops sending DeliverAck{A} to
+    ///      the pipeline ctrl channel (simulating batchexport ack loop).
+    ///      Pipeline ctrl is full, so Node A blocks immediately.
+    ///   3. Manager processes the two DeliverAck{A}s (freeing slots that Node A
+    ///      promptly refills), sending Acks to A's control channel.
+    ///      The first Ack succeeds (fills A's cap-1 channel).
+    ///      The second Ack finds A's channel full → manager blocks on `.await`.
+    ///   4. Now both are stuck:
+    ///      - Manager is blocked sending to A's control channel (full)
+    ///      - Node A is blocked sending to pipeline ctrl channel (full, refilled
+    ///        after manager freed the initial two slots)
+    ///      - Neither can make progress.
+    ///   5. DeliverAck{B} sits in the pipeline ctrl queue — never processed.
+    ///
+    /// The test asserts Node B receives its ack within 500 ms.  On the current
+    /// code this **times out**, proving the circular-wait stall.
+    #[tokio::test]
+    async fn test_circular_wait_between_node_and_manager() {
+        use crate::control::AckMsg;
+
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                // --- Custom setup with specific channel capacities ---
+                let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(3);
+                let mut control_senders = ControlSenders::new();
+
+                let nodes = test_nodes(vec!["node_a", "node_b"]);
+                let node_a = nodes[0].clone();
+                let node_b = nodes[1].clone();
+
+                // Node A: control channel capacity 1 — fills up after one message
+                let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(1);
+                control_senders.register(
+                    node_a.clone(),
+                    NodeType::Processor,
+                    Sender::Shared(SharedSender::mpsc(tx_a)),
+                );
+
+                // Node B: control channel capacity 10 — plenty of room
+                let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(10);
+                control_senders.register(
+                    node_b.clone(),
+                    NodeType::Processor,
+                    Sender::Shared(SharedSender::mpsc(tx_b)),
+                );
+
+                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+                let metrics_reporter = metrics_system.reporter();
+                let observed_state_store = ObservedStateStore::new(
+                    &ObservedStateSettings::default(),
+                    metrics_system.registry(),
+                );
+                let pipeline_group_id: PipelineGroupId = Default::default();
+                let pipeline_id: PipelineId = Default::default();
+                let controller_context = ControllerContext::new(metrics_system.registry());
+                let pipeline_context = PipelineContext::new(
+                    controller_context,
+                    pipeline_group_id.clone(),
+                    pipeline_id.clone(),
+                    0,
+                    1,
+                    0,
+                );
+                let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                    pipeline_context.metrics_registry(),
+                    pipeline_entity_key,
+                );
+
+                let manager = PipelineCtrlMsgManager::new(
+                    DeployedPipelineKey {
+                        pipeline_group_id,
+                        pipeline_id,
+                        core_id: 0,
+                    },
+                    pipeline_context,
+                    pipeline_rx,
+                    control_senders,
+                    observed_state_store.reporter(SendPolicy::default()),
+                    metrics_reporter,
+                    TelemetryPolicy::default(),
+                    Vec::new(),
+                );
+
+                // Pre-load pipeline ctrl: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
+                // This fills the channel (cap=3) before anyone starts consuming.
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        node_id: node_a.index,
+                        ack: AckMsg::new("a1".to_owned()),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        node_id: node_a.index,
+                        ack: AckMsg::new("a2".to_owned()),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        node_id: node_b.index,
+                        ack: AckMsg::new("b1".to_owned()),
+                    })
+                    .await
+                    .unwrap();
+
+                // Spawn Node A: simulates an exporter that's acking a batch of
+                // messages in a tight loop (just like AzureMonitorExporter's
+                // `for msg in completed_messages { notify_ack(..).await; }` loop).
+                //
+                // Node A keeps sending DeliverAck to the pipeline ctrl channel.
+                // When the channel is full, Node A blocks — and since it never
+                // drains its own control channel (rx_a), the manager can't
+                // deliver acks to it either.
+                let node_a_tx = pipeline_tx.clone();
+                let node_a_id = node_a.index;
+                let _node_a_handle = tokio::task::spawn_local(async move {
+                    let _rx_a = rx_a; // keep A's ctrl channel open (not closed)
+                    loop {
+                        if node_a_tx
+                            .send(PipelineControlMsg::DeliverAck {
+                                node_id: node_a_id,
+                                ack: AckMsg::new("batch_ack".to_owned()),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                // Start the manager
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Assert Node B receives its ack within 500 ms.
+                // This will time out because of the circular wait:
+                //   Manager → blocked on A's full ctrl channel
+                //   Node A  → blocked on full pipeline ctrl channel
+                //   DeliverAck{B} is stuck in the pipeline ctrl queue, unprocessed.
+                let mut receiver_b = Receiver::Shared(SharedReceiver::mpsc(rx_b));
+                let received = timeout(Duration::from_millis(500), receiver_b.recv()).await;
+
+                assert!(
+                    received.is_ok(),
+                    "Node B should receive its Ack within 500 ms, but the \
+                     manager is stuck in a circular wait with Node A: the \
+                     manager is blocked sending to Node A's full control \
+                     channel, while Node A is blocked sending to the full \
+                     pipeline control channel"
+                );
+
+                // Cleanup
+                drop(pipeline_tx);
+                manager_handle.abort();
             })
             .await;
     }

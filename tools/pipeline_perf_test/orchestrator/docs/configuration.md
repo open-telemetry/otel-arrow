@@ -233,7 +233,8 @@ hooks:
 ```
 
 - This hook intentionally raises an exception before the scenario starts.
-- The `on_error.continue: true` flag ensures the test proceeds even if the hook fails.
+- The `on_error.continue: true` flag ensures the test proceeds even if the hook
+  fails.
 - The `pre_strategy: replace` line ensures this hook replaces any defaults for
    the `pre` phase.
 
@@ -401,8 +402,8 @@ This step invokes the deployment strategy of each listed component (e.g. Docker)
 
 ### Lifecycle Phases
 
-| Phase     | Description                                 |
-|-----------|---------------------------------------------|
+| Phase       | Description                               |
+| ----------- | ----------------------------------------- |
 | `deploy`    | Starts the component                      |
 | `destroy`   | Cleans up the component                   |
 
@@ -491,10 +492,10 @@ Only one execution strategy should be defined per component.
 
 ### Execution Strategy Phases
 
-| Phase | Description                           |
-|-------|---------------------------------------|
+| Phase   | Description                                    |
+| ------- | ---------------------------------------------- |
 | `start` | Begins the execution behavior (e.g. send load) |
-| `stop`  | Ends the execution behavior          |
+| `stop`  | Ends the execution behavior                    |
 
 These phases are tied to `component_action` test steps that reference the component.
 
@@ -559,8 +560,8 @@ and high-level application telemetry.
 
 Monitoring is controlled via test steps that use these phases:
 
-| Phase            | Description                          |
-|------------------|--------------------------------------|
+| Phase              | Description                         |
+| ----------------   | ----------------------------------- |
 | `start_monitoring` | Begins collecting metrics           |
 | `stop_monitoring`  | Stops metric collection             |
 
@@ -696,11 +697,11 @@ its own `hooks`.
 
 #### Example Step Types
 
-| Action Plugin             | Purpose                                      |
-|---------------------------|----------------------------------------------|
+| Action Plugin             | Purpose                                           |
+| ------------------------- |-------------------------------------------------- |
 | `multi_component_action`  | Run a phase (e.g., deploy) on multiple components |
-| `component_action`        | Run a phase on a single component            |
-| `wait`                    | Delay execution for a specified time         |
+| `component_action`        | Run a phase on a single component                 |
+| `wait`                    | Delay execution for a specified time              |
 
 See the full list of [supprted step action types](plugins/step_actions.md).
 
@@ -1129,11 +1130,11 @@ on_error:
   continue: true
 ```
 
-| Field                | Type      | Description                                                                 |
-|----------------------|-----------|-----------------------------------------------------------------------------|
-| `retries`            | `int`     | Number of times to retry the failed phase or hook (default: `0`)           |
-| `retry_delay_seconds`| `int`     | Time (in seconds) to wait between retries (default: `10`)                  |
-| `continue`           | `bool`    | If `true`, execution will continue even after the final failure (default: `false`) |
+| Field                 | Type      | Description                                                                        |
+| --------------------- | --------- | ---------------------------------------------------------------------------------- |
+| `retries`             | `int`     | Number of times to retry the failed phase or hook (default: `0`)                   |
+| `retry_delay_seconds` | `int`     | Time (in seconds) to wait between retries (default: `10`)                          |
+| `continue`            | `bool`    | If `true`, execution will continue even after the final failure (default: `false`) |
 
 ---
 

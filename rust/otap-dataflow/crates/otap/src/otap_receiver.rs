@@ -238,7 +238,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otap_df_telemetry::otel_info!(
-            "receiver.start",
+            "otap_receiver.start",
             listening_addr = %self.config.listening_addr
         );
 
@@ -322,7 +322,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 loop {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            otap_df_telemetry::otel_info!("otap.receiver.shutdown");
+                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
