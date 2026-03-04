@@ -134,6 +134,7 @@ export NO_PROXY=localhost,127.0.0.1,*.internal,192.168.0.0/16
 ```
 
 `HTTPS_PROXY` (and `proxy.https_proxy` in YAML) may be either:
+
 - `http://...` for plaintext exporter-to-proxy transport
 - `https://...` for TLS exporter-to-proxy transport (requires `experimental-tls`)
 
