@@ -1047,6 +1047,15 @@ mod tests {
         use std::sync::Arc;
         use tokio_rustls::TlsAcceptor;
 
+        if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+            // Non-fatal if already installed by another test.
+            otel_debug!(
+                "provider.installation.failed",
+                error = ?err,
+                "rustls default provider installation failed in test"
+            );
+        }
+
         let ca = generate_ca("Proxy Handshake Test CA");
         let server = ca.issue_leaf(
             "localhost",
