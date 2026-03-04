@@ -547,7 +547,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         }
     }
 
-    async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
     /// Non-blocking send: try to deliver immediately, buffer on backpressure.
     ///
     /// Previously this method was `async` and fell back to `sender.send(msg).await`
@@ -2044,6 +2043,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     control_senders,
+                    Vec::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetryPolicy::default(),
