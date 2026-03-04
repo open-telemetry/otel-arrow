@@ -210,7 +210,7 @@ impl AttrsFilterCombineOptimizerRule {
 /// variants. This then assigns the resulting `Expr` as the source filter Composite `Base` variant.
 ///
 /// The nominal use case for this is for when we plan filtering that we know will always apply to
-/// a single record batch, for example when creating a filter plan for attributes. In this case,
+/// a single record batch; for example - when creating a filter plan for attributes. In this case,
 /// there are no nested attribute filters, so it makes more sense to drop these and have the filter
 /// just be a single logical `Expr`
 pub struct CompositeToBaseFilterPlan {}
@@ -240,9 +240,8 @@ impl CompositeToBaseFilterPlan {
             }
             Composite::Base(base) => {
                 // Note: from where this is currently being called in the planner, we should have
-                // a source_filter here, since it's for filtering attributes as the source, so
-                // these filter plans have source_filter None in favor of filtering on children
-                // attrs because there are no children
+                // a source_filter here, since it's for filtering attributes as the source. These
+                // filter plans shouldn't have source_filter None
                 base.source_filter.ok_or_else(|| Error::InvalidPipelineError {
                     cause: "No source filter found on base Composite<FilterPlan> in CompositeToBaseFilterPlan".into(), 
                     query_location: None
