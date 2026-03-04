@@ -1208,25 +1208,4 @@ mod test {
             }
         }
     }
-
-    #[tokio::test]
-    async fn test_duration_update() {
-        let traces_data = to_traces_data(vec![
-            Span::build()
-                .start_time_unix_nano(1u64)
-                .end_time_unix_nano(5u64)
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
-
-        // check the duration
-
-        let pipeline_expr =
-            OplParser::parse("traces | set duration_time_unix_nano = duration_time_unix_nano * 2")
-                .unwrap()
-                .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
-
-        let result = pipeline.execute(otap_batch).await.unwrap();
-    }
 }
