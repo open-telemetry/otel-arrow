@@ -68,12 +68,23 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
 
                     let value = match std::env::var(var_name) {
                         Ok(v) => v,
-                        Err(_) => match default {
+                        Err(env_var_error) => match default {
                             Some(d) => d.to_string(),
                             None => {
-                                return Err(Error::EnvVarNotFound {
-                                    var: var_name.to_string(),
-                                });
+                                match env_var_error {
+                                    std::env::VarError::NotPresent => {
+                                        // Variable is simply not set.
+                                        return Err(Error::EnvVarNotFound {
+                                            var: var_name.to_string(),
+                                        });
+                                    }
+                                    std::env::VarError::NotUnicode(_) => {
+                                        // Variable is set but contains invalid Unicode.
+                                        return Err(Error::EnvVarCannotBeParsed {
+                                            var: var_name.to_string(),
+                                        });
+                                    }
+                                }
                             }
                         },
                     };

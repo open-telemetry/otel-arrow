@@ -200,6 +200,14 @@ pub enum Error {
         var: String,
     },
 
+    /// An environment variable referenced in the configuration cannot be parsed and no default was given.
+    #[error("Environment variable `{var}` cannot be parsed and no default was provided")]
+    #[diagnostic(code(data_plane::env_var_cannot_be_parsed), url(docsrs))]
+    EnvVarCannotBeParsed {
+        /// The name of the environment variable that cannot be parsed.
+        var: String,
+    },
+
     /// An invalid user configuration occurred.
     #[error("An invalid user configuration occurred: {error}")]
     InvalidUserConfig {
