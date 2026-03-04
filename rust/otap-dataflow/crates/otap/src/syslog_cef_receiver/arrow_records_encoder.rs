@@ -521,12 +521,16 @@ mod tests {
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
                 );
+                assert_eq!(
+                    log1_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc5424".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (7 for this message)
+                // Check that we have exactly the expected number of attributes (8 for this message)
                 // Note: process_id and structured_data are "-" (nil) so they might not be included
                 assert!(
-                    log1_attrs.len() >= 7,
-                    "Log 1 should have at least 7 attributes, got {}",
+                    log1_attrs.len() >= 8,
+                    "Log 1 should have at least 8 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -574,12 +578,16 @@ mod tests {
                         "Application started successfully".to_string()
                     ))
                 );
+                assert_eq!(
+                    log2_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc5424".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (10 for complete RFC5424 with numeric proc_id)
+                // Check that we have exactly the expected number of attributes (11 for complete RFC5424 with numeric proc_id)
                 assert_eq!(
                     log2_attrs.len(),
-                    10,
-                    "Log 2 should have exactly 10 attributes, got {}",
+                    11,
+                    "Log 2 should have exactly 11 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -617,13 +625,17 @@ mod tests {
                         "Kernel panic - not syncing: VFS".to_string()
                     ))
                 );
+                assert_eq!(
+                    log3_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc5424".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (6 for this message)
+                // Check that we have exactly the expected number of attributes (7 for this message)
                 // process_id, msg_id, and structured_data should not be present as they are nil ("-")
                 assert_eq!(
                     log3_attrs.len(),
-                    6,
-                    "Log 3 should have exactly 6 attributes, got {}",
+                    7,
+                    "Log 3 should have exactly 7 attributes, got {}",
                     log3_attrs.len()
                 );
 
@@ -1008,12 +1020,16 @@ mod tests {
                     log1_attrs.get("syslog.app_name"),
                     Some(&AttributeValue::String("su".to_string()))
                 );
+                assert_eq!(
+                    log1_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc3164".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (6 for RFC3164 with app_name)
+                // Check that we have exactly the expected number of attributes (7 for RFC3164 with app_name)
                 assert_eq!(
                     log1_attrs.len(),
-                    6,
-                    "Log 1 should have exactly 6 attributes, got {}",
+                    7,
+                    "Log 1 should have exactly 7 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -1053,12 +1069,16 @@ mod tests {
                     log2_attrs.get("syslog.process_id"),
                     Some(&AttributeValue::Integer(1234))
                 );
+                assert_eq!(
+                    log2_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc3164".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (7 for RFC3164 with app_name and proc_id)
+                // Check that we have exactly the expected number of attributes (8 for RFC3164 with app_name and proc_id)
                 assert_eq!(
                     log2_attrs.len(),
-                    7,
-                    "Log 2 should have exactly 7 attributes, got {}",
+                    8,
+                    "Log 2 should have exactly 8 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -1094,12 +1114,16 @@ mod tests {
                     log3_attrs.get("syslog.app_name"),
                     Some(&AttributeValue::String("kernel".to_string()))
                 );
+                assert_eq!(
+                    log3_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc3164".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (6 for RFC3164 with app_name)
+                // Check that we have exactly the expected number of attributes (7 for RFC3164 with app_name)
                 assert_eq!(
                     log3_attrs.len(),
-                    6,
-                    "Log 3 should have exactly 6 attributes, got {}",
+                    7,
+                    "Log 3 should have exactly 7 attributes, got {}",
                     log3_attrs.len()
                 );
             }
@@ -1415,12 +1439,16 @@ mod tests {
                     log1_attrs.get("spt"),
                     Some(&AttributeValue::String("1232".to_string()))
                 );
+                assert_eq!(
+                    log1_attrs.get("input.format"),
+                    Some(&AttributeValue::String("cef".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (7 core + 3 extensions = 10)
+                // Check that we have exactly the expected number of attributes (7 core + 3 extensions + 1 input.format = 11)
                 assert_eq!(
                     log1_attrs.len(),
-                    10,
-                    "Log 1 should have exactly 10 attributes, got {}",
+                    11,
+                    "Log 1 should have exactly 11 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -1458,12 +1486,16 @@ mod tests {
                     log2_attrs.get("cef.severity"),
                     Some(&AttributeValue::String("3".to_string()))
                 );
+                assert_eq!(
+                    log2_attrs.get("input.format"),
+                    Some(&AttributeValue::String("cef".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (7 core attributes, no extensions)
+                // Check that we have exactly the expected number of attributes (7 core attributes + 1 input.format, no extensions)
                 assert_eq!(
                     log2_attrs.len(),
-                    7,
-                    "Log 2 should have exactly 7 attributes, got {}",
+                    8,
+                    "Log 2 should have exactly 8 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -1509,12 +1541,16 @@ mod tests {
                     log3_attrs.get("sourceAddress"),
                     Some(&AttributeValue::String("192.168.1.100".to_string()))
                 );
+                assert_eq!(
+                    log3_attrs.get("input.format"),
+                    Some(&AttributeValue::String("cef".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (7 core + 2 extensions = 9)
+                // Check that we have exactly the expected number of attributes (7 core + 2 extensions + 1 input.format = 10)
                 assert_eq!(
                     log3_attrs.len(),
-                    9,
-                    "Log 3 should have exactly 9 attributes, got {}",
+                    10,
+                    "Log 3 should have exactly 10 attributes, got {}",
                     log3_attrs.len()
                 );
             }
@@ -1894,12 +1930,16 @@ mod tests {
                         "Application started successfully".to_string()
                     ))
                 );
+                assert_eq!(
+                    log1_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc5424".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes for RFC5424 (10 with numeric proc_id)
+                // Check that we have exactly the expected number of attributes for RFC5424 (11 with numeric proc_id)
                 assert_eq!(
                     log1_attrs.len(),
-                    10,
-                    "Log 1 should have exactly 10 attributes, got {}",
+                    11,
+                    "Log 1 should have exactly 11 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -1935,12 +1975,16 @@ mod tests {
                     log2_attrs.get("syslog.app_name"),
                     Some(&AttributeValue::String("su".to_string()))
                 );
+                assert_eq!(
+                    log2_attrs.get("input.format"),
+                    Some(&AttributeValue::String("rfc3164".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes for RFC3164 (6 with app_name)
+                // Check that we have exactly the expected number of attributes for RFC3164 (7 with app_name)
                 assert_eq!(
                     log2_attrs.len(),
-                    6,
-                    "Log 2 should have exactly 6 attributes, got {}",
+                    7,
+                    "Log 2 should have exactly 7 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -1992,12 +2036,16 @@ mod tests {
                     log3_attrs.get("spt"),
                     Some(&AttributeValue::String("1232".to_string()))
                 );
+                assert_eq!(
+                    log3_attrs.get("input.format"),
+                    Some(&AttributeValue::String("cef".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes for CEF (7 core + 3 extensions = 10)
+                // Check that we have exactly the expected number of attributes for CEF (7 core + 3 extensions + 1 input.format = 11)
                 assert_eq!(
                     log3_attrs.len(),
-                    10,
-                    "Log 3 should have exactly 10 attributes, got {}",
+                    11,
+                    "Log 3 should have exactly 11 attributes, got {}",
                     log3_attrs.len()
                 );
 
@@ -2145,9 +2193,10 @@ mod tests {
             log1_attrs.get("syslog.message"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 7 attributes expected)
-        assert_eq!(log1.attributes.len(), 7);
+        // Ensure no unexpected attributes are present (exactly 8 attributes expected)
+        assert_eq!(log1.attributes.len(), 8);
 
         // Verify second log record with structured data
         let log2_attrs: std::collections::HashMap<String, String> = log2
@@ -2197,9 +2246,10 @@ mod tests {
             log2_attrs.get("syslog.message"),
             Some(&"Application started successfully".to_string())
         );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 10 attributes expected with numeric proc_id)
-        assert_eq!(log2.attributes.len(), 10);
+        // Ensure no unexpected attributes are present (exactly 11 attributes expected with numeric proc_id)
+        assert_eq!(log2.attributes.len(), 11);
 
         // Verify third log record
         let log3 = &scope_logs.log_records[2];
@@ -2240,9 +2290,10 @@ mod tests {
             log3_attrs.get("syslog.message"),
             Some(&"Kernel panic - not syncing: VFS".to_string())
         );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
-        // // Ensure no unexpected attributes are present (exactly 6 attributes expected)
-        assert_eq!(log3.attributes.len(), 6);
+        // // Ensure no unexpected attributes are present (exactly 7 attributes expected)
+        assert_eq!(log3.attributes.len(), 7);
 
         // Priority = Facility * 8 + Severity
         // Priority 14: 1 (user level) * 8 + 6 (informational)
@@ -2411,9 +2462,10 @@ mod tests {
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
         assert_eq!(log1_attrs.get("syslog.app_name"), Some(&"su".to_string()));
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 6 attributes expected with app_name)
-        assert_eq!(log1.attributes.len(), 6);
+        // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name)
+        assert_eq!(log1.attributes.len(), 7);
 
         // Verify second log record attributes (RFC3164 with process ID in tag)
         let log2_attrs: std::collections::HashMap<String, String> = log2
@@ -2448,9 +2500,10 @@ mod tests {
             log2_attrs.get("syslog.process_id"),
             Some(&"1234".to_string())
         );
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name and proc_id)
-        assert_eq!(log2.attributes.len(), 7);
+        // Ensure no unexpected attributes are present (exactly 8 attributes expected with app_name and proc_id)
+        assert_eq!(log2.attributes.len(), 8);
 
         // Verify third log record
         let log3 = &scope_logs.log_records[2];
@@ -2520,9 +2573,10 @@ mod tests {
             log3_attrs.get("syslog.app_name"),
             Some(&"kernel".to_string())
         );
+        assert_eq!(log3_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 6 attributes expected with app_name)
-        assert_eq!(log3.attributes.len(), 6);
+        // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name)
+        assert_eq!(log3.attributes.len(), 7);
     }
 
     #[test]
@@ -2639,9 +2693,10 @@ mod tests {
         assert_eq!(log1_attrs.get("src"), Some(&"10.0.0.1".to_string()));
         assert_eq!(log1_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
         assert_eq!(log1_attrs.get("spt"), Some(&"1232".to_string()));
+        assert_eq!(log1_attrs.get("input.format"), Some(&"cef".to_string()));
 
-        // Ensure no unexpected attributes are present (7 core + 3 extensions = 10 attributes expected)
-        assert_eq!(log1.attributes.len(), 10);
+        // Ensure no unexpected attributes are present (7 core + 3 extensions + 1 input.format = 11 attributes expected)
+        assert_eq!(log1.attributes.len(), 11);
 
         // Verify second CEF log record (no extensions)
         let log2 = &scope_logs.log_records[1];
@@ -2704,9 +2759,10 @@ mod tests {
             Some(&"Successful Login".to_string())
         );
         assert_eq!(log2_attrs.get("cef.severity"), Some(&"3".to_string()));
+        assert_eq!(log2_attrs.get("input.format"), Some(&"cef".to_string()));
 
-        // Ensure no unexpected attributes are present (only 7 core attributes expected, no extensions)
-        assert_eq!(log2.attributes.len(), 7);
+        // Ensure no unexpected attributes are present (only 7 core attributes + 1 input.format expected, no extensions)
+        assert_eq!(log2.attributes.len(), 8);
 
         // Verify third CEF log record (complex extensions)
         let log3 = &scope_logs.log_records[2];
@@ -2789,9 +2845,10 @@ mod tests {
         assert_eq!(log3_attrs.get("requestMethod"), Some(&"GET".to_string()));
         assert_eq!(log3_attrs.get("cs1"), Some(&"value1".to_string()));
         assert_eq!(log3_attrs.get("cs2"), Some(&"value2".to_string()));
+        assert_eq!(log3_attrs.get("input.format"), Some(&"cef".to_string()));
 
-        // Ensure no unexpected attributes are present (7 core + 10 extensions = 17 attributes expected)
-        assert_eq!(log3.attributes.len(), 17);
+        // Ensure no unexpected attributes are present (7 core + 10 extensions + 1 input.format = 18 attributes expected)
+        assert_eq!(log3.attributes.len(), 18);
     }
 
     #[test]
@@ -2919,9 +2976,10 @@ mod tests {
             log1_attrs.get("syslog.message"),
             Some(&"Application started successfully".to_string())
         );
+        assert_eq!(log1_attrs.get("input.format"), Some(&"rfc5424".to_string()));
 
-        // Ensure no unexpected attributes are present for RFC5424 (exactly 10 attributes expected with numeric proc_id)
-        assert_eq!(log1.attributes.len(), 10);
+        // Ensure no unexpected attributes are present for RFC5424 (exactly 11 attributes expected with numeric proc_id)
+        assert_eq!(log1.attributes.len(), 11);
 
         // Verify second log record (RFC3164)
         let log2 = &scope_logs.log_records[1];
@@ -2989,9 +3047,10 @@ mod tests {
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
         assert_eq!(log2_attrs.get("syslog.app_name"), Some(&"su".to_string()));
+        assert_eq!(log2_attrs.get("input.format"), Some(&"rfc3164".to_string()));
 
-        // Ensure no unexpected attributes are present for RFC3164 (exactly 6 attributes expected with app_name)
-        assert_eq!(log2.attributes.len(), 6);
+        // Ensure no unexpected attributes are present for RFC3164 (exactly 7 attributes expected with app_name)
+        assert_eq!(log2.attributes.len(), 7);
 
         // Verify third log record (CEF)
         let log3 = &scope_logs.log_records[2];
@@ -3058,9 +3117,10 @@ mod tests {
         assert_eq!(log3_attrs.get("src"), Some(&"10.0.0.1".to_string()));
         assert_eq!(log3_attrs.get("dst"), Some(&"2.1.2.2".to_string()));
         assert_eq!(log3_attrs.get("spt"), Some(&"1232".to_string()));
+        assert_eq!(log3_attrs.get("input.format"), Some(&"cef".to_string()));
 
-        // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions = 10 attributes expected)
-        assert_eq!(log3.attributes.len(), 10);
+        // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions + 1 input.format = 11 attributes expected)
+        assert_eq!(log3.attributes.len(), 11);
     }
 
     /// Test that verifies body handling for mixed fully-parsed and partially-parsed messages.
