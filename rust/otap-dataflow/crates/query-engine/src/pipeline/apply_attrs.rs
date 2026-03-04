@@ -102,7 +102,10 @@ mod test {
                 resource::v1::Resource,
             },
         },
-        testing::{equiv::assert_equivalent, round_trip::to_logs_data},
+        testing::{
+            equiv::assert_equivalent,
+            round_trip::{otlp_to_otap, to_logs_data},
+        },
     };
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
@@ -292,5 +295,154 @@ mod test {
                 panic!("expected OK")
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_works_correctly_on_empty_batch() {
+        let query = r#"
+            logs | apply attributes {
+                where value > 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_works_correctly_on_non_empty_batch_with_no_attributes() {
+        let input = to_logs_data(vec![LogRecord::build().finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let query = r#"
+            logs | apply attributes {
+                where value > 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_bool_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value == true
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_bool(true))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when bool literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where true == value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_int_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k2", AnyValue::new_int(14)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value > 10
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_int(14))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where 10 < value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_float_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value > 10.0
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(14.0))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where 10.0 < value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
     }
 }
