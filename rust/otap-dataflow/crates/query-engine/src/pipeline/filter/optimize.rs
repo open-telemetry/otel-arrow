@@ -3,9 +3,11 @@
 
 use arrow::datatypes::DataType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::logical_expr::{Expr, and, col, not, or};
+use datafusion::error::DataFusionError;
+use datafusion::logical_expr::{BinaryExpr, Expr, and, col, not, or};
 use otap_df_pdata::schema::consts;
 
+use crate::consts::VALUE_FIELD_NAME;
 use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterPlan};
 
@@ -250,36 +252,44 @@ impl CompositeToBaseFilterPlan {
     }
 }
 
+/// This filter optimizer will search for binary expressions where one side is referencing a
+/// virtual column called "value", and then attempt to determine the real attributes values
+/// column based on the type on the other side of the binary expression.
+///
+/// This makes it possible for users to write expressions on attributes like: `value = "1"`
+/// and we will transparently change the expression on the left from `col("value")` to
+/// `col("str")`.
+///
+/// Note - the transformation is only applied to the source_filter in the Composite::Base variant,
+/// so it is recommended to call [`CompositeToBaseFilterPlan::optimize`] on the input to ensure
+/// that the entire filter tree will be optimized.
 pub struct AttrValueColumnSelectionOptimizer {}
 
 impl AttrValueColumnSelectionOptimizer {
     pub fn optimize(input: Composite<FilterPlan>) -> Result<Composite<FilterPlan>> {
         match input {
             Composite::Base(filter) => {
-                let expr = filter.source_filter.unwrap();
+                let Some(expr) = filter.source_filter else {
+                    return Ok(Composite::Base(filter));
+                };
 
-                let transformed = expr
-                    .transform_up(|expr| match expr {
-                        Expr::BinaryExpr(mut binary) => {
-                            if Self::is_values_col(&binary.left) {
-                                let new_left = Self::lit_to_col_name(&binary.right).unwrap();
-                                binary.left = Box::new(new_left);
-                                return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
-                            }
-
-                            if Self::is_values_col(&binary.right) {
-                                let new_right = Self::lit_to_col_name(&binary.left).unwrap();
-                                binary.right = Box::new(new_right);
-                                return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
-                            }
-
-                            return Ok(Transformed::no(Expr::BinaryExpr(binary)));
+                let transformed = expr.transform_up(|expr| match expr {
+                    Expr::BinaryExpr(mut binary) => {
+                        if Self::is_values_col(&binary.left) {
+                            Self::replace_left(&mut binary)?;
+                            return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
                         }
-                        _ => Ok(Transformed::no(expr)),
-                    })
-                    .unwrap();
 
-                println!("optimized expr = {:?}", transformed.data);
+                        if Self::is_values_col(&binary.right) {
+                            Self::replace_right(&mut binary)?;
+                            return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+                        }
+
+                        Ok(Transformed::no(Expr::BinaryExpr(binary)))
+                    }
+                    _ => Ok(Transformed::no(expr)),
+                })?;
+
                 Ok(Composite::Base(FilterPlan::from(transformed.data)))
             }
             _ => Ok(input),
@@ -288,24 +298,49 @@ impl AttrValueColumnSelectionOptimizer {
 
     fn is_values_col(expr: &Expr) -> bool {
         match expr {
-            Expr::Column(col) => col.name() == "value",
+            Expr::Column(col) => col.name() == VALUE_FIELD_NAME,
             _ => false,
         }
     }
 
-    fn lit_to_col_name(expr: &Expr) -> Option<Expr> {
+    fn replace_left(binary: &mut BinaryExpr) -> std::result::Result<(), DataFusionError> {
+        let new_left = Self::to_col_name_from_epr_type(&binary.right).ok_or_else(|| {
+            DataFusionError::Plan(
+                format!("Could not determine physical column for values virtual column in expression {binary}")
+            )
+        })?;
+        *binary.left = new_left;
+
+        Ok(())
+    }
+
+    fn replace_right(binary: &mut BinaryExpr) -> std::result::Result<(), DataFusionError> {
+        let new_right = Self::to_col_name_from_epr_type(&binary.left).ok_or_else(|| {
+            DataFusionError::Plan(
+                format!("Could not determine physical column for values virtual column in expression {binary}")
+            )
+        })?;
+        *binary.right = new_right;
+
+        Ok(())
+    }
+
+    /// return the column type by examining the type returned by the expression
+    fn to_col_name_from_epr_type(expr: &Expr) -> Option<Expr> {
+        // TODO the logic in here isn't yet very sophisticated yet, but column values/literal
+        // are the only types of arguments the expression planner for attributes pipelines
+        // currently supports. As we support additional, this logic will need to be amended and
+        // it may be safer to reimplement it by calling expr.get_type() with a representative
+        // attributes batch schema
+
         match expr {
-            // TODO ... making a big assumption the other side is always a literal ...
-            // TODO - tests
             Expr::Literal(scalar_val, _) => Some(match scalar_val.data_type() {
                 DataType::Binary => col(consts::ATTRIBUTE_BYTES),
                 DataType::Boolean => col(consts::ATTRIBUTE_BOOL),
                 DataType::Utf8 => col(consts::ATTRIBUTE_STR),
                 DataType::Float64 => col(consts::ATTRIBUTE_DOUBLE),
                 dt if dt.is_integer() => col(consts::ATTRIBUTE_INT),
-                _ => {
-                    todo!("other expr type")
-                }
+                _ => return None,
             }),
             _ => None,
         }

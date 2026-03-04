@@ -202,6 +202,7 @@ pub struct PlannedPipeline {
 
 impl PlannedPipeline {
     /// Create a new instance of [`PlannedPipeline`]
+    #[must_use]
     pub fn new(stages: Vec<Box<dyn PipelineStage>>, session_context: SessionContext) -> Self {
         let state = session_context.state();
         let task_context = Arc::new(TaskContext::from(&state));

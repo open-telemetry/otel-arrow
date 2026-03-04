@@ -21,10 +21,14 @@ use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
 
-/// TODO API docs
+/// Implementation of [`PipelineStage`] that performs transformations directly on a stream of
+/// attribute record batches. It contains a set of inner pipeline stages that have the capability
+/// to transform attributes record batches directly by calling `execute_on_attributes` method.
 pub struct ApplyToAttributesPipelineStage {
+    /// Identifier of which attributes record batch to apply the inner pipeline
     attributes_id: AttributesIdentifier,
 
+    /// Pipeline stages that will be applied to each attributes record batch
     pipeline_stages: Vec<Box<dyn PipelineStage>>,
 }
 
@@ -59,8 +63,10 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
             AttributesIdentifier::NonRoot(payload_type) => *payload_type,
         };
 
-        // TODO - can we avoid unwrapping and cloning here?
-        let mut curr_batch = otap_batch.get(attrs_payload_type).unwrap().clone();
+        let Some(mut curr_batch) = otap_batch.get(attrs_payload_type).cloned() else {
+            // nothing to do - just return the original batch
+            return Ok(otap_batch);
+        };
 
         for pipeline_stage in &mut self.pipeline_stages {
             curr_batch = pipeline_stage
@@ -74,7 +80,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
                 .await?;
         }
 
-        // replace record batch
+        // replace record batch with pipeline result
         otap_batch.set(attrs_payload_type, curr_batch);
 
         Ok(otap_batch)
