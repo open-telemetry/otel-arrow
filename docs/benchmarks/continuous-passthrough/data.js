@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772658365295,
+  "lastUpdate": 1772660148750,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "8c726ba2cb1ff2463db6c67ed0f03b102d322a54",
-          "message": "OTLP receiver: enable HTTP-only mode (#1925)\n\n# Change Summary\n\nThis PR restructures the OTLP receiver configuration to support flexible\nprotocol deployment modes, aligning with the Go collector's otlpreceiver\nmodel:\n- gRPC only - Configure only protocols.grpc\n- HTTP only - Configure only protocols.http (new!)\n  - Both protocols - Configure both with a global concurrency cap   \n\n## Key Changes\n### Configuration restructure:\n- Moved from flat config to protocols.grpc / protocols.http structure\n- TLS configuration is now per-protocol (under each protocol's config)\n- At least one protocol must be configured (validated at startup)\n### Concurrency model for dual-protocol mode:\n- Each protocol enforces its own max_concurrent_requests limit\n- When both protocols are enabled, an additional global semaphore caps\ncombined load to prevent exceeding downstream capacity\n- Permits acquired in consistent order (global -> local) to prevent\ndeadlocks\n\n## What issue does this PR close?\n\n* Closes #1893\n\n## How are these changes tested?\n\n Manual tested, along with unit tests.\n\n## Are there any user-facing changes?\n\n⚠️ Breaking change: The OTLP receiver configuration format has changed.\n  **_Before_**:\n\n```yaml                                                                                              \n  config:                                                                                                                                                                             \n    listening_addr: \"127.0.0.1:4317\"                                                                                                                                                  \n    tls:                                                                                                                                                                              \n      cert_file: \"/path/to/cert\"                                                                                                                                                      \n    http:                                                                                                                                                                             \n      listening_addr: \"127.0.0.1:4318\"\n```\n  **_After_**:\n\n```yaml                                                                                                                                                                   \n  config:                                                                                                                                                                             \n    protocols:                                                                                                                                                                        \n      grpc:                                                                                                                                                                           \n        listening_addr: \"127.0.0.1:4317\"                                                                                                                                              \n        tls:                                                                                                                                                                          \n          cert_file: \"/path/to/cert\"                                                                                                                                                  \n      http:                                                                                                                                                                           \n        listening_addr: \"127.0.0.1:4318\"                                                                                                                                              \n        tls:                                                                                                                                                                          \n          cert_file: \"/path/to/cert\"\n```\nRefer to `otlp_receiver.md` (updated in this PR) for more details.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
-          "timestamp": "2026-02-05T07:37:32Z",
-          "tree_id": "eb856afc70e086d0007c667769f06b8d6a12ebf1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8c726ba2cb1ff2463db6c67ed0f03b102d322a54"
-        },
-        "date": 1770280995460,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.2983384132385254,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.40433413630542,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.85078608938115,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.544010416666666,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.40625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 519207.1554230734,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 525948.2215854845,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002378,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11417712.903308954,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11364124.388817286,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11369902.929236421,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "74a4a5e519ad661d447350db468f6f5b9b886295",
+          "message": "feat(otap): add HTTPS proxy support for gRPC exporters (#2177)\n\nFixes: #1710 \n\n  ### Description:\n\nAdds support for `https://` proxy URLs in the OTLP/gRPC and OTAP/gRPC\nexporters, enabling TLS (and optionally mTLS) connections to the proxy\nserver itself.\n  \nPreviously, proxy URLs were restricted to `http://` - the connection to\nthe proxy was always plaintext, even when the tunneled traffic to the\nbackend was encrypted. This doesn't work in enterprise environments\nwhere proxy servers require TLS connections.\n\n   ## Changes\n   \n- **`proxy.rs`**: Accept `https://` proxy URLs (gated behind\n`experimental-tls`). Perform a TLS handshake with the proxy before\nsending the HTTP CONNECT request. Refactored\n`http_connect_tunnel_on_stream` to\nbe generic over `AsyncRead + AsyncWrite` instead of\n`TcpStream`-specific.\n- **`client_settings.rs`**: Updated connector return type to\n`ProxyTcpStream` (trait object supporting both plain and TLS streams).\n- **`proxy-support.md`**: Removed \"No HTTPS to proxy\" limitation, added\nHTTPS proxy configuration examples including the new `proxy.tls` block.\n   \n   ## Configuration\n   \n \n   ### Simple case — TLS to proxy, system CAs\n   \n ```yaml\n   nodes:\n     exporter:\n       type: exporter:otlp\n       config:\n         grpc_endpoint: \"https://telemetry.backend.com:4317\"\n         proxy:\n           https_proxy: \"https://secure-proxy.corp.com:8443\"\n```\n\n  Or via environment variable:\n```bash\n   export HTTPS_PROXY=https://secure-proxy.corp.com:8443\n```\n\n### Full case — separate TLS/mTLS for proxy and backend\n\n```yaml\n   nodes:\n     exporter:\n       type: exporter:otlp\n       config:\n         grpc_endpoint: \"https://telemetry.backend.com:4317\"\n   \n         # TLS/mTLS to the backend server (inside the tunnel)\n         tls:\n           ca_file: \"/etc/ssl/certs/backend-ca.pem\"\n           cert_file: \"/etc/ssl/certs/backend-client.pem\"\n           key_file: \"/etc/ssl/private/backend-client-key.pem\"\n           server_name_override: \"telemetry.backend.com\"\n   \n         # HTTPS proxy with its own TLS/mTLS\n         proxy:\n           https_proxy: \"https://secure-proxy.corp.com:8443\"\n           no_proxy: \"localhost,*.internal,10.0.0.0/8\"\n           tls:\n             ca_file: \"/etc/ssl/certs/proxy-ca.pem\"\n             cert_file: \"/etc/ssl/certs/proxy-client.pem\"\n             key_file: \"/etc/ssl/private/proxy-client-key.pem\"\n             server_name_override: \"secure-proxy.corp.com\"\n```\n\n  This supports two independent trust chains — the proxy and backend can use different CAs, different client certificates, and different SNI names.",
+          "timestamp": "2026-03-04T20:13:07Z",
+          "tree_id": "7b195c9085cdaf3efb245bef9f725d97844750ba",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/74a4a5e519ad661d447350db468f6f5b9b886295"
+        },
+        "date": 1772660148121,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.1621811389923096,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.47291901566949,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.85508788203337,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 55.22473958333333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 56.52734375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 485424.4553051551,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 495920.21145375393,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001394,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11358712.874028418,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11300228.97214956,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
