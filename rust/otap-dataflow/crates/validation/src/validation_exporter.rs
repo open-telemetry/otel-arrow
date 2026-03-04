@@ -28,6 +28,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
@@ -37,16 +38,11 @@ pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:exporter:validation";
 #[derive(Debug, Deserialize)]
 struct ValidationExporterConfig {
     suv_input: NodeName,
-    control_input: NodeName,
-    /// Validation rules to run. Defaults to a single equivalence check.
-    #[serde(default = "ValidationExporterConfig::default_validations")]
+    #[serde(default)]
+    control_inputs: Vec<NodeName>,
+    /// Validation rules to run.
+    #[serde(default)]
     validations: Vec<ValidationInstructions>,
-}
-
-impl ValidationExporterConfig {
-    fn default_validations() -> Vec<ValidationInstructions> {
-        vec![ValidationInstructions::Equivalence]
-    }
 }
 
 #[metric_set(name = "validation.exporter.metrics")]
@@ -68,10 +64,10 @@ struct ValidationExporterMetrics {
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
 pub struct ValidationExporter {
     suv_index: usize,
-    control_index: usize,
+    control_indices: HashSet<usize>,
     validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
-    suv_msgs: Vec<OtlpProtoMessage>,
+    suv_msgs: Vec<(OtlpProtoMessage, Duration)>,
     metrics: MetricSet<ValidationExporterMetrics>,
 }
 
@@ -97,15 +93,10 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage, time_elapsed: Duration) {
+    fn validate_and_record(&mut self) {
         let mut valid = true;
         for validate in &self.validations {
-            valid &= validate.validate(
-                &self.control_msgs,
-                &self.suv_msgs,
-                &received_suv_msg,
-                &time_elapsed,
-            );
+            valid &= validate.validate(&self.control_msgs, &self.suv_msgs);
         }
 
         if valid {
@@ -133,17 +124,19 @@ impl ValidationExporter {
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: format!("unknown node name for suv_input: {}", config.suv_input),
             })?;
-        let control_node = pipeline_ctx
-            .node_by_name(&config.control_input)
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: format!(
-                    "unknown node name for control_input: {}",
-                    config.control_input
-                ),
-            })?;
+        let mut control_indices = HashSet::new();
+        for ctrl in config.control_inputs.iter() {
+            let ctrl_node =
+                pipeline_ctx
+                    .node_by_name(ctrl)
+                    .ok_or_else(|| ConfigError::InvalidUserConfig {
+                        error: format!("unknown node name for control_input: {ctrl}"),
+                    })?;
+            let _ = control_indices.insert(ctrl_node.index);
+        }
         Ok(Self {
             suv_index: suv_node.index,
-            control_index: control_node.index,
+            control_indices,
             validations: config.validations,
             metrics,
             control_msgs: Vec::new(),
@@ -181,18 +174,23 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
-                    if let Some(msg) = msg
-                        && let Some(node_index) = source_node
-                    {
-                        if node_index == self.suv_index {
-                            self.suv_msgs.push(msg.clone());
-                            self.validate_and_record(msg, time_elapsed);
+                    if let Some(msg) = msg {
+                        if let Some(node_index) = source_node {
+                            if node_index == self.suv_index {
+                                self.suv_msgs.push((msg, time_elapsed));
+                                self.validate_and_record();
+                                time = Instant::now();
+                            } else if self.control_indices.contains(&node_index) {
+                                self.control_msgs.push(msg);
+                                self.validate_and_record();
+                            }
+                        } else if self.control_indices.is_empty() {
+                            self.suv_msgs.push((msg, time_elapsed));
+                            self.validate_and_record();
                             time = Instant::now();
-                        } else if node_index == self.control_index {
-                            self.control_msgs.push(msg);
+                        } else {
+                            otel_error!("validation.missing.source");
                         }
-                    } else {
-                        otel_error!("validation.missing.source");
                     }
                 }
                 _ => {}
