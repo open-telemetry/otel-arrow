@@ -111,7 +111,7 @@ impl Scenario {
         let rendered_group = self.render_template()?;
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
-        println!("{rendered_group}");
+
         tokio_rt.block_on(async move {
             run_pipelines_with_timeout(
                 rendered_group,
