@@ -122,6 +122,21 @@ strategy (in order):
 > preserved in the `body` field to help identify devices sending non-standard
 > data.
 
+### Detected Input Format (`input.format`)
+
+Every log record emitted by this receiver includes an `input.format` attribute
+indicating the format that was detected by the auto-detection logic above.
+This allows downstream processors to filter, route, or transform records based
+on the originating format without re-inspecting the content.
+
+| `input.format` Value | Description |
+| -------------------- | ----------- |
+| `rfc5424` | RFC 5424 syslog message |
+| `rfc3164` | RFC 3164 (BSD) syslog message |
+| `cef` | Raw CEF message (no syslog header) |
+| `cef_rfc5424` | CEF message wrapped in an RFC 5424 syslog header |
+| `cef_rfc3164` | CEF message wrapped in an RFC 3164 syslog header |
+
 ### RFC 5424 Parsing
 
 RFC 5424 messages follow this structure:
@@ -151,6 +166,7 @@ RFC 5424 messages follow this structure:
 
 | Attribute | Value |
 | --------- | ----- |
+| `input.format` | `rfc5424` |
 | `syslog.version` | `1` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |
@@ -187,6 +203,7 @@ RFC 3164 messages follow this structure:
 
 | Attribute | Value |
 | --------- | ----- |
+| `input.format` | `rfc3164` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |
 | `syslog.host_name` | `mymachine` |
@@ -230,6 +247,7 @@ CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 d
 
 | Attribute | Value |
 | --------- | ----- |
+| `input.format` | `cef` |
 | `cef.version` | `0` |
 | `cef.device_vendor` | `Security` |
 | `cef.device_product` | `threatmanager` |
@@ -269,6 +287,7 @@ are parsed:
 
 | Attribute | Value |
 | --------- | ----- |
+| `input.format` | `cef_rfc5424` |
 | `syslog.version` | `1` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |

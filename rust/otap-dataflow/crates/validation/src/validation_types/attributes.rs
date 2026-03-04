@@ -78,61 +78,69 @@ pub(crate) fn collect_attributes<'a>(
 
 /// Validate that none of the provided keys appear in the selected domains.
 pub(crate) fn validate_deny_keys(
-    message: &OtlpProtoMessage,
+    messages: &[OtlpProtoMessage],
     domains: &[AttributeDomain],
     keys: &[String],
 ) -> bool {
-    collect_attributes(message, domains)
-        .into_iter()
-        .all(|attrs| {
-            keys.iter()
-                .all(|deny| attrs.iter().all(|kv| deny != &kv.key))
-        })
+    messages.iter().all(|message| {
+        collect_attributes(message, domains)
+            .into_iter()
+            .all(|attrs| {
+                keys.iter()
+                    .all(|deny| attrs.iter().all(|kv| deny != &kv.key))
+            })
+    })
 }
 
 /// Validate that all provided keys are present in each attribute list for the selected domains.
 pub(crate) fn validate_require_keys(
-    message: &OtlpProtoMessage,
+    messages: &[OtlpProtoMessage],
     domains: &[AttributeDomain],
     keys: &[String],
 ) -> bool {
-    collect_attributes(message, domains)
-        .into_iter()
-        .all(|attrs| keys.iter().all(|req| attrs.iter().any(|kv| req == &kv.key)))
+    messages.iter().all(|message| {
+        collect_attributes(message, domains)
+            .into_iter()
+            .all(|attrs| keys.iter().all(|req| attrs.iter().any(|kv| req == &kv.key)))
+    })
 }
 
 /// Validate that all provided key/value pairs are present in each attribute list for the selected domains.
 pub(crate) fn validate_require_key_values(
-    message: &OtlpProtoMessage,
+    messages: &[OtlpProtoMessage],
     domains: &[AttributeDomain],
     pairs: &[KeyValue],
 ) -> bool {
     let pairs_proto_kv: Vec<ProtoKeyValue> = pairs.iter().filter_map(keyvalue_to_proto).collect();
 
-    collect_attributes(message, domains)
-        .into_iter()
-        .all(|attrs| {
-            pairs_proto_kv.iter().all(|req| {
-                attrs
-                    .iter()
-                    .any(|kv| kv.key == req.key && kv.value == req.value)
+    messages.iter().all(|message| {
+        collect_attributes(message, domains)
+            .into_iter()
+            .all(|attrs| {
+                pairs_proto_kv.iter().all(|req| {
+                    attrs
+                        .iter()
+                        .any(|kv| kv.key == req.key && kv.value == req.value)
+                })
             })
-        })
+    })
 }
 
 /// Validate that no attribute list contains duplicate keys.
-pub(crate) fn validate_no_duplicate_keys(message: &OtlpProtoMessage) -> bool {
+pub(crate) fn validate_no_duplicate_keys(messages: &[OtlpProtoMessage]) -> bool {
     let domains = vec![
         AttributeDomain::Resource,
         AttributeDomain::Scope,
         AttributeDomain::Signal,
     ];
-    collect_attributes(message, &domains)
-        .into_iter()
-        .all(|attrs| {
-            let mut seen = std::collections::HashSet::new();
-            attrs.iter().all(|kv| seen.insert(&kv.key))
-        })
+    messages.iter().all(|message| {
+        collect_attributes(message, &domains)
+            .into_iter()
+            .all(|attrs| {
+                let mut seen = std::collections::HashSet::new();
+                attrs.iter().all(|kv| seen.insert(&kv.key))
+            })
+    })
 }
 
 /// helper to extract attributes from logs
@@ -398,7 +406,7 @@ mod tests {
         };
         let msg = OtlpProtoMessage::Logs(logs.clone());
         assert!(validate_require_keys(
-            &msg,
+            &[msg],
             &[
                 AttributeDomain::Resource,
                 AttributeDomain::Scope,
@@ -416,7 +424,7 @@ mod tests {
             .clear();
         let missing_scope = OtlpProtoMessage::Logs(logs);
         assert!(!validate_require_keys(
-            &missing_scope,
+            &[missing_scope],
             &[
                 AttributeDomain::Resource,
                 AttributeDomain::Scope,
@@ -453,7 +461,7 @@ mod tests {
         };
         let msg = OtlpProtoMessage::Logs(logs);
         assert!(!validate_deny_keys(
-            &msg,
+            &[msg],
             &[AttributeDomain::Signal],
             &[String::from("forbidden")]
         ));
