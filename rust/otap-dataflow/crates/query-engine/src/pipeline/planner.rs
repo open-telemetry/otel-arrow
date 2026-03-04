@@ -559,7 +559,7 @@ impl PipelinePlanner {
                 }
                 _ => None,
             },
-            2 => match (&selectors[1], &selectors[0]) {
+            2 => match (&selectors[0], &selectors[1]) {
                 (
                     ScalarExpression::Static(StaticScalarExpression::String(column0)),
                     ScalarExpression::Static(StaticScalarExpression::String(column1)),

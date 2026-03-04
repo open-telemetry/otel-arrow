@@ -97,8 +97,9 @@ mod test {
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
-                common::v1::{AnyValue, KeyValue},
-                logs::v1::LogRecord,
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                resource::v1::Resource,
             },
         },
         testing::{equiv::assert_equivalent, round_trip::to_logs_data},
@@ -183,6 +184,80 @@ mod test {
                 ])
                 .finish(),
         ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removing_resource_attributes() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![
+                    KeyValue::new("ka", AnyValue::new_string("a")),
+                    KeyValue::new("kb", AnyValue::new_string("b")),
+                ])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = r#"
+            logs | apply resource.attributes {
+                where matches(value, ".*a")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new("ka", AnyValue::new_string("a"))])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removing_scope_attributes() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(vec![
+                        KeyValue::new("ka", AnyValue::new_string("a")),
+                        KeyValue::new("kb", AnyValue::new_string("b")),
+                    ])
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = r#"
+            logs | apply instrumentation_scope.attributes {
+                where matches(value, ".*a")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(vec![KeyValue::new("ka", AnyValue::new_string("a"))])
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
 
         assert_equivalent(
             &[OtlpProtoMessage::Logs(result)],
