@@ -9,9 +9,22 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, TRecord>,
     logical_expression: &'a LogicalExpression,
 ) -> Result<bool, ExpressionError> {
+    execute_logical_expression_with_options(
+        execution_context,
+        logical_expression,
+        SelectionOptions::new(),
+    )
+}
+
+pub fn execute_logical_expression_with_options<'a, TRecord: Record>(
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
+    logical_expression: &'a LogicalExpression,
+    selection_options: SelectionOptions,
+) -> Result<bool, ExpressionError> {
     let value = match logical_expression {
         LogicalExpression::Scalar(s) => {
-            let value = execute_scalar_expression(execution_context, s)?;
+            let value =
+                execute_scalar_expression_with_options(execution_context, s, selection_options)?;
 
             if let Some(b) = value.to_value().convert_to_bool() {
                 b
@@ -26,9 +39,17 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             }
         }
         LogicalExpression::EqualTo(e) => {
-            let left = execute_scalar_expression(execution_context, e.get_left())?;
+            let left = execute_scalar_expression_with_options(
+                execution_context,
+                e.get_left(),
+                selection_options.clone(),
+            )?;
 
-            let right = execute_scalar_expression(execution_context, e.get_right())?;
+            let right = execute_scalar_expression_with_options(
+                execution_context,
+                e.get_right(),
+                selection_options,
+            )?;
 
             Value::are_values_equal(
                 e.get_query_location(),
@@ -38,37 +59,79 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             )?
         }
         LogicalExpression::GreaterThan(g) => {
-            let left = execute_scalar_expression(execution_context, g.get_left())?;
+            let left = execute_scalar_expression_with_options(
+                execution_context,
+                g.get_left(),
+                selection_options.clone(),
+            )?;
 
-            let right = execute_scalar_expression(execution_context, g.get_right())?;
+            let right = execute_scalar_expression_with_options(
+                execution_context,
+                g.get_right(),
+                selection_options,
+            )?;
 
             Value::compare_values(g.get_query_location(), &left.to_value(), &right.to_value())? > 0
         }
         LogicalExpression::GreaterThanOrEqualTo(g) => {
-            let left = execute_scalar_expression(execution_context, g.get_left())?;
+            let left = execute_scalar_expression_with_options(
+                execution_context,
+                g.get_left(),
+                selection_options.clone(),
+            )?;
 
-            let right = execute_scalar_expression(execution_context, g.get_right())?;
+            let right = execute_scalar_expression_with_options(
+                execution_context,
+                g.get_right(),
+                selection_options,
+            )?;
 
             Value::compare_values(g.get_query_location(), &left.to_value(), &right.to_value())? >= 0
         }
-        LogicalExpression::Not(n) => {
-            !execute_logical_expression(execution_context, n.get_inner_expression())?
-        }
+        LogicalExpression::Not(n) => !execute_logical_expression_with_options(
+            execution_context,
+            n.get_inner_expression(),
+            selection_options,
+        )?,
         LogicalExpression::And(a) => {
-            match execute_logical_expression(execution_context, a.get_left())? {
+            match execute_logical_expression_with_options(
+                execution_context,
+                a.get_left(),
+                selection_options.clone(),
+            )? {
                 false => false,
-                true => execute_logical_expression(execution_context, a.get_right())?,
+                true => execute_logical_expression_with_options(
+                    execution_context,
+                    a.get_right(),
+                    selection_options,
+                )?,
             }
         }
         LogicalExpression::Or(o) => {
-            match execute_logical_expression(execution_context, o.get_left())? {
+            match execute_logical_expression_with_options(
+                execution_context,
+                o.get_left(),
+                selection_options.clone(),
+            )? {
                 true => true,
-                false => execute_logical_expression(execution_context, o.get_right())?,
+                false => execute_logical_expression_with_options(
+                    execution_context,
+                    o.get_right(),
+                    selection_options,
+                )?,
             }
         }
         LogicalExpression::Contains(c) => {
-            let haystack = execute_scalar_expression(execution_context, c.get_haystack())?;
-            let needle = execute_scalar_expression(execution_context, c.get_needle())?;
+            let haystack = execute_scalar_expression_with_options(
+                execution_context,
+                c.get_haystack(),
+                selection_options.clone(),
+            )?;
+            let needle = execute_scalar_expression_with_options(
+                execution_context,
+                c.get_needle(),
+                selection_options,
+            )?;
 
             Value::contains(
                 c.get_query_location(),
@@ -78,8 +141,16 @@ pub fn execute_logical_expression<'a, TRecord: Record>(
             )?
         }
         LogicalExpression::Matches(m) => {
-            let haystack = execute_scalar_expression(execution_context, m.get_haystack())?;
-            let pattern = execute_scalar_expression(execution_context, m.get_pattern())?;
+            let haystack = execute_scalar_expression_with_options(
+                execution_context,
+                m.get_haystack(),
+                selection_options.clone(),
+            )?;
+            let pattern = execute_scalar_expression_with_options(
+                execution_context,
+                m.get_pattern(),
+                selection_options,
+            )?;
 
             Value::matches(
                 m.get_query_location(),

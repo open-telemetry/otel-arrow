@@ -48,7 +48,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 /// The URN for the OTLP exporter
-pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
+pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp";
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
@@ -62,7 +62,7 @@ pub struct Config {
     pub max_in_flight: usize,
 }
 
-const fn default_max_in_flight() -> usize {
+pub(crate) const fn default_max_in_flight() -> usize {
     5
 }
 
@@ -88,6 +88,8 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTLPExporter {
@@ -224,7 +226,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    otel_info!("otlp.exporter.shutdown");
+                    otel_info!("otlp.exporter.grpc.shutdown");
                     debug_assert!(
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
@@ -479,7 +481,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
     make_future: MakeFuture,
-    inflight: &mut InFlightExports<Fut>,
+    inflight: &mut InFlightExports<Fut, CompletedExport>,
     failed_counter: &mut Counter<u64>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
@@ -596,37 +598,37 @@ fn make_export_future(
 }
 
 /// FIFO-ish wrapper around the in-flight export RPCs.
-struct InFlightExports<Fut>
+pub(crate) struct InFlightExports<Fut, Output>
 where
-    Fut: Future<Output = CompletedExport>,
+    Fut: Future<Output = Output>,
 {
     futures: FuturesUnordered<Fut>,
 }
 
-impl<Fut> InFlightExports<Fut>
+impl<Fut, Output> InFlightExports<Fut, Output>
 where
-    Fut: Future<Output = CompletedExport>,
+    Fut: Future<Output = Output>,
 {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             futures: FuturesUnordered::new(),
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.futures.len()
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.futures.is_empty()
     }
 
-    fn push(&mut self, future: Fut) {
+    pub(crate) fn push(&mut self, future: Fut) {
         self.futures.push(future);
     }
 
     /// Returns a future that resolves once the next export finishes.
-    fn next_completion(&mut self) -> impl Future<Output = Option<CompletedExport>> + '_ {
+    pub(crate) fn next_completion(&mut self) -> impl Future<Output = Option<Output>> + '_ {
         self.futures.next()
     }
 }

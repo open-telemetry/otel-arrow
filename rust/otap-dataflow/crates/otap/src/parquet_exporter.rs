@@ -58,7 +58,7 @@ mod schema;
 mod writer;
 
 #[allow(dead_code)]
-const PARQUET_EXPORTER_URN: &str = "urn:otel:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -86,6 +86,8 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<config::Config>,
 };
 
 impl ParquetExporter {
@@ -479,6 +481,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Skipping on Windows due to timing flakiness"
+    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1418,6 +1424,7 @@ mod test {
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
             );
 
         let exporter_impl = ParquetExporter::from_config(

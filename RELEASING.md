@@ -1,6 +1,7 @@
 # Releasing
 
-This document describes the release process for Go components in the OTel Arrow repository.
+This document describes the release process for Go components in the OTel
+Arrow repository.
 
 ## Overview
 

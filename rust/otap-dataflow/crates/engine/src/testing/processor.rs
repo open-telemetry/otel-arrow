@@ -8,6 +8,7 @@
 
 use crate::config::ProcessorConfig;
 use crate::control::pipeline_ctrl_msg_channel;
+use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
@@ -89,6 +90,18 @@ impl<PData> TestContext<PData> {
         sleep(duration).await;
     }
 
+    /// Sets whether outgoing messages need source node tagging on the effect handler.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.set_source_tagging(value);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.set_source_tagging(value);
+            }
+        }
+    }
+
     /// Sets the pipeline control message sender on the effect handler.
     /// This is needed for processor ACK/NACK handling.
     pub fn set_pipeline_ctrl_sender(
@@ -118,9 +131,9 @@ impl ValidateContext {
     }
 }
 
-/// The name of the out_port that will be configured automatically on the [`ProcessorWrapper`] by
+/// The name of the output that will be configured automatically on the [`ProcessorWrapper`] by
 /// the [`TestRuntime`].
-pub const TEST_OUT_PORT_NAME: &str = "out";
+pub const TEST_OUT_PORT_NAME: &str = "default";
 
 /// A test runtime for simplifying processor tests.
 ///

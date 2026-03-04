@@ -65,7 +65,7 @@ mod metrics;
 use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
-pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:attribute:processor";
+pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.
@@ -471,6 +471,8 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
                  proc_cfg: &ProcessorConfig| {
             create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
 // Pre-computed arrays for all domain combinations

@@ -60,7 +60,7 @@ corresponds to a specific phase or aspect of orchestrated test execution. This
 section provides an overview of each type and what it is responsible for.
 
 | Plugin Type                | Base Class                    | Purpose                                                                 |
-|----------------------------|-------------------------------|-------------------------------------------------------------------------|
+| -------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
 | **Configuration Strategy** | `ConfigurationStrategy`       | Prepares config files or settings before deployment                     |
 | **Deployment Strategy**    | `DeploymentStrategy`          | Launches components into the test environment (e.g., Docker, processes) |
 | **Execution Strategy**     | `ExecutionStrategy`           | Drives component behavior during the test (send traffic, run scripts)   |
@@ -170,11 +170,11 @@ Each plugin file typically contains both the `*Config` class and the strategy cl
 
 Every plugin class can define a `PLUGIN_META` attribute with the following fields:
 
-| Field               | Purpose                                              |
-|---------------------|------------------------------------------------------|
-| `supported_contexts` | List of context types the plugin supports                      |
-| `installs_hooks`     | Hook types the plugin automatically installs (if any)          |
-| `yaml_example`       | Example YAML block showing how to use the plugin               |
+| Field                | Purpose                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| `supported_contexts` | List of context types the plugin supports                       |
+| `installs_hooks`     | Hook types the plugin automatically installs (if any)           |
+| `yaml_example`       | Example YAML block showing how to use the plugin                |
 | `cli_flags`          | List of additional cli flags to inject into the argparse parser |
 
 This metadata is used by documentation generators, validation tools, and helps
@@ -221,14 +221,14 @@ suite definitions.
 
 Each plugin type has its own registry:
 
-| Registry Name              | Plugin Type           | Decorators                     |
-|----------------------------|------------------------|--------------------------------|
-| `deployment_registry`      | DeploymentStrategy     | `@deployment_registry.register_class` |
-| `execution_registry`       | ExecutionStrategy      | `@execution_registry.register_class`  |
-| `monitoring_registry`      | MonitoringStrategy     | `@monitoring_registry.register_class` |
-| `hook_registry`            | HookStrategy           | `@hook_registry.register_class`      |
-| `reporting_registry`       | ReportingHookStrategy  | `@reporting_registry.register_class` |
-| `configuration_registry`   | ConfigurationStrategy  | `@configuration_registry.register_class` |
+| Registry Name              | Plugin Type            | Decorators                                  |
+| -------------------------- | ---------------------- | ------------------------------------------- |
+| `deployment_registry`      | DeploymentStrategy     | `@deployment_registry.register_class`       |
+| `execution_registry`       | ExecutionStrategy      | `@execution_registry.register_class`        |
+| `monitoring_registry`      | MonitoringStrategy     | `@monitoring_registry.register_class`       |
+| `hook_registry`            | HookStrategy           | `@hook_registry.register_class`             |
+| `reporting_registry`       | ReportingHookStrategy  | `@reporting_registry.register_class`        |
+| `configuration_registry`   | ConfigurationStrategy  | `@configuration_registry.register_class`    |
 | `test_step_action_registry`| TestStepAction         | `@test_step_action_registry.register_class` |
 
 Each of these also supports `register_config(...)` for registering the
@@ -274,8 +274,8 @@ Each plugin receives a specific **context object** when invoked. These are
 defined in `lib/core/context/` and contain relevant information for the plugin's
 scope.
 
-| Context Class                    | Used By                    | Description                                                                 |
-|----------------------------------|----------------------------|-----------------------------------------------------------------------------|
+| Context Class                    | Used By                               | Description                                                                 |
+| -------------------------------- | ------------------------------------- | --------------------------------------------------------------------------- |
 | `BaseContext`                    | Base Class for all Context Types      | Provides core features: logging, telemetry, runtime info                    |
 | `FrameworkElementContext`        | Inherited Class suite/step/scenario   | Base class for contexts created for Suite, Scenario, Steps main execution   |
 | `SuiteContext`                   | Indirect access by any descendant ctx | Root CTX instance in the hierarchy, holds shared runtimes, telemetry, etc   |
@@ -392,13 +392,13 @@ framework to parse and validate user-provided YAML configuration.
 
 Most plugin types have a corresponding base config class defined under `lib/core/strategies/`:
 
-| Plugin Type         | Base Config Class          |
-|---------------------|----------------------------|
-| HookStrategy        | `HookStrategyConfig`       |
-| ExecutionStrategy   | `ExecutionStrategyConfig`  |
+| Plugin Type           | Base Config Class             |
+| --------------------- | ----------------------------- |
+| HookStrategy          | `HookStrategyConfig`          |
+| ExecutionStrategy     | `ExecutionStrategyConfig`     |
 | ReportingHookStrategy | `ReportingHookStrategyConfig` |
-| DeploymentStrategy  | `DeploymentStrategyConfig` |
-| MonitoringStrategy  | `MonitoringStrategyConfig` |
+| DeploymentStrategy    | `DeploymentStrategyConfig`    |
+| MonitoringStrategy    | `MonitoringStrategyConfig`    |
 | ConfigurationStrategy | `ConfigurationStrategyConfig` |
 
 Your config class should inherit from the appropriate base class.
@@ -476,13 +476,13 @@ interacts with the framework through provided context objects.
 Choose the appropriate base class from `lib/core/strategies/` according to your
 plugin type:
 
-| Plugin Type         | Base Class             |
-|---------------------|------------------------|
-| HookStrategy        | `HookStrategy`          |
-| ExecutionStrategy   | `ExecutionStrategy`     |
+| Plugin Type           | Base Class              |
+| --------------------- | ----------------------- |
+| HookStrategy          | `HookStrategy`          |
+| ExecutionStrategy     | `ExecutionStrategy`     |
 | ReportingHookStrategy | `ReportingHookStrategy` |
-| DeploymentStrategy  | `DeploymentStrategy`    |
-| MonitoringStrategy  | `MonitoringStrategy`    |
+| DeploymentStrategy    | `DeploymentStrategy`    |
+| MonitoringStrategy    | `MonitoringStrategy`    |
 | ConfigurationStrategy | `ConfigurationStrategy` |
 
 Your plugin class should inherit from the relevant base.
@@ -508,8 +508,8 @@ Store the config instance for use during execution.
 Define the main method(s) the framework calls to trigger plugin behavior.
 This differs by plugin type:
 
-| Plugin Type       | Typical Method(s) to Implement       | Purpose                            |
-|-------------------|--------------------------------------|------------------------------------|
+| Plugin Type           | Typical Method(s) to Implement         | Purpose                      |
+| --------------------- | -------------------------------------- | ---------------------------- |
 | HookStrategy          | execute(self, ctx: BaseContext)        | Run the hook logic           |
 | ReportingHookStrategy | execute(self, ctx: BaseContext)        | Generate reports             |
 | ExecutionStrategy     | start(self, component, ctx)            | Control execution lifecycle  |
@@ -645,15 +645,15 @@ your plugin dynamically by its type name.
 The framework provides specialized registries for different plugin categories,
 all accessible from `lib/runner/registry.py`. Common registries include:
 
-| Registry Name          | Description                         | Typical Plugins Registered         |
-|------------------------|-------------------------------------|------------------------------------|
-| `hook_registry`        | Hook strategies                     | HookStrategy implementations       |
-| `execution_registry`   | Execution strategies                | ExecutionStrategy implementations   |
-| `deployment_registry`  | Deployment strategies               | DeploymentStrategy implementations  |
-| `monitoring_registry`  | Monitoring strategies               | MonitoringStrategy implementations  |
-| `reporting_registry`   | Reporting hooks                     | ReportingHookStrategy implementations|
-| `configuration_registry` | Configuration strategies          | ConfigurationStrategy implementations|
-| `test_step_action_registry` | Test step action implementations | Actions performed in test steps    |
+| Registry Name               | Description                         | Typical Plugins Registered            |
+| --------------------------- | ----------------------------------- | ------------------------------------- |
+| `hook_registry`             | Hook strategies                     | HookStrategy implementations          |
+| `execution_registry`        | Execution strategies                | ExecutionStrategy implementations     |
+| `deployment_registry`       | Deployment strategies               | DeploymentStrategy implementations    |
+| `monitoring_registry`       | Monitoring strategies               | MonitoringStrategy implementations    |
+| `reporting_registry`        | Reporting hooks                     | ReportingHookStrategy implementations |
+| `configuration_registry`    | Configuration strategies            | ConfigurationStrategy implementations |
+| `test_step_action_registry` | Test step action implementations    | Actions performed in test steps       |
 
 ---
 

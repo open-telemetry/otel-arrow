@@ -6,7 +6,7 @@
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Status, TracesData};
 use crate::testing::equiv::canonical::{
     assert_equivalent, canonicalize_any_value, canonicalize_idvec, canonicalize_resource,
-    canonicalize_scope, canonicalize_vec,
+    canonicalize_scope, canonicalize_vec, validate_equivalent,
 };
 
 /// Split a TracesData into individual singleton TracesData messages (one per span).
@@ -94,6 +94,16 @@ pub fn assert_traces_equivalent(left: &[TracesData], right: &[TracesData]) {
         traces_canonicalize_singleton_in_place,
         "TracesData",
     );
+}
+
+/// Validate that two collections of `TracesData` instances are equivalent.
+pub fn validate_traces_equivalent(left: &[TracesData], right: &[TracesData]) -> bool {
+    validate_equivalent(
+        left,
+        right,
+        traces_split_into_singletons,
+        traces_canonicalize_singleton_in_place,
+    )
 }
 
 #[cfg(test)]
@@ -278,6 +288,10 @@ mod tests {
             }],
         };
 
+        assert!(validate_traces_equivalent(
+            std::slice::from_ref(&request1),
+            std::slice::from_ref(&request2)
+        ));
         assert_traces_equivalent(&[request1], &[request2]);
     }
 }

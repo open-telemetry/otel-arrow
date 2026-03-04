@@ -51,8 +51,14 @@
 //!     let data_dir = PathBuf::from("/var/lib/quiver/data");
 //!     let cfg = QuiverConfig::default().with_data_dir(&data_dir);
 //!
-//!     // Configure disk budget (10 GB cap with backpressure)
-//!     let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+//!     // Configure disk budget (10 GB cap with backpressure).
+//!     // for_config() reads segment/WAL sizes from the config and validates
+//!     // that hard_cap >= wal_max + 2 * segment_target.
+//!     let budget = Arc::new(DiskBudget::for_config(
+//!         10 * 1024 * 1024 * 1024,  // 10 GB hard cap
+//!         &cfg,
+//!         RetentionPolicy::Backpressure,
+//!     )?);
 //!     let engine = QuiverEngine::open(cfg, budget).await?;
 //!
 //!     // Register and activate a subscriber
@@ -108,6 +114,9 @@
 //! - `serde`: Enable serialization for configuration types
 //! - `otap-dataflow-integrations`: Enable integration with otap-dataflow types
 
+// Declare logging module first so macros are available to subsequent modules
+pub(crate) mod logging;
+
 pub mod budget;
 pub mod config;
 pub mod engine;
@@ -119,7 +128,7 @@ pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
-pub use budget::{BudgetConfigError, DiskBudget, PendingWrite};
+pub use budget::{BudgetConfigError, DiskBudget};
 pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };

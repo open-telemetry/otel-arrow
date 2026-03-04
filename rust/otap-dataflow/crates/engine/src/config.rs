@@ -9,24 +9,9 @@
 
 use otap_df_config::NodeId;
 
-/// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
-/// arbitrary and will likely be adjusted (and made configurable) in the future once we have more
-/// insight into the engine’s performance. The general idea is to choose a default that is big
-/// enough to absorb short-lived rate mismatches yet small enough to expose back-pressure quickly
-/// and stay L1/L2-cache-friendly.
-///
-/// The default capacity is generally guided by the following formula:
-///
-/// `capacity = producer_rate * worst_case_consumer_pause * safety_margin`
-///
-/// - producer_rate: the number of messages per second each producer can burst.
-/// - worst_case_consumer_pause: the maximum duration (in seconds) a consumer might be unable to make progress
-///   (e.g. syscall, I/O hiccup, thread pre-emption).
-/// - safety_margin: a factor of 1.5–2* is typically sufficient to prevent occasional spikes from
-///   overwhelming the system scheduler.
-///
-/// ToDo: Make this default value configurable and based on performance testing.
+/// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
+/// Default pdata channel capacity used by legacy constructor paths.
 const DEFAULT_PDATA_CHANNEL_CAPACITY: usize = 256;
 
 /// Generic configuration for a control channel.
@@ -80,59 +65,109 @@ pub struct ExporterConfig {
 }
 
 impl ReceiverConfig {
-    /// Creates a new receiver configuration with the given name and default channel capacity.
+    /// Creates a new receiver configuration with default channel capacities.
     pub fn new<T>(name: T) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        Self::with_channel_capacities(
+            name,
+            DEFAULT_CONTROL_CHANNEL_CAPACITY,
+            DEFAULT_PDATA_CHANNEL_CAPACITY,
+        )
+    }
+
+    /// Creates a new receiver configuration with explicit channel capacities.
+    pub fn with_channel_capacities<T>(
+        name: T,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Self
     where
         T: Into<NodeId>,
     {
         ReceiverConfig {
             name: name.into(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
+                capacity: control_channel_capacity,
             },
             output_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
+                capacity: pdata_channel_capacity,
             },
         }
     }
 }
 
 impl ProcessorConfig {
-    /// Creates a new processor configuration with the given name and default channel capacity.
+    /// Creates a new processor configuration with default channel capacities.
     #[must_use]
     pub fn new<T>(name: T) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        Self::with_channel_capacities(
+            name,
+            DEFAULT_CONTROL_CHANNEL_CAPACITY,
+            DEFAULT_PDATA_CHANNEL_CAPACITY,
+        )
+    }
+
+    /// Creates a new processor configuration with explicit channel capacities.
+    #[must_use]
+    pub fn with_channel_capacities<T>(
+        name: T,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Self
     where
         T: Into<NodeId>,
     {
         ProcessorConfig {
             name: name.into(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
+                capacity: control_channel_capacity,
             },
             input_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
+                capacity: pdata_channel_capacity,
             },
             output_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
+                capacity: pdata_channel_capacity,
             },
         }
     }
 }
 
 impl ExporterConfig {
-    /// Creates a new exporter configuration with the given name and default channel capacity.
+    /// Creates a new exporter configuration with default channel capacities.
     #[must_use]
     pub fn new<T>(name: T) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        Self::with_channel_capacities(
+            name,
+            DEFAULT_CONTROL_CHANNEL_CAPACITY,
+            DEFAULT_PDATA_CHANNEL_CAPACITY,
+        )
+    }
+
+    /// Creates a new exporter configuration with explicit channel capacities.
+    #[must_use]
+    pub fn with_channel_capacities<T>(
+        name: T,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Self
     where
         T: Into<NodeId>,
     {
         ExporterConfig {
             name: name.into(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
+                capacity: control_channel_capacity,
             },
             input_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
+                capacity: pdata_channel_capacity,
             },
         }
     }

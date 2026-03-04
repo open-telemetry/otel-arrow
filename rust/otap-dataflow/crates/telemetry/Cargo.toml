@@ -21,6 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
+otap-df-pdata-views = { workspace = true }
 
 axum = { workspace = true }
 bytes = { workspace = true }
@@ -49,3 +50,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter","registry", "s
 [dev-dependencies]
 tower = { workspace = true }
 tempfile = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

@@ -21,6 +21,8 @@ pub mod otlp_receiver;
 /// Implementation of OTLP exporter that implements the exporter trait
 pub mod otlp_exporter;
 
+pub mod otlp_http_exporter;
+
 /// Batch processor
 pub mod batch_processor;
 
@@ -55,13 +57,6 @@ pub mod fanout_processor;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
-/// Experimental exporters and processors
-#[cfg(any(
-    feature = "experimental-exporters",
-    feature = "experimental-processors"
-))]
-pub mod experimental;
-
 /// testing utilities
 #[cfg(test)]
 mod otap_mock;
@@ -71,11 +66,14 @@ mod otlp_mock;
 #[cfg(test)]
 mod fixtures;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
+
+/// Content-based router processor (routes by resource attribute value)
+pub mod content_router;
 
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
@@ -103,6 +101,10 @@ pub mod cloud_auth;
 
 /// Internal telemetry receiver
 pub mod internal_telemetry_receiver;
+
+pub mod topic_receiver;
+
+pub mod topic_exporter;
 
 /// Object storage utilities including integrations for different cloud
 /// providers

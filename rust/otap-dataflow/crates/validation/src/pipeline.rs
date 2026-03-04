@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pipeline wiring helpers for validation scenarios.
+//! Pipeline wiring helpers for validation scenarios. Allows loading YAML
+//! pipelines and rewriting receiver/exporter endpoints at runtime so tests
+//! can bind to ephemeral ports.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -21,6 +23,25 @@ impl Pipeline {
     pub fn from_file(path: &str) -> Result<Self, ValidationError> {
         let content = fs::read_to_string(path)
             .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
+        Ok(Self::from_yaml(&content))
+    }
+
+    /// Load a pipeline from a YAML file with `${VAR}` placeholder substitution.
+    pub fn from_file_with_vars(path: &str, vars: &[(&str, &str)]) -> Result<Self, ValidationError> {
+        let mut content = fs::read_to_string(path)
+            .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
+        for (key, value) in vars {
+            content = content.replace(&format!("${{{key}}}"), value);
+        }
+        if let Some(start) = content.find("${") {
+            let end = content[start..]
+                .find('}')
+                .map_or(content.len(), |i| start + i + 1);
+            let unresolved = &content[start..end];
+            return Err(ValidationError::Config(format!(
+                "unresolved placeholder {unresolved} in {path}"
+            )));
+        }
         Ok(Self::from_yaml(&content))
     }
 
@@ -76,7 +97,7 @@ impl Pipeline {
     }
 
     /// Serialize the current pipeline configuration into a YAML string.
-    pub fn to_yaml_string(&self) -> Result<String, ValidationError> {
+    pub(crate) fn to_yaml_string(&self) -> Result<String, ValidationError> {
         serde_yaml::to_string(&self.suv_yaml)
             .map_err(|e| ValidationError::Config(format!("failed to serialize pipeline yaml: {e}")))
     }

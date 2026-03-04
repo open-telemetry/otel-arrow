@@ -46,7 +46,7 @@ use std::time::Instant;
 use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
-pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:perf:exporter";
+pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
@@ -74,6 +74,8 @@ pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl PerfExporter {
@@ -131,7 +133,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         // let mut average_pipeline_latency: f64 = 0.0;
 
         otel_info!(
-            "exporter.start",
+            "perf_exporter.start",
             frequency_ms = self.config.frequency(),
             message = "Starting Perf Exporter"
         );

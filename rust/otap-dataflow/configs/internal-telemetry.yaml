@@ -1,9 +1,12 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+      control:
+        node: 256
+        pipeline: 256
+      pdata: 128
+engine:
   telemetry:
-    # Internal logging
     logs:
       level: "debug"
       providers:
@@ -11,47 +14,64 @@ settings:
         engine: its
         internal: console_direct
         admin: its
-# OpenTelemetry-specific, visible in "its" modes
-service:
-  telemetry:
     resource:
       service.id: 1234
       service.name: test
-
-nodes:
-  generator:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
-    config:
-      traffic_config:
-        max_signal_count: 100000
-        max_batch_size: 1000
-        signals_per_second: 1000
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
-    config: {}
-
-# Internal telemetry pipeline - separate from main pipeline
-# Uses hardcoded settings: single thread, no admin server
-internal:
-  telemetry:
-    kind: receiver
-    plugin_urn: "urn:otel:internal_telemetry:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - console
-        dispatch_strategy: round_robin
-    config: {}
-  console:
-    kind: exporter
-    plugin_urn: "urn:otel:console:exporter"
-    config: {}
+  observability:
+    pipeline:
+      policies:
+        channel_capacity:
+            control:
+              node: 64
+              pipeline: 64
+            pdata: 64
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          channel_metrics: false
+      # Internal telemetry pipeline
+      # Runs on a single thread (controller-managed) and can use dedicated policies.
+      nodes:
+        telemetry:
+          type: "receiver:internal_telemetry"
+          config: {}
+        console:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: telemetry
+          to: console
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_signal_count: 100000
+                max_batch_size: 1000
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 1
+          noop:
+            type: exporter:noop
+            config: {}
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 2
+        connections:
+          - from: generator
+            to: noop

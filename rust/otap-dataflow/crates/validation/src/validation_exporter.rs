@@ -1,6 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Exporter used in validation pipelines that compares control and
+//! system-under-validation outputs and records pass/fail metrics.
+
+use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::NodeId as NodeName;
@@ -20,35 +24,40 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::equiv::assert_equivalent;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 /// URN that identifies the validation exporter within OTAP pipelines.
-pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
+pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:exporter:validation";
 
 #[derive(Debug, Deserialize)]
 struct ValidationExporterConfig {
     suv_input: NodeName,
     control_input: NodeName,
-    /// When true, a failing equivalence check is considered expected.
-    #[serde(default)]
-    expect_failure: bool,
+    /// Validation rules to run. Defaults to a single equivalence check.
+    #[serde(default = "ValidationExporterConfig::default_validations")]
+    validations: Vec<ValidationInstructions>,
+}
+
+impl ValidationExporterConfig {
+    fn default_validations() -> Vec<ValidationInstructions> {
+        vec![ValidationInstructions::Equivalence]
+    }
 }
 
 #[metric_set(name = "validation.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
 struct ValidationExporterMetrics {
-    /// Number of comparisons that did not match expectation
-    #[metric(name = "comparison.failed", unit = "{comparison}")]
-    failed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
-    /// Number of comparisons that did match expectation
-    #[metric(name = "comparison.passed", unit = "{comparison}")]
-    passed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
+    /// Number of validation checks that did not match expectation
+    #[metric(name = "check.failed", unit = "{check}")]
+    failed_checks: otap_df_telemetry::instrument::Counter<u64>,
+    /// Number of validation checks that did match expectation
+    #[metric(name = "check.passed", unit = "{check}")]
+    passed_checks: otap_df_telemetry::instrument::Counter<u64>,
     /// The value of the last comparison result
     /// 0 -> not valid
     /// 1 -> valid
@@ -58,7 +67,9 @@ struct ValidationExporterMetrics {
 
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
 pub struct ValidationExporter {
-    config: ValidationExporterConfig,
+    suv_index: usize,
+    control_index: usize,
+    validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<OtlpProtoMessage>,
     metrics: MetricSet<ValidationExporterMetrics>,
@@ -80,28 +91,29 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<ValidationExporterConfig>,
 };
 
 impl ValidationExporter {
-    /// compares control and suv msgs and updates the metrics
-    fn compare_and_record(&mut self) {
-        let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            assert_equivalent(&self.control_msgs, &self.suv_msgs)
-        }))
-        .is_ok();
-
-        // we do this if we expect the data to be altered due
-        // to a transformative processor in the pipeline
-        // passed is equal to !equiv if expect_failure is true
-        // passed is equal to equiv if expect_failure is false
-
-        if equiv {
-            self.metrics.passed_comparisons.add(1);
-        } else {
-            self.metrics.failed_comparisons.add(1);
+    /// Run the configured validations and update metrics.
+    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage, time_elapsed: Duration) {
+        let mut valid = true;
+        for validate in &self.validations {
+            valid &= validate.validate(
+                &self.control_msgs,
+                &self.suv_msgs,
+                &received_suv_msg,
+                &time_elapsed,
+            );
         }
-        let passed = equiv ^ self.config.expect_failure;
-        self.metrics.valid.set(passed as u64);
+
+        if valid {
+            self.metrics.passed_checks.add(1);
+        } else {
+            self.metrics.failed_checks.add(1);
+        }
+        self.metrics.valid.set(valid as u64);
     }
 
     /// Build a new exporter instance from user configuration embedded in the pipeline.
@@ -116,8 +128,23 @@ impl ValidationExporter {
                     error: e.to_string(),
                 }
             })?;
+        let suv_node = pipeline_ctx
+            .node_by_name(&config.suv_input)
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: format!("unknown node name for suv_input: {}", config.suv_input),
+            })?;
+        let control_node = pipeline_ctx
+            .node_by_name(&config.control_input)
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: format!(
+                    "unknown node name for control_input: {}",
+                    config.control_input
+                ),
+            })?;
         Ok(Self {
-            config,
+            suv_index: suv_node.index,
+            control_index: control_node.index,
+            validations: config.validations,
             metrics,
             control_msgs: Vec::new(),
             suv_msgs: Vec::new(),
@@ -135,6 +162,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
+        let mut time = Instant::now();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -146,6 +174,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     return Ok(TerminalState::new(deadline, [self.metrics]));
                 }
                 Message::PData(pdata) => {
+                    let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
                     let msg = OtlpProtoBytes::try_from(payload)
@@ -153,20 +182,17 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
                     if let Some(msg) = msg
-                        && let Some(node_name) = source_node
+                        && let Some(node_index) = source_node
                     {
-                        match node_name {
-                            // match node name and update the vec of msgs and compare
-                            name if name == self.config.suv_input => {
-                                self.suv_msgs.push(msg);
-                                self.compare_and_record();
-                            }
-                            name if name == self.config.control_input => {
-                                self.control_msgs.push(msg);
-                                self.compare_and_record();
-                            }
-                            _ => {}
+                        if node_index == self.suv_index {
+                            self.suv_msgs.push(msg.clone());
+                            self.validate_and_record(msg, time_elapsed);
+                            time = Instant::now();
+                        } else if node_index == self.control_index {
+                            self.control_msgs.push(msg);
                         }
+                    } else {
+                        otel_error!("validation.missing.source");
                     }
                 }
                 _ => {}

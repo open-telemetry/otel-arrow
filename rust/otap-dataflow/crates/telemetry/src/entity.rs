@@ -259,6 +259,15 @@ fn hash_attribute_value<H: Hasher>(value: &AttributeValue, state: &mut H) {
             4u8.hash(state);
             v.hash(state);
         }
+        AttributeValue::Map(m) => {
+            5u8.hash(state);
+            m.len().hash(state);
+            // BTreeMap iterates in sorted key order, so hashing is deterministic.
+            for (k, v) in m {
+                k.hash(state);
+                hash_attribute_value(v, state);
+            }
+        }
     }
 }
 
@@ -268,6 +277,7 @@ const fn attribute_value_type_rank(value_type: AttributeValueType) -> u8 {
         AttributeValueType::Int => 1,
         AttributeValueType::Double => 2,
         AttributeValueType::Boolean => 3,
+        AttributeValueType::Map => 4,
     }
 }
 
@@ -278,6 +288,7 @@ fn attribute_value_equal(left: &AttributeValue, right: &AttributeValue) -> bool 
         (AttributeValue::UInt(a), AttributeValue::UInt(b)) => a == b,
         (AttributeValue::Double(a), AttributeValue::Double(b)) => a.to_bits() == b.to_bits(),
         (AttributeValue::Boolean(a), AttributeValue::Boolean(b)) => a == b,
+        (AttributeValue::Map(a), AttributeValue::Map(b)) => a == b,
         _ => false,
     }
 }

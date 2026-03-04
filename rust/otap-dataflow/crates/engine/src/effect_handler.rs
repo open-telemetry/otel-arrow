@@ -14,6 +14,27 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
+/// SourceTagging indicates whether the Context will contain empty source frames.
+#[derive(Clone, Copy)]
+pub enum SourceTagging {
+    /// Disabled means no source node-id will be automatically
+    /// inserted for nodes that do not not otherwise subscribe to
+    /// Ack/Nack.
+    Disabled,
+
+    /// Enabled means a source node_id will be automatically entered
+    /// by creating a new frame in as messagees are sent.
+    Enabled,
+}
+
+impl SourceTagging {
+    /// Indicates that source tagging is required.
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 /// Common implementation of all effect handlers.
 ///
 /// Note: This implementation is `Send`.
@@ -25,6 +46,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// The outgoing message source tagging mode.
+    pub(crate) source_tag: SourceTagging,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -34,6 +57,7 @@ impl<PData> EffectHandlerCore<PData> {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -43,6 +67,17 @@ impl<PData> EffectHandlerCore<PData> {
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.source_tag = value;
+    }
+
+    /// Returns outgoing messages source tagging mode.
+    #[must_use]
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.source_tag
     }
 
     /// Returns the id of the node associated with this effect handler.

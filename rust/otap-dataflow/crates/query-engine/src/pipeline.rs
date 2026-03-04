@@ -23,11 +23,14 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
+mod assign;
 mod attributes;
 mod conditional;
+mod expr;
 mod filter;
 mod functions;
 mod planner;
+mod project;
 
 pub mod routing;
 pub mod state;
