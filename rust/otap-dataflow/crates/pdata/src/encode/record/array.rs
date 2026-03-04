@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
+    Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BinaryBuilder, BinaryDictionaryBuilder,
     DictionaryArray, FixedSizeBinaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder,
     PrimitiveDictionaryBuilder, StringArray, StringBuilder, StringDictionaryBuilder,
 };
@@ -702,6 +702,10 @@ pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanoseco
 /// converting either a native array (e.g. [`BinaryArray`] to [`StringArray`]) or
 /// [`DictionaryArray`]s where the values are [`DataType::Binary`].
 ///
+/// If any value contains invalid UTF-8, the invalid byte sequences are replaced with the
+/// Unicode replacement character (U+FFFD `�`) using lossy conversion, ensuring that a single
+/// malformed value never causes the entire batch to fail.
+///
 /// Returns an error if the passed source array does not contain binary data.
 pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     let src_data_type = src.data_type();
@@ -712,8 +716,7 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
             .as_any()
             .downcast_ref::<BinaryArray>()
             .expect("is binary array");
-        return StringArray::try_from_binary(binary_arr.clone())
-            .map(|arr| Arc::new(arr) as ArrayRef);
+        return Ok(binary_to_utf8_lossy(binary_arr));
     }
 
     if let DataType::Dictionary(k, v) = src_data_type {
@@ -734,6 +737,30 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         "expected array of type Binary, or dictionary with binary keys. Found {:?}",
         src.data_type()
     )))
+}
+
+/// Convert a [`BinaryArray`] to a [`StringArray`], replacing any invalid UTF-8 byte sequences
+/// with the Unicode replacement character (U+FFFD `�`).
+///
+/// Uses a fast path that attempts a zero-copy conversion first. If the entire values buffer is
+/// valid UTF-8, no additional allocation is needed. Only when invalid UTF-8 is encountered does
+/// it fall back to a per-value lossy conversion.
+fn binary_to_utf8_lossy(binary_arr: &BinaryArray) -> ArrayRef {
+    // Fast path: try zero-copy batch conversion (validates entire buffer in one pass).
+    if let Ok(arr) = StringArray::try_from_binary(binary_arr.clone()) {
+        return Arc::new(arr) as ArrayRef;
+    }
+
+    // Slow path: at least one value has invalid UTF-8. Rebuild per-value with lossy conversion.
+    let mut builder = StringBuilder::with_capacity(binary_arr.len(), binary_arr.value_data().len());
+    for i in 0..binary_arr.len() {
+        if binary_arr.is_null(i) {
+            builder.append_null();
+        } else {
+            builder.append_value(String::from_utf8_lossy(binary_arr.value(i)));
+        }
+    }
+    Arc::new(builder.finish()) as ArrayRef
 }
 
 fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
@@ -758,11 +785,11 @@ fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
                 dict_arr.value_type()
             ))
         })?;
-    let new_values = StringArray::try_from_binary(values.clone())?;
+    let new_values = binary_to_utf8_lossy(values);
 
     Ok(Arc::new(DictionaryArray::new(
         dict_arr.keys().clone(),
-        Arc::new(new_values),
+        new_values,
     )))
 }
 
@@ -1600,13 +1627,40 @@ pub mod test {
             "Invalid argument error: expected array of type Binary, or dictionary with binary keys. Found Dictionary(UInt16, Utf8)"
         );
 
-        // check it returns an error for invalid UTF-8
+        // check that invalid UTF-8 is replaced with the replacement character (lossy conversion)
         let input = BinaryArray::from_iter_values([b"ab", &[0xc3u8, 0x28u8]]);
-        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef));
-        let err = result.unwrap_err().to_string();
-        assert_eq!(
-            err,
-            "Invalid argument error: Encountered non UTF-8 data: invalid utf-8 sequence of 1 bytes from index 2",
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(result.value(0), "ab");
+        assert_eq!(result.value(1), "\u{FFFD}("); // invalid byte replaced with �
+
+        // check that invalid UTF-8 in dictionary values is also handled with lossy conversion
+        let input = DictionaryArray::new(
+            UInt8Array::from_iter_values([0, 1]),
+            Arc::new(BinaryArray::from_iter_values([
+                b"valid" as &[u8],
+                &[0xffu8, 0xfe],
+            ])),
         );
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let dict = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(values.value(0), "valid");
+        assert_eq!(values.value(1), "\u{FFFD}\u{FFFD}"); // both invalid bytes replaced
+
+        // check that nulls are preserved during lossy conversion
+        let input = BinaryArray::from_iter([Some(b"ok" as &[u8]), None, Some(&[0x80u8])]);
+        let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
+        let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(result.value(0), "ok");
+        assert!(result.is_null(1));
+        assert_eq!(result.value(2), "\u{FFFD}"); // lone continuation byte replaced
     }
 }
