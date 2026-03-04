@@ -9,14 +9,12 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::error::Result;
 use crate::pipeline::PipelineStage;
