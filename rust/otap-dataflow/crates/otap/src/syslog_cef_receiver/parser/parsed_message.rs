@@ -34,6 +34,9 @@ const CEF_DEVICE_EVENT_CLASS_ID: &str = "cef.device_event_class_id";
 const CEF_NAME: &str = "cef.name";
 const CEF_SEVERITY: &str = "cef.severity";
 
+// Attribute key constant for detected input format
+const INPUT_FORMAT: &str = "input.format";
+
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSyslogMessage<'a> {
@@ -84,6 +87,20 @@ impl ParsedSyslogMessage<'_> {
             ParsedSyslogMessage::Cef(msg) => msg.input,
             ParsedSyslogMessage::CefWithRfc3164(msg, _) => msg.input,
             ParsedSyslogMessage::CefWithRfc5424(msg, _) => msg.input,
+        }
+    }
+
+    /// Returns the detected input format as a string.
+    ///
+    /// This is emitted as the `input.format` log attribute so that downstream
+    /// processors can filter or route records by format.
+    pub(crate) const fn format(&self) -> &'static str {
+        match self {
+            ParsedSyslogMessage::Rfc5424(_) => "rfc5424",
+            ParsedSyslogMessage::Rfc3164(_) => "rfc3164",
+            ParsedSyslogMessage::Cef(_) => "cef",
+            ParsedSyslogMessage::CefWithRfc3164(_, _) => "cef_rfc3164",
+            ParsedSyslogMessage::CefWithRfc5424(_, _) => "cef_rfc5424",
         }
     }
 
@@ -155,24 +172,22 @@ impl ParsedSyslogMessage<'_> {
         &self,
         log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
     ) -> u16 {
-        let mut attributes_count = 0;
-
-        match self {
+        let mut attributes_count: u16 = match self {
             ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
                 // Add syslog RFC5424 attributes
-                attributes_count +=
+                let mut count =
                     self.add_rfc5424_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
-                attributes_count
+                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count
             }
             ParsedSyslogMessage::CefWithRfc3164(syslog_msg, cef_msg) => {
                 // Add syslog RFC3164 attributes
-                attributes_count +=
+                let mut count =
                     self.add_rfc3164_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
-                attributes_count
+                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count
             }
             ParsedSyslogMessage::Rfc5424(msg) => {
                 self.add_rfc5424_attributes(msg, log_attributes_arrow_records)
@@ -183,7 +198,16 @@ impl ParsedSyslogMessage<'_> {
             ParsedSyslogMessage::Cef(msg) => {
                 self.add_cef_attributes(msg, log_attributes_arrow_records)
             }
-        }
+        };
+
+        // Always emit the detected input format attribute
+        log_attributes_arrow_records.append_key(INPUT_FORMAT);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(self.format().as_bytes());
+        attributes_count += 1;
+
+        attributes_count
     }
 
     // Extract the attribute adding logic into helper methods to avoid duplication
@@ -700,5 +724,33 @@ mod tests {
             }
             _ => panic!("Expected CefWithRfc3164, got {:?}", result),
         }
+    }
+
+    #[test]
+    fn test_parsed_syslog_message_format() {
+        // RFC 5424
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "rfc5424");
+
+        // RFC 3164
+        let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "rfc3164");
+
+        // Pure CEF
+        let input = b"CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef");
+
+        // CEF with RFC 5424 header
+        let input = b"<134>1 2024-10-09T12:34:56.789Z host CEF - - CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef_rfc5424");
+
+        // CEF with RFC 3164 header
+        let input = b"<134>Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef_rfc3164");
     }
 }
