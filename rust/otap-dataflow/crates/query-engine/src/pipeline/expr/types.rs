@@ -126,6 +126,10 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
 
 /// Returns true if the field on the root batch can be a dictionary encoded type
 pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+    // TODO - when we have better support for time arithmetic we should test that this
+    // duration type gets coerced into a dictionary during assignment for column with name
+    // consts::DURATION_TIME_UNIX_NANO
+
     matches!(
         field_name,
         consts::SCHEMA_URL
@@ -136,7 +140,6 @@ pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
             | consts::EVENT_NAME
             | consts::TRACE_STATE
             | consts::KIND
-            | consts::DURATION_TIME_UNIX_NANO
             | consts::NAME
             | consts::DESCRIPTION
             | consts::UNIT
@@ -237,6 +240,7 @@ pub fn coerce_arithmetic(
     left: &mut ScopedLogicalExpr,
     right: &mut ScopedLogicalExpr,
 ) -> Option<ExprLogicalType> {
+    // TODO - need to update the rules here when we support date/time/duration arithmetic
     match &left.expr_type {
         ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric => {
             // The left side of the arithmetic operation is an AnyValue, or AnyValue numeric. The
