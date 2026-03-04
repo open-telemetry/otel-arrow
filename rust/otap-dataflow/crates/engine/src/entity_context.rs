@@ -162,6 +162,17 @@ pub(crate) fn with_node_telemetry_handle<T>(
     })
 }
 
+/// Directly set or clear the build-time node telemetry handle.
+///
+/// Use this instead of [`with_node_telemetry_handle`] when the scoped work
+/// contains `.await` points (since the RAII closure cannot span an await).
+#[cfg(test)]
+pub(crate) fn set_build_node_telemetry_handle(handle: Option<NodeTelemetryHandle>) {
+    BUILD_NODE_TELEMETRY_HANDLE.with(|cell| {
+        let _ = cell.replace(handle);
+    });
+}
+
 /// Handle for per-node telemetry state, including entity keys, metric sets,
 /// channel associations, and custom log record attributes.
 #[derive(Clone)]

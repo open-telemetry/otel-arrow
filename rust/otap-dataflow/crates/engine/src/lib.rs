@@ -64,6 +64,7 @@ pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
+mod processor_metrics;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;

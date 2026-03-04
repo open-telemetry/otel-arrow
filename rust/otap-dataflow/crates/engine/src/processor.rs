@@ -13,22 +13,24 @@ use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
-use crate::entity_context::NodeTelemetryGuard;
+use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::processor_metrics::ProcessorMetrics;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -101,6 +103,8 @@ pub enum ProcessorWrapperRuntime<PData> {
         message_channel: MessageChannel<PData>,
         /// The local effect handler
         effect_handler: local::EffectHandler<PData>,
+        /// Engine-level processor metrics (process duration).
+        process_metrics: Option<MetricSet<ProcessorMetrics>>,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -110,6 +114,8 @@ pub enum ProcessorWrapperRuntime<PData> {
         message_channel: MessageChannel<PData>,
         /// The shared effect handler
         effect_handler: shared::EffectHandler<PData>,
+        /// Engine-level processor metrics (process duration).
+        process_metrics: Option<MetricSet<ProcessorMetrics>>,
     },
 }
 
@@ -346,10 +352,13 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                let process_metrics = current_node_telemetry_handle()
+                    .map(|h| h.register_metric_set::<ProcessorMetrics>());
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
                     message_channel,
+                    process_metrics,
                 })
             }
             ProcessorWrapper::Shared {
@@ -379,10 +388,13 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                let process_metrics = current_node_telemetry_handle()
+                    .map(|h| h.register_metric_set::<ProcessorMetrics>());
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
                     message_channel,
+                    process_metrics,
                 })
             }
         }
@@ -394,6 +406,7 @@ impl<PData> ProcessorWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Result<(), Error> {
+        let mut process_reporter = metrics_reporter.clone();
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         match runtime {
@@ -401,6 +414,7 @@ impl<PData> ProcessorWrapper<PData> {
                 mut processor,
                 mut message_channel,
                 mut effect_handler,
+                mut process_metrics,
             } => {
                 effect_handler
                     .core
@@ -412,22 +426,46 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
+                    let is_collect_telemetry = matches!(
+                        msg,
+                        Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                    );
+                    let start = Instant::now();
                     processor.process(msg, &mut effect_handler).await?;
+                    if let Some(ref mut m) = process_metrics {
+                        m.process_duration_ns
+                            .record(start.elapsed().as_nanos() as f64);
+                        if is_collect_telemetry {
+                            let _ = process_reporter.report(m);
+                        }
+                    }
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
+                // Report accumulated process metrics
+                if let Some(ref mut m) = process_metrics {
+                    let _ = process_reporter.report(m);
+                }
                 // Collect final metrics before exiting
+                let start = Instant::now();
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await?;
+                // Report duration of the final collection call
+                if let Some(ref mut m) = process_metrics {
+                    m.process_duration_ns
+                        .record(start.elapsed().as_nanos() as f64);
+                    let _ = process_reporter.report(m);
+                }
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
                 mut message_channel,
                 mut effect_handler,
+                mut process_metrics,
             } => {
                 effect_handler
                     .core
@@ -439,17 +477,40 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
+                    let is_collect_telemetry = matches!(
+                        msg,
+                        Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                    );
+                    let start = Instant::now();
                     processor.process(msg, &mut effect_handler).await?;
+                    if let Some(ref mut m) = process_metrics {
+                        m.process_duration_ns
+                            .record(start.elapsed().as_nanos() as f64);
+                        if is_collect_telemetry {
+                            let _ = process_reporter.report(m);
+                        }
+                    }
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
+                // Report accumulated process metrics
+                if let Some(ref mut m) = process_metrics {
+                    let _ = process_reporter.report(m);
+                }
                 // Collect final metrics before exiting
+                let start = Instant::now();
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await?;
+                // Report duration of the final collection call
+                if let Some(ref mut m) = process_metrics {
+                    m.process_duration_ns
+                        .record(start.elapsed().as_nanos() as f64);
+                    let _ = process_reporter.report(m);
+                }
             }
         }
         Ok(())
@@ -584,7 +645,8 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 mod tests {
     use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
-    use crate::message::Message;
+    use crate::message::{Message, Receiver, Sender};
+    use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
     use crate::processor::{Error, ProcessorWrapper};
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
@@ -756,5 +818,93 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_processor_duration_metrics() {
+        use crate::entity_context::NodeTelemetryHandle;
+        use crate::processor::ProcessorWrapperRuntime;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(
+            crate::attributes::NodeAttributeSet::default(),
+        );
+        let handle = NodeTelemetryHandle::new(registry, entity_key);
+
+        let test_runtime: TestRuntime<TestMsg> = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let mut processor = ProcessorWrapper::local(
+            TestProcessor::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        // Set up pdata channels so prepare_runtime succeeds.
+        let (pdata_sender, _pdata_receiver) = otap_df_channel::mpsc::Channel::new(100);
+        let _ = processor.set_pdata_sender(
+            test_node(test_runtime.config().name.clone()),
+            "default".into(),
+            Sender::Local(crate::local::message::LocalSender::mpsc(pdata_sender)),
+        );
+        let (_, dummy_input) = otap_df_channel::mpsc::Channel::<TestMsg>::new(1);
+        let _ = processor.set_pdata_receiver(
+            test_node(test_runtime.config().name.clone()),
+            Receiver::Local(crate::local::message::LocalReceiver::mpsc(dummy_input)),
+        );
+
+        let (rt, _local_tasks) = crate::testing::setup_test_runtime();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        rt.block_on(async {
+            // Set the node telemetry handle for the duration of prepare_runtime.
+            // We use the thread-local directly since with_node_telemetry_handle
+            // takes a sync closure but prepare_runtime is async.
+            crate::entity_context::set_build_node_telemetry_handle(Some(handle));
+            let runtime = processor
+                .prepare_runtime(metrics_reporter)
+                .await
+                .expect("Failed to prepare runtime");
+            crate::entity_context::set_build_node_telemetry_handle(None);
+
+            match runtime {
+                ProcessorWrapperRuntime::Local {
+                    mut processor,
+                    mut effect_handler,
+                    process_metrics,
+                    ..
+                } => {
+                    assert!(
+                        process_metrics.is_some(),
+                        "process_metrics should be Some when telemetry context is set"
+                    );
+                    let mut process_metrics = process_metrics.unwrap();
+
+                    // Process several messages and verify duration is recorded.
+                    for i in 0..5 {
+                        let msg = Message::data_msg(TestMsg(format!("msg-{i}")));
+                        let start = Instant::now();
+                        processor.process(msg, &mut effect_handler).await.unwrap();
+                        process_metrics
+                            .process_duration_ns
+                            .record(start.elapsed().as_nanos() as f64);
+                    }
+
+                    let snapshot = process_metrics.process_duration_ns.get();
+                    assert_eq!(snapshot.count, 5, "should have recorded 5 process durations");
+                    assert!(snapshot.min > 0.0, "min duration should be > 0");
+                    assert!(
+                        snapshot.max >= snapshot.min,
+                        "max should be >= min"
+                    );
+                    assert!(
+                        snapshot.sum >= snapshot.min * 5.0,
+                        "sum should be >= min * count"
+                    );
+                }
+                _ => panic!("Expected Local runtime"),
+            }
+        });
     }
 }
