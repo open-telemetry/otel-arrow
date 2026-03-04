@@ -112,7 +112,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
-            "exporter.start",
+            "otap_exporter.start",
             grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
             message = "Starting OTAP Exporter"
         );
@@ -216,7 +216,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         // like endpoint not available. (the backoff sleep
                         // might be causing it?)
                         otel_info!(
-                            "exporter.shutdown",
+                            "otap_exporter.shutdown",
                             message = "OTAP Exporter shutting down"
                         );
                         _ = shutdown_tx.send_replace(true);
@@ -370,7 +370,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         // there was an error initiating the streaming request
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
                         otel_error!(
-                            "exporter.request_failed",
+                            "otap_exporter.request_failed",
                             message = "Failed to connect, retrying after backoff",
                             error = %e,
                             backoff = ?failed_request_backoff
