@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772597162293,
+  "lastUpdate": 1772598943581,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "AaronRM@users.noreply.github.com",
-            "name": "Aaron Marten",
-            "username": "AaronRM"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "dab43aec0e346bfc2d7bd3f8e4c08747ad8ddf48",
-          "message": "feat: add durable_buffer processor to otap-dataflow (#1882)\n\n# Change Summary\n\nAdds the `durable_buffer` processor to `otap-dataflow`, providing\ndurable buffering via Quiver's WAL and segment storage.\n\n## What issue does this PR close?\n\nCloses #1416\n\n## How are these changes tested?\n\nAdded unit tests, basic e2e tests & have performed manual validation\n\n## Are there any user-facing changes?\n\nYes. This PR adds the ability to configure a `durable_buffer` processor\nin the pipeline. For example:\n\n``` yaml\n  persistence:\n    kind: processor\n    plugin_urn: \"urn:otel:durable_buffer:processor\"\n    out_ports:\n      out_port:\n        destinations:\n          - noop\n        dispatch_strategy: round_robin\n    config:\n      path: /var/lib/otap/buffer\n      poll_interval: 10ms\n      retention_size_cap: 10 GiB\n      size_cap_policy: backpressure\n```\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-02-03T15:37:31Z",
-          "tree_id": "7aabe7edc36bab4d21261271549fc7f6300744ba",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/dab43aec0e346bfc2d7bd3f8e4c08747ad8ddf48"
-        },
-        "date": 1770137254034,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.0761040449142456,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.12685287413447,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.60876527217975,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.28684895833333,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.1875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 527265.8202923073,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 532939.748969984,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.007804,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11703177.464778202,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11648711.659969697,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11134690.633539332,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7aed512ee2de348b2d44bdc63fb13f63f613ccb7",
+          "message": "Columnar query engine support assigning to root batch fields (#2159)\n\n# Change Summary\n\nAdds support to the columnar query engine to assign values to columns on\nthe root OTAP batch.\n\nFor example:\n```kql\nlogs | set severity_text = \"INFO\"\n```\n\nThrough this work, I wanted to validate that it's possible to bridge the\nexpression evaluation code that was added in\nhttps://github.com/open-telemetry/otel-arrow/pull/2126 with a\nPipelineStage implementation. In doing so, many things that were\nprivate/dead-code in the `expr` module are now marked public.\n\nThis also means that we support assigning values from various types of\nexpressions, not simply literals. For example:\n```kql\nlogs | set event_name = attributes[\"event_name\"] // assign from attribute\nlogs | set severity_number = severity_number * 5 + 1 // assign from arithmetic\n```\n\nThis code handles:\n- type checking the result when doing the assignment, at planning time\nif possible and otherwise at runtime\n- converting the expression eval result back into a dictionary if the\ncolumn supports it\n- removing the column if the expression evaluated to null (and returning\nan error if the column is not nullable)\n- not assigning nulls to non-null columns (returning error if this would\nhappen)\n\nTo make it easier to take the results of the evaluated expression, I\nalso modified the JoinExec trait that is used to expression evaluation\nexpose a method to return the rows to take from the values being joined.\nThis helps to align the rows produced by the expression evaluation to\nthe order of the destination record batch.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Related to #2036 \n\n## How are these changes tested?\n\nExisting unit tests ensure we didn't break the planner.\n\nThere are over 30 new unit tests for the assignment pipeline stage.\n\n## Are there any user-facing changes?\n\nI suppose the ability for the transform processor to evaluate these new\ntypes of expressions could be considered user facing.\n\n\n## Near-term followups:\n\nIn followup PRs, I'll add support to assign values attributes. We\nalready support assigning literals to values (added here\nhttps://github.com/open-telemetry/otel-arrow/pull/1885), but this only\nsupports literals.\n\nWe'll also now need to fix this TODO (in fact, we should have done after\n#1885, but the code in this PR could also cause the concatenation we're\ndoing here to fail).\n\nhttps://github.com/open-telemetry/otel-arrow/blob/63a23cf282c43a3dceb453f6fd17c794a4e9bb70/rust/otap-dataflow/crates/query-engine/src/pipeline/conditional.rs#L190-L207\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-03-04T02:44:26Z",
+          "tree_id": "c3117a6a2c4138325b9e435ad2a0aa6ea99fc7ff",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7aed512ee2de348b2d44bdc63fb13f63f613ccb7"
+        },
+        "date": 1772598942699,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.7776729464530945,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.46848388829554,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.06014744563956,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 55.553515625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 57.8828125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 488281.5337815848,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 492078.76705782133,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001581,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11268219.705016859,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11210187.524176376,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
