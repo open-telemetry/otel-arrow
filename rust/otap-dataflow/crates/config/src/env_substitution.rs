@@ -227,4 +227,15 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn substitute_attribute_name_and_value() {
+        with_var("ATTRIBUTE1_NAME", "service.instance.id", || {
+            with_var("ATTRIBUTE1_VALUE", "1", || {
+                let result =
+                    substitute_env_vars("${env:ATTRIBUTE1_NAME}: ${env:ATTRIBUTE1_VALUE}").unwrap();
+                assert_eq!(result, "service.instance.id: 1");
+            });
+        });
+    }
 }
