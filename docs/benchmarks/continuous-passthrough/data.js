@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772667325703,
+  "lastUpdate": 1772669160507,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "d.dahl@f5.com",
-            "name": "David Dahl",
-            "username": "daviddahl"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "0824c0193edf0ff675fc33b5b0af470e254928b0",
-          "message": "Standardization of urns, validation and usage (#1948)\n\n# Change Summary\n\nStandardized otap-df-otap node URNs to the canonical\nurn:<namespace>:<id>:<kind> format, added strict parsing/normalization\n(including OTel shortcut support), updated component\nconstants/configs/templates/docs to match, and documented otelcol config\n  compatibility design and URN rules.\n\n  ## What issue does this PR close?\n\n  - Closes #1831\n\n  ## How are these changes tested?\n\n  - cargo test (per local confirmation)\n- Added unit/config tests for URN normalization and legacy URN rejection\nin otap_df_config\n\n  ## Are there any user-facing changes?\n\nYes. Configuration now enforces canonical URN format and accepts the\nOTel shortcut form; legacy URNs are rejected with a doc-linked\n  error message.",
-          "timestamp": "2026-02-05T18:53:12Z",
-          "tree_id": "012cb22877f7a9665f03d772d2537cfc4933b66d",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/0824c0193edf0ff675fc33b5b0af470e254928b0"
-        },
-        "date": 1770326078830,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.134752035140991,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.12021018010863,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.97175865582656,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 47.446614583333336,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 50.359375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 519633.1470042875,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 530726.0266388438,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002454,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11560124.522144636,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11499354.316789607,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11291766.228867872,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "21f27b620adf61b30d75a293857322c906b25b51",
+          "message": "fix(tests): ensure ACK/NACK notifications are queued before counter updates in FlakyExporter (#2191)\n\n# Change Summary\n\nFix test flakiness in `durable_buffer` ACK/NACK handling tests. Ensure\nACK/NACK notifications are queued before counter updates in\n`FlakyExporter`.\n\n## What issue does this PR close?\n\nn/a\n\n## How are these changes tested?\n\nRans tests in a loop locally to ensure the pass consistently.\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-03-04T22:47:15Z",
+          "tree_id": "031ffe2886727261d2fa7f0b6ca6e0c5a4c5b892",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/21f27b620adf61b30d75a293857322c906b25b51"
+        },
+        "date": 1772669159946,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.126826524734497,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.11015252230072,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.62269818464166,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 53.30716145833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 55.12890625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 479442.00773327105,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 489638.9073584737,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002552,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11347315.606312592,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11284818.90720252,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
