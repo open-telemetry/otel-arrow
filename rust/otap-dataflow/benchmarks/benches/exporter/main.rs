@@ -9,6 +9,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use otap_df_channel::mpsc;
 use otap_df_engine::{
+    Interests,
     config::ExporterConfig,
     exporter::ExporterWrapper,
     message::{Receiver, Sender},
@@ -454,7 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -520,7 +521,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -591,7 +592,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });

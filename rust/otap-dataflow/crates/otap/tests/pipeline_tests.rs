@@ -12,7 +12,7 @@ use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{
     DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
 };
-use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+use otap_df_config::policy::{ChannelCapacityPolicy, MetricLevel, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -38,7 +38,7 @@ fn test_telemetry_registries_cleanup() {
     let config = build_test_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics;
+    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
@@ -126,7 +126,7 @@ fn test_pipeline_fan_in_builds() {
     let config = build_fan_in_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics;
+    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
@@ -163,7 +163,7 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
         build_mixed_receiver_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics;
+    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
