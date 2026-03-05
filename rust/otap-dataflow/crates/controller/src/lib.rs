@@ -330,6 +330,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
         {
+            let core_allocation = pipeline_entry
+                .policies
+                .effective_resources()
+                .core_allocation
+                .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
@@ -337,6 +342,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let pipeline = pipeline_entry.pipeline;
 
             let num_cores = requested_cores.len();
+            otel_info!(
+                "pipeline.core_allocation",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                num_cores = num_cores,
+                core_allocation = core_allocation
+            );
             for core_id in requested_cores {
                 let pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: pipeline_group_id.clone(),
@@ -610,7 +622,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources.core_allocation,
+                    &pipeline_entry
+                        .policies
+                        .effective_resources()
+                        .core_allocation,
                 )
             })
             .collect()
@@ -862,7 +877,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::policy::{CoreRange, Policies};
+    use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -906,8 +921,10 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let mut policies = Policies::default();
-        policies.resources.core_allocation = core_allocation;
+        let policies = Policies {
+            resources: Some(ResourcesPolicy { core_allocation }),
+            ..Default::default()
+        };
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),

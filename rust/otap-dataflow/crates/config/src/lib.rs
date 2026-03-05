@@ -18,6 +18,8 @@ use std::hash::Hash;
 
 pub mod byte_units;
 pub mod engine;
+/// Environment variable substitution for raw config text.
+pub mod env_substitution;
 pub mod error;
 pub mod health;
 pub mod node;

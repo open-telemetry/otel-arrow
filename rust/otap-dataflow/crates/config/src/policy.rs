@@ -22,11 +22,30 @@ pub struct Policies {
     #[serde(default)]
     pub telemetry: TelemetryPolicy,
     /// Resources policy controlling runtime core allocation.
-    #[serde(default)]
-    pub resources: ResourcesPolicy,
+    ///
+    /// When absent, the parent scope's resources policy or the built-in default
+    /// (`core_allocation: all_cores`) applies.  Serde leaves this `None` when
+    /// the key is omitted from the YAML/JSON, so a `policies:` block that only
+    /// sets (e.g.) `channel_capacity` does **not** implicitly pin `core_allocation`
+    /// to `AllCores` and shadow a `--num-cores` / `--core-id-range` CLI flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcesPolicy>,
 }
 
 impl Policies {
+    /// Returns the effective resources policy.
+    ///
+    /// When `resources` is `None` (not explicitly configured), the built-in
+    /// default [`ResourcesPolicy`] is returned as an owned value.  When it is
+    /// `Some`, a reference to the stored value is returned.
+    #[must_use]
+    pub fn effective_resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
+        self.resources
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
+    }
+
     /// Returns validation errors for this policy set.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
@@ -243,7 +262,7 @@ mod tests {
             super::MetricLevel::Basic
         );
         assert_eq!(
-            policies.resources.core_allocation,
+            policies.effective_resources().core_allocation,
             super::CoreAllocation::AllCores
         );
     }
