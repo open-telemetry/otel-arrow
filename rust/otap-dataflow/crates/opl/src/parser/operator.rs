@@ -5,8 +5,8 @@ use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
     MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
-    NestedDataExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-    PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
+    NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction,
+    PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
     SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
 };
@@ -443,12 +443,13 @@ pub(crate) fn parse_apply_operator_call(
 mod tests {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MapKeyRenameSelector,
-        MapSelectionExpression, MapSelector, MutableValueExpression, NestedDataExpression,
-        NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation,
-        ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
-        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, TransformExpression, ValueAccessor,
+        DiscardDataExpression, EqualToLogicalExpression, InvokeFunctionScalarExpression,
+        LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
+        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+        PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
+        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -933,7 +934,7 @@ mod tests {
     fn test_parse_apply_operator_call() {
         let query = r#"apply attributes {
             where value == "x" |
-            where key == "x"
+            where key == "y"
         }"#;
 
         let mut state = ParserState::new_with_options(query, ParserOptions::default());
@@ -946,9 +947,16 @@ mod tests {
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Nested(
-            NestedDataExpression::new(QueryLocation::new_fake())
-                .with_target(SourceScalarExpression::new(
+        let expected =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    0,
+                    Vec::new(),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
                     QueryLocation::new_fake(),
                     ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                         StaticScalarExpression::String(StringScalarExpression::new(
@@ -956,64 +964,70 @@ mod tests {
                             "attributes",
                         )),
                     )]),
-                ))
-                .with_children(vec![
-                    DataExpression::Discard(
-                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                            LogicalExpression::Not(NotLogicalExpression::new(
-                                QueryLocation::new_fake(),
-                                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ScalarExpression::Source(SourceScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        ValueAccessor::new_with_selectors(vec![
-                                            ScalarExpression::Static(
-                                                StaticScalarExpression::String(
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "value",
-                                                    ),
-                                                ),
-                                            ),
-                                        ]),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(QueryLocation::new_fake(), "x"),
-                                    )),
-                                    true,
-                                )),
-                            )),
-                        ),
-                    ),
-                    DataExpression::Discard(
-                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                            LogicalExpression::Not(NotLogicalExpression::new(
-                                QueryLocation::new_fake(),
-                                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ScalarExpression::Source(SourceScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        ValueAccessor::new_with_selectors(vec![
-                                            ScalarExpression::Static(
-                                                StaticScalarExpression::String(
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "key",
-                                                    ),
-                                                ),
-                                            ),
-                                        ]),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(QueryLocation::new_fake(), "x"),
-                                    )),
-                                    true,
-                                )),
-                            )),
-                        ),
-                    ),
-                ]),
-        );
+                )),
+            )));
         assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 1);
+
+        let expected = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            Vec::new(),
+            None,
+            vec![
+                PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "value",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                                )),
+                                true,
+                            )),
+                        )),
+                    ),
+                ),
+                PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "key",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                                )),
+                                true,
+                            )),
+                        )),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(&functions[0], &expected);
     }
 }
