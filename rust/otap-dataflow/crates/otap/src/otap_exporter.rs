@@ -437,7 +437,7 @@ fn create_req_stream(
                 yield bar;
             }
             Err(_) => {
-                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, first_pdata));
+                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, first_pdata)).await;
             }
         };
 
@@ -450,7 +450,7 @@ fn create_req_stream(
                     yield bar;
                 }
                 Err(_) => {
-                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata));
+                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata)).await;
                 }
             }
         }
