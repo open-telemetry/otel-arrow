@@ -17,7 +17,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, ProcessorFactory,
+    ConsumerEffectHandlerExtension, Interests, ProcessorFactory,
     context::PipelineContext,
     control::NackMsg,
     error::Error,
@@ -154,18 +154,13 @@ impl RecordsetKqlProcessor {
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
         // Time the KQL processing compute (excludes channel sends).
-        let RecordsetKqlProcessor {
-            ref pipeline,
-            ref mut metrics,
-            ..
-        } = *self;
-        let result = metrics.process_duration.timed(|| match otlp_bytes {
+        let do_process = || match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.processing_logs",
                     input_items
                 );
-                Self::do_process_logs(pipeline, bytes, signal)
+                Self::do_process_logs(&self.pipeline, bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
                 message: "Metrics processing not yet implemented in KQL bridge".to_string(),
@@ -173,7 +168,16 @@ impl RecordsetKqlProcessor {
             OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
                 message: "Traces processing not yet implemented in KQL bridge".to_string(),
             }),
-        });
+        };
+
+        let result = if effect_handler
+            .node_interests()
+            .contains(Interests::CONSUMER_METRICS)
+        {
+            self.metrics.process_duration.timed(do_process)
+        } else {
+            do_process()
+        };
 
         match result {
             Ok(processed_bytes) => {

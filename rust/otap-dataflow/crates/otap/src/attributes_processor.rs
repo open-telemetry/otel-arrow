@@ -39,7 +39,7 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::{Interests, config::ProcessorConfig};
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
@@ -363,7 +363,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
                 // Apply transform across selected domains and collect exact stats.
-                // Time just the transform compute.
+                // Time just the transform compute (at Normal+ metric level).
+                let time_process = effect_handler
+                    .node_interests()
+                    .contains(Interests::CONSUMER_METRICS);
                 let AttributesProcessor {
                     ref transform,
                     has_resource_domain,
@@ -371,18 +374,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     has_signal_domain,
                     ref mut metrics,
                 } = *self;
-                let transform_result = if let Some(m) = metrics.as_mut() {
-                    m.process_duration.timed(|| {
-                        Self::do_transform(
-                            transform,
-                            has_resource_domain,
-                            has_scope_domain,
-                            has_signal_domain,
-                            &mut records,
-                            signal,
-                        )
-                    })
-                } else {
+                let mut do_transform = || {
                     Self::do_transform(
                         transform,
                         has_resource_domain,
@@ -391,6 +383,15 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         &mut records,
                         signal,
                     )
+                };
+                let transform_result = if time_process {
+                    if let Some(m) = metrics.as_mut() {
+                        m.process_duration.timed(do_transform)
+                    } else {
+                        do_transform()
+                    }
+                } else {
+                    do_transform()
                 };
                 match transform_result {
                     Ok((deleted_total, renamed_total)) => {
