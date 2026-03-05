@@ -767,9 +767,8 @@ where
         payload: T,
         items: usize,
     ) -> Result<(), EngineError> {
-        // If there are subscribers, calculate an inbound slot key.
-        // When inbound slots are exhausted, nack the request to apply
-        // backpressure instead of returning a fatal error.
+        // If there are subscribers, calculate an inbound slot key. When inbound
+        // slots are exhausted, nack the request to apply backpressure.
         let inkey = if ctx.has_subscribers() {
             if self.buffer.inbound.is_full() {
                 self.metrics.nacked_inbound_slots.inc();
