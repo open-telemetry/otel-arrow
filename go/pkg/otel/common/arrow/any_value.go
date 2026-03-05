@@ -6,12 +6,10 @@
 package arrow
 
 import (
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
-	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
 	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
 	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
 )
@@ -26,30 +24,6 @@ const (
 	CborCode   int8 = 5
 )
 
-var (
-	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.
-	// Any values are represented as a sparse union of the following variants:
-	// str, i64, f64, bool, binary.
-	//
-	// Note: str, i64, binary, and cbor are dictionary encoded by default and
-	// will fall back to a non-dictionary encoding when the dictionary index
-	// overflowed.
-	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary16)},
-		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
-		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
-		{Name: "binary", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		{Name: "cbor", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-	}, []int8{
-		StrCode,
-		I64Code,
-		F64Code,
-		BoolCode,
-		BinaryCode,
-		CborCode,
-	})
-)
 
 // AnyValueBuilder is a helper to build an Arrow array containing a collection of OTLP Any Value.
 type AnyValueBuilder struct {
@@ -65,16 +39,6 @@ type AnyValueBuilder struct {
 	cborBuilder   *builder.BinaryBuilder  // cbor builder
 }
 
-// ValueTypeCounters is a struct to count the number of values of each type.
-type ValueTypeCounters struct {
-	strCount    int64
-	i64Count    int64
-	f64Count    int64
-	boolCount   int64
-	binaryCount int64
-	listCount   int64
-	mapCount    int64
-}
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
 func AnyValueBuilderFrom(av *builder.SparseUnionBuilder) *AnyValueBuilder {

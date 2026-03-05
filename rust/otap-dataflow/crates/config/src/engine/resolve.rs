@@ -128,7 +128,7 @@ impl OtelDataflowSpec {
                         channel_capacity: channel_capacity_policy,
                         health: health_policy,
                         telemetry: telemetry_policy,
-                        resources: resources_policy,
+                        resources: Some(resources_policy),
                     },
                     role: ResolvedPipelineRole::Regular,
                 }
@@ -147,7 +147,7 @@ impl OtelDataflowSpec {
                     channel_capacity: channel_capacity_policy,
                     health: health_policy,
                     telemetry: telemetry_policy,
-                    resources: ResourcesPolicy::default(),
+                    resources: Some(ResourcesPolicy::default()),
                 },
                 role: ResolvedPipelineRole::ObservabilityInternal,
             });
@@ -262,6 +262,13 @@ impl OtelDataflowSpec {
     /// 1. pipeline-level policies
     /// 2. group-level policies
     /// 3. top-level policies
+    ///
+    /// Importantly, a scope's `resources` is only considered when the user
+    /// **explicitly** wrote a `resources:` key in that scope's `policies:`
+    /// block.  Scopes that have a `policies:` block for *other* fields (e.g.
+    /// `channel_capacity`) but no `resources:` key deserialise `resources` as
+    /// `None` and are skipped, so the CLI `--num-cores` / `--core-id-range`
+    /// flag written to the top-level config is not silently shadowed.
     #[must_use]
     fn resolve_resources_policy(
         &self,
@@ -271,16 +278,21 @@ impl OtelDataflowSpec {
         let pipeline_group = self.groups.get(pipeline_group_id)?;
         let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
 
-        pipeline
+        // Walk from the most-specific scope to the top-level, stopping at the
+        // first scope that explicitly declares a resources policy.  When no scope
+        // does, fall back to the built-in default (all_cores).
+        let explicit = pipeline
             .policies()
-            .map(|p| p.resources.clone())
+            .and_then(|p| p.resources.clone())
             .or_else(|| {
                 pipeline_group
                     .policies
                     .as_ref()
-                    .map(|p| p.resources.clone())
+                    .and_then(|p| p.resources.clone())
             })
-            .or_else(|| Some(self.policies.resources.clone()))
+            .or_else(|| self.policies.resources.clone());
+
+        Some(explicit.unwrap_or_default())
     }
 
     /// Resolves the effective channel capacity policy for the engine observability pipeline.
