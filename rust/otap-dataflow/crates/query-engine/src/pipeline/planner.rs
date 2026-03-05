@@ -6,10 +6,10 @@
 use data_engine_expressions::{
     BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
-    OutputExpression, PipelineExpression, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, StringValue, TransformExpression,
-    ValueAccessor,
+    OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
+    PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+    StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -72,18 +72,25 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        self.plan_data_exprs(pipeline.get_expressions(), session_ctx, otap_batch)
+        self.plan_data_exprs(
+            pipeline.get_expressions(),
+            pipeline.get_functions(),
+            session_ctx,
+            otap_batch,
+        )
     }
 
     fn plan_data_exprs(
         &self,
         data_exprs: &[DataExpression],
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<BoxedPipelineStage>> {
         let mut results = Vec::new();
         for data_expr in data_exprs {
-            let mut expr_results = self.plan_data_expr(data_expr, session_ctx, otap_batch)?;
+            let mut expr_results =
+                self.plan_data_expr(data_expr, functions, session_ctx, otap_batch)?;
 
             // validate the pipeline stages are valid for attributes if planning pipeline to apply
             // to attrs batches only
@@ -109,6 +116,7 @@ impl PipelinePlanner {
     fn plan_data_expr(
         &self,
         data_expr: &DataExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
@@ -138,7 +146,9 @@ impl PipelinePlanner {
                 TransformExpression::ReduceMap(reduce_map_exr) => {
                     Self::plan_reduce_map(reduce_map_exr)
                 }
-                TransformExpression::Set(set_expr) => self.plan_set(set_expr),
+                TransformExpression::Set(set_expr) => {
+                    self.plan_set(set_expr, functions, session_ctx, otap_batch)
+                }
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
                         "transform expression not yet supported {}",
@@ -153,8 +163,12 @@ impl PipelinePlanner {
                     let predicate =
                         self.plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
 
-                    let pipeline_stages =
-                        self.plan_data_exprs(branch.get_expressions(), session_ctx, otap_batch)?;
+                    let pipeline_stages = self.plan_data_exprs(
+                        branch.get_expressions(),
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
 
                     pipeline_branches.push(ConditionalPipelineStageBranch::new(
                         predicate,
@@ -164,7 +178,9 @@ impl PipelinePlanner {
 
                 let default_branch = conditional_expr
                     .get_default_branch()
-                    .map(|data_exprs| self.plan_data_exprs(data_exprs, session_ctx, otap_batch))
+                    .map(|data_exprs| {
+                        self.plan_data_exprs(data_exprs, functions, session_ctx, otap_batch)
+                    })
                     .transpose()?;
 
                 let pipeline_stage =
@@ -177,28 +193,6 @@ impl PipelinePlanner {
                     Ok(vec![Box::new(RouteToPipelineStage::new(name.get_value()))])
                 }
             },
-
-            DataExpression::Nested(nested_expr) => {
-                let attributes_id = nested_expr
-                    .get_target()
-                    .and_then(Self::source_to_apply_attrs_id)
-                    .ok_or_else(|| Error::InvalidPipelineError {
-                        cause: format!(
-                            "Invalid source for nested apply pipeline to attributes {:?}",
-                            nested_expr.get_target()
-                        ),
-                        query_location: Some(nested_expr.get_query_location().clone()),
-                    })?;
-
-                let planner = Self::new_for_attributes();
-                let child_pipeline =
-                    planner.plan_data_exprs(nested_expr.get_children(), session_ctx, otap_batch)?;
-
-                Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
-                    attributes_id,
-                    child_pipeline,
-                ))])
-            }
 
             // TODO support other DataExpressions
             other => Err(Error::NotYetSupportedError {
@@ -480,12 +474,71 @@ impl PipelinePlanner {
         Ok(pipeline_stages)
     }
 
-    fn plan_set(&self, set_expr: &SetTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
+    fn plan_set(
+        &self,
+        set_expr: &SetTransformExpression,
+        functions: &[PipelineFunction],
+        session_ctx: &SessionContext,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let MutableValueExpression::Source(dest) = set_expr.get_destination() else {
             return Err(Error::NotYetSupportedError {
                 message: "set expression only supports source destinations".to_string(),
             });
         };
+
+        // first check if this represents a nested pipeline that should be applied to attributes.
+        // in our AST expression tree, these are modeled as function invocations with a special
+        // anonymous name
+        if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
+            // TODO don't unwrap here - need to check if the function definition is null
+            // TODO - in the future we may want some way to identify that this is the special type
+            // of "function" that represents a nested pipeline applied to attributes. For now, we
+            // just know this is the only type of function invocation supported.
+            let function = functions.get(func.get_function_id()).unwrap();
+            let PipelineFunctionImplementation::Expressions(function_exprs) =
+                function.get_implementation()
+            else {
+                todo!("return error")
+            };
+
+            let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
+            for func_expr in function_exprs {
+                let data_expr = match func_expr {
+                    PipelineFunctionExpression::Discard(d) => DataExpression::Discard(d.clone()),
+                    PipelineFunctionExpression::Transform(t) => {
+                        DataExpression::Transform(t.clone())
+                    }
+                    PipelineFunctionExpression::Return(_r) => {
+                        todo!("invalid")
+                    }
+                };
+                inner_pipeline_data_exprs.push(data_expr);
+            }
+
+            let planner = Self::new_for_attributes();
+            let child_pipeline = planner.plan_data_exprs(
+                &inner_pipeline_data_exprs,
+                functions,
+                session_ctx,
+                otap_batch,
+            )?;
+
+            let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
+                Error::InvalidPipelineError {
+                    cause: format!(
+                        "Invalid source for nested apply pipeline to attributes {:?}",
+                        dest,
+                    ),
+                    query_location: Some(dest.get_query_location().clone()),
+                }
+            })?;
+
+            return Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
+                attributes_id,
+                child_pipeline,
+            ))]);
+        }
 
         let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
         match dest_accessor {

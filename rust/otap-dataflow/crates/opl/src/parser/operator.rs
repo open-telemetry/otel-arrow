@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-    DiscardDataExpression, Expression, LogicalExpression, MapKeyRenameSelector,
-    MapSelectionExpression, MapSelector, MutableValueExpression, NestedDataExpression,
-    NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation,
-    ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
-    SetTransformExpression, SourceScalarExpression, StaticScalarExpression, TransformExpression,
-    ValueAccessor,
+    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression, NestedDataExpression, NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -20,7 +14,7 @@ use crate::parser::expression::{
     no_inner_rule_error, parse_attribute_selection_expression, parse_expression,
     parse_index_expression, parse_member_expression,
 };
-use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
+use crate::parser::pipeline::{InnerPipelineBuilder, PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_operator_call(
@@ -222,7 +216,7 @@ pub(crate) fn parse_if_else_operator_call(
     let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
-    let mut next_branch: Vec<DataExpression> = Vec::new();
+    let mut next_branch = InnerPipelineBuilder::new();
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -258,7 +252,7 @@ pub(crate) fn parse_if_else_operator_call(
 
                 // take the data expressions for the branch and reset next_branch
                 let curr_branch = next_branch;
-                next_branch = Vec::new();
+                next_branch = InnerPipelineBuilder::new();
 
                 let query_location = QueryLocation::new(
                     branch_location_start,
@@ -285,7 +279,7 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 conditional_expr = conditional_expr.with_branch(
-                    ConditionalDataExpressionBranch::new(query_location, condition, curr_branch),
+                    ConditionalDataExpressionBranch::new(query_location, condition, curr_branch.into_data_exprs()),
                 );
             }
 
@@ -303,13 +297,16 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 let inner_rules = branch_rules.into_inner();
-                let mut else_branch_exprs = Vec::with_capacity(inner_rules.len());
+                let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacities(
+                    Some(inner_rules.len()),
+                    None
+                );
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
 
-                conditional_expr = conditional_expr.with_default_branch(else_branch_exprs);
+                conditional_expr = conditional_expr.with_default_branch(else_branch_exprs.into_data_exprs());
             }
             _ => {
                 return Err(ParserError::SyntaxError(
@@ -368,6 +365,7 @@ pub(crate) fn parse_apply_operator_call(
     let target_identifier_rule = inner_rules
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let target_rule_query_location = to_query_location(&target_identifier_rule);
     let target_expr: ScalarExpression = parse_member_expression(target_identifier_rule)?.into();
     let target_source_expr = match target_expr {
         ScalarExpression::Source(source_expr) => source_expr,
@@ -383,16 +381,51 @@ pub(crate) fn parse_apply_operator_call(
     };
 
     // parse the child stages of the nested pipeline
-    let mut children = Vec::with_capacity(inner_rules.len());
+    let mut inner_pipeline = InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
     for inner_rule in inner_rules {
-        parse_pipeline_stage(inner_rule, &mut children)?;
+        parse_pipeline_stage(inner_rule, &mut inner_pipeline)?;
+    }
+    let inner_data_exprs = inner_pipeline.into_data_exprs();
+
+    // convert child stages to pipeline functions
+    let mut function_exprs = Vec::with_capacity(inner_data_exprs.len());
+    for data_expr in inner_data_exprs {
+        let function_expr = match data_expr {
+            DataExpression::Discard(d) => PipelineFunctionExpression::Discard(d),
+            DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
+            _ => {
+                todo!("need add the others")
+            }
+        };
+
+        function_exprs.push(function_expr);
     }
 
-    let nested_expr = NestedDataExpression::new(query_location)
-        .with_children(children)
-        .with_target(target_source_expr);
+    let pipeline_function = PipelineFunction::new_with_expressions(
+        query_location.clone(), // TODO might not need clone
+        Vec::new(),
+        None,
+        function_exprs
+    );
 
-    pipeline_builder.push_data_expression(DataExpression::Nested(nested_expr));
+    // TODO - juggling of the function ID is not currently correct.
+    // we need to account for the fact that some function IDs may have been
+    // added in child pipelines
+    let fn_name = "__apply__TODO_some_hash";
+    let function_id = pipeline_builder.push_function_definition(fn_name, pipeline_function);
+
+    let transform_expr = TransformExpression::Set(
+        SetTransformExpression::new(target_rule_query_location, 
+            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                query_location.clone(), 
+                None,
+                function_id, 
+                Vec::new()
+            )),
+            MutableValueExpression::Source(target_source_expr))
+        );
+
+    pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
 
     Ok(())
 }

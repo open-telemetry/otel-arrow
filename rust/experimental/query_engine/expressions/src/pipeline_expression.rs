@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::str::from_utf8_unchecked;
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -319,6 +321,7 @@ impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineFunctionExpression {
+    Discard(DiscardDataExpression),
     Transform(TransformExpression),
     Return(ScalarExpression),
 }
@@ -330,6 +333,10 @@ impl PipelineFunctionExpression {
         indent: &str,
     ) -> std::fmt::Result {
         match self {
+            PipelineFunctionExpression::Discard(d) => {
+                write!(f, "Discard: ")?;
+                d.fmt_with_indent(f, format!("{indent}           ").as_str())
+            }
             PipelineFunctionExpression::Transform(t) => {
                 write!(f, "Transform: ")?;
                 t.fmt_with_indent(f, format!("{indent}           ").as_str())
