@@ -84,10 +84,6 @@ impl ProcessDuration {
     pub fn report(&mut self, reporter: &mut MetricsReporter) {
         let _ = reporter.report(&mut self.metrics);
     }
-
-    fn record(&mut self, nanos: f64) {
-        self.metrics.process_duration.record(nanos);
-    }
 }
 
 /// Lightweight timing token.  Call [`TimingGuard::stop`] to record
@@ -101,7 +97,7 @@ impl TimingGuard {
     /// Record the elapsed time and consume the guard.
     pub fn stop(self, pd: &mut ProcessDuration) {
         if let Some(timer) = self.timer {
-            pd.record(timer.elapsed_nanos());
+            pd.metrics.process_duration.record_timer(timer);
         }
     }
 }
