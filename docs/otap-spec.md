@@ -594,12 +594,12 @@ EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
 | parent_id | UInt32      | Dict(u8), Dict(u16) | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*\_DP_EXEMPLARS `id` column                   |
 | key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | -                                        | -        | Attribute key name                                                              |
 | type      | UInt8       | -                   | No       | Yes      | -                                        | -        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
-| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
+| str       | Utf8        | Dict(u16)           | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
+| int       | Int64       | Dict(u16)           | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
 | double    | Float64     | -                   | Yes      | No       | -                                        | -        | Double value (when type=4)                                                      |
 | bool      | Boolean     | -                   | Yes      | No       | -                                        | -        | Boolean value (when type=2)                                                     |
-| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
-| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
+| bytes     | Binary      | Dict(u16)           | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
+| ser       | Binary      | Dict(u16)           | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
 
 #### 5.4.2 U16 Attributes
 
@@ -610,12 +610,12 @@ Applies to: RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS
 | parent_id | UInt16      | -                   | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id`, `scope.id`, or `id` column         |
 | key       | Utf8        | Dict(u8), Dict(u16) | No       | Yes      | -                                        | -        | Attribute key name                                                              |
 | type      | UInt8       | -                   | No       | Yes      | -                                        | -        | Value type: 0=Empty, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str       | Utf8        | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
-| int       | Int64       | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
+| str       | Utf8        | Dict(u16)           | Yes      | No       | -                                        | -        | String value (when type=1)                                                      |
+| int       | Int64       | Dict(u16)           | Yes      | No       | -                                        | -        | Integer value (when type=3)                                                     |
 | double    | Float64     | -                   | Yes      | No       | -                                        | -        | Double value (when type=4)                                                      |
 | bool      | Boolean     | -                   | Yes      | No       | -                                        | -        | Boolean value (when type=2)                                                     |
-| bytes     | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
-| ser       | Binary      | Dict(u8), Dict(u16) | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
+| bytes     | Binary      | Dict(u16)           | Yes      | No       | -                                        | -        | Bytes value (when type=5)                                                       |
+| ser       | Binary      | Dict(u16)           | Yes      | No       | -                                        | -        | CBOR-encoded Array or Map (when type=6 or 7)                                    |
 
 ### 5.5 Special Field Rules
 
