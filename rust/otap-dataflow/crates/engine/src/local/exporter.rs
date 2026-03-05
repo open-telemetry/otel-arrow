@@ -33,6 +33,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::Interests;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -101,7 +102,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
     /// reporter.
     #[must_use]
-    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
@@ -112,6 +113,12 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
     }
 
     /// Print an info message to stdout.
@@ -141,20 +148,20 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to a node of known-interest.
-    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send an Ack to the pipeline controller for context unwinding.
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_ack(ack, cxf).await
+        self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send a Nack to the pipeline controller for context unwinding.
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_nack(nack, cxf).await
+        self.core.route_nack(nack).await
     }
 
     /// Reports metrics collected by the exporter.
