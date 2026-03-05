@@ -32,10 +32,9 @@ impl PipelineBuilder for ParserState {
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
         self.push_function(name, definition, Vec::new(), HashMap::new());
-        return self
-            .get_function_id(name)
+        self.get_function_id(name)
             .expect("should have function with name")
-            .get_id();
+            .get_id()
     }
 }
 
