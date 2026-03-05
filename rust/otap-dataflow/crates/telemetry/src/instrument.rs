@@ -539,10 +539,37 @@ impl Mmsc {
     where
         F: FnOnce() -> R,
     {
-        let start = Instant::now();
+        let timer = Timer::start();
         let result = f();
-        self.record(start.elapsed().as_nanos() as f64);
+        self.record(timer.elapsed_nanos());
         result
+    }
+}
+
+/// A lightweight wall-clock timer.
+///
+/// Call [`Timer::start`] to capture the current instant, then
+/// [`Timer::elapsed_nanos`] to get the elapsed time in nanoseconds
+/// as an `f64` suitable for recording into an [`Mmsc`].
+#[must_use]
+pub struct Timer {
+    start: Instant,
+}
+
+impl Timer {
+    /// Capture the current instant.
+    #[inline]
+    pub fn start() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+
+    /// Return the elapsed wall-clock time in nanoseconds.
+    #[inline]
+    #[must_use]
+    pub fn elapsed_nanos(&self) -> f64 {
+        self.start.elapsed().as_nanos() as f64
     }
 }
 

@@ -15,11 +15,10 @@
 //! Both are gated on [`Interests::CONSUMER_METRICS`] (MetricLevel ≥ Normal).
 
 use crate::Interests;
-use otap_df_telemetry::instrument::Mmsc;
+use otap_df_telemetry::instrument::{Mmsc, Timer};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
-use std::time::Instant;
 
 use crate::context::PipelineContext;
 
@@ -60,12 +59,12 @@ impl ProcessDuration {
     /// timing.stop(&mut self.process_duration);
     /// ```
     pub fn start(interests: Interests) -> TimingGuard {
-        let start = if interests.contains(Interests::CONSUMER_METRICS) {
-            Some(Instant::now())
+        let timer = if interests.contains(Interests::CONSUMER_METRICS) {
+            Some(Timer::start())
         } else {
             None
         };
-        TimingGuard { start }
+        TimingGuard { timer }
     }
 
     /// Time `f` if `interests` includes [`Interests::CONSUMER_METRICS`],
@@ -95,14 +94,14 @@ impl ProcessDuration {
 /// the elapsed duration into the originating [`ProcessDuration`].
 #[must_use]
 pub struct TimingGuard {
-    start: Option<Instant>,
+    timer: Option<Timer>,
 }
 
 impl TimingGuard {
     /// Record the elapsed time and consume the guard.
     pub fn stop(self, pd: &mut ProcessDuration) {
-        if let Some(start) = self.start {
-            pd.record(start.elapsed().as_nanos() as f64);
+        if let Some(timer) = self.timer {
+            pd.record(timer.elapsed_nanos());
         }
     }
 }
