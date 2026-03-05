@@ -7,6 +7,8 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
+use crate::Interests;
+use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
@@ -246,7 +248,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                ..
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
@@ -283,7 +284,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                ..
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
@@ -317,6 +317,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
+        node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
@@ -337,6 +338,8 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
+                    node_id.index,
+                    node_interests,
                 );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = local::EffectHandler::new(
@@ -370,6 +373,8 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
+                    node_id.index,
+                    node_interests,
                 );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = shared::EffectHandler::new(
@@ -393,8 +398,14 @@ impl<PData> ProcessorWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-    ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
+        node_interests: Interests,
+    ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
+    {
+        let runtime = self
+            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -405,6 +416,7 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -432,6 +444,7 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler

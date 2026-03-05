@@ -751,7 +751,8 @@ mod tests {
 
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::testing::TestCallData;
+    use crate::pdata::OtapPdata;
+    use crate::testing::{TestCallData, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
@@ -800,12 +801,12 @@ mod tests {
         let result = timeout(Duration::from_secs(1), async {
             loop {
                 match pipeline_ctrl_rx.recv().await {
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck {
-                        node_id, ..
-                    }) => {
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck { ack }) => {
                         if !expect_ack {
                             return Err(format!("Got Ack but expected Nack {}", context));
                         }
+                        let (node_id, _ack) = next_ack(ack)
+                            .ok_or_else(|| format!("No ack subscriber found {}", context))?;
                         if node_id != expected_node_id {
                             return Err(format!(
                                 "Expected node_id {} but got {} {}",
@@ -814,13 +815,12 @@ mod tests {
                         }
                         return Ok(());
                     }
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack {
-                        node_id,
-                        ..
-                    }) => {
+                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack { nack }) => {
                         if expect_ack {
                             return Err(format!("Got Nack but expected Ack {}", context));
                         }
+                        let (node_id, _nack) = next_nack(nack)
+                            .ok_or_else(|| format!("No nack subscriber found {}", context))?;
                         if node_id != expected_node_id {
                             return Err(format!(
                                 "Expected node_id {} but got {} {}",
@@ -1098,6 +1098,7 @@ mod tests {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|_| ())

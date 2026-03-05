@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::Interests;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -40,6 +41,7 @@ use crate::error::{Error, TypedError};
 use crate::extension::registry::ExtensionRegistry;
 use crate::message::Sender;
 use crate::node::NodeId;
+use crate::output_router::OutputRouter;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
@@ -110,11 +112,15 @@ pub struct ControlChannel<PData> {
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub const fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
+    pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
         Self { rx }
     }
 
     /// Asynchronously receives the next control message.
+    ///
+    /// Note: produced outcome metrics are now recorded by the pipeline
+    /// controller via `Frame` entries collected during context
+    /// unwinding, not here.
     ///
     /// # Errors
     ///
@@ -127,13 +133,9 @@ impl<PData> ControlChannel<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore<PData>,
-
-    /// A sender used to forward messages from the receiver.
-    /// Supports multiple named output ports.
-    msg_senders: HashMap<PortName, Sender<PData>>,
-    /// Cached default sender for fast access in the hot path
-    default_sender: Option<Sender<PData>>,
+    pub(crate) core: EffectHandlerCore<PData>,
+    /// Output-port router.
+    pub router: OutputRouter<Sender<PData>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -147,23 +149,10 @@ impl<PData> EffectHandler<PData> {
         node_request_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
+        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
-
-        // Determine and cache the default sender
-        let default_sender = if let Some(ref port) = default_port {
-            msg_senders.get(port).cloned()
-        } else if msg_senders.len() == 1 {
-            msg_senders.values().next().cloned()
-        } else {
-            None
-        };
-
-        EffectHandler {
-            core,
-            msg_senders,
-            default_sender,
-        }
+        let router = OutputRouter::new(node_id, msg_senders, default_port);
+        EffectHandler { core, router }
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -187,7 +176,13 @@ impl<PData> EffectHandler<PData> {
     /// Returns the list of connected output ports for this receiver.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.msg_senders.keys().cloned().collect()
+        self.router.connected_ports()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -201,15 +196,7 @@ impl<PData> EffectHandler<PData> {
     /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.receiver_id(),
-            })),
-        }
+        self.router.send_default(data).await
     }
 
     /// Attempts to send a message without awaiting.
@@ -224,12 +211,7 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.receiver_id(),
-            })),
-        }
+        self.router.try_send_default(data)
     }
 
     /// Sends a message to a specific named output port.
@@ -243,17 +225,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.receiver_id(),
-                port: port_name,
-            })),
-        }
+        self.router.send_to(port, data).await
     }
 
     /// Attempts to send a message to a specific named output port without awaiting.
@@ -271,14 +243,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.receiver_id(),
-                port: port_name,
-            })),
-        }
+        self.router.try_send_to(port, data)
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

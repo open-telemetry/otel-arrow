@@ -6,6 +6,7 @@
 //! These utilities are designed to make testing receivers simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::Interests;
 use crate::config::ReceiverConfig;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
@@ -286,6 +287,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .expect("Receiver event loop failed");

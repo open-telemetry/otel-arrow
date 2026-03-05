@@ -3,6 +3,7 @@
 
 //! HTTP server for exposing admin endpoints.
 
+mod dashboard;
 pub mod error;
 mod health;
 mod pipeline;
@@ -55,6 +56,7 @@ pub async fn run(
         .merge(telemetry::routes())
         .merge(pipeline_group::routes())
         .merge(pipeline::routes())
+        .merge(dashboard::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);
 

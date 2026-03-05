@@ -550,7 +550,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                msg = msg_chan.recv() => {
+                // Control always flows; pdata guarded by !at_capacity
+                msg = msg_chan.recv_when(!at_capacity) => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
                             self.sync_gauges();

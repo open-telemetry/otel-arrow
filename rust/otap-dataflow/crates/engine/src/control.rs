@@ -12,10 +12,27 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
+
+thread_local! {
+    /// Temporary; see nanos_since_birth
+    static BIRTH_KEY: Cell<Instant> = Cell::new(Instant::now());
+}
+
+/// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
+/// Used for duration calculations in pipeline component metrics.
+///
+/// TODO: This should not use a thread_local; it should not store any
+/// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
+#[must_use]
+pub fn nanos_since_birth() -> u64 {
+    let birth = BIRTH_KEY.get();
+    Instant::now().duration_since(birth).as_nanos() as u64
+}
 
 /// A 8-byte context value. Supports conversion to and from plain data
 /// using bytemuck.
@@ -63,14 +80,62 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
+/// Engine-managed call data envelope. Wraps the CallData with an envelope
+/// containing timestamp. Lives on the forward path (in context stack frames).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RouteData {
+    /// Component-specific opaque data (formerly the entire `CallData`).
+    pub calldata: CallData,
+    /// Entry timestamp, see nanos_since_birth().
+    pub entry_time_ns: u64,
+    /// Producer's output port index.
+    pub output_port_index: u16,
+}
+
+/// Return-path data carried in AckMsg/NackMsg. Contains all the fields
+/// from the forward-path RouteData plus a return-path timestamp.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnwindData {
+    /// The route we are returning through.
+    pub route: RouteData,
+    /// Ack or Nack timestamp, see nanos_since_birth().
+    pub return_time_ns: u64,
+}
+
+impl UnwindData {
+    /// Build new return route data.
+    #[must_use]
+    pub fn new(route: RouteData, return_time_ns: u64) -> Self {
+        Self {
+            route,
+            return_time_ns,
+        }
+    }
+}
+
+/// Per-node interests, context, and identity.
+///
+/// A frame lives on the context stack carried inside PData. Each node
+/// that subscribes (or has metrics interests) pushes one frame. During
+/// ack/nack unwinding the controller pops frames one at a time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    /// Declares the set of interests this node has (Acks, Nacks, ...)
+    pub interests: crate::Interests,
+    /// The caller's route data.
+    pub route: RouteData,
+    /// The caller's node_id for routing.
+    pub node_id: usize,
+}
+
 /// The ACK message.
 #[derive(Debug, Clone)]
 pub struct AckMsg<PData> {
     /// Accepted pdata being returned.
     pub accepted: Box<PData>,
 
-    /// Subscriber information returned.
-    pub calldata: CallData,
+    /// Routing information returned.
+    pub unwind: UnwindData,
 }
 
 impl<PData> AckMsg<PData> {
@@ -78,7 +143,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: smallvec![],
+            unwind: UnwindData::default(),
         }
     }
 }
@@ -89,11 +154,11 @@ pub struct NackMsg<PData> {
     /// Human-readable reason for the NACK.
     pub reason: String,
 
-    /// Subscriber information returned.
-    pub calldata: CallData,
-
     /// Refused pdata being returned.
     pub refused: Box<PData>,
+
+    /// Subscriber information returned.
+    pub unwind: UnwindData,
 
     /// Permanent status.
     pub permanent: bool,
@@ -113,8 +178,8 @@ impl<PData> NackMsg<PData> {
     fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
-            calldata: smallvec![],
             refused: Box::new(refused),
+            unwind: UnwindData::default(),
             permanent,
         }
     }
@@ -266,16 +331,14 @@ pub enum PipelineControlMsg<PData> {
         data: Box<PData>,
     },
     /// Deliver an Ack to the preceding subscriber in the pipeline.
+    /// The controller unwinds the context stack to find the recipient.
     DeliverAck {
-        /// The recipient node_id
-        node_id: usize,
         /// The Ack
         ack: AckMsg<PData>,
     },
-    /// Deliver an Nack to the preceding subscriber in the pipeline.
+    /// Deliver a Nack to the preceding subscriber in the pipeline.
+    /// The controller unwinds the context stack to find the recipient.
     DeliverNack {
-        /// The recipient node_id
-        node_id: usize,
         /// The Nack
         nack: NackMsg<PData>,
     },

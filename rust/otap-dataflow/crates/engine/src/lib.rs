@@ -25,9 +25,11 @@ use crate::{
     shared::message::{SharedReceiver, SharedSender},
 };
 use async_trait::async_trait;
+pub use channel_metrics::RequestOutcome;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
+use otap_df_config::MetricLevel;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
@@ -64,6 +66,7 @@ pub mod engine_metrics;
 pub mod entity_context;
 pub mod local;
 pub mod node;
+pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod runtime_pipeline;
@@ -270,7 +273,104 @@ pub struct Interests: u8 {
 
     /// Return data
     const RETURN_DATA = 1 << 2;
+
+    /// Entry-timestamp should be recorded for detailed metrics.
+    const ENTRY_TIMESTAMP = 1 << 3;
+
+    /// Consumer metrics will be instrumented by recording the route
+    /// and optional timing.
+    const CONSUMER_METRICS = 1 << 4;
+
+    /// Producer metrics will be instrumented by recording the route
+    /// and optional timing.
+    const PRODUCER_METRICS = 1 << 5;
+
+    /// Source-tagging requested. A frame with no other interests may be inserted.
+    const SOURCE_TAGGING = 1 << 6;
+
+    /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
+    const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
 }
+}
+
+impl Interests {
+    /// Derive Interests from MetricLevel.
+    ///
+    /// None:     empty()
+    /// Basic:    empty() with only channel metrics, no use of Context
+    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
+    #[must_use]
+    pub fn from_metric_level(level: MetricLevel) -> Self {
+        match level {
+            MetricLevel::None | MetricLevel::Basic => Self::empty(),
+            MetricLevel::Normal => Self::PIPELINE_METRICS,
+            MetricLevel::Detailed => Self::PIPELINE_METRICS | Self::ENTRY_TIMESTAMP,
+        }
+    }
+}
+
+/// Trait for context-stack unwinding during ack/nack delivery.
+pub trait Unwindable {
+    /// Returns true if the context stack has any frames.
+    ///
+    /// TODO: there are cases where having frames does not necessarily
+    /// mean there are interests. This can be refined.
+    fn has_frames(&self) -> bool;
+
+    /// Remove and return the top frame.
+    fn pop_frame(&mut self) -> Option<control::Frame>;
+
+    /// Drop the retained payload unless RETURN_DATA is set.
+    fn drop_payload(&mut self);
+}
+
+impl Unwindable for () {
+    fn has_frames(&self) -> bool {
+        false
+    }
+    fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn drop_payload(&mut self) {}
+}
+
+impl Unwindable for String {
+    fn has_frames(&self) -> bool {
+        false
+    }
+    fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn drop_payload(&mut self) {}
+}
+
+/// Trait for setting entry information in the Context, for PData consumers.
+pub trait ReceivedAtNode {
+    /// Called automatically when a PData message is received from the input channel.
+    fn received_at_node(&mut self, node_id: usize, node_interests: Interests);
+}
+
+// No-op implementations for types used as PData in tests.
+impl ReceivedAtNode for () {
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
+}
+impl ReceivedAtNode for String {
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
+}
+
+/// Trait for setting exit information in the Context, for PData consumers.
+pub trait StampOutputPort {
+    /// Called automatically when a PData message is sent on an output channel.
+    fn stamp_output_port_index(&mut self, index: u16);
+}
+
+impl StampOutputPort for () {
+    fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+impl StampOutputPort for String {
+    fn stamp_output_port_index(&mut self, _index: u16) {}
 }
 
 /// Effect handler extensions for producers specific to data type.
@@ -339,6 +439,7 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     where
         P: Into<PortName> + Send + 'static;
 }
+
 /// Builds a pipeline factory for initialization.
 ///
 /// This function is used as a placeholder when declaring a pipeline factory with the
@@ -531,7 +632,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.channel_metrics;
+        let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;

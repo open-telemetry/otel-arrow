@@ -7,6 +7,7 @@
 //! setup and lifecycle management.
 
 use crate::ExporterFactory;
+use crate::Interests;
 use crate::config::ExporterConfig;
 use crate::context::{ControllerContext, PipelineContext};
 use crate::control::{
@@ -264,6 +265,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter_start,
                     ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|terminal_state| {

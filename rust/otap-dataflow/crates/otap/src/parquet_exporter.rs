@@ -428,6 +428,7 @@ mod test {
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
     use otap_df_engine::control::{
         Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
         pipeline_ctrl_msg_channel,
@@ -925,6 +926,7 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|_| ())
@@ -1079,6 +1081,7 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|_| ())
@@ -1231,6 +1234,7 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|_| ())
@@ -1478,6 +1482,7 @@ mod test {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     otap_df_engine::extension::registry::ExtensionRegistry::new(),
+                    Interests::empty(),
                 )
                 .await
                 .map(|_| ())

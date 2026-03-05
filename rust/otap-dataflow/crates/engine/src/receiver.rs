@@ -7,6 +7,7 @@
 //! For more details on the `!Send` implementation of a receiver, see [`local::Receiver`].
 //! See [`shared::Receiver`] for the Send implementation.
 
+use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ReceiverConfig;
@@ -298,11 +299,13 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Starts the receiver and begins receiver incoming data.
+    #[doc(hidden)]
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         extension_registry: ExtensionRegistry,
+        node_interests: Interests,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -337,6 +340,7 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_node_interests(node_interests);
                 receiver
                     .start(ctrl_msg_chan, effect_handler, extension_registry)
                     .await
@@ -373,6 +377,7 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_node_interests(node_interests);
                 receiver
                     .start(ctrl_msg_chan, effect_handler, extension_registry)
                     .await

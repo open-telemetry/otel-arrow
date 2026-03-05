@@ -3,28 +3,82 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
-use crate::channel_metrics::ChannelMetricsHandle;
+use crate::Interests;
+use crate::ReceivedAtNode;
+use crate::Unwindable;
+use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, ExtensionControlSender, NodeControlMsg, PipelineCtrlMsgReceiver,
     PipelineCtrlMsgSender,
 };
-use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
+use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::extension::ExtensionWrapper;
 use crate::extension::registry::ExtensionRegistry;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::pipeline_ctrl::PipelineCtrlMsgManager;
+use crate::pipeline_ctrl::{NodeMetricHandles, PipelineCtrlMsgManager};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
+
+/// Build produced-request metric sets indexed by sorted output port name,
+/// matching the `output_port_index` layout used in `RouteData`.
+fn make_produced_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MetricSet<ProducedMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Build per-node metric handles for the pipeline controller.
+///
+/// - `has_input`: whether to register consumed-request metrics (false for receivers).
+/// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+fn make_node_metric_handles(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+    has_input: bool,
+    has_outputs: bool,
+) -> NodeMetricHandles {
+    let consumed = if has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+    } else {
+        None
+    };
+    let produced = if has_outputs {
+        make_produced_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
+    NodeMetricHandles {
+        registry: pipeline_context.metrics_registry(),
+        input: consumed,
+        outputs: produced,
+    }
+}
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
@@ -113,7 +167,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub const fn config(&self) -> &PipelineConfig {
         &self.config
     }
+}
 
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -139,6 +195,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             telemetry_policy,
         } = self;
 
+        let metric_level = telemetry_policy.channel_metrics;
+        let node_interests = Interests::from_metric_level(metric_level);
+
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
@@ -149,6 +208,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
         let mut extension_control_senders: Vec<ExtensionControlSender> = Vec::new();
+        let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
         // Spawn extension tasks first so they are ready before other components.
         // Extensions do NOT register in control_senders (they use ExtensionControlMsg,
@@ -198,6 +258,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            // Collect per-node metrics for the controller (exporters have no output channels).
+            node_metric_entries.push((
+                node_id.index,
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
+            ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
@@ -208,6 +273,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
                         extension_registry,
+                        node_interests,
                     )
                     .await
                     .map(|terminal_state| {
@@ -240,11 +306,16 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            // Collect per-node metrics for the controller.
+            node_metric_entries.push((
+                node_id.index,
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
+            ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests)
                     .await;
                 drop(telemetry_guard);
                 result
@@ -273,6 +344,11 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             let telemetry_guard = receiver.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            // Collect per-node metrics for the controller (receivers have no input data channel).
+            node_metric_entries.push((
+                node_id.index,
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
+            ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
@@ -283,6 +359,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
                         extension_registry,
+                        node_interests,
                     )
                     .await
                     .map(|terminal_state| {
@@ -305,6 +382,18 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             }
         }
 
+        // Build the per-node metric handles table indexed by node_id.
+        let max_node = node_metric_entries
+            .iter()
+            .map(|(id, _)| *id)
+            .max()
+            .unwrap_or(0);
+        let mut node_metric_handles: Vec<Option<NodeMetricHandles>> =
+            (0..=max_node).map(|_| None).collect();
+        for (id, handles) in node_metric_entries {
+            node_metric_handles[id] = Some(handles);
+        }
+
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
@@ -317,6 +406,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 metrics_reporter,
                 telemetry_policy,
                 channel_metrics,
+                node_metric_handles,
             );
             manager.run().await
         }));
@@ -353,7 +443,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .await
         })
     }
+}
 
+impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Gets a reference to any node by its ID as a Node trait object.
     ///
     /// Returns `None` for extensions — they do not implement `Node<PData>`.
