@@ -151,7 +151,7 @@ impl OTAPReceiver {
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
-        let calldata = ack.calldata;
+        let calldata = ack.unwind.route.calldata;
         let resp = Ok(());
         let state = match ack.accepted.signal_type() {
             SignalType::Logs => states.logs.as_ref(),
@@ -169,7 +169,7 @@ impl OTAPReceiver {
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
-        let calldata = std::mem::take(&mut nack.calldata);
+        let calldata = std::mem::take(&mut nack.unwind.route.calldata);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
         let state = match signal_type {
@@ -391,6 +391,7 @@ mod tests {
     use crate::otap_mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
+    use crate::testing::{next_ack, next_nack};
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -543,9 +544,7 @@ mod tests {
                     assert!(matches!(metrics_records, _expected_metrics_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(metrics_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for metrics");
@@ -571,9 +570,7 @@ mod tests {
                     assert!(matches!(logs_records, _expected_logs_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for logs");
@@ -599,9 +596,7 @@ mod tests {
                     assert!(matches!(traces_records, _expected_traces_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(traces_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for traces");
@@ -733,7 +728,7 @@ mod tests {
                         .expect("No metrics received");
 
                     let nack = NackMsg::new("Test NACK reason for metrics", metrics_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for metrics");
@@ -748,7 +743,7 @@ mod tests {
                         .expect("No logs received");
 
                     let nack = NackMsg::new("Test NACK reason for logs", logs_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for logs");
@@ -763,7 +758,7 @@ mod tests {
                         .expect("No traces received");
 
                     let nack = NackMsg::new("Test NACK reason for traces", traces_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for traces");

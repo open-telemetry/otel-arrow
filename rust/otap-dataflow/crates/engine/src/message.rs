@@ -6,6 +6,7 @@
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::{Interests, ReceivedAtNode};
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::ops::Add;
@@ -194,23 +195,33 @@ pub struct MessageChannel<PData> {
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
     pending_shutdown: Option<NodeControlMsg<PData>>,
+    /// Node ID for entry-frame stamping via `ReceivedAtNode`.
+    node_id: usize,
+    /// Node interests for entry-frame stamping via `ReceivedAtNode`.
+    interests: Interests,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         control_rx: Receiver<NodeControlMsg<PData>>,
         pdata_rx: Receiver<PData>,
+        node_id: usize,
+        interests: Interests,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
+            node_id,
+            interests,
         }
     }
+}
 
+impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// Asynchronously receives the next message to process.
     ///
     /// Order of precedence:
@@ -316,7 +327,10 @@ impl<PData> MessageChannel<PData> {
 
                     // 2) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Ok(mut pdata) => {
+                            pdata.received_at_node(self.node_id, self.interests);
+                            return Ok(Message::PData(pdata));
+                        }
                         Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
@@ -349,14 +363,17 @@ impl<PData> MessageChannel<PData> {
                         self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Ok(msg) => {
+                        return Ok(Message::Control(msg));
+                    }
                     Err(e)  => return Err(e),
                 },
 
                 // B) Then pdata (guarded by accept_pdata)
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if accept_pdata => {
                     match pdata {
-                        Ok(pdata) => {
+                        Ok(mut pdata) => {
+                            pdata.received_at_node(self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
                         }
                         Err(RecvError::Closed) => {

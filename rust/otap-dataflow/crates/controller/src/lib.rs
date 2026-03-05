@@ -52,6 +52,8 @@ use otap_df_config::engine::{
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
+use otap_df_engine::ReceivedAtNode;
+use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
@@ -106,7 +108,9 @@ fn engine_context() -> LogContext {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
+    Controller<PData>
+{
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
