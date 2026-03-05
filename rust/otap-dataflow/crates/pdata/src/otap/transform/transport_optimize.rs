@@ -376,8 +376,10 @@ where
 
     // safety: max will only return an error here if the array is all nulls or empty, which we've
     // already validated that it is not
-    let remappings_len =
-        one + arrow::compute::max(column).expect("error computing size of remappings");
+    let remappings_len = one.as_usize() as u64
+        + arrow::compute::max(column)
+            .expect("error computing size of remappings")
+            .as_usize() as u64;
     let mut remappings = vec![zero; remappings_len.as_usize()];
 
     let mut curr_id: T::Native = zero;
