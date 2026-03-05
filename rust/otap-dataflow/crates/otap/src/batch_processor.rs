@@ -2515,21 +2515,34 @@ mod tests {
                     .expect("second message should not return a fatal error");
 
                 // Verify a DeliverNack was sent on the pipeline control channel
-                // for the second message.
-                let mut found_nack = false;
+                // specifically for the second message, and that the first message
+                // did not produce a nack.
+                let call1: CallData = TestCallData::new_with(0, 0).into();
+                let call2: CallData = TestCallData::new_with(1, 0).into();
+                let mut found_nack_for_pdata1 = false;
+                let mut found_nack_for_pdata2 = false;
                 while let Ok(msg) = pipeline_rx.try_recv() {
                     if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
-                        assert!(
-                            nack.reason.contains("inbound slots not available"),
-                            "expected nack reason to contain 'inbound slots not available', got: {}",
-                            nack.reason
-                        );
-                        found_nack = true;
+                        if nack.calldata == call1 {
+                            // The first message should not be nacked.
+                            found_nack_for_pdata1 = true;
+                        } else if nack.calldata == call2 {
+                            assert!(
+                                nack.reason.contains("inbound slots not available"),
+                                "expected nack reason to contain 'inbound slots not available', got: {}",
+                                nack.reason
+                            );
+                            found_nack_for_pdata2 = true;
+                        }
                     }
                 }
                 assert!(
-                    found_nack,
-                    "expected a DeliverNack on the pipeline control channel"
+                    found_nack_for_pdata2,
+                    "expected a DeliverNack for the second message on the pipeline control channel"
+                );
+                assert!(
+                    !found_nack_for_pdata1,
+                    "did not expect a DeliverNack for the first message"
                 );
             })
             .validate(|_| async {});
