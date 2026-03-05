@@ -72,6 +72,9 @@ pub type NodeId = Cow<'static, str>;
 /// The URN of a node type.
 pub use node_urn::NodeUrn;
 
+/// MetricLevel is widely used.
+pub use policy::MetricLevel;
+
 /// The name of a node output port in the pipeline.
 pub type PortName = Cow<'static, str>;
 

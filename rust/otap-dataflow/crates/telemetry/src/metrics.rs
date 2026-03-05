@@ -240,6 +240,12 @@ pub struct MetricSetSnapshot {
 }
 
 impl MetricSetSnapshot {
+    /// Returns the metric set key that identifies this snapshot's source.
+    #[must_use]
+    pub fn key(&self) -> MetricSetKey {
+        self.key
+    }
+
     /// get a reference to the metric values
     #[must_use]
     pub fn get_metrics(&self) -> &[MetricValue] {

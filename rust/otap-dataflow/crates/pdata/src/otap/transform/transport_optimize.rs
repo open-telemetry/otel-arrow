@@ -376,8 +376,10 @@ where
 
     // safety: max will only return an error here if the array is all nulls or empty, which we've
     // already validated that it is not
-    let remappings_len =
-        one + arrow::compute::max(column).expect("error computing size of remappings");
+    let remappings_len = one.as_usize() as u64
+        + arrow::compute::max(column)
+            .expect("error computing size of remappings")
+            .as_usize() as u64;
     let mut remappings = vec![zero; remappings_len.as_usize()];
 
     let mut curr_id: T::Native = zero;
@@ -1689,6 +1691,34 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_create_delta_encoded_column_max_id() {
+        // Regression: when the max ID value is Native::MAX, computing
+        // remappings_len as (1 + max) in Native arithmetic would overflow.
+        // The fix computes this in u64 before converting back.
+        let input = UInt16Array::from_iter_values([0, u16::MAX]);
+        let result = create_new_delta_encoded_column_from(&input).unwrap();
+        let result_col = result
+            .new_column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("Expected UInt16Array");
+        let expected_column = UInt16Array::from_iter_values([0, 1]);
+        assert_eq!(result_col, &expected_column);
+        assert!(result.remapping.is_some());
+
+        let input = UInt32Array::from_iter_values([0, u32::MAX]);
+        let result = create_new_delta_encoded_column_from(&input).unwrap();
+        let result_col = result
+            .new_column
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("Expected UInt32Array");
+        let expected_column = UInt32Array::from_iter_values([0, 1]);
+        assert_eq!(result_col, &expected_column);
+        assert!(result.remapping.is_some());
     }
 
     #[test]
