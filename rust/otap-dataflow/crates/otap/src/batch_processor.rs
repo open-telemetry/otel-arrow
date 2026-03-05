@@ -2530,10 +2530,10 @@ mod tests {
                 let mut found_nack_for_pdata2 = false;
                 while let Ok(msg) = pipeline_rx.try_recv() {
                     if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
-                        if nack.calldata == call1 {
+                        if nack.unwind.route.calldata == call1 {
                             // The first message should not be nacked.
                             found_nack_for_pdata1 = true;
-                        } else if nack.calldata == call2 {
+                        } else if nack.unwind.route.calldata == call2 {
                             assert!(
                                 nack.reason.contains("inbound slots not available"),
                                 "expected nack reason to contain 'inbound slots not available', got: {}",
