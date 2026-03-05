@@ -13,10 +13,10 @@ use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
-use std::cell::Cell;
 
 thread_local! {
     /// Temporary; see nanos_since_birth
