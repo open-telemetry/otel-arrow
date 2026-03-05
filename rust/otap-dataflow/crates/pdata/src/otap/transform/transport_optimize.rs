@@ -1694,6 +1694,34 @@ mod test {
     }
 
     #[test]
+    fn test_create_delta_encoded_column_max_id() {
+        // Regression: when the max ID value is Native::MAX, computing
+        // remappings_len as (1 + max) in Native arithmetic would overflow.
+        // The fix computes this in u64 before converting back.
+        let input = UInt16Array::from_iter_values([0, u16::MAX]);
+        let result = create_new_delta_encoded_column_from(&input).unwrap();
+        let result_col = result
+            .new_column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("Expected UInt16Array");
+        let expected_column = UInt16Array::from_iter_values([0, 1]);
+        assert_eq!(result_col, &expected_column);
+        assert!(result.remapping.is_some());
+
+        let input = UInt32Array::from_iter_values([0, u32::MAX]);
+        let result = create_new_delta_encoded_column_from(&input).unwrap();
+        let result_col = result
+            .new_column
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("Expected UInt32Array");
+        let expected_column = UInt32Array::from_iter_values([0, 1]);
+        assert_eq!(result_col, &expected_column);
+        assert!(result.remapping.is_some());
+    }
+
+    #[test]
     fn test_create_delta_encoded_column_all_nulls() {
         let input = UInt16Array::from_iter(vec![None, None, None, None]);
         let result = create_new_delta_encoded_column_from(&input).unwrap();
