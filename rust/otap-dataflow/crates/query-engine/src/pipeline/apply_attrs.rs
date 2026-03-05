@@ -363,7 +363,7 @@ mod test {
         for bad_target in bad_targets {
             let query = format!(
                 "logs | apply {bad_target} {{
-                    project-rename attributes[\"x\"] = attributes[\"y\"]
+                    where value == 2
                 }}"
             );
             let pipeline_expr = OplParser::parse(&query).unwrap().pipeline;

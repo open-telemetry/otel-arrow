@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression, NestedDataExpression, NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor
+    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
+    DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
+    MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
+    NestedDataExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+    PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
+    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -278,9 +284,12 @@ pub(crate) fn parse_if_else_operator_call(
                     )
                 })?;
 
-                conditional_expr = conditional_expr.with_branch(
-                    ConditionalDataExpressionBranch::new(query_location, condition, curr_branch.into_data_exprs()),
-                );
+                conditional_expr =
+                    conditional_expr.with_branch(ConditionalDataExpressionBranch::new(
+                        query_location,
+                        condition,
+                        curr_branch.into_data_exprs(),
+                    ));
             }
 
             // parse the data expressions for the else branch
@@ -297,16 +306,15 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 let inner_rules = branch_rules.into_inner();
-                let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacities(
-                    Some(inner_rules.len()),
-                    None
-                );
+                let mut else_branch_exprs =
+                    InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
 
-                conditional_expr = conditional_expr.with_default_branch(else_branch_exprs.into_data_exprs());
+                conditional_expr =
+                    conditional_expr.with_default_branch(else_branch_exprs.into_data_exprs());
             }
             _ => {
                 return Err(ParserError::SyntaxError(
@@ -381,7 +389,8 @@ pub(crate) fn parse_apply_operator_call(
     };
 
     // parse the child stages of the nested pipeline
-    let mut inner_pipeline = InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
+    let mut inner_pipeline =
+        InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
     for inner_rule in inner_rules {
         parse_pipeline_stage(inner_rule, &mut inner_pipeline)?;
     }
@@ -405,7 +414,7 @@ pub(crate) fn parse_apply_operator_call(
         query_location.clone(), // TODO might not need clone
         Vec::new(),
         None,
-        function_exprs
+        function_exprs,
     );
 
     // TODO - juggling of the function ID is not currently correct.
@@ -414,16 +423,16 @@ pub(crate) fn parse_apply_operator_call(
     let fn_name = "__apply__TODO_some_hash";
     let function_id = pipeline_builder.push_function_definition(fn_name, pipeline_function);
 
-    let transform_expr = TransformExpression::Set(
-        SetTransformExpression::new(target_rule_query_location, 
-            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-                query_location.clone(), 
-                None,
-                function_id, 
-                Vec::new()
-            )),
-            MutableValueExpression::Source(target_source_expr))
-        );
+    let transform_expr = TransformExpression::Set(SetTransformExpression::new(
+        target_rule_query_location,
+        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            query_location.clone(),
+            None,
+            function_id,
+            Vec::new(),
+        )),
+        MutableValueExpression::Source(target_source_expr),
+    ));
 
     pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
 
