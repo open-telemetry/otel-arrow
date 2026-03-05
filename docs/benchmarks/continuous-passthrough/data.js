@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772736761288,
+  "lastUpdate": 1772738536225,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "76450334+andborja@users.noreply.github.com",
-            "name": "Andres Borja",
-            "username": "andborja"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "a9fbb0ed89ecc74f8a67e731a3186d45c589333a",
-          "message": "feat: Add message parameter to otel_debug macro (#1973)\n\n# Change Summary\n\nAdding \"message\" attribute to the otel_debug macro.\n\nPart of https://github.com/open-telemetry/otel-arrow/issues/1972\n\n## What issue does this PR close?\n\n\n* Closes NA\n\n## How are these changes tested?\n\nBuilding the package\n\n## Are there any user-facing changes?\n\nNo",
-          "timestamp": "2026-02-06T20:47:49Z",
-          "tree_id": "778c0652dd59aaa67bce252e7ac30380fb815d86",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/a9fbb0ed89ecc74f8a67e731a3186d45c589333a"
-        },
-        "date": 1770415345134,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.4265170097351074,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.54367242024608,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.03171241384652,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.46875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 49.03125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 527483.0354585524,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 540282.5008675471,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002506,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11662959.452482764,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11608099.5117847,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11189143.791149901,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "94df6e2702ae455f7e75d7983181cf0947a14485",
+          "message": "fix: CI test failures (#2197)\n\n## Fix flaky `test_otap_receiver` test\n\nThe `test_otap_receiver` test was intermittently failing in CI with\n`\"Server did not shutdown\"`.\n\n### Root cause\n\nAfter sending a `Shutdown` control message, the test immediately\nattempted to connect to the gRPC server and asserted the connection must\nfail. Since `send_shutdown` only enqueues the message on a channel and\nreturns immediately, the server may not have closed the listener socket\nyet — a race condition that surfaces on slower/loaded CI runners.\n\n### Fix\n\nRemove the racy post-shutdown connection assertion. The shutdown\nbehavior is already validated by the test harness itself (the receiver\ntask completing cleanly). This is consistent with the\n`test_otap_receiver_ack` and `test_otap_receiver_nack` tests, which\ndon't perform this check.",
+          "timestamp": "2026-03-05T18:09:17Z",
+          "tree_id": "55f52ab0bc4323d5e9dfe1071b11578c2ae14a0b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/94df6e2702ae455f7e75d7983181cf0947a14485"
+        },
+        "date": 1772738535766,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.2404911518096924,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.91757669658772,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.37993229244114,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 56.121484375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 57.44140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 467760.382348055,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 473562.9082067609,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001456,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11020812.017434092,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10966120.893213881,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
