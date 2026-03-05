@@ -411,7 +411,7 @@ where
 
                     for e in expressions {
                         match e {
-                            PipelineFunctionExpression::Discard(d) => {
+                            PipelineFunctionExpression::Discard(_d) => {
                                 todo!("Albert TODO")
                             }
                             PipelineFunctionExpression::Transform(t) => {
