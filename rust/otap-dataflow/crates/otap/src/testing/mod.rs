@@ -5,6 +5,7 @@
 
 use crate::pdata::OtapPdata;
 use bytes::Bytes;
+use otap_df_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
@@ -16,7 +17,41 @@ use serde_json::Value;
 use std::ops::Add;
 use std::time::Instant;
 
-/// TestCallData helps test the CallData type.
+/// Consume frames to locate the most recent subscriber with ACKS
+/// interest in test scenarios, simulating the pipeline controller.
+#[must_use]
+pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
+    let frame = ack
+        .accepted
+        .context_mut()
+        .drain_to_next_subscriber(Interests::ACKS);
+    frame.map(|frame| {
+        if (frame.interests & Interests::RETURN_DATA).is_empty() {
+            let _drop = ack.accepted.take_payload();
+        }
+        ack.unwind = UnwindData::new(frame.route, nanos_since_birth());
+        (frame.node_id, ack)
+    })
+}
+
+/// Consume frames to locate the most recent subscriber with NACKS
+/// interest in test scenarios, simulating the pipeline controller.
+#[must_use]
+pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
+    let frame = nack
+        .refused
+        .context_mut()
+        .drain_to_next_subscriber(Interests::NACKS);
+    frame.map(|frame| {
+        if (frame.interests & Interests::RETURN_DATA).is_empty() {
+            let _drop = nack.refused.take_payload();
+        }
+        nack.unwind = UnwindData::new(frame.route, nanos_since_birth());
+        (frame.node_id, nack)
+    })
+}
+
+/// TestCallData helps test the RouteData type.
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct TestCallData {
     id0: u64,
@@ -137,27 +172,38 @@ pub fn test_exporter_with_subscription(
             let mut pipeline_rx = ctx
                 .take_pipeline_ctrl_receiver()
                 .expect("pipeline control receiver should be present in subscription test");
-            let (trigger, calldata, reqdata, reason) = match pipeline_rx.recv().await {
-                Ok(PipelineControlMsg::DeliverAck { ack, node_id }) => {
-                    assert_eq!(node_id, 654321);
-                    (Interests::ACKS, ack.calldata, Some(ack.accepted), "success".into())
+            // Loop to skip acks/nacks that have no matching subscriber
+            // (e.g., exporter sends ack but subscription is NACKS-only).
+            // In the real controller, unwind_ack would consume these silently.
+            let (trigger, calldata, reqdata, reason) = loop {
+                match pipeline_rx.recv().await {
+                    Ok(PipelineControlMsg::DeliverAck { ack }) => {
+                        if let Some((node_id, ack)) = next_ack(ack) {
+                            assert_eq!(node_id, 654321);
+                            break (Interests::ACKS, ack.unwind.route.calldata, Some(ack.accepted), "success".into());
+                        }
+                        // No ACKS subscriber — skip, like the controller would.
+                    }
+                    Ok(PipelineControlMsg::DeliverNack { nack }) => {
+                        if let Some((node_id, nack)) = next_nack(nack) {
+                            assert_eq!(node_id, 654321);
+                            break (Interests::NACKS, nack.unwind.route.calldata, Some(nack.refused), nack.reason);
+                        }
+                        // No NACKS subscriber — skip, like the controller would.
+                    }
+                    Ok(other) => break (
+                        Interests::empty(),
+                        CallData::default(),
+                        None,
+                        format!("other message {other:?}"),
+                    ),
+                    Err(err) => break (
+                        Interests::empty(),
+                        CallData::default(),
+                        None,
+                        format!("error {err:?}"),
+                    ),
                 }
-                Ok(PipelineControlMsg::DeliverNack { nack, node_id }) => {
-                    assert_eq!(node_id, 654321);
-                    (Interests::NACKS, nack.calldata, Some(nack.refused), nack.reason)
-                }
-                Ok(other) => (
-                    Interests::empty(),
-                    CallData::default(),
-                    None,
-                    format!("other message {other:?}"),
-                ),
-                Err(err) => (
-                    Interests::empty(),
-                    CallData::default(),
-                    None,
-                    format!("error {err:?}"),
-                ),
             };
             assert_eq!(expect_interest&Interests::ACKS_OR_NACKS, trigger);
 
