@@ -3,8 +3,8 @@
 
 //! HTTP server for exposing admin endpoints.
 
-pub mod error;
 mod dashboard;
+pub mod error;
 mod health;
 mod pipeline;
 mod pipeline_group;

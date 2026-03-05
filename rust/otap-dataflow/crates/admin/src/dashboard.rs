@@ -8,10 +8,10 @@
 //! the existing `/metrics?format=json` endpoint.
 
 use crate::AppState;
+use axum::Router;
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 
 /// The embedded dashboard HTML (compiled into the binary).
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
