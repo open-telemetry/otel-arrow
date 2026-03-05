@@ -188,11 +188,12 @@ impl Context {
     ///
     /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
     /// entry timestamp is captured automatically.
-    pub(crate) fn update_send_context(&mut self, node_id: usize, interests: Interests) {
+    fn update_send_context(&mut self, node_id: usize, interests: Interests) {
         if let Some(top) = self.stack.last_mut() {
             if top.node_id == node_id {
                 top.interests |= interests;
-                if interests.contains(Interests::ENTRY_TIMESTAMP) {
+                if interests.contains(Interests::ENTRY_TIMESTAMP)
+                    && top.route.entry_time_ns == 0 {
                     top.route.entry_time_ns = nanos_since_birth();
                 }
                 return;
