@@ -33,7 +33,6 @@ pub enum ExprLogicalType {
     ScalarInt,
 
     Boolean,
-    Binary,
     FixedSizeBinary(usize),
     Float64,
     Int32,
@@ -41,20 +40,17 @@ pub enum ExprLogicalType {
     UInt8,
     UInt32,
     String,
+    DurationNanoSecond,
     TimestampNanosecond,
 }
 
 impl ExprLogicalType {
-    fn is_integer(&self) -> bool {
+    pub fn is_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
     }
 
     fn is_signed_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64)
-    }
-
-    fn is_unsigned_integer(&self) -> bool {
-        matches!(self, Self::UInt8 | Self::UInt32)
     }
 
     /// Returns the bit width of integer types
@@ -69,9 +65,8 @@ impl ExprLogicalType {
 
     /// return the datatype associated with this type. returns None if the type
     /// is not associated with a single datatype, such as with AnyValue* and ScalarInt
-    fn datatype(&self) -> Option<DataType> {
+    pub fn datatype(&self) -> Option<DataType> {
         Some(match self {
-            Self::Binary => DataType::Binary,
             Self::Boolean => DataType::Boolean,
             Self::FixedSizeBinary(len) => DataType::FixedSizeBinary(*len as i32),
             Self::Float64 => DataType::Float64,
@@ -79,6 +74,7 @@ impl ExprLogicalType {
             Self::Int64 => DataType::Int64,
             Self::String => DataType::Utf8,
             Self::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
+            Self::DurationNanoSecond => DataType::Duration(TimeUnit::Nanosecond),
             Self::UInt32 => DataType::UInt32,
             Self::UInt8 => DataType::UInt8,
 
@@ -107,10 +103,12 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         // logs fields
         consts::SEVERITY_NUMBER => ExprLogicalType::Int32,
         consts::SEVERITY_TEXT => ExprLogicalType::String,
+        consts::EVENT_NAME => ExprLogicalType::String,
 
         // traces fields
+        consts::DURATION_TIME_UNIX_NANO => ExprLogicalType::DurationNanoSecond,
         consts::TRACE_STATE => ExprLogicalType::String,
-        consts::PARENT_ID => ExprLogicalType::FixedSizeBinary(8),
+        consts::PARENT_SPAN_ID => ExprLogicalType::FixedSizeBinary(8),
         consts::KIND => ExprLogicalType::Int32,
         consts::DROPPED_EVENTS_COUNT => ExprLogicalType::UInt32,
         consts::DROPPED_LINKS_COUNT => ExprLogicalType::UInt32,
@@ -124,6 +122,29 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
 
         _ => return None,
     })
+}
+
+/// Returns true if the field on the root batch can be a dictionary encoded type
+pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+    // TODO - when we have better support for time arithmetic we should test that this
+    // duration type gets coerced into a dictionary during assignment for column with name
+    // consts::DURATION_TIME_UNIX_NANO
+
+    matches!(
+        field_name,
+        consts::SCHEMA_URL
+            | consts::TRACE_ID
+            | consts::SPAN_ID
+            | consts::SEVERITY_NUMBER
+            | consts::SEVERITY_TEXT
+            | consts::EVENT_NAME
+            | consts::TRACE_STATE
+            | consts::KIND
+            | consts::NAME
+            | consts::DESCRIPTION
+            | consts::UNIT
+            | consts::AGGREGATION_TEMPORALITY
+    )
 }
 
 /// Return the type from a nested struct field on the root OTAP record batch such as resource/scope
@@ -219,6 +240,7 @@ pub fn coerce_arithmetic(
     left: &mut ScopedLogicalExpr,
     right: &mut ScopedLogicalExpr,
 ) -> Option<ExprLogicalType> {
+    // TODO - need to update the rules here when we support date/time/duration arithmetic
     match &left.expr_type {
         ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric => {
             // The left side of the arithmetic operation is an AnyValue, or AnyValue numeric. The

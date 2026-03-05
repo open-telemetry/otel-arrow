@@ -140,7 +140,7 @@ impl EngineObservabilityPolicies {
             channel_capacity: self.channel_capacity,
             health: self.health,
             telemetry: self.telemetry,
-            resources: ResourcesPolicy::default(),
+            resources: Some(ResourcesPolicy::default()),
         }
     }
 
@@ -339,7 +339,7 @@ groups:
         assert!(config.policies.telemetry.tokio_metrics);
         assert!(config.policies.telemetry.channel_metrics);
         assert_eq!(
-            config.policies.resources.core_allocation,
+            config.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
     }
@@ -464,7 +464,7 @@ groups:
         assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
-            p1_resolved.policies.resources.core_allocation,
+            p1_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
         );
         assert_eq!(
@@ -490,7 +490,7 @@ groups:
         );
         assert!(p2_resolved.policies.telemetry.channel_metrics);
         assert_eq!(
-            p2_resolved.policies.resources.core_allocation,
+            p2_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
         );
 
@@ -508,7 +508,7 @@ groups:
         );
         assert!(!p3_resolved.policies.telemetry.channel_metrics);
         assert_eq!(
-            p3_resolved.policies.resources.core_allocation,
+            p3_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
     }
@@ -730,7 +730,7 @@ groups:
         );
         assert!(obs.policies.telemetry.channel_metrics);
         assert_eq!(
-            obs.policies.resources.core_allocation,
+            obs.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
         assert_eq!(

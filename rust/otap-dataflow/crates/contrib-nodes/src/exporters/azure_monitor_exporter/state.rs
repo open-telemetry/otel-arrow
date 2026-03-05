@@ -19,12 +19,12 @@ pub struct AzureMonitorExporterState {
 }
 
 impl AzureMonitorExporterState {
-    /// Create state with preallocated capacity for high throughput.
+    /// Create state with a small initial capacity that grows on demand.
     pub fn new() -> Self {
         Self {
-            batch_to_msg: HashMap::with_capacity(262144),
-            msg_to_batch: HashMap::with_capacity(262144),
-            msg_to_data: HashMap::with_capacity(262144),
+            batch_to_msg: HashMap::with_capacity(256),
+            msg_to_batch: HashMap::with_capacity(256),
+            msg_to_data: HashMap::with_capacity(256),
         }
     }
 

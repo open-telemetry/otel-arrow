@@ -72,6 +72,34 @@ make docker-otelarrowcol
 You will now be able to run the [examples][EXAMPLES] using the resulting
 `otelarrowcol` image.
 
+## Upgrading collector dependencies
+
+The collector's Go dependencies (OpenTelemetry Collector core and contrib
+modules) are managed through the `BUILDER_VERSION` variable in the top-level
+`Makefile`. To upgrade all collector dependencies to a new version:
+
+1. **Update `BUILDER_VERSION`** in the top-level `Makefile` to the desired
+   version:
+
+   ```makefile
+   BUILDER_VERSION = v0.147.0
+   ```
+
+2. **Regenerate the collector source and tidy modules**:
+
+   ```shell
+   make genotelarrowcol
+   ```
+
+   This single command will:
+   - Install the `builder` tool at the specified version.
+   - Update all `go.opentelemetry.io/collector/...` and
+     `github.com/open-telemetry/opentelemetry-collector-contrib/...` module
+     versions in `collector/otelarrowcol-build.yaml` and `Dockerfile`.
+   - Remove and regenerate all files in `collector/cmd/otelarrowcol/`
+     (including `go.mod`, `go.sum`, `components.go`, and `main.go`).
+   - Run `go mod tidy` on all modules.
+
 [BUILDER]:
     https://github.com/open-telemetry/opentelemetry-collector/blob/main/cmd/builder/README.md
 [CONTRIBUTING.md]: ../CONTRIBUTING.md
