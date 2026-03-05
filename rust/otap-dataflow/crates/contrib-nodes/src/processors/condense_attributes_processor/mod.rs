@@ -237,7 +237,6 @@ impl CondenseAttributesProcessor {
 
     /// Condenses attributes in the given record batch according to the processor configuration.
     /// Returns the number of individual attributes that were condensed.
-    #[cfg(test)]
     fn condense(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         Self::do_condense(&self.config, records)
     }
@@ -643,16 +642,17 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let do_condense = || match signal {
-                    SignalType::Logs => Self::do_condense(&self.config, &mut records),
+                let timing = ProcessDuration::start(effect_handler.node_interests());
+
+                let result = match signal {
+                    SignalType::Logs => self.condense(&mut records),
                     _ => Err(Error::InternalError {
                         message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
                             .to_string(),
                     }),
                 };
 
-                let interests = effect_handler.node_interests();
-                let result = self.process_duration.timed(interests, do_condense);
+                timing.stop(&mut self.process_duration);
 
                 match result {
                     Ok(condensed) => {
@@ -891,7 +891,7 @@ mod condense_tests {
             "source_keys": ["nonexistent1", "nonexistent2"]
         });
 
-        let mut processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
 
         let mut bytes = BytesMut::new();
         input.encode(&mut bytes).expect("encode input");
@@ -923,7 +923,7 @@ mod condense_tests {
             "destination_key": "condensed",
             "delimiter": ";"
         });
-        let mut processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         let mut records = OtapArrowRecords::from(Logs::default());
 
         let condensed_count = processor

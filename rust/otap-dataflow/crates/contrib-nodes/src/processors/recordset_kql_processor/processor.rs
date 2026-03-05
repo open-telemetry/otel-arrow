@@ -152,14 +152,16 @@ impl RecordsetKqlProcessor {
         let (ctx, payload) = data.into_parts();
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
-        // Time the KQL processing compute (excludes channel sends).
-        let do_process = || match otlp_bytes {
+        let timing = ProcessDuration::start(effect_handler.node_interests());
+
+        // Process based on signal type
+        let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.processing_logs",
                     input_items
                 );
-                Self::do_process_logs(&self.pipeline, bytes, signal)
+                self.process_logs(bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
                 message: "Metrics processing not yet implemented in KQL bridge".to_string(),
@@ -169,8 +171,7 @@ impl RecordsetKqlProcessor {
             }),
         };
 
-        let interests = effect_handler.node_interests();
-        let result = self.process_duration.timed(interests, do_process);
+        timing.stop(&mut self.process_duration);
 
         match result {
             Ok(processed_bytes) => {
@@ -210,13 +211,13 @@ impl RecordsetKqlProcessor {
         }
     }
 
-    fn do_process_logs(
-        pipeline: &BridgePipeline,
+    fn process_logs(
+        &mut self,
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
         let response = process_protobuf_otlp_export_logs_service_request_using_pipeline(
-            pipeline,
+            &self.pipeline,
             RecordSetEngineDiagnosticLevel::Warn,
             &bytes,
         )

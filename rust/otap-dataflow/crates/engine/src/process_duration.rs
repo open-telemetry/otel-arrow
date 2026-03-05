@@ -4,15 +4,22 @@
 //! Opt-in process-duration timing for processors.
 //!
 //! Processors that perform meaningful compute can add a
-//! [`ProcessDuration`] field and call [`ProcessDuration::timed`] to
-//! record wall-clock duration of their processing section.  Recording
-//! is gated on [`Interests::CONSUMER_METRICS`] (MetricLevel ≥ Normal).
+//! [`ProcessDuration`] field and use either:
+//!
+//! - [`ProcessDuration::guard`] – a drop-guard that records the
+//!   elapsed time when it goes out of scope.  This keeps the
+//!   original code structure intact (no closure / re-indentation).
+//! - [`ProcessDuration::timed`] – a scoped closure that records
+//!   duration on return.
+//!
+//! Both are gated on [`Interests::CONSUMER_METRICS`] (MetricLevel ≥ Normal).
 
 use crate::Interests;
 use otap_df_telemetry::instrument::Mmsc;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use std::time::Instant;
 
 use crate::context::PipelineContext;
 
@@ -39,6 +46,28 @@ impl ProcessDuration {
         }
     }
 
+    /// Start timing if `interests` includes [`Interests::CONSUMER_METRICS`].
+    ///
+    /// Returns a lightweight [`TimingGuard`] that captures the start
+    /// instant.  Call [`TimingGuard::stop`] to record the elapsed
+    /// duration, or let the guard drop without recording (e.g. on
+    /// early-return error paths where you don't want the measurement).
+    ///
+    /// Usage:
+    /// ```ignore
+    /// let timing = self.process_duration.start(effect_handler.node_interests());
+    /// // … existing processing code unchanged …
+    /// timing.stop(&mut self.process_duration);
+    /// ```
+    pub fn start(interests: Interests) -> TimingGuard {
+        let start = if interests.contains(Interests::CONSUMER_METRICS) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        TimingGuard { start }
+    }
+
     /// Time `f` if `interests` includes [`Interests::CONSUMER_METRICS`],
     /// otherwise just call `f` without overhead.
     pub fn timed<F, R>(&mut self, interests: Interests, f: F) -> R
@@ -55,5 +84,25 @@ impl ProcessDuration {
     /// Report accumulated duration metrics to the collector.
     pub fn report(&mut self, reporter: &mut MetricsReporter) {
         let _ = reporter.report(&mut self.metrics);
+    }
+
+    fn record(&mut self, nanos: f64) {
+        self.metrics.process_duration.record(nanos);
+    }
+}
+
+/// Lightweight timing token.  Call [`TimingGuard::stop`] to record
+/// the elapsed duration into the originating [`ProcessDuration`].
+#[must_use]
+pub struct TimingGuard {
+    start: Option<Instant>,
+}
+
+impl TimingGuard {
+    /// Record the elapsed time and consume the guard.
+    pub fn stop(self, pd: &mut ProcessDuration) {
+        if let Some(start) = self.start {
+            pd.record(start.elapsed().as_nanos() as f64);
+        }
     }
 }

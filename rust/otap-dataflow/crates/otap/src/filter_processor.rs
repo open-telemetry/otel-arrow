@@ -121,18 +121,20 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
-                let do_filter = || -> Result<_, Error> {
-                    let mut arrow_records: OtapArrowRecords = payload.try_into()?;
-                    arrow_records.decode_transport_optimized_ids()?;
+                let timing = ProcessDuration::start(effect_handler.node_interests());
 
-                    match signal {
-                        SignalType::Metrics => {
-                            // ToDo: Add support for metrics
-                            Ok((arrow_records, None))
-                        }
-                        SignalType::Logs => {
-                            let (filtered, consumed, filtered_count) = self
-                                .config
+                let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+                arrow_records.decode_transport_optimized_ids()?;
+
+                let filtered_arrow_records: OtapArrowRecords = match signal {
+                    SignalType::Metrics => {
+                        // ToDo: Add support for metrics
+                        arrow_records
+                    }
+                    SignalType::Logs => {
+                        // get logs
+                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) =
+                            self.config
                                 .log_filters()
                                 .filter(arrow_records)
                                 .map_err(|e| {
@@ -144,11 +146,17 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                         source_detail,
                                     }
                                 })?;
-                            Ok((filtered, Some((true, consumed, filtered_count))))
-                        }
-                        SignalType::Traces => {
-                            let (filtered, consumed, filtered_count) = self
-                                .config
+
+                        // get logs after
+                        self.metrics.log_signals_consumed.add(log_signals_consumed);
+                        self.metrics.log_signals_filtered.add(log_signals_filtered);
+
+                        filtered_arrow_records
+                    }
+                    SignalType::Traces => {
+                        // get spans
+                        let (filtered_arrow_records, span_signals_consumed, span_signals_filtered) =
+                            self.config
                                 .trace_filters()
                                 .filter(arrow_records)
                                 .map_err(|e| {
@@ -160,24 +168,19 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                         source_detail,
                                     }
                                 })?;
-                            Ok((filtered, Some((false, consumed, filtered_count))))
-                        }
+
+                        self.metrics
+                            .span_signals_consumed
+                            .add(span_signals_consumed);
+                        self.metrics
+                            .span_signals_filtered
+                            .add(span_signals_filtered);
+
+                        filtered_arrow_records
                     }
                 };
 
-                let interests = effect_handler.node_interests();
-                let (filtered_arrow_records, signal_counts) =
-                    self.process_duration.timed(interests, do_filter)?;
-
-                if let Some((is_logs, consumed, filtered)) = signal_counts {
-                    if is_logs {
-                        self.metrics.log_signals_consumed.add(consumed);
-                        self.metrics.log_signals_filtered.add(filtered);
-                    } else {
-                        self.metrics.span_signals_consumed.add(consumed);
-                        self.metrics.span_signals_filtered.add(filtered);
-                    }
-                }
+                timing.stop(&mut self.process_duration);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

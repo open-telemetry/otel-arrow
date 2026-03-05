@@ -231,18 +231,13 @@ impl AttributesProcessor {
     }
 
     #[inline]
-    const fn static_attrs_payloads(
-        has_resource_domain: bool,
-        has_scope_domain: bool,
-        has_signal_domain: bool,
-        signal: SignalType,
-    ) -> &'static [ArrowPayloadType] {
+    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
         use payload_sets::*;
 
         match (
-            has_resource_domain,
-            has_scope_domain,
-            has_signal_domain,
+            self.has_resource_domain,
+            self.has_scope_domain,
+            self.has_signal_domain,
             signal,
         ) {
             // Empty cases
@@ -280,30 +275,19 @@ impl AttributesProcessor {
     }
 
     #[allow(clippy::result_large_err)]
-    fn do_transform(
-        transform: &AttributesTransform,
-        has_resource_domain: bool,
-        has_scope_domain: bool,
-        has_signal_domain: bool,
+    fn apply_transform_with_stats(
+        &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
     ) -> Result<(u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
 
-        let is_noop = transform.rename.is_none()
-            && transform.delete.is_none()
-            && transform.insert.is_none();
-        if !is_noop {
-            let payloads = Self::static_attrs_payloads(
-                has_resource_domain,
-                has_scope_domain,
-                has_signal_domain,
-                signal,
-            );
+        if !self.is_noop() {
+            let payloads = self.attrs_payloads(signal);
             for &payload_ty in payloads {
                 if let Some(rb) = records.get(payload_ty) {
-                    let (rb, stats) = transform_attributes_with_stats(rb, transform)
+                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
@@ -369,25 +353,9 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         m.domains_signal.inc();
                     }
                 }
-                // Apply transform across selected domains and collect exact stats.
-                let interests = effect_handler.node_interests();
-                let mut do_transform = || {
-                    Self::do_transform(
-                        &self.transform,
-                        self.has_resource_domain,
-                        self.has_scope_domain,
-                        self.has_signal_domain,
-                        &mut records,
-                        signal,
-                    )
-                };
-                let transform_result =
-                    if let Some(pd) = self.process_duration.as_mut() {
-                        pd.timed(interests, do_transform)
-                    } else {
-                        do_transform()
-                    };
-                match transform_result {
+                // Apply transform across selected domains and collect exact stats
+                let timing = ProcessDuration::start(effect_handler.node_interests());
+                match self.apply_transform_with_stats(&mut records, signal) {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
@@ -404,6 +372,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         }
                         return Err(e);
                     }
+                }
+
+                if let Some(pd) = self.process_duration.as_mut() {
+                    timing.stop(pd);
                 }
 
                 effect_handler
