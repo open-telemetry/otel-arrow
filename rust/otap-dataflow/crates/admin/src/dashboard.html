@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTAP Dataflow — Dashboard</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --fg: #e6edf3;
+          --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         background: var(--bg); color: var(--fg); padding: 24px; }
+  h1 { font-size: 1.3rem; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+  #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 16px; }
+  #status .ok { color: var(--green); }
+  #status .err { color: var(--red); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .card .value { font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card .unit { font-size: 0.85rem; color: var(--muted); margin-left: 2px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .section-title { font-size: 1rem; font-weight: 600; margin: 20px 0 10px; color: var(--accent); }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>OTAP Dataflow Engine</h1>
+<p class="subtitle">Auto-refreshing dashboard — engine-level metrics</p>
+<div id="status">Connecting…</div>
+
+<div class="cards" id="engine-cards">
+  <div class="card"><div class="label">RSS Memory</div><div class="value" id="v-rss">—</div></div>
+  <div class="card"><div class="label">CPU (normalized)</div><div class="value" id="v-cpu">—</div></div>
+  <div class="card"><div class="label">Uptime</div><div class="value" id="v-uptime">—</div></div>
+  <div class="card"><div class="label">Cores</div><div class="value" id="v-cores">—</div></div>
+</div>
+
+<div id="pipelines-section"></div>
+
+<script>
+const POLL_MS = 3000;
+const METRICS_URL = '/metrics?format=json';
+
+function fmtBytes(b) {
+  if (b == null) return '—';
+  const mb = b / (1024 * 1024);
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + '<span class="unit">GB</span>';
+  if (mb >= 1) return mb.toFixed(1) + '<span class="unit">MB</span>';
+  return b.toLocaleString() + '<span class="unit">B</span>';
+}
+
+function fmtPct(v) {
+  if (v == null) return '\u2014';
+  return (v * 100).toFixed(1) + '<span class="unit">%</span>';
+}
+
+function fmtSecs(s) {
+  if (s == null) return '\u2014';
+  if (s >= 3600) return (s / 3600).toFixed(1) + '<span class="unit">h</span>';
+  if (s >= 60) return (s / 60).toFixed(0) + '<span class="unit">m</span>';
+  return s.toFixed(0) + '<span class="unit">s</span>';
+}
+
+function fmtNum(n) {
+  if (n == null) return '—';
+  if (typeof n === 'number') return n.toLocaleString();
+  return String(n);
+}
+
+// Extract a plain numeric value from a metric entry's value field.
+function metricVal(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  // MMSC snapshot
+  if (typeof v === 'object' && 'sum' in v) return v.sum;
+  return null;
+}
+
+// Unwrap typed attribute value like {"UInt": 3}
+function attrVal(v) {
+  if (v == null) return null;
+  if (typeof v !== 'object') return v;
+  const keys = Object.keys(v);
+  if (keys.length === 1) return v[keys[0]];
+  return v;
+}
+
+function findMetric(metrics, name) {
+  if (!Array.isArray(metrics)) return null;
+  const m = metrics.find(m => m.name === name);
+  return m ? metricVal(m.value) : null;
+}
+
+// Escape a string for safe insertion into HTML.
+function esc(s) {
+  if (s == null) return '\u2014';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function classify(name) {
+  const n = name.toLowerCase();
+  if (n === 'engine.metrics') return 'engine';
+  if (n === 'pipeline.metrics') return 'pipeline';
+  if (n === 'tokio.runtime') return 'tokio';
+  if (n.startsWith('channel.')) return 'channel';
+  if (n.includes('receiver')) return 'receiver';
+  if (n.includes('processor')) return 'processor';
+  if (n.includes('exporter')) return 'exporter';
+  return 'other';
+}
+
+function update(data) {
+  const sets = data.metric_sets || [];
+
+  // --- Engine card ---
+  let engineMetrics = null;
+  let coreCount = 0;
+  for (const ms of sets) {
+    if ((ms.name || '').toLowerCase() === 'engine.metrics') {
+      engineMetrics = ms.metrics;
+      break;
+    }
+  }
+  // Count cores from pipeline.metrics
+  const pipelineSets = sets.filter(ms => (ms.name || '').toLowerCase() === 'pipeline.metrics');
+  coreCount = pipelineSets.length;
+
+  if (engineMetrics) {
+    document.getElementById('v-rss').innerHTML = fmtBytes(findMetric(engineMetrics, 'memory.rss'));
+    document.getElementById('v-cpu').innerHTML = fmtPct(findMetric(engineMetrics, 'cpu.utilization'));
+  }
+  // Derive uptime from the first pipeline core (engine.metrics doesn't have uptime)
+  if (pipelineSets.length > 0) {
+    const firstUptime = findMetric(pipelineSets[0].metrics, 'uptime');
+    document.getElementById('v-uptime').innerHTML = fmtSecs(firstUptime);
+  }
+  document.getElementById('v-cores').textContent = coreCount > 0 ? String(coreCount) : '\u2014';
+
+  // --- Aggregate by pipeline group and by pipeline ---
+  // Key: group name → { cpu, mem, cores }
+  const groups = {};
+  // Key: "group/pipeline" → { cpu, mem, cores }
+  const pipelines = {};
+
+  for (const ms of pipelineSets) {
+    const attrs = ms.attributes || {};
+    const gid = String(attrVal(attrs['pipeline.group.id']) || 'unknown');
+    const pid = String(attrVal(attrs['pipeline.id']) || 'unknown');
+    const cpu = findMetric(ms.metrics, 'cpu.utilization') || 0;
+    const mem = findMetric(ms.metrics, 'memory.usage') || 0;
+
+    // Aggregate per group
+    if (!groups[gid]) groups[gid] = { cpu: 0, mem: 0, cores: 0 };
+    groups[gid].cpu += cpu;
+    groups[gid].mem += mem;
+    groups[gid].cores += 1;
+
+    // Aggregate per pipeline (within group)
+    const pkey = gid + '\0' + pid;
+    if (!pipelines[pkey]) pipelines[pkey] = { group: gid, pipeline: pid, cpu: 0, mem: 0, cores: 0 };
+    pipelines[pkey].cpu += cpu;
+    pipelines[pkey].mem += mem;
+    pipelines[pkey].cores += 1;
+  }
+
+  const section = document.getElementById('pipelines-section');
+  if (pipelineSets.length === 0) {
+    section.innerHTML = '';
+    return;
+  }
+
+  let html = '';
+
+  // --- Pipeline Groups table ---
+  const groupNames = Object.keys(groups).sort();
+  let groupRows = '';
+  for (const g of groupNames) {
+    const d = groups[g];
+    groupRows += '<tr>'
+      + '<td>' + esc(g) + '</td>'
+      + '<td class="num">' + d.cores + '</td>'
+      + '<td class="num">' + fmtPct(d.cpu) + '</td>'
+      + '<td class="num">' + fmtBytes(d.mem) + '</td>'
+      + '</tr>';
+  }
+  html += '<div class="section-title">Pipeline Groups</div>'
+    + '<table><thead><tr>'
+    + '<th>Group</th><th>Cores</th><th>CPU (sum)</th><th>Memory (sum)</th>'
+    + '</tr></thead><tbody>' + groupRows + '</tbody></table>';
+
+  // --- Per-Pipeline table ---
+  const pipelineList = Object.values(pipelines).sort((a, b) =>
+    a.group.localeCompare(b.group) || a.pipeline.localeCompare(b.pipeline)
+  );
+  let pipelineRows = '';
+  for (const p of pipelineList) {
+    pipelineRows += '<tr>'
+      + '<td>' + esc(p.group) + '</td>'
+      + '<td>' + esc(p.pipeline) + '</td>'
+      + '<td class="num">' + p.cores + '</td>'
+      + '<td class="num">' + fmtPct(p.cpu) + '</td>'
+      + '<td class="num">' + fmtBytes(p.mem) + '</td>'
+      + '</tr>';
+  }
+  html += '<div class="section-title">Pipelines</div>'
+    + '<table><thead><tr>'
+    + '<th>Group</th><th>Pipeline</th><th>Cores</th><th>CPU (sum)</th><th>Memory (sum)</th>'
+    + '</tr></thead><tbody>' + pipelineRows + '</tbody></table>';
+
+  section.innerHTML = html;
+}
+
+async function poll() {
+  const el = document.getElementById('status');
+  try {
+    const resp = await fetch(METRICS_URL);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const ts = data.timestamp || new Date().toISOString();
+    el.innerHTML = '<span class="ok">&#9679;</span> Updated ' + new Date(ts).toLocaleTimeString();
+    update(data);
+  } catch (e) {
+    el.innerHTML = '<span class="err">&#9679;</span> ' + esc(e.message);
+  }
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

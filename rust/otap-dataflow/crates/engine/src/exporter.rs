@@ -7,6 +7,7 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
+use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
@@ -270,6 +271,7 @@ impl<PData> ExporterWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        node_interests: Interests,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -282,7 +284,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    local::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -292,8 +295,13 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-                let message_channel =
-                    message::MessageChannel::new(Receiver::Local(control_receiver), pdata_rx);
+                effect_handler.core.set_node_interests(node_interests);
+                let message_channel = message::MessageChannel::new(
+                    Receiver::Local(control_receiver),
+                    pdata_rx,
+                    node_id.index,
+                    node_interests,
+                );
                 exporter.start(message_channel, effect_handler).await
             }
             (
@@ -306,7 +314,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    shared::EffectHandler::new(node_id.clone(), metrics_reporter);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -316,7 +325,13 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-                let message_channel = shared::MessageChannel::new(control_receiver, pdata_rx);
+                effect_handler.core.set_node_interests(node_interests);
+                let message_channel = shared::MessageChannel::new(
+                    control_receiver,
+                    pdata_rx,
+                    node_id.index,
+                    node_interests,
+                );
                 exporter.start(message_channel, effect_handler).await
             }
         }
@@ -391,6 +406,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Interests;
     use crate::control::{AckMsg, NodeControlMsg};
     use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
@@ -601,6 +617,8 @@ mod tests {
             message::MessageChannel::new(
                 message::Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 message::Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
             ),
         )
     }

@@ -39,6 +39,7 @@ use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
+use crate::{Interests, ReceivedAtNode};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -76,23 +77,33 @@ pub struct MessageChannel<PData> {
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
     pending_shutdown: Option<NodeControlMsg<PData>>,
+    /// Node ID for entry-frame stamping via `ReceivedAtNode`.
+    node_id: usize,
+    /// Node interests for entry-frame stamping via `ReceivedAtNode`.
+    interests: Interests,
 }
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         control_rx: SharedReceiver<NodeControlMsg<PData>>,
         pdata_rx: SharedReceiver<PData>,
+        node_id: usize,
+        interests: Interests,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
+            node_id,
+            interests,
         }
     }
+}
 
+impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// Asynchronously receives the next message to process.
     ///
     /// Order of precedence:
@@ -141,7 +152,10 @@ impl<PData> MessageChannel<PData> {
 
                     // 1) Any pdata?
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Ok(pdata) => return Ok(Message::PData(pdata)),
+                        Ok(mut pdata) => {
+                            pdata.received_at_node(self.node_id, self.interests);
+                            return Ok(Message::PData(pdata));
+                        }
                         Err(_) => {
                             // pdata channel closed → emit Shutdown
                             let shutdown = self.pending_shutdown
@@ -181,14 +195,17 @@ impl<PData> MessageChannel<PData> {
                         self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Ok(msg) => {
+                        return Ok(Message::Control(msg));
+                    }
                     Err(e)  => return Err(e),
                 },
 
                 // B) Then pdata
                 pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
-                        Ok(pdata) => {
+                        Ok(mut pdata) => {
+                            pdata.received_at_node(self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
                         }
                         Err(e) => {
@@ -218,7 +235,7 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
     /// exporter.
     #[must_use]
-    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
@@ -229,6 +246,12 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
     }
 
     /// Print an info message to stdout.
@@ -258,20 +281,20 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to a node of known-interest.
-    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send an Ack to the pipeline controller for context unwinding.
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_ack(ack, cxf).await
+        self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send a Nack to the pipeline controller for context unwinding.
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_nack(nack, cxf).await
+        self.core.route_nack(nack).await
     }
 
     /// Reports metrics collected by the exporter.

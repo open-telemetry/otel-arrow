@@ -70,7 +70,7 @@ pub(crate) struct NodeTaskContext {
 }
 
 impl NodeTaskContext {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         entity_key: Option<EntityKey>,
         telemetry_handle: Option<NodeTelemetryHandle>,
         input_channel_key: Option<EntityKey>,
