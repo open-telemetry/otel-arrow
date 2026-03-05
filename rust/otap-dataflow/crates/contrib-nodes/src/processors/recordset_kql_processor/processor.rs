@@ -3,7 +3,6 @@
 
 use super::config::RecordsetKqlProcessorConfig;
 use super::create_recordset_kql_processor;
-use super::metrics::RecordsetKqlMetrics;
 use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
@@ -17,15 +16,15 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProcessorFactory,
+    ConsumerEffectHandlerExtension, ProcessorFactory,
     context::PipelineContext,
     control::NackMsg,
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
+    process_duration::ProcessDuration,
 };
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-use otap_df_telemetry::metrics::MetricSet;
 
 /// URN identifier for the processor
 pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset_kql";
@@ -44,7 +43,7 @@ pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = Proces
 pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
-    metrics: MetricSet<RecordsetKqlMetrics>,
+    process_duration: ProcessDuration,
 }
 
 impl RecordsetKqlProcessor {
@@ -62,14 +61,14 @@ impl RecordsetKqlProcessor {
             error: format!("Failed to parse KQL query: {:?}", errors),
         })?;
 
-        let metrics = pipeline_ctx.register_metrics::<RecordsetKqlMetrics>();
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
 
         otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
 
         Ok(Self {
             config,
             pipeline,
-            metrics,
+            process_duration,
         })
     }
 
@@ -170,14 +169,8 @@ impl RecordsetKqlProcessor {
             }),
         };
 
-        let result = if effect_handler
-            .node_interests()
-            .contains(Interests::CONSUMER_METRICS)
-        {
-            self.metrics.process_duration.timed(do_process)
-        } else {
-            do_process()
-        };
+        let interests = effect_handler.node_interests();
+        let result = self.process_duration.timed(interests, do_process);
 
         match result {
             Ok(processed_bytes) => {
@@ -308,7 +301,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
-                        let _ = metrics_reporter.report(&mut self.metrics);
+                        self.process_duration.report(&mut metrics_reporter);
                         Ok(())
                     }
                     _ => Ok(()),

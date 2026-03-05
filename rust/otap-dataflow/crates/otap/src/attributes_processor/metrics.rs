@@ -3,7 +3,7 @@
 
 //! Metrics for the AttributesProcessor node.
 
-use otap_df_telemetry::instrument::{Counter, Mmsc};
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the AttributesProcessor node.
@@ -33,8 +33,4 @@ pub struct AttributesProcessorMetrics {
     /// Number of times transforms were applied to scope-level payloads.
     #[metric(unit = "{apply}")]
     pub domains_scope: Counter<u64>,
-
-    /// Wall-clock duration of each process() invocation, in nanoseconds.
-    #[metric(name = "process.duration", unit = "ns")]
-    pub process_duration: Mmsc,
 }

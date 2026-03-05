@@ -20,7 +20,6 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::Interests;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NackMsg;
@@ -28,6 +27,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ProcessDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -35,16 +35,12 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
-use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-
-mod metrics;
-use metrics::CondenseAttributesMetrics;
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -162,7 +158,7 @@ impl Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
-    metrics: MetricSet<CondenseAttributesMetrics>,
+    process_duration: ProcessDuration,
 }
 
 enum CachedAttributeValue {
@@ -214,19 +210,16 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
     };
 
 impl CondenseAttributesProcessor {
-    /// Creates a new CondenseAttributesProcessor instance
-    #[must_use]
-    pub fn new(config: Config, metrics: MetricSet<CondenseAttributesMetrics>) -> Self {
-        Self { config, metrics }
-    }
-
     /// Creates a new CondenseAttributesProcessor instance from configuration
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<CondenseAttributesMetrics>();
-        Ok(Self::new(Config::from_config(config)?, metrics))
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
+        Ok(Self {
+            config: Config::from_config(config)?,
+            process_duration,
+        })
     }
 
     /// Creates a new CondenseAttributesProcessor from configuration for testing.
@@ -629,7 +622,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
-                        let _ = metrics_reporter.report(&mut self.metrics);
+                        self.process_duration.report(&mut metrics_reporter);
                         Ok(())
                     }
                     _ => Ok(()),
@@ -650,7 +643,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let mut do_condense = || match signal {
+                let do_condense = || match signal {
                     SignalType::Logs => Self::do_condense(&self.config, &mut records),
                     _ => Err(Error::InternalError {
                         message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
@@ -658,14 +651,8 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     }),
                 };
 
-                let result = if effect_handler
-                    .node_interests()
-                    .contains(Interests::CONSUMER_METRICS)
-                {
-                    self.metrics.process_duration.timed(do_condense)
-                } else {
-                    do_condense()
-                };
+                let interests = effect_handler.node_interests();
+                let result = self.process_duration.timed(interests, do_condense);
 
                 match result {
                     Ok(condensed) => {

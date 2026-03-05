@@ -67,6 +67,7 @@ pub mod node;
 pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
+pub mod process_duration;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;

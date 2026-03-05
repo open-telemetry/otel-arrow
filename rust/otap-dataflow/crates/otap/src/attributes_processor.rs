@@ -39,12 +39,13 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::{Interests, config::ProcessorConfig};
+use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ProcessDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
@@ -131,6 +132,8 @@ pub struct AttributesProcessor {
     has_signal_domain: bool,
     // Metrics handle (set at runtime in factory; None when parsed-only)
     metrics: Option<MetricSet<AttributesProcessorMetrics>>,
+    // Opt-in process-duration timing (set at runtime in factory; None when parsed-only)
+    process_duration: Option<ProcessDuration>,
 }
 
 impl AttributesProcessor {
@@ -216,6 +219,7 @@ impl AttributesProcessor {
             has_scope_domain,
             has_signal_domain,
             metrics: None,
+            process_duration: None,
         })
     }
 
@@ -331,6 +335,9 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     if let Some(metrics) = self.metrics.as_mut() {
                         let _ = metrics_reporter.report(metrics);
                     }
+                    if let Some(pd) = self.process_duration.as_mut() {
+                        pd.report(&mut metrics_reporter);
+                    }
                     Ok(())
                 }
                 _ => Ok(()),
@@ -363,36 +370,23 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
                 // Apply transform across selected domains and collect exact stats.
-                // Time just the transform compute (at Normal+ metric level).
-                let time_process = effect_handler
-                    .node_interests()
-                    .contains(Interests::CONSUMER_METRICS);
-                let AttributesProcessor {
-                    ref transform,
-                    has_resource_domain,
-                    has_scope_domain,
-                    has_signal_domain,
-                    ref mut metrics,
-                } = *self;
+                let interests = effect_handler.node_interests();
                 let mut do_transform = || {
                     Self::do_transform(
-                        transform,
-                        has_resource_domain,
-                        has_scope_domain,
-                        has_signal_domain,
+                        &self.transform,
+                        self.has_resource_domain,
+                        self.has_scope_domain,
+                        self.has_signal_domain,
                         &mut records,
                         signal,
                     )
                 };
-                let transform_result = if time_process {
-                    if let Some(m) = metrics.as_mut() {
-                        m.process_duration.timed(do_transform)
+                let transform_result =
+                    if let Some(pd) = self.process_duration.as_mut() {
+                        pd.timed(interests, do_transform)
                     } else {
                         do_transform()
-                    }
-                } else {
-                    do_transform()
-                };
+                    };
                 match transform_result {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
@@ -477,6 +471,7 @@ pub fn create_attributes_processor(
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let mut proc = AttributesProcessor::from_config(&node_config.config)?;
     proc.metrics = Some(pipeline_ctx.register_metrics::<AttributesProcessorMetrics>());
+    proc.process_duration = Some(ProcessDuration::new(&pipeline_ctx));
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -1678,9 +1673,6 @@ mod telemetry_tests {
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
-                            if let otap_df_telemetry::metrics::MetricValue::Mmsc(_) = v {
-                                continue;
-                            }
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,

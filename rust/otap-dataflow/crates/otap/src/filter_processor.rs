@@ -17,13 +17,14 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::{Interests, config::ProcessorConfig};
+use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ProcessDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
@@ -39,6 +40,7 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 pub struct FilterProcessor {
     config: Config,
     metrics: MetricSet<FilterPdataMetrics>,
+    process_duration: ProcessDuration,
 }
 
 /// Factory function to create a FilterProcessor.
@@ -80,17 +82,19 @@ impl FilterProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
-        FilterProcessor { config, metrics }
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
+        FilterProcessor { config, metrics, process_duration }
     }
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
-        Ok(FilterProcessor { config, metrics })
+        Ok(FilterProcessor { config, metrics, process_duration })
     }
 }
 
@@ -108,6 +112,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 } = control
                 {
                     _ = metrics_reporter.report(&mut self.metrics);
+                    self.process_duration.report(&mut metrics_reporter);
                 }
                 Ok(())
             }
@@ -160,15 +165,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                 };
 
+                let interests = effect_handler.node_interests();
                 let (filtered_arrow_records, signal_counts) =
-                    if effect_handler
-                        .node_interests()
-                        .contains(Interests::CONSUMER_METRICS)
-                    {
-                        self.metrics.process_duration.timed(do_filter)
-                    } else {
-                        do_filter()
-                    }?;
+                    self.process_duration.timed(interests, do_filter)?;
 
                 if let Some((is_logs, consumed, filtered)) = signal_counts {
                     if is_logs {

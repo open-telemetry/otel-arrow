@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod config;
-pub(crate) mod metrics;
 pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;
