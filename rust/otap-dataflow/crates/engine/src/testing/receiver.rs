@@ -6,6 +6,7 @@
 //! These utilities are designed to make testing receivers simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::Interests;
 use crate::config::ReceiverConfig;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
@@ -281,7 +282,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             let terminal_state = self
                 .receiver
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .expect("Receiver event loop failed");
 
