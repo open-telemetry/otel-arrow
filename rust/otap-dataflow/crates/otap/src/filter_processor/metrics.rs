@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Metrics for the OTAP FilterProcessor node.
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP FilterProcessor
@@ -22,4 +22,8 @@ pub struct FilterPdataMetrics {
     /// Number of span signals filtered
     #[metric(unit = "{span}")]
     pub span_signals_filtered: Counter<u64>,
+
+    /// Wall-clock duration of each process() invocation, in nanoseconds.
+    #[metric(name = "process.duration", unit = "ns")]
+    pub process_duration: Mmsc,
 }

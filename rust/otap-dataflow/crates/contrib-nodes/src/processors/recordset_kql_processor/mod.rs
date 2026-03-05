@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod config;
+pub(crate) mod metrics;
 pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;
@@ -13,8 +14,6 @@ use otap_df_engine::{
     config::ProcessorConfig, context::PipelineContext, node::NodeId, processor::ProcessorWrapper,
 };
 use std::sync::Arc;
-
-// TODO metrics
 
 /// Factory function to create a KQL processor
 pub fn create_recordset_kql_processor(

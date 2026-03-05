@@ -227,13 +227,18 @@ impl AttributesProcessor {
     }
 
     #[inline]
-    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
+    const fn static_attrs_payloads(
+        has_resource_domain: bool,
+        has_scope_domain: bool,
+        has_signal_domain: bool,
+        signal: SignalType,
+    ) -> &'static [ArrowPayloadType] {
         use payload_sets::*;
 
         match (
-            self.has_resource_domain,
-            self.has_scope_domain,
-            self.has_signal_domain,
+            has_resource_domain,
+            has_scope_domain,
+            has_signal_domain,
             signal,
         ) {
             // Empty cases
@@ -271,20 +276,30 @@ impl AttributesProcessor {
     }
 
     #[allow(clippy::result_large_err)]
-    fn apply_transform_with_stats(
-        &self,
+    fn do_transform(
+        transform: &AttributesTransform,
+        has_resource_domain: bool,
+        has_scope_domain: bool,
+        has_signal_domain: bool,
         records: &mut OtapArrowRecords,
         signal: SignalType,
     ) -> Result<(u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
 
-        // Only apply if we have transforms to apply
-        if !self.is_noop() {
-            let payloads = self.attrs_payloads(signal);
+        let is_noop = transform.rename.is_none()
+            && transform.delete.is_none()
+            && transform.insert.is_none();
+        if !is_noop {
+            let payloads = Self::static_attrs_payloads(
+                has_resource_domain,
+                has_scope_domain,
+                has_signal_domain,
+                signal,
+            );
             for &payload_ty in payloads {
                 if let Some(rb) = records.get(payload_ty) {
-                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                    let (rb, stats) = transform_attributes_with_stats(rb, transform)
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
@@ -347,8 +362,37 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         m.domains_signal.inc();
                     }
                 }
-                // Apply transform across selected domains and collect exact stats
-                match self.apply_transform_with_stats(&mut records, signal) {
+                // Apply transform across selected domains and collect exact stats.
+                // Time just the transform compute.
+                let AttributesProcessor {
+                    ref transform,
+                    has_resource_domain,
+                    has_scope_domain,
+                    has_signal_domain,
+                    ref mut metrics,
+                } = *self;
+                let transform_result = if let Some(m) = metrics.as_mut() {
+                    m.process_duration.timed(|| {
+                        Self::do_transform(
+                            transform,
+                            has_resource_domain,
+                            has_scope_domain,
+                            has_signal_domain,
+                            &mut records,
+                            signal,
+                        )
+                    })
+                } else {
+                    Self::do_transform(
+                        transform,
+                        has_resource_domain,
+                        has_scope_domain,
+                        has_signal_domain,
+                        &mut records,
+                        signal,
+                    )
+                };
+                match transform_result {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
@@ -1633,6 +1677,9 @@ mod telemetry_tests {
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
+                            if let otap_df_telemetry::metrics::MetricValue::Mmsc(_) = v {
+                                continue;
+                            }
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,

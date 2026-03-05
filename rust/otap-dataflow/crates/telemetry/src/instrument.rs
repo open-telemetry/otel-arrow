@@ -13,6 +13,7 @@
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
+use std::time::Instant;
 
 /// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
@@ -530,6 +531,19 @@ impl Mmsc {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Times a synchronous closure, recording the elapsed wall-clock
+    /// duration in nanoseconds as an observation.
+    #[inline]
+    pub fn timed<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let start = Instant::now();
+        let result = f();
+        self.record(start.elapsed().as_nanos() as f64);
+        result
+    }
 }
 
 /// An immutable snapshot of MMSC (min, max, sum, count) values.
@@ -653,5 +667,18 @@ mod tests {
         assert_eq!(snap.max, -1.0);
         assert_eq!(snap.sum, -16.0);
         assert_eq!(snap.count, 3);
+    }
+
+    #[test]
+    fn test_mmsc_timed() {
+        let mut mmsc = Mmsc::default();
+        let result = mmsc.timed(|| {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            42
+        });
+        assert_eq!(result, 42);
+        let snap = mmsc.get();
+        assert_eq!(snap.count, 1);
+        assert!(snap.min > 0.0, "timed duration should be positive");
     }
 }

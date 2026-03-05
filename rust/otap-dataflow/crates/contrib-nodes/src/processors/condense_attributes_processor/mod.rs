@@ -34,12 +34,16 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+
+mod metrics;
+use metrics::CondenseAttributesMetrics;
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -157,6 +161,7 @@ impl Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
+    metrics: MetricSet<CondenseAttributesMetrics>,
 }
 
 enum CachedAttributeValue {
@@ -174,12 +179,12 @@ fn engine_err(msg: &str) -> Error {
 
 /// Factory function to create a Condense Attributes processor
 pub fn create_condense_attributes_processor(
-    _: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let processor = CondenseAttributesProcessor::from_config(&node_config.config)?;
+    let processor = CondenseAttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
 
     otel_info!("condense_attributes_processor.ready");
 
@@ -210,18 +215,40 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
 impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance
     #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(config: Config, metrics: MetricSet<CondenseAttributesMetrics>) -> Self {
+        Self { config, metrics }
     }
 
     /// Creates a new CondenseAttributesProcessor instance from configuration
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
-        Ok(Self::new(Config::from_config(config)?))
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<CondenseAttributesMetrics>();
+        Ok(Self::new(Config::from_config(config)?, metrics))
+    }
+
+    /// Creates a new CondenseAttributesProcessor from configuration for testing.
+    #[cfg(test)]
+    fn from_config_for_test(config: &Value) -> Result<Self, ConfigError> {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0);
+        Self::from_config(pipeline_ctx, config)
     }
 
     /// Condenses attributes in the given record batch according to the processor configuration.
     /// Returns the number of individual attributes that were condensed.
-    fn condense(&mut self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
+    #[cfg(test)]
+    fn condense(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
+        Self::do_condense(&self.config, records)
+    }
+
+    fn do_condense(config: &Config, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
             None => {
@@ -263,7 +290,7 @@ impl CondenseAttributesProcessor {
         let int_col = rb.column_by_name(consts::ATTRIBUTE_INT);
         let double_col = rb.column_by_name(consts::ATTRIBUTE_DOUBLE);
         let bool_col = rb.column_by_name(consts::ATTRIBUTE_BOOL);
-        let delimiter_str = self.config.delimiter.to_string();
+        let delimiter_str = config.delimiter.to_string();
 
         // Pre-extract key arrays
         let key_str_arr = key_col.as_any().downcast_ref::<StringArray>();
@@ -375,14 +402,14 @@ impl CondenseAttributesProcessor {
             };
 
             // Always skip attributes that match the destination_key to prevent circular references
-            if key == self.config.destination_key {
+            if key == config.destination_key {
                 removed_existing_destination = true;
                 removed_existing_destination_count += 1;
                 continue;
             }
 
             // Check if we should include this key
-            let should_condense = match (&self.config.source_keys, &self.config.exclude_keys) {
+            let should_condense = match (&config.source_keys, &config.exclude_keys) {
                 (Some(source), _) => source.contains(key),
                 (None, Some(exclude)) => !exclude.contains(key),
                 (None, None) => true,
@@ -479,7 +506,7 @@ impl CondenseAttributesProcessor {
 
                 for (index, (key, val)) in attrs.iter().enumerate() {
                     if index > 0 {
-                        condensed_value.push(self.config.delimiter);
+                        condensed_value.push(config.delimiter);
                     }
                     condensed_value.push_str(key);
                     condensed_value.push('=');
@@ -488,7 +515,7 @@ impl CondenseAttributesProcessor {
                 }
 
                 builder.append_parent_id(parent_id);
-                builder.append_key(&self.config.destination_key);
+                builder.append_key(&config.destination_key);
                 builder
                     .any_values_builder
                     .append_str(condensed_value.as_bytes());
@@ -598,6 +625,12 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                         }
                         Ok(())
                     }
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => {
+                        let _ = metrics_reporter.report(&mut self.metrics);
+                        Ok(())
+                    }
                     _ => Ok(()),
                 }
             }
@@ -616,13 +649,17 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let result = match signal {
-                    SignalType::Logs => self.condense(&mut records),
+                let CondenseAttributesProcessor {
+                    ref config,
+                    ref mut metrics,
+                } = *self;
+                let result = metrics.process_duration.timed(|| match signal {
+                    SignalType::Logs => Self::do_condense(config, &mut records),
                     _ => Err(Error::InternalError {
                         message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
                             .to_string(),
                     }),
-                };
+                });
 
                 match result {
                     Ok(condensed) => {
@@ -861,7 +898,7 @@ mod condense_tests {
             "source_keys": ["nonexistent1", "nonexistent2"]
         });
 
-        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let mut processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
 
         let mut bytes = BytesMut::new();
         input.encode(&mut bytes).expect("encode input");
@@ -893,7 +930,7 @@ mod condense_tests {
             "destination_key": "condensed",
             "delimiter": ";"
         });
-        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let mut processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         let mut records = OtapArrowRecords::from(Logs::default());
 
         let condensed_count = processor
@@ -1353,7 +1390,7 @@ mod config_tests {
             "source_keys": ["key1", "key2", "key3"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed");
         assert_eq!(processor.config.delimiter, '|');
         assert!(processor.config.exclude_keys.is_none());
@@ -1377,7 +1414,7 @@ mod config_tests {
             "exclude_keys": ["id", "timestamp"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed_attr");
         assert_eq!(processor.config.delimiter, ',');
         assert!(processor.config.source_keys.is_none());
@@ -1399,7 +1436,7 @@ mod config_tests {
             "delimiter": ";"
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "all_condensed");
         assert_eq!(processor.config.delimiter, ';');
         assert!(processor.config.source_keys.is_none());
@@ -1413,7 +1450,7 @@ mod config_tests {
             "source_keys": ["key1"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1430,7 +1467,7 @@ mod config_tests {
             "source_keys": ["key1"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1448,7 +1485,7 @@ mod config_tests {
             "source_keys": ["key1", "key2"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1467,7 +1504,7 @@ mod config_tests {
             "exclude_keys": ["key2"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1485,7 +1522,7 @@ mod config_tests {
             "source_keys": "not_an_array"
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1503,7 +1540,7 @@ mod config_tests {
             "exclude_keys": "not_an_array"
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1521,7 +1558,7 @@ mod config_tests {
             "source_keys": ["attr1", "condensed"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1540,7 +1577,7 @@ mod config_tests {
             "exclude_keys": ["attr1", "condensed"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
