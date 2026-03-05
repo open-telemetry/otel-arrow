@@ -509,6 +509,9 @@ pub struct BatchProcessorMetrics {
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
     dropped_empty_records: Counter<u64>,
+    /// Number of requests nacked due to inbound slot exhaustion (backpressure)
+    #[metric(unit = "{msg}")]
+    nacked_inbound_slots: Counter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
@@ -765,26 +768,29 @@ where
         items: usize,
     ) -> Result<(), EngineError> {
         // If there are subscribers, calculate an inbound slot key.
-        let inkey = ctx
-            .has_subscribers()
-            .then(|| {
-                self.buffer
-                    .inbound
-                    .allocate(|| {
-                        (
-                            BatchContext { ctx, outbound: 0 },
-                            (), // not used
-                        )
-                    })
-                    .ok_or_else(|| EngineError::ProcessorError {
-                        processor: effect.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "inbound slots not available".into(),
-                        source_detail: "".into(),
-                    })
-            })
-            .transpose()?
-            .map(|(bc, _)| bc);
+        // When inbound slots are exhausted, nack the request to apply
+        // backpressure instead of returning a fatal error.
+        let inkey = if ctx.has_subscribers() {
+            if self.buffer.inbound.is_full() {
+                self.metrics.nacked_inbound_slots.inc();
+                let refused = OtapPdata::new(ctx, payload.into());
+                effect
+                    .notify_nack(NackMsg::new("inbound slots not available", refused))
+                    .await?;
+                return Ok(());
+            }
+            self.buffer
+                .inbound
+                .allocate(|| {
+                    (
+                        BatchContext { ctx, outbound: 0 },
+                        (), // not used
+                    )
+                })
+                .map(|(bc, _)| bc)
+        } else {
+            None
+        };
 
         // Set the arrival time when the current input is empty.
         let timeout = self.config.flush_timeout;
@@ -2449,5 +2455,84 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
             });
+    }
+
+    /// When `inbound_request_limit` is exhausted, verify the batch
+    /// processor nacks the request with backpressure instead of
+    /// returning a fatal error that would crash the pipeline.
+    #[test]
+    fn test_inbound_slot_exhaustion_nacks_request() {
+        // Configure batch processor with inbound_request_limit = 1.
+        // Use a large min_size and long timeout so no flush happens
+        // between the two sends — this keeps the single slot occupied.
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 100_000,
+                "sizer": "items",
+            },
+            "flush_timeout": "60s",
+            "inbound_request_limit": 1,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+
+                // Generate two small log batches.
+                let mut datagen = DataGenerator::new(1);
+                let logs1 = datagen.generate_logs();
+                let logs2 = datagen.generate_logs();
+
+                let rec1 = encode_logs_otap_batch(&logs1)
+                    .expect("encode");
+                let rec2 = encode_logs_otap_batch(&logs2)
+                    .expect("encode");
+
+                // Both pdata messages are subscribed (has_subscribers = true),
+                // which means the batch processor WILL allocate inbound slots.
+                let pdata1 = OtapPdata::new_default(rec1.into())
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::new_with(0, 0).into(),
+                        1,
+                    );
+                let pdata2 = OtapPdata::new_default(rec2.into())
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::new_with(1, 0).into(),
+                        1,
+                    );
+
+                // First message: succeeds, occupies the single inbound slot.
+                ctx.process(Message::PData(pdata1))
+                    .await
+                    .expect("first message should succeed");
+
+                // Second message: should succeed (not crash) but the request
+                // should be nacked because inbound slots are exhausted.
+                ctx.process(Message::PData(pdata2))
+                    .await
+                    .expect("second message should not return a fatal error");
+
+                // Verify a DeliverNack was sent on the pipeline control channel
+                // for the second message.
+                let mut found_nack = false;
+                while let Ok(msg) = pipeline_rx.try_recv() {
+                    if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
+                        assert!(
+                            nack.reason.contains("inbound slots not available"),
+                            "expected nack reason to contain 'inbound slots not available', got: {}",
+                            nack.reason
+                        );
+                        found_nack = true;
+                    }
+                }
+                assert!(
+                    found_nack,
+                    "expected a DeliverNack on the pipeline control channel"
+                );
+            })
+            .validate(|_| async {});
     }
 }
