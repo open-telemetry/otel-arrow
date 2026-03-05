@@ -91,19 +91,9 @@ impl<S: Clone> OutputRouter<S> {
     /// Returns the list of connected output port names.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.ports.keys().cloned().collect()
-    }
-
-    /// Returns the stable output port index for the default port.
-    #[must_use]
-    pub fn default_output_port_index(&self) -> u16 {
-        self.default.as_ref().map_or(0, |(_, idx)| *idx)
-    }
-
-    /// Returns the stable output port index for a named port.
-    #[must_use]
-    pub fn output_port_index(&self, port: &PortName) -> u16 {
-        self.ports.get(port).map_or(0, |(_, idx)| *idx)
+        let mut ports: Vec<_> = self.ports.keys().cloned().collect();
+        ports.sort();
+        ports
     }
 }
 
