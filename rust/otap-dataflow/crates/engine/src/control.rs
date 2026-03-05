@@ -15,13 +15,12 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use std::cell::Cell;
 
 thread_local! {
     /// Temporary; see nanos_since_birth
-    static BIRTH_KEY: Cell<Instant> = Instant::now();
+    static BIRTH_KEY: Cell<Instant> = Cell::new(Instant::now());
 }
 
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
@@ -29,6 +28,7 @@ thread_local! {
 ///
 /// TODO: This should not use a thread_local; it should not store any
 /// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
+#[must_use]
 pub fn nanos_since_birth() -> u64 {
     let birth = BIRTH_KEY.get();
     Instant::now().duration_since(birth).as_nanos() as u64
