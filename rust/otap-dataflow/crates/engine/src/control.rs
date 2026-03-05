@@ -17,15 +17,21 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use std::cell::Cell;
+
+thread_local! {
+    /// Temporary; see nanos_since_birth
+    static BIRTH_KEY: Cell<Instant> = Instant::now();
+}
 
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
 /// Used for duration calculations in pipeline component metrics.
 ///
-/// TODO: This could be perhaps more platform-specific.
+/// TODO: This should not use a thread_local; it should not store any
+/// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
 pub fn nanos_since_birth() -> u64 {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    let birth = BIRTH_KEY.get();
+    Instant::now().duration_since(birth).as_nanos() as u64
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data
