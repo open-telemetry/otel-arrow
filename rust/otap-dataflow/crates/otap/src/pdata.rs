@@ -133,16 +133,18 @@ impl Context {
         !self.stack.is_empty()
     }
 
-    /// Returns true if there are frames with pipeline metrics interests
+    /// Returns true if there are frames with pipeline timing interests
     /// at or before the first subscriber for `subscriber_interest` (ACKS
     /// or NACKS), scanning from the top of the stack (the unwind order).
     ///
     /// Used at the ack/nack origin (notify_ack/notify_nack) to decide
     /// whether to capture a return-path timestamp before routing.
+    ///
+    /// TODO: This could be O(1) by propagating a new interest bit.
     #[must_use]
-    pub fn has_pending_metrics(&self, subscriber_interest: Interests) -> bool {
+    fn has_timing(&self, subscriber_interest: Interests) -> bool {
         for frame in self.stack.iter().rev() {
-            if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+            if frame.interests.intersects(Interests::ENTRY_TIMESTAMP) {
                 return true;
             }
             if frame.interests.intersects(subscriber_interest) {
@@ -428,11 +430,11 @@ impl OtapPdata {
         self.context.has_context_frames()
     }
 
-    /// Returns true if the context stack has frames with pipeline metrics
+    /// Returns true if the context stack has frames with pipeline timing
     /// interests before the first subscriber for `subscriber_interest`.
     #[must_use]
-    pub fn has_pending_metrics(&self, subscriber_interest: Interests) -> bool {
-        self.context.has_pending_metrics(subscriber_interest)
+    fn has_timing(&self, subscriber_interest: Interests) -> bool {
+        self.context.has_timing(subscriber_interest)
     }
 
     /// Return the source's calldata. Note that after a subscribe_to()
@@ -528,14 +530,14 @@ macro_rules! impl_consumer_ext {
         #[async_trait(?Send)]
         impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
             async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-                if ack.accepted.has_pending_metrics(Interests::ACKS) {
+                if ack.accepted.has_timing(Interests::ACKS) {
                     ack.unwind.return_time_ns = nanos_since_birth();
                 }
                 self.route_ack(ack).await
             }
 
             async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-                if nack.refused.has_pending_metrics(Interests::NACKS) {
+                if nack.refused.has_timing(Interests::NACKS) {
                     nack.unwind.return_time_ns = nanos_since_birth();
                 }
                 self.route_nack(nack).await

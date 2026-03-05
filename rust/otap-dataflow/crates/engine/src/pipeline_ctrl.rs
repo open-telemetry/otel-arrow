@@ -2892,8 +2892,7 @@ mod tests {
                 let node_b = nodes[1].clone();
 
                 // Node A: control channel capacity 1 — fills up after one message
-                let (tx_a, rx_a) =
-                    tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
+                let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
                 control_senders.register(
                     node_a.clone(),
                     NodeType::Processor,
@@ -2901,8 +2900,7 @@ mod tests {
                 );
 
                 // Node B: control channel capacity 10 — plenty of room
-                let (tx_b, rx_b) =
-                    tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
+                let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
                 control_senders.register(
                     node_b.clone(),
                     NodeType::Processor,
