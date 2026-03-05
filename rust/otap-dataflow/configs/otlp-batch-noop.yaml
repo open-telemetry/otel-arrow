@@ -50,17 +50,12 @@ groups:
               format: preserve
               flush_timeout: 3s
 
-          perf:
-            type: exporter:perf
+          noop:
+            type: exporter:noop
             config:
-              frequency: 1000
-              cpu_usage: true
-              mem_usage: true
-              disk_usage: false
-              io_usage: false
 
         connections:
           - from: receiver
             to: batch
           - from: batch
-            to: perf
+            to: noop

@@ -1,12 +1,10 @@
-# Test config: OTLP receiver → batch processor → perf exporter
+# Low-memory variant: OTLP receiver → batch processor → noop exporter
 #
-# Used to reproduce a high-volume telemetrygen logs workload:
-#   telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure \
-#     --rate 20000 --duration 60m \
-#     --telemetry-attributes 'key1="<~1KB>"' --telemetry-attributes 'key2="<~1KB>"'
-#
-# Each log record is ~2KB of attributes. At 20k/sec with default batch-size 100,
-# telemetrygen makes ~200 synchronous export calls/sec.
+# Compared to otlp-batch-noop.yaml:
+#   - pdata channel: 128 → 8
+#   - max_concurrent_requests: auto(128) → 8 (match channel)
+#   - batch otlp min_size: 65536 → 32768 (flush sooner, hold less)
+#   - batch flush_timeout: 3s → 1s (flush sooner on low traffic)
 
 version: otel_dataflow/v1
 engine:
@@ -28,7 +26,7 @@ groups:
             control:
               node: 100
               pipeline: 100
-            pdata: 128
+            pdata: 8
 
         nodes:
           receiver:
@@ -37,6 +35,7 @@ groups:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
+                  max_concurrent_requests: 8
 
           batch:
             type: processor:batch
@@ -45,22 +44,17 @@ groups:
                 min_size: 1000
                 sizer: items
               otlp:
-                min_size: 65536
+                min_size: 32768
                 sizer: bytes
               format: preserve
-              flush_timeout: 3s
+              flush_timeout: 1s
 
-          perf:
-            type: exporter:perf
+          noop:
+            type: exporter:noop
             config:
-              frequency: 1000
-              cpu_usage: true
-              mem_usage: true
-              disk_usage: false
-              io_usage: false
 
         connections:
           - from: receiver
             to: batch
           - from: batch
-            to: perf
+            to: noop

@@ -1,12 +1,6 @@
-# Test config: OTLP receiver → batch processor → perf exporter
-#
-# Used to reproduce a high-volume telemetrygen logs workload:
-#   telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure \
-#     --rate 20000 --duration 60m \
-#     --telemetry-attributes 'key1="<~1KB>"' --telemetry-attributes 'key2="<~1KB>"'
-#
-# Each log record is ~2KB of attributes. At 20k/sec with default batch-size 100,
-# telemetrygen makes ~200 synchronous export calls/sec.
+# Test config: OTLP receiver → batch → noop with wait_for_result
+# This forces each gRPC call to wait for the full pipeline round-trip ack,
+# so max in-flight data is bounded by the number of concurrent telemetrygen workers.
 
 version: otel_dataflow/v1
 engine:
@@ -37,6 +31,7 @@ groups:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
+                  wait_for_result: true
 
           batch:
             type: processor:batch
@@ -50,17 +45,12 @@ groups:
               format: preserve
               flush_timeout: 3s
 
-          perf:
-            type: exporter:perf
+          noop:
+            type: exporter:noop
             config:
-              frequency: 1000
-              cpu_usage: true
-              mem_usage: true
-              disk_usage: false
-              io_usage: false
 
         connections:
           - from: receiver
             to: batch
           - from: batch
-            to: perf
+            to: noop
