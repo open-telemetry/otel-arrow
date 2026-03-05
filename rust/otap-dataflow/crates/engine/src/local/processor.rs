@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::Interests;
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -39,6 +40,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
+use crate::output_router::OutputRouter;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -92,12 +94,8 @@ pub trait Processor<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-
-    /// A sender used to forward messages from the processor.
-    /// Supports multiple named output ports.
-    msg_senders: HashMap<PortName, Sender<PData>>,
-    /// Cached default sender for fast access in the hot path
-    default_sender: Option<Sender<PData>>,
+    /// Output-port router.
+    pub router: OutputRouter<Sender<PData>>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -110,22 +108,9 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id, metrics_reporter);
-
-        // Determine and cache the default sender
-        let default_sender = if let Some(ref port) = default_port {
-            msg_senders.get(port).cloned()
-        } else if msg_senders.len() == 1 {
-            msg_senders.values().next().cloned()
-        } else {
-            None
-        };
-
-        EffectHandler {
-            core,
-            msg_senders,
-            default_sender,
-        }
+        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let router = OutputRouter::new(node_id, msg_senders, default_port);
+        EffectHandler { core, router }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -149,7 +134,13 @@ impl<PData> EffectHandler<PData> {
     /// Returns the list of connected output ports for this processor.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
-        self.msg_senders.keys().cloned().collect()
+        self.router.connected_ports()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -163,15 +154,7 @@ impl<PData> EffectHandler<PData> {
     /// if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.processor_id(),
-            })),
-        }
+        self.router.send_default(data).await
     }
 
     /// Attempts to send a message without awaiting.
@@ -186,12 +169,7 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
-                node: self.processor_id(),
-            })),
-        }
+        self.router.try_send_default(data)
     }
 
     /// Sends a message to a specific named output port.
@@ -205,17 +183,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.processor_id(),
-                port: port_name,
-            })),
-        }
+        self.router.send_to(port, data).await
     }
 
     /// Attempts to send a message to a specific named output port without awaiting.
@@ -233,14 +201,7 @@ impl<PData> EffectHandler<PData> {
     where
         P: Into<PortName>,
     {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutputPort {
-                node: self.processor_id(),
-                port: port_name,
-            })),
-        }
+        self.router.try_send_to(port, data)
     }
 
     /// Print an info message to stdout.
@@ -270,20 +231,20 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to a node of known-interest.
-    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send an Ack to the pipeline controller for context unwinding.
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_ack(ack, cxf).await
+        self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to a node of known-interest.
-    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    /// Send a Nack to the pipeline controller for context unwinding.
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
-        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        self.core.route_nack(nack, cxf).await
+        self.core.route_nack(nack).await
     }
 
     /// Delay data.
