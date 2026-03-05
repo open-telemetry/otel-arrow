@@ -192,8 +192,13 @@ impl Context {
         if let Some(top) = self.stack.last_mut() {
             if top.node_id == node_id {
                 top.interests |= interests;
-                if interests.contains(Interests::ENTRY_TIMESTAMP)
-                    && top.route.entry_time_ns == 0 {
+                if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
+                    && top.route.entry_time_ns == 0
+                {
+                    // Note: This update is only for receivers which need
+                    // to capture timestamp here in case they did not use
+                    // subscribe_to. If they called called subscribe_to,
+                    // this will be skipped by a non-zero timestamp.
                     top.route.entry_time_ns = nanos_since_birth();
                 }
                 return;
