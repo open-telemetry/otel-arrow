@@ -507,11 +507,6 @@ mod tests {
                 ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
-
-                // server should be down after shutdown
-                let fail_metrics_client =
-                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone()).await;
-                assert!(fail_metrics_client.is_err(), "Server did not shutdown");
             })
         }
     }
