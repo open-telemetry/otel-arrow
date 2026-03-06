@@ -43,6 +43,12 @@
       ]
     },
     {
+      // group these crates that are tagged and released together
+      "groupName": "OpenTelemetry Weaver",
+      "matchDatasources": ["crate"],
+      "matchSourceUrls": ["https://github.com/open-telemetry/weaver"],
+    },
+    {
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
       // fine to take them together
