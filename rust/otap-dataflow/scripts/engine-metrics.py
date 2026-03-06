@@ -328,7 +328,7 @@ def _sortkey(item):
 # --- printing -------------------------------------------------------
 
 
-def _print_section(grp, prev, key, show_pc):
+def _print_section(grp, prev, key, show_pc, elapsed_secs=None):
     """Print one metric-set section with aggregated totals and per-core."""
     name = grp["name"]
     attrs = grp["attrs"]
@@ -355,13 +355,17 @@ def _print_section(grp, prev, key, show_pc):
         unit = m.get("unit", "")
         txt = fmt(v, unit, inst)
 
-        # delta for counters
+        # delta / rate for counters
         pk = (key, mn)
         delta = ""
         if inst == "counter" and not is_mmsc(v) and pk in prev:
             d = v - prev[pk]
             if d > 0:
-                delta = f" (+{_fmt_num(d)})"
+                if elapsed_secs and elapsed_secs > 0:
+                    rate = d / elapsed_secs
+                    delta = f" ({_fmt_num(rate)}/s)"
+                else:
+                    delta = f" (+{_fmt_num(d)})"
             elif d < 0:
                 delta = f" ({_fmt_num(d)})"
         prev[pk] = v
@@ -480,6 +484,7 @@ def main():
             )
 
     prev = {}  # (group_key, metric_name) -> previous value (for deltas)
+    last_poll_time = None  # monotonic timestamp of previous successful poll
     pids = find_engine_pids()
 
     kind_msg = f"  kinds={','.join(sorted(kinds))}" if kinds else ""
@@ -491,6 +496,10 @@ def main():
             if data is None:
                 time.sleep(interval)
                 continue
+
+            poll_time = time.monotonic()
+            elapsed_secs = (poll_time - last_poll_time) if last_poll_time else None
+            last_poll_time = poll_time
 
             all_groups = parse(data)
             now = datetime.now().strftime("%H:%M:%S")
@@ -574,7 +583,7 @@ def main():
                     label = _KIND_LABELS.get(kind, kind.title())
                     print(f"  -- {label} {'-' * max(1, 56 - len(label))}")
                     last_kind = kind
-                _print_section(grp, prev, key, show_pc)
+                _print_section(grp, prev, key, show_pc, elapsed_secs)
 
             print(f"{'=' * 64}")
             sys.stdout.flush()
