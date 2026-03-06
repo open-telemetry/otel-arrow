@@ -63,7 +63,11 @@ mod tests {
             .expect("validation scenario failed");
     }
 
+    // Pipeline validation tests are end-to-end integration tests that spin up real
+    // gRPC servers and are inherently slow (~60s+). They validate data correctness
+    // through platform-independent code paths, so running on Linux alone is sufficient.
     #[test]
+    #[cfg(target_os = "linux")]
     fn debug_processor() {
         Scenario::new()
             .pipeline(
@@ -92,6 +96,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
@@ -127,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
@@ -169,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn multiple_input_output() {
         Scenario::new()
             .pipeline(
