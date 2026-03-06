@@ -720,6 +720,11 @@ impl DurableBuffer {
     ///
     /// The gauges reflect all ingested but not-yet-ACKed items across both sources.
     ///
+    /// *Snapshotting is intentionally non-atomic across these two sources.* During
+    /// segment finalization there is a brief window where a just-finalized segment
+    /// may appear in neither snapshot, causing a temporary under-count. Gauges
+    /// will self-correct on the next telemetry tick.
+    ///
     /// Uses a segment-level cache (`segment_cache`) for finalized segments to avoid
     /// per-tick allocations. Segments are immutable after finalization, so the
     /// per-bundle `(item_count, signal_type)` classification is computed once and
