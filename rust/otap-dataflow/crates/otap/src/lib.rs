@@ -18,8 +18,8 @@ pub mod otap_receiver;
 /// produce for the pipeline OTAP PData
 pub mod otlp_receiver;
 
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
+/// Implementation of OTLP gRPC exporter that implements the exporter trait
+pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
