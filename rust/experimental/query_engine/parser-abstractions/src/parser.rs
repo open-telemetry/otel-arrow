@@ -69,13 +69,13 @@ impl ParserOptions {
     pub fn with_external_function(
         mut self,
         name: &str,
-        mut parameters: Vec<(&str, PipelineFunctionParameter, Option<ScalarExpression>)>,
+        parameters: Vec<(&str, PipelineFunctionParameter, Option<ScalarExpression>)>,
         return_value_type: Option<ValueType>,
     ) -> ParserOptions {
         self.functions.push((
             name.into(),
             parameters
-                .drain(..)
+                .into_iter()
                 .map(|(name, def, default)| (name.into(), def, default))
                 .collect(),
             return_value_type,
