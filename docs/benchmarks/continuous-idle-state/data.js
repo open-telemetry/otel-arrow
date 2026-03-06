@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772824880004,
+  "lastUpdate": 1772826452882,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "3d8dc2c6eaf0ee1d288655d3736deb3b9e32ec4d",
-          "message": "Fix internal logging macros (#1985)\n\nReverting https://github.com/open-telemetry/otel-arrow/pull/1973\nFixing the empty \"\" from our internal macros, that caused the\n`message=\"user friendly message here\"` from being omitted in stdout!\n\nTaking\nhttps://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/controller/src/lib.rs#L668-L671\nas example\n```rust\notel_warn!(\n                \"core_affinity.set_failed\",\n                message = \"Failed to set core affinity for pipeline thread. Performance may be less predictable.\"\n            );\n```\n\nBefore\n```txt\n2026-02-06T22:15:09.891Z  WARN  otap-df-controller::core_affinity.set_failed (crates/controller/src/lib.rs:668): \n```\n(Missing message!)\n\nAfter (i.e with this PR)\n```txt\n2026-02-06T22:11:19.095Z  WARN  otap-df-controller::core_affinity.set_failed (crates/controller/src/lib.rs:668): Failed to set core affinity for pipeline thread. Performance may be less predictable.\n```\n(Message is back)\n\n\"message\" is already special cased in this repo, OTel Rust repo, and\n`tracing` itself. Passing user friendly string as an attribute named\n\"message\" is\n*[faster](https://github.com/open-telemetry/opentelemetry-rust/pull/2001/changes)*\ntoo!\n\nAlso, we avoid the less friendly syntax -\nhttps://github.com/open-telemetry/otel-arrow/pull/1981#discussion_r2776145173",
-          "timestamp": "2026-02-06T22:38:34Z",
-          "tree_id": "6f81ba35d91815c876bae0ba2c7845703f8d0e82",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d8dc2c6eaf0ee1d288655d3736deb3b9e32ec4d"
-        },
-        "date": 1770425480909,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.1178872136549124,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.1551164902984493,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 42.40625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 42.53515625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000847,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.5487934044590641,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.7747262998988406,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 178.57533482142858,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 178.7578125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001014,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.2950074325916281,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.4012144984020578,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 95.52845982142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 95.60546875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002151,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.06735772233728082,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.1083605672432601,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 31.970982142857142,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 32.05078125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001304,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.17838975703310145,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.20838533561750505,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 55.456473214285715,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 55.5703125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.006113,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.06269793651823877,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.10212877471586486,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 27.209821428571427,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 27.375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000863,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.000918,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ef2d5b2b55dabc4a4a0996ea18b8be7750f6c07",
+          "message": "fix(deps): update module github.com/apache/arrow-go/v18 to v18.5.2 (#2196)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[github.com/apache/arrow-go/v18](https://redirect.github.com/apache/arrow-go)\n| `v18.5.1` → `v18.5.2` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fapache%2farrow-go%2fv18/v18.5.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fapache%2farrow-go%2fv18/v18.5.1/v18.5.2?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>apache/arrow-go (github.com/apache/arrow-go/v18)</summary>\n\n###\n[`v18.5.2`](https://redirect.github.com/apache/arrow-go/releases/tag/v18.5.2)\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-go/compare/v18.5.1...v18.5.2)\n\n#### What's Changed\n\n- chore: bump parquet-testing submodule by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;633](https://redirect.github.com/apache/arrow-go/pull/633)\n- fix(arrow/array): handle empty binary values correctly in\nBinaryBuilder by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;634](https://redirect.github.com/apache/arrow-go/pull/634)\n- test(arrow/array): add test to binary builder by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;636](https://redirect.github.com/apache/arrow-go/pull/636)\n- chore: Bump modernc.org/sqlite from 1.29.6 to 1.44.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;627](https://redirect.github.com/apache/arrow-go/pull/627)\n- chore: Bump gonum.org/v1/gonum from 0.16.0 to 0.17.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;643](https://redirect.github.com/apache/arrow-go/pull/643)\n- chore: Bump github.com/hamba/avro/v2 from 2.30.0 to 2.31.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;641](https://redirect.github.com/apache/arrow-go/pull/641)\n- chore: Bump github.com/pierrec/lz4/v4 from 4.1.23 to 4.1.25 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;639](https://redirect.github.com/apache/arrow-go/pull/639)\n- chore: Bump actions/setup-go from 6.1.0 to 6.2.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;638](https://redirect.github.com/apache/arrow-go/pull/638)\n- chore: Bump github.com/klauspost/compress from 1.18.2 to 1.18.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;640](https://redirect.github.com/apache/arrow-go/pull/640)\n- chore: Bump modernc.org/sqlite from 1.44.1 to 1.44.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;642](https://redirect.github.com/apache/arrow-go/pull/642)\n- fix(parquet): decryption of V2 data pages by\n[@&#8203;daniel-adam-tfs](https://redirect.github.com/daniel-adam-tfs)\nin [#&#8203;596](https://redirect.github.com/apache/arrow-go/pull/596)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.78.1\nto 0.79.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;651](https://redirect.github.com/apache/arrow-go/pull/651)\n- chore: Bump github.com/zeebo/xxh3 from 1.0.2 to 1.1.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;649](https://redirect.github.com/apache/arrow-go/pull/649)\n- chore: Bump actions/setup-python from 6.1.0 to 6.2.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;650](https://redirect.github.com/apache/arrow-go/pull/650)\n- chore: Bump actions/checkout from 6.0.1 to 6.0.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;648](https://redirect.github.com/apache/arrow-go/pull/648)\n- perf(arrow): Reduce the amount of allocated objects by\n[@&#8203;spiridonov](https://redirect.github.com/spiridonov) in\n[#&#8203;645](https://redirect.github.com/apache/arrow-go/pull/645)\n- fix(parquet/file): regression with decompressing data by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;652](https://redirect.github.com/apache/arrow-go/pull/652)\n- fix(arrow/compute): take on record/array with nested struct by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;653](https://redirect.github.com/apache/arrow-go/pull/653)\n- fix(parquet/file): write large string values by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;655](https://redirect.github.com/apache/arrow-go/pull/655)\n- chore: Bump github.com/substrait-io/substrait-go/v7 from 7.2.2 to\n7.3.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;656](https://redirect.github.com/apache/arrow-go/pull/656)\n- chore: Bump golang.org/x/sys from 0.40.0 to 0.41.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;659](https://redirect.github.com/apache/arrow-go/pull/659)\n- ci: ensure extra GC cycle for flaky tests by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;661](https://redirect.github.com/apache/arrow-go/pull/661)\n- chore: Bump github.com/klauspost/compress from 1.18.3 to 1.18.4 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;660](https://redirect.github.com/apache/arrow-go/pull/660)\n- chore: Bump modernc.org/sqlite from 1.44.3 to 1.45.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;658](https://redirect.github.com/apache/arrow-go/pull/658)\n- chore: Bump golang.org/x/tools from 0.41.0 to 0.42.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;657](https://redirect.github.com/apache/arrow-go/pull/657)\n- fix(arrow/array): handle exponent notation for unmarshal int by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;662](https://redirect.github.com/apache/arrow-go/pull/662)\n- fix(flight/flightsql/driver): fix `time.Time` params by\n[@&#8203;etodd](https://redirect.github.com/etodd) in\n[#&#8203;666](https://redirect.github.com/apache/arrow-go/pull/666)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.79.0\nto 0.80.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;664](https://redirect.github.com/apache/arrow-go/pull/664)\n- chore: Bump google.golang.org/grpc from 1.78.0 to 1.79.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;665](https://redirect.github.com/apache/arrow-go/pull/665)\n- fix(parquet): bss encoding and tests on big endian systems by\n[@&#8203;daniel-adam-tfs](https://redirect.github.com/daniel-adam-tfs)\nin [#&#8203;663](https://redirect.github.com/apache/arrow-go/pull/663)\n- fix(parquet/pqarrow): selective column reading of complex map column\nby [@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;668](https://redirect.github.com/apache/arrow-go/pull/668)\n- feat(arrow/ipc): support custom\\_metadata on RecordBatch messages by\n[@&#8203;rustyconover](https://redirect.github.com/rustyconover) in\n[#&#8203;669](https://redirect.github.com/apache/arrow-go/pull/669)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.80.0\nto 0.81.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;671](https://redirect.github.com/apache/arrow-go/pull/671)\n- chore: Bump modernc.org/sqlite from 1.45.0 to 1.46.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;670](https://redirect.github.com/apache/arrow-go/pull/670)\n- chore: Bump github.com/substrait-io/substrait-go/v7 from 7.3.0 to\n7.4.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;672](https://redirect.github.com/apache/arrow-go/pull/672)\n- feat: Support setting IPC options in FlightSQL call options by\n[@&#8203;peasee](https://redirect.github.com/peasee) in\n[#&#8203;674](https://redirect.github.com/apache/arrow-go/pull/674)\n- chore(dev/release): embed hash of source tarball into email by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;675](https://redirect.github.com/apache/arrow-go/pull/675)\n- chore(arrow): bump PkgVersion to 18.5.2 by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;676](https://redirect.github.com/apache/arrow-go/pull/676)\n\n#### New Contributors\n\n- [@&#8203;spiridonov](https://redirect.github.com/spiridonov) made\ntheir first contribution in\n[#&#8203;645](https://redirect.github.com/apache/arrow-go/pull/645)\n- [@&#8203;etodd](https://redirect.github.com/etodd) made their first\ncontribution in\n[#&#8203;666](https://redirect.github.com/apache/arrow-go/pull/666)\n- [@&#8203;rustyconover](https://redirect.github.com/rustyconover) made\ntheir first contribution in\n[#&#8203;669](https://redirect.github.com/apache/arrow-go/pull/669)\n- [@&#8203;peasee](https://redirect.github.com/peasee) made their first\ncontribution in\n[#&#8203;674](https://redirect.github.com/apache/arrow-go/pull/674)\n\n**Full Changelog**:\n<https://github.com/apache/arrow-go/compare/v18.5.1...v18.5.2>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am every weekday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My40OC4xIiwidXBkYXRlZEluVmVyIjoiNDMuNDguMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: otelbot <197425009+otelbot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-03-06T18:43:05Z",
+          "tree_id": "8d077f1c3649fd2abea03353ddcfc49fc918ba80",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3ef2d5b2b55dabc4a4a0996ea18b8be7750f6c07"
+        },
+        "date": 1772826452299,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.3061905869188732,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.46885475815873506,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 105.59598214285714,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 105.73828125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000755,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.11645832882649863,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.2745865566368237,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 34.1875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 34.27734375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000779,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.11993183076833044,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.21170040536326787,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 46.61830357142857,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 46.89453125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00089,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.19445408077645615,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.35365576059850373,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 68.03013392857143,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 68.2890625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.016213,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.5612327843884554,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.7856746052016819,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 176.78236607142858,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 177.33203125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000834,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.06441934144674301,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.1403494910762996,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 31.469866071428573,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 31.6484375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001186,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
