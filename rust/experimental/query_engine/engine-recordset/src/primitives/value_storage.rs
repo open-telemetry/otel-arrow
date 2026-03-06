@@ -291,7 +291,9 @@ impl<T: EnumerableValueSource<T>> ArrayValueStorage<T> {
     }
 
     pub fn into<TTarget: EnumerableValueSource<TTarget>>(self) -> ArrayValueStorage<TTarget> {
-        ArrayValueStorage::<TTarget>::new(self.values.into_iter().map(|v| v.into().into()).collect())
+        ArrayValueStorage::<TTarget>::new(
+            self.values.into_iter().map(|v| v.into().into()).collect(),
+        )
     }
 
     pub fn get_values(&self) -> &[T] {

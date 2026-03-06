@@ -1364,7 +1364,8 @@ impl SelectScalarExpression {
 
                     match value {
                         ResolvedStaticScalarExpression::Computed(c) => {
-                            match ValueAccessor::select_from_value(&c, &mut selectors.into_iter())? {
+                            match ValueAccessor::select_from_value(&c, &mut selectors.into_iter())?
+                            {
                                 None => Ok(None),
                                 Some(s) => {
                                     Ok(Some(ResolvedStaticScalarExpression::Computed(s.clone())))
