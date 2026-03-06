@@ -370,7 +370,7 @@ fn decode_content_encoding(
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "gzip",
                     max_len = max_len,
@@ -380,7 +380,7 @@ fn decode_content_encoding(
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "gzip",
                     error = err_msg.as_str()
@@ -400,7 +400,7 @@ fn decode_content_encoding(
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "deflate",
                     max_len = max_len,
@@ -410,7 +410,7 @@ fn decode_content_encoding(
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "deflate",
                     error = err_msg.as_str()
@@ -427,7 +427,7 @@ fn decode_content_encoding(
         let mut decoder = ZstdDecoder::new(body.as_ref()).map_err(|e| {
             let err_msg = e.to_string();
             otap_df_telemetry::otel_debug!(
-                "HttpRequestRejected",
+                "otlp_http_receiver.request_rejected",
                 reason = "invalid_encoding",
                 encoding = "zstd",
                 error = err_msg.as_str()
@@ -443,7 +443,7 @@ fn decode_content_encoding(
             let err_msg = e.to_string();
             if err_msg.contains("decoded body too large") {
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "zstd",
                     max_len = max_len,
@@ -452,7 +452,7 @@ fn decode_content_encoding(
                 limited_body_too_large()
             } else {
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "zstd",
                     error = err_msg.as_str()
@@ -545,7 +545,7 @@ impl HttpHandler {
                     Ok(Err(_)) => {
                         // Semaphore closed (shouldn't happen)
                         otap_df_telemetry::otel_error!(
-                            "HttpSemaphoreClosed",
+                            "otlp_http_receiver.semaphore_closed",
                             kind = "global",
                             path = path_for_fut.as_str()
                         );
@@ -554,7 +554,7 @@ impl HttpHandler {
                     }
                     Err(_) => {
                         otap_df_telemetry::otel_warn!(
-                            "HttpRequestRejected",
+                            "otlp_http_receiver.request_rejected",
                             reason = "global_concurrency_limit_timeout",
                             path = path_for_fut.as_str(),
                             timeout_ms = permit_timeout.as_millis() as u64
@@ -576,7 +576,7 @@ impl HttpHandler {
                 Ok(Err(_)) => {
                     // Semaphore closed (shouldn't happen)
                     otap_df_telemetry::otel_error!(
-                        "HttpSemaphoreClosed",
+                        "otlp_http_receiver.semaphore_closed",
                         kind = "local",
                         path = path_for_fut.as_str()
                     );
@@ -586,7 +586,7 @@ impl HttpHandler {
                 Err(_) => {
                     // Timeout waiting for permit
                     otap_df_telemetry::otel_warn!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "concurrency_limit_timeout",
                         path = path_for_fut.as_str(),
                         max_concurrent = self.settings.max_concurrent_requests,
@@ -609,7 +609,7 @@ impl HttpHandler {
             if let Some(upper) = size_hint.upper() {
                 if (upper as usize) > max_len {
                     otap_df_telemetry::otel_debug!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_hint",
                         max_len = max_len,
                         size_hint = upper,
@@ -623,7 +623,7 @@ impl HttpHandler {
             let collected = Limited::new(body, max_len).collect().await.map_err(|e| {
                 if e.downcast_ref::<LengthLimitError>().is_some() {
                     otap_df_telemetry::otel_debug!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_collected",
                         max_len = max_len,
                         path = parts.uri.path().to_string()
@@ -632,7 +632,10 @@ impl HttpHandler {
                     return limited_body_too_large();
                 }
 
-                otap_df_telemetry::otel_warn!("HttpBodyCollectionFailed", error = e.to_string());
+                otap_df_telemetry::otel_warn!(
+                    "otlp_http_receiver.body_collection_failed",
+                    error = e.to_string()
+                );
                 internal_error()
             })?;
             let body = collected.to_bytes();
@@ -700,7 +703,7 @@ impl HttpHandler {
                 .is_err()
             {
                 otap_df_telemetry::otel_warn!(
-                    "HttpPipelineSendFailed",
+                    "otlp_http_receiver.pipeline_send_failed",
                     path = parts.uri.path().to_string(),
                     signal = format!("{:?}", signal)
                 );
@@ -712,7 +715,7 @@ impl HttpHandler {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
                         otap_df_telemetry::otel_debug!(
-                            "HttpRequestNacked",
+                            "otlp_http_receiver.request_nacked",
                             reason = nack.reason.as_str(),
                             signal = format!("{:?}", signal)
                         );
@@ -738,7 +741,7 @@ impl HttpHandler {
                 Ok(inner) => inner,
                 Err(_) => {
                     otap_df_telemetry::otel_warn!(
-                        "HttpRequestTimeout",
+                        "otlp_http_receiver.request_timeout",
                         path = path.as_str(),
                         timeout_ms = timeout_duration.as_millis() as u64,
                         signal = format!("{:?}", signal)
@@ -820,7 +823,7 @@ pub async fn serve(
                     Ok(s) => s,
                     Err(e) => {
                         otap_df_telemetry::otel_warn!(
-                            "HttpSocketOptionsFailed",
+                            "otlp_http_receiver.socket_options_failed",
                             peer = peer_addr.to_string(),
                             error = e.to_string(),
                             message = "Failed to apply socket options to connection, skipping"
@@ -857,7 +860,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("http.connection_error", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {
@@ -881,7 +884,7 @@ pub async fn serve(
                     tokio::select! {
                         res = &mut conn => {
                             if let Err(err) = res {
-                                otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                             }
                         },
                         _ = shutdown.cancelled() => {
@@ -908,7 +911,7 @@ pub async fn serve(
         .is_err()
     {
         otap_df_telemetry::otel_warn!(
-            "HttpShutdownTimeout",
+            "otlp_http_receiver.shutdown_timeout",
             timeout_ms = drain_timeout.as_millis() as u64,
             message = "Timed out waiting for in-flight HTTP requests to drain"
         );
@@ -1043,7 +1046,9 @@ mod tests {
         );
 
         // Send ACK back
-        if let Some((_, ack)) = Context::next_ack(otap_df_engine::control::AckMsg::new(received)) {
+        if let Some((_, ack)) =
+            crate::testing::next_ack(otap_df_engine::control::AckMsg::new(received))
+        {
             let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
         }
 

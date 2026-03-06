@@ -164,6 +164,28 @@ impl ControllerContext {
             thread_id,
         )
     }
+
+    /// Registers the engine-level entity for engine-wide metrics.
+    ///
+    /// Returns the [`EntityKey`] to pass to
+    /// [`EngineMetricsMonitor::new`](crate::engine_metrics::EngineMetricsMonitor::new).
+    #[must_use]
+    pub fn register_engine_entity(&self) -> EntityKey {
+        use crate::attributes::ResourceAttributeSet;
+
+        self.telemetry_registry_handle
+            .register_entity(ResourceAttributeSet {
+                process_instance_id: self.process_instance_id.clone(),
+                host_id: self.host_id.clone(),
+                container_id: self.container_id.clone(),
+            })
+    }
+
+    /// Returns a handle to the telemetry registry.
+    #[must_use]
+    pub fn telemetry_registry(&self) -> TelemetryRegistryHandle {
+        self.telemetry_registry_handle.clone()
+    }
 }
 
 impl PipelineContext {

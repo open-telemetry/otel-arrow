@@ -3,7 +3,7 @@
 ## Plugin Summary
 
 | Type Name | Module | Class | Config Class | Description Summary |
-|-----------|--------|-------|--------------|----------------------|
+| --------- | ------ | ----- | ------------ | -------------------- |
 | `build_docker_images` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImages` | `BuildDockerImagesConfig` | Hook strategy to build Docker images for multiple components locally |
 | `build_docker_image` | `lib.impl.strategies.hooks.docker.build_docker_image` | `BuildDockerImage` | `BuildDockerImageConfig` | Hook strategy implementation for building a single Docker image |
 | `create_docker_network` | `lib.impl.strategies.hooks.docker.network` | `CreateDockerNetwork` | `CreateDockerNetworkConfig` | Hook strategy to create a Docker network for a component if it does not already exist |
@@ -36,7 +36,7 @@
 **Docker Options:**
 
 | Flag | Description | Default | Required |
-|------|-------------|---------|----------|
+| ---- | ----------- | ------- | -------- |
 | `--docker.no-build` | Skip build of Docker containers. | - | - |
 
 **Description:**

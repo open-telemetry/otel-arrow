@@ -31,8 +31,6 @@ pub mod _private {
 /// use otap_df_telemetry::otel_info;
 /// otel_info!("receiver.start", version = "1.0.0");
 /// ```
-// TODO: Remove `name` attribute duplication in logging macros below once `tracing::Fmt` supports displaying `name`.
-// See issue: https://github.com/tokio-rs/tracing/issues/2774
 #[macro_export]
 macro_rules! otel_info {
     ($name:expr, $($fields:tt)+) => {

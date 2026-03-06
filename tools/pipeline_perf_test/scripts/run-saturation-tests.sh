@@ -41,19 +41,49 @@ done
 
 cd "$PERF_TEST_DIR"
 
+# Detect available CPU cores on this machine
+AVAILABLE_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0)
 echo "=============================================="
 echo "Running Saturation/Scaling Tests"
+echo "Detected $AVAILABLE_CORES CPU cores on this machine"
 echo "=============================================="
 echo ""
 
-# Find and run all saturation test configs
+# Compute total cores needed for a saturation test config.
+# Each config defines: num_cores (engine) + loadgen_cores + backend_cores
+# The pattern is: engine=N, loadgen=3*N, backend=N => total=5*N
+# We parse the actual values from each YAML to be safe.
+compute_required_cores() {
+    local config="$1"
+    local engine loadgen backend
+
+    engine=$(grep -oP 'num_cores:\s*\K[0-9]+' "$config" 2>/dev/null || echo 0)
+    loadgen=$(grep -oP 'loadgen_cores:\s*\K[0-9]+' "$config" 2>/dev/null || echo 0)
+    backend=$(grep -oP 'backend_cores:\s*\K[0-9]+' "$config" 2>/dev/null || echo 0)
+
+    echo $((engine + loadgen + backend))
+}
+
+# Find and run saturation test configs that fit on this machine
+SKIPPED=0
+RAN=0
 for config in test_suites/integration/continuous/saturation-*.yaml; do
     if [[ -f "$config" ]]; then
-        echo "Running: $config"
-        python orchestrator/run_orchestrator.py --config "$config"
-        echo ""
+        required=$(compute_required_cores "$config")
+        if [[ "$required" -le "$AVAILABLE_CORES" ]]; then
+            echo "Running: $config (requires $required cores, $AVAILABLE_CORES available)"
+            python orchestrator/run_orchestrator.py --config "$config"
+            RAN=$((RAN + 1))
+            echo ""
+        else
+            echo "Skipping: $config (requires $required cores, only $AVAILABLE_CORES available)"
+            SKIPPED=$((SKIPPED + 1))
+        fi
     fi
 done
+
+echo ""
+echo "Ran $RAN test(s), skipped $SKIPPED test(s) due to insufficient cores."
 
 echo ""
 echo "=============================================="

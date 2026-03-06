@@ -463,12 +463,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        effect_handler
-            .info(&format!(
-                "[AzureMonitorExporter] Starting: endpoint={}, stream={}, dcr={}",
-                self.config.api.dcr_endpoint, self.config.api.stream_name, self.config.api.dcr
-            ))
-            .await;
+        otel_info!(
+            "azure_monitor_exporter.start",
+            endpoint = self.config.api.dcr_endpoint.as_str(),
+            stream = self.config.api.stream_name.as_str(),
+            dcr = self.config.api.dcr.as_str()
+        );
 
         let mut msg_id = 0;
 
@@ -568,7 +568,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                msg = msg_chan.recv() => {
+                // Control always flows; pdata guarded by !at_capacity
+                msg = msg_chan.recv_when(!at_capacity) => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
                             self.sync_gauges();

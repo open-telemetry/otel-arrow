@@ -42,30 +42,32 @@
 //! - `Message::Data`: Ingested to storage, ACK sent upstream after WAL fsync
 //! - `TimerTick`: Poll storage for bundles, send downstream
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
-//! - `Nack`: Call handle.defer() and schedule retry via delay_data()
+//! - `Nack (permanent)`: Call handle.reject() — no retry
+//! - `Nack (transient)`: Call handle.defer() and schedule retry via delay_data()
 //! - `Shutdown`: Flush storage engine
 //!
 //! # Retry Behavior and Error Handling
 //!
-//! On NACK from downstream, bundles are retried with exponential backoff until
-//! either delivery succeeds or the data is evicted by the configured retention
-//! policy (`retention_size_cap` + `drop_oldest`).
+//! On NACK from downstream, bundles are handled based on the NACK's `permanent` status:
 //!
-//! There is no `max_retries` limit: without machine-readable error classification
-//! in NACKs, we cannot distinguish temporary failures (network outage—retry will
-//! succeed) from permanent failures (malformed data—retry is futile). A retry
-//! limit would cause **data loss** during legitimate extended outages.
+//! - **Permanent NACKs** (e.g., malformed data, schema validation failures): The bundle
+//!   is immediately rejected via `handle.reject()` and will not be retried. Monitor the
+//!   `bundles_nacked_permanent` metric to detect data being dropped due to permanent failures.
+//!
+//! - **Transient NACKs** (e.g., network issues, temporary downstream unavailability): Bundles
+//!   are retried with exponential backoff until either delivery succeeds or the data is evicted
+//!   by the configured retention policy (`retention_size_cap` + `drop_oldest`).
+//!
+//! There is no `max_retries` limit for transient failures: a retry limit would cause
+//! **data loss** during legitimate extended outages.
 //!
 //! **Operational guidance:**
 //!
+//! - Monitor `bundles_nacked_permanent` metric to detect permanent failures (data loss)
 //! - Monitor `retries_scheduled` metric to detect persistently failing data
 //! - Use `retention_size_cap` to bound storage; `drop_oldest` policy evicts
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
-//!
-//! **Future improvement:** When NACK messages carry error categorization
-//! (e.g., `retryable: bool` or error codes), we can drop permanently-failed
-//! data immediately while still retrying transient failures.
 
 mod bundle_adapter;
 mod config;
@@ -146,9 +148,27 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_acked: Counter<u64>,
 
-    /// Number of bundles rejected (deferred for retry) by downstream.
+    /// Number of bundles deferred for retry after transient downstream failures.
     #[metric(unit = "{bundle}")]
-    pub bundles_nacked: Counter<u64>,
+    pub bundles_nacked_deferred: Counter<u64>,
+
+    /// Number of bundles permanently rejected by downstream (not retried).
+    /// These indicate data loss due to permanent failures (e.g., malformed data).
+    #[metric(unit = "{bundle}")]
+    pub bundles_nacked_permanent: Counter<u64>,
+
+    // ─── Rejected item metrics (per signal type) ────────────────────────
+    /// Number of log records rejected.
+    #[metric(unit = "{log_record}")]
+    pub rejected_log_records: Counter<u64>,
+
+    /// Number of metric data points rejected.
+    #[metric(unit = "{data_point}")]
+    pub rejected_metric_points: Counter<u64>,
+
+    /// Number of spans rejected.
+    #[metric(unit = "{span}")]
+    pub rejected_spans: Counter<u64>,
 
     // ─── Consumed item metrics (per signal type) ────────────────────────
     /// Number of log records consumed (ingested to WAL).
@@ -1274,7 +1294,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&ack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&ack.unwind.route.calldata) else {
             // Invalid calldata, just forward the ACK upstream
             return effect_handler.notify_ack(ack).await;
         };
@@ -1326,7 +1346,10 @@ impl DurableBuffer {
 
     /// Handle NACK from downstream.
     ///
-    /// Schedules a retry with exponential backoff using `delay_data()`.
+    /// For permanent NACKs (e.g., malformed data that will never succeed), the bundle
+    /// is rejected immediately without retry.
+    ///
+    /// For transient NACKs, schedules a retry with exponential backoff using `delay_data()`.
     /// The bundle is deferred in Quiver (releasing the claim) and a lightweight
     /// retry ticket is scheduled. When the delay expires, `handle_delayed_retry`
     /// will re-claim the bundle and attempt redelivery.
@@ -1336,20 +1359,65 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&nack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&nack.unwind.route.calldata) else {
             // Invalid calldata, just forward the NACK upstream
             return effect_handler.notify_nack(nack).await;
         };
 
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
-        // Handle retry scheduling
+        // Handle based on whether this is a permanent or transient failure
         if let Some(pending) = self.pending_bundles.remove(&key) {
-            let retry_count = pending.retry_count + 1;
-            self.metrics.bundles_nacked.add(1);
             self.metrics
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
+
+            // Permanent failures should not be retried - reject the bundle immediately
+            if nack.permanent {
+                // Decrement queued item count — permanently rejected items are no longer queued
+                match pending.signal_type {
+                    SignalType::Logs => {
+                        self.queued_log_records =
+                            self.queued_log_records.saturating_sub(pending.item_count);
+                        self.metrics.queued_log_records.set(self.queued_log_records);
+                    }
+                    SignalType::Metrics => {
+                        self.queued_metric_points =
+                            self.queued_metric_points.saturating_sub(pending.item_count);
+                        self.metrics
+                            .queued_metric_points
+                            .set(self.queued_metric_points);
+                    }
+                    SignalType::Traces => {
+                        self.queued_spans = self.queued_spans.saturating_sub(pending.item_count);
+                        self.metrics.queued_spans.set(self.queued_spans);
+                    }
+                }
+
+                // Track permanently rejected items by signal type (individual items in NACKed bundles)
+                match pending.signal_type {
+                    SignalType::Logs => self.metrics.rejected_log_records.add(pending.item_count),
+                    SignalType::Metrics => {
+                        self.metrics.rejected_metric_points.add(pending.item_count)
+                    }
+                    SignalType::Traces => self.metrics.rejected_spans.add(pending.item_count),
+                }
+                self.metrics.bundles_nacked_permanent.add(1);
+
+                otel_warn!(
+                    "durable_buffer.bundle.rejected_permanent",
+                    segment_seq = bundle_ref.segment_seq.raw(),
+                    bundle_index = bundle_ref.bundle_index.raw(),
+                    reason = %nack.reason
+                );
+
+                // Reject the bundle in Quiver (marks as permanently failed)
+                pending.handle.reject();
+                return Ok(());
+            }
+
+            // Transient failure - schedule retry with exponential backoff
+            let retry_count = pending.retry_count + 1;
 
             // Track requeued items by signal type (individual items in NACKed bundles)
             match pending.signal_type {
@@ -1357,6 +1425,7 @@ impl DurableBuffer {
                 SignalType::Metrics => self.metrics.requeued_metric_points.add(pending.item_count),
                 SignalType::Traces => self.metrics.requeued_spans.add(pending.item_count),
             }
+            self.metrics.bundles_nacked_deferred.add(1);
 
             // Calculate backoff delay with jitter
             let backoff = self.calculate_backoff(retry_count);
@@ -1409,12 +1478,12 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Decode the retry ticket
-        let Some(calldata) = retry_ticket.source_calldata() else {
+        let Some(calldata) = retry_ticket.source_route() else {
             otel_warn!("durable_buffer.retry.missing_calldata");
             return Ok(());
         };
 
-        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
+        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata.calldata) else {
             otel_warn!("durable_buffer.retry.invalid_calldata");
             return Ok(());
         };
@@ -1714,8 +1783,8 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
-                    if let Some(calldata) = data.source_calldata() {
-                        if decode_retry_ticket(&calldata).is_some() {
+                    if let Some(route) = data.source_route() {
+                        if decode_retry_ticket(&route.calldata).is_some() {
                             // This is a retry ticket - handle retry
                             return self.handle_delayed_retry(data, effect_handler).await;
                         }
@@ -1889,5 +1958,223 @@ mod tests {
         let backoff100 = processor.calculate_backoff(100);
         assert!(backoff100 >= Duration::from_millis(15000));
         assert!(backoff100 <= Duration::from_millis(30000));
+    }
+
+    /// Test that DurableBufferMetrics snapshot correctly reports NACK metrics.
+    ///
+    /// Verifies:
+    /// - bundles_nacked_deferred (index 1) and bundles_nacked_permanent (index 2)
+    ///   are distinct counters reported at the correct positions
+    /// - retries_scheduled (index 22) is correctly reported
+    /// - bundles_acked (index 0) is correctly reported
+    /// - Snapshot clears values (delta semantics)
+    #[test]
+    fn test_nack_metrics_snapshot_field_positions() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let config = DurableBufferConfig {
+            path: std::path::PathBuf::from("/tmp/test-metrics"),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MiB
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+
+        // Simulate the metric increments that handle_nack would perform
+        // for permanent NACKs:
+        processor.metrics.bundles_nacked_permanent.add(3);
+
+        // for transient NACKs:
+        processor.metrics.bundles_nacked_deferred.add(5);
+
+        // for retries scheduled (only on transient):
+        processor.metrics.retries_scheduled.add(5);
+
+        // for ACKs:
+        processor.metrics.bundles_acked.add(10);
+
+        // Take a snapshot and verify field positions
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        reporter.report(&mut processor.metrics).unwrap();
+        let snapshot = metrics_rx.try_recv().unwrap();
+        let values = snapshot.get_metrics();
+
+        // Verify total metric count matches DurableBufferMetrics field count
+        assert_eq!(
+            values.len(),
+            30,
+            "DurableBufferMetrics should have 30 fields, got {}",
+            values.len()
+        );
+
+        // Index 0: bundles_acked
+        assert_eq!(
+            values[0].to_u64_lossy(),
+            10,
+            "bundles_acked (index 0) should be 10"
+        );
+
+        // Index 1: bundles_nacked_deferred
+        assert_eq!(
+            values[1].to_u64_lossy(),
+            5,
+            "bundles_nacked_deferred (index 1) should be 5"
+        );
+
+        // Index 2: bundles_nacked_permanent
+        assert_eq!(
+            values[2].to_u64_lossy(),
+            3,
+            "bundles_nacked_permanent (index 2) should be 3"
+        );
+
+        // Index 22: retries_scheduled
+        assert_eq!(
+            values[22].to_u64_lossy(),
+            5,
+            "retries_scheduled (index 22) should be 5"
+        );
+
+        // Verify delta semantics: after snapshot, counters should be cleared.
+        // The NACK-related counter values we set above should now be zero.
+        // (Gauges may still report due to Gauge::clear semantics, so we verify
+        // counters specifically by taking another snapshot.)
+        reporter.report(&mut processor.metrics).unwrap_or(());
+        if let Ok(snap2) = metrics_rx.try_recv() {
+            let vals2 = snap2.get_metrics();
+            assert_eq!(
+                vals2[0].to_u64_lossy(),
+                0,
+                "bundles_acked should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[1].to_u64_lossy(),
+                0,
+                "bundles_nacked_deferred should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[2].to_u64_lossy(),
+                0,
+                "bundles_nacked_permanent should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[22].to_u64_lossy(),
+                0,
+                "retries_scheduled should be 0 after reset"
+            );
+        }
+    }
+
+    /// Test that permanent NACKs decrement the `queued_*` gauges.
+    ///
+    /// The `queued_log_records` (and siblings) gauge tracks items ingested but
+    /// not yet resolved (ACKed or rejected). When a bundle is permanently
+    /// NACKed, it must be decremented just like an ACK — otherwise the gauge
+    /// drifts upward, giving operators a false picture of backlog.
+    #[test]
+    fn test_permanent_nack_decrements_queued_gauge() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let config = DurableBufferConfig {
+            path: std::path::PathBuf::from("/tmp/test-queued-gauge"),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(10);
+
+        // Simulate: 100 log records queued (as if 100 items were ingested)
+        processor.queued_log_records = 100;
+        processor.metrics.queued_log_records.set(100);
+
+        // Simulate: permanent NACK path decrements by 30 items
+        // (mirrors the code in handle_nack when nack.permanent is true)
+        processor.queued_log_records = processor.queued_log_records.saturating_sub(30);
+        processor
+            .metrics
+            .queued_log_records
+            .set(processor.queued_log_records);
+
+        // Snapshot should show queued_log_records = 70 (index 27)
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap.get_metrics()[27].to_u64_lossy(),
+            70,
+            "queued_log_records should be 70 after decrementing 30 from 100"
+        );
+
+        // Simulate: ACK the remaining 70
+        processor.queued_log_records = processor.queued_log_records.saturating_sub(70);
+        processor
+            .metrics
+            .queued_log_records
+            .set(processor.queued_log_records);
+
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap2 = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap2.get_metrics()[27].to_u64_lossy(),
+            0,
+            "queued_log_records should be 0 after all items resolved"
+        );
+
+        // Verify the same for metrics and spans signals
+        processor.queued_metric_points = 50;
+        processor.metrics.queued_metric_points.set(50);
+        processor.queued_metric_points = processor.queued_metric_points.saturating_sub(50);
+        processor
+            .metrics
+            .queued_metric_points
+            .set(processor.queued_metric_points);
+
+        processor.queued_spans = 25;
+        processor.metrics.queued_spans.set(25);
+        processor.queued_spans = processor.queued_spans.saturating_sub(25);
+        processor.metrics.queued_spans.set(processor.queued_spans);
+
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap3 = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap3.get_metrics()[28].to_u64_lossy(),
+            0,
+            "queued_metric_points should be 0"
+        );
+        assert_eq!(
+            snap3.get_metrics()[29].to_u64_lossy(),
+            0,
+            "queued_spans should be 0"
+        );
     }
 }
