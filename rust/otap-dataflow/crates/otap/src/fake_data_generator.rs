@@ -959,10 +959,16 @@ mod tests {
     fn test_fake_signal_receiver() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
+        // Path to the semantic-conventions git submodule (rust/semantic-conventions/).
+        // CARGO_MANIFEST_DIR = rust/otap-dataflow/crates/otap
+        // Submodule root     = rust/semantic-conventions
+        // Relative path      = ../../../semantic-conventions/model
+        let registry_path = VirtualDirectoryPath::LocalFolder {
+            path: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../semantic-conventions/model"
+            )
+            .to_owned(),
         };
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
@@ -1043,14 +1049,16 @@ mod tests {
     fn test_fake_signal_receiver_message_rate_only() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
-        };
-
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 0, 0);
-        let config = Config::new(traffic_config, registry_path);
+        // Use Static data source to avoid network access (git clone).
+        // The registry path is unused when DataSource::Static is set.
+        let config = Config::new(
+            traffic_config,
+            VirtualDirectoryPath::LocalFolder {
+                path: ".".to_owned(),
+            },
+        )
+        .with_data_source(DataSource::Static);
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
@@ -1119,14 +1127,17 @@ mod tests {
     #[test]
     fn test_fake_signal_receiver_max_signal_count_only() {
         let test_runtime = TestRuntime::new();
-        let registry_path = VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
-        };
 
         let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), MAX_BATCH, 1, 0, 0);
-        let config = Config::new(traffic_config, registry_path);
+        // Use Static data source to avoid network access (git clone).
+        // The registry path is unused when DataSource::Static is set.
+        let config = Config::new(
+            traffic_config,
+            VirtualDirectoryPath::LocalFolder {
+                path: ".".to_owned(),
+            },
+        )
+        .with_data_source(DataSource::Static);
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
@@ -1197,11 +1208,16 @@ mod tests {
     fn test_fake_signal_receiver_static_pregenerated() {
         let test_runtime = TestRuntime::new();
 
-        // Use Static data source with PreGenerated strategy
-        let registry_path = VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
+        // Use Static data source with PreGenerated strategy.
+        // The registry path is unused when DataSource::Static is set,
+        // but we use the submodule path for consistency.
+        // CARGO_MANIFEST_DIR = rust/otap-dataflow/crates/otap → ../../../semantic-conventions
+        let registry_path = VirtualDirectoryPath::LocalFolder {
+            path: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../semantic-conventions/model"
+            )
+            .to_owned(),
         };
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);

@@ -1,3 +1,8 @@
 [submodule "proto/opentelemetry-proto"]
 	path = proto/opentelemetry-proto
 	url = https://github.com/open-telemetry/opentelemetry-proto.git
+[submodule "rust/semantic-conventions"]
+	path = rust/semantic-conventions
+	url = https://github.com/open-telemetry/semantic-conventions.git
+	branch = main
+	shallow = true

@@ -46,10 +46,16 @@ fn gen_fake_logs_batch(batch_size: usize) {
         return;
     }
 
-    let registry_path = VirtualDirectoryPath::GitRepo {
-        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-        sub_folder: Some("model".to_owned()),
-        refspec: None,
+    // Path to the semantic-conventions git submodule (rust/semantic-conventions/).
+    // CARGO_MANIFEST_DIR = rust/otap-dataflow/benchmarks
+    // Submodule root     = rust/semantic-conventions
+    // Relative path      = ../../semantic-conventions/model
+    let registry_path = VirtualDirectoryPath::LocalFolder {
+        path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../semantic-conventions/model"
+        )
+        .to_owned(),
     };
 
     let traffic_config = TrafficConfig::new(None, None, 10000, 1, 1, 1);
