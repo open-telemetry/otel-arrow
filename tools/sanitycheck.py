@@ -2,17 +2,38 @@
 
 import glob
 import os
+import subprocess
 import sys
 
 CR = b'\r'
 CRLF = b'\r\n'
 LF = b'\n'
 
+# Build a set of git-ignored files to skip (e.g., build artifacts in target/).
+_git_ignored_cache = None
+
+def is_git_ignored(filepath):
+    global _git_ignored_cache
+    if _git_ignored_cache is None:
+        _git_ignored_cache = set()
+        try:
+            result = subprocess.run(
+                ['git', 'ls-files', '--others', '--ignored', '--exclude-standard'],
+                capture_output=True, text=True, check=True
+            )
+            for line in result.stdout.splitlines():
+                _git_ignored_cache.add(os.path.normpath(line))
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    return os.path.normpath(filepath) in _git_ignored_cache
+
 def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1):
     error_count = 0
 
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
+            continue
+        if is_git_ignored(filename):
             continue
         with open(filename, 'rb') as file:
             content = file.read()
