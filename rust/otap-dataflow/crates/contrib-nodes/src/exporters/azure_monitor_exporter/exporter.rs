@@ -480,14 +480,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             }
         })?;
 
-        otel_info!(
-            "azure_monitor_exporter.start",
-            endpoint = self.config.api.dcr_endpoint.as_str(),
-            stream = self.config.api.stream_name.as_str(),
-            dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name()
-        );
-
         self.client_pool
             .initialize(&self.config.api)
             .await
