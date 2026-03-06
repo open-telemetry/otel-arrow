@@ -465,20 +465,22 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
     ) -> Result<TerminalState, EngineError> {
         let mut msg_id = 0;
 
-        let (mut auth, auth_method) =
-            Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
-                let error = Error::AuthHandlerCreation(Box::new(e));
-                EngineError::InternalError {
-                    message: error.to_string(),
-                }
-            })?;
+        // Auth::new only builds the credential object (no network calls), so it
+        // is practically infallible. Placing the start event after it lets us
+        // include auth_method without a separate failure event.
+        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
+            let error = Error::AuthHandlerCreation(Box::new(e));
+            EngineError::InternalError {
+                message: error.to_string(),
+            }
+        })?;
 
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = auth_method
+            auth_method = self.config.auth.auth_method_name()
         );
 
         self.client_pool

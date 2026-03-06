@@ -13,13 +13,6 @@ use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 use super::metrics::AzureMonitorExporterMetricsRc;
 
-/// Auth method name for system-assigned managed identity.
-const AUTH_METHOD_SYSTEM_ASSIGNED: &str = "system_assigned_managed_identity";
-/// Auth method name for user-assigned managed identity.
-const AUTH_METHOD_USER_ASSIGNED: &str = "user_assigned_managed_identity";
-/// Auth method name for developer tools (Azure CLI, etc.).
-const AUTH_METHOD_DEVELOPER_TOOLS: &str = "developer_tools";
-
 /// Minimum delay between token refresh retry attempts in seconds.
 const MIN_RETRY_DELAY_SECS: f64 = 5.0;
 /// Maximum delay between token refresh retry attempts in seconds.
@@ -39,17 +32,14 @@ impl Auth {
     pub fn new(
         auth_config: &AuthConfig,
         metrics: AzureMonitorExporterMetricsRc,
-    ) -> Result<(Self, &'static str), Error> {
-        let (credential, auth_method) = Self::create_credential(auth_config)?;
+    ) -> Result<Self, Error> {
+        let credential = Self::create_credential(auth_config)?;
 
-        Ok((
-            Self {
-                credential,
-                scope: auth_config.scope.clone(),
-                metrics,
-            },
-            auth_method,
-        ))
+        Ok(Self {
+            credential,
+            scope: auth_config.scope.clone(),
+            metrics,
+        })
     }
 
     #[cfg(test)]
@@ -121,31 +111,22 @@ impl Auth {
         }
     }
 
-    fn create_credential(
-        auth_config: &AuthConfig,
-    ) -> Result<(Arc<dyn TokenCredential>, &'static str), Error> {
+    fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, Error> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
-                let auth_method = if let Some(client_id) = &auth_config.client_id {
+                if let Some(client_id) = &auth_config.client_id {
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
-                    AUTH_METHOD_USER_ASSIGNED
-                } else {
-                    AUTH_METHOD_SYSTEM_ASSIGNED
-                };
+                }
 
-                Ok((
-                    ManagedIdentityCredential::new(Some(options))
-                        .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?,
-                    auth_method,
-                ))
+                Ok(ManagedIdentityCredential::new(Some(options))
+                    .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
-            AuthMethod::Development => Ok((
-                DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                    .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
-                AUTH_METHOD_DEVELOPER_TOOLS,
-            )),
+            AuthMethod::Development => Ok(DeveloperToolsCredential::new(Some(
+                DeveloperToolsCredentialOptions::default(),
+            ))
+            .map_err(|e| Error::create_credential(AuthMethod::Development, e))?),
         }
     }
 }
