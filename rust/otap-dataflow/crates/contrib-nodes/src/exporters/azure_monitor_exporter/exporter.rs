@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::extension::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
@@ -18,7 +18,6 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_pdata_views::views::logs::LogsDataView;
 
-use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::error::Error;
@@ -40,12 +39,6 @@ use std::rc::Rc;
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
-/// Minimum interval between token refresh attempts (10 seconds).
-const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
-/// Buffer time before token expiry to trigger a refresh.
-/// Azure Identity SDK caches tokens internally and won't issue a new token
-/// until ~5 minutes before expiry, so we schedule refresh at 295 seconds before expiry.
-const TOKEN_EXPIRY_BUFFER_SECS: u64 = 295;
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -356,25 +349,6 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    #[inline]
-    fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
-        let now = azure_core::time::OffsetDateTime::now_utc();
-        let duration_remaining = if token.expires_on > now {
-            (token.expires_on - now).unsigned_abs()
-        } else {
-            std::time::Duration::ZERO
-        };
-
-        let token_valid_until = tokio::time::Instant::now() + duration_remaining;
-        let next_token_refresh =
-            token_valid_until - tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
-        std::cmp::max(
-            next_token_refresh,
-            tokio::time::Instant::now()
-                + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS),
-        )
-    }
-
     async fn handle_message(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
@@ -462,6 +436,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
+        extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
             "azure_monitor_exporter.start",
@@ -472,12 +447,15 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
-            let error = Error::AuthHandlerCreation(Box::new(e));
-            EngineError::InternalError {
-                message: error.to_string(),
-            }
-        })?;
+        // Look up the auth extension from the registry
+        let auth = extension_registry
+            .get::<dyn BearerTokenProvider>(&self.config.auth)
+            .map_err(|e| {
+                let error = Error::AuthHandlerCreation(Box::new(e));
+                EngineError::InternalError {
+                    message: error.to_string(),
+                }
+            })?;
 
         self.client_pool
             .initialize(&self.config.api)
@@ -489,6 +467,30 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
             })?;
 
+        // Subscribe to token refresh events from the auth extension
+        let mut token_rx = auth.subscribe_token_refresh();
+
+        // Wait for the initial token — blocks until the auth extension provides one
+        otel_info!("azure_monitor_exporter.auth.waiting_for_initial_token");
+        let _ =
+            token_rx
+                .wait_for(|t| t.is_some())
+                .await
+                .map_err(|_| EngineError::InternalError {
+                    message: "Auth extension closed before providing a token".to_string(),
+                })?;
+
+        // Set the initial token on the client pool and heartbeat
+        if let Some(token) = token_rx.borrow().as_ref() {
+            let header = HeaderValue::from_str(&format!("Bearer {}", token.token.secret()))
+                .map_err(|e| EngineError::InternalError {
+                    message: format!("Failed to create auth header: {e:?}"),
+                })?;
+            self.client_pool.update_auth(header.clone());
+            self.heartbeat.update_auth(header);
+            otel_info!("azure_monitor_exporter.auth.initial_token_set");
+        }
+
         // Start periodic telemetry collection and retain the cancel handle for graceful shutdown
         let telemetry_timer_cancel_handle = effect_handler
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
@@ -497,7 +499,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 message: format!("Failed to start telemetry timer: {e}"),
             })?;
 
-        let mut next_token_refresh = tokio::time::Instant::now();
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
@@ -509,37 +510,18 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             tokio::select! {
                 biased;
 
-                _ = tokio::time::sleep_until(next_token_refresh) => {
-                    match auth.get_token().await {
-                        Ok(access_token) => {
-                            match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
-                                Ok(header) => {
-                                    self.client_pool.update_auth(header.clone());
-                                    self.heartbeat.update_auth(header.clone());
-
-                                    // Schedule next token refresh
-                                    next_token_refresh = Self::get_next_token_refresh(access_token);
-
-                                    let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
-                                    let total_secs = refresh_in.as_secs();
-                                    let hours = total_secs / 3600;
-                                    let minutes = (total_secs % 3600) / 60;
-                                    let seconds = total_secs % 60;
-
-                                    otel_info!("azure_monitor_exporter.auth.token_refresh", refresh_in = format!("{}h {}m {}s", hours, minutes, seconds));
-                                }
-                                Err(e) => {
-                                    otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
-                                    // Retry every 10 seconds
-                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-                                }
+                // React to token refresh events from the auth extension
+                _ = token_rx.changed() => {
+                    if let Some(token) = token_rx.borrow_and_update().as_ref() {
+                        match HeaderValue::from_str(&format!("Bearer {}", token.token.secret())) {
+                            Ok(header) => {
+                                self.client_pool.update_auth(header.clone());
+                                self.heartbeat.update_auth(header);
+                                otel_info!("azure_monitor_exporter.auth.token_refreshed");
                             }
-
-                        }
-                        Err(e) => {
-                            otel_error!("azure_monitor_exporter.auth.token_refresh_failed", error = ?e);
-                            // Retry every 10 seconds
-                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                            Err(e) => {
+                                otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
+                            }
                         }
                     }
                 }
@@ -622,9 +604,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, SchemaConfig};
     use super::*;
-    use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -653,7 +634,7 @@ mod tests {
                     log_record_mapping: HashMap::new(),
                 },
             },
-            auth: AuthConfig::default(),
+            auth: "azure_identity_auth".to_string(),
         }
     }
 
@@ -662,31 +643,6 @@ mod tests {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
         let _ = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
-    }
-
-    #[test]
-    fn test_get_next_token_refresh_logic() {
-        let now = OffsetDateTime::now_utc();
-        let expires_on = now + azure_core::time::Duration::seconds(3600);
-
-        let token = AccessToken {
-            token: "secret".into(),
-            expires_on,
-        };
-
-        let refresh_at = AzureMonitorExporter::get_next_token_refresh(token);
-        let duration_until_refresh = refresh_at.duration_since(tokio::time::Instant::now());
-
-        // Should be 3600 - 295 = 3305 seconds before refresh
-        // Allow some delta for execution time
-        let expected = 3305.0;
-        let actual = duration_until_refresh.as_secs_f64();
-        assert!(
-            (actual - expected).abs() < 5.0,
-            "Expected ~{}, got {}",
-            expected,
-            actual
-        );
     }
 
     #[tokio::test]

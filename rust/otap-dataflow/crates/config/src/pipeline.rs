@@ -41,14 +41,26 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     policies: Option<Policies>,
 
-    /// All nodes in this pipeline, keyed by node ID.
+    /// All data-path nodes in this pipeline, keyed by node ID.
+    ///
+    /// This includes receivers, processors, and exporters — but NOT extensions.
+    /// Extensions are configured in the sibling `extensions` section.
     #[serde(default)]
     nodes: PipelineNodes,
+
+    /// Pipeline extensions, keyed by extension ID.
+    ///
+    /// Extensions are long-lived components that run alongside the pipeline and
+    /// expose functionality (e.g., authentication, service discovery) to other
+    /// components. Unlike nodes, extensions do NOT participate in data-path
+    /// connections.
+    #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
+    extensions: PipelineNodes,
 
     /// Explicit graph connections between nodes.
     ///
     /// When provided, these connections are used as the authoritative topology for
-    /// the main pipeline graph.
+    /// the main pipeline graph. Extensions are not part of connections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     connections: Vec<PipelineConnection>,
 }
@@ -474,15 +486,26 @@ impl PipelineConfig {
         self.policies.as_ref()
     }
 
-    /// Returns a reference to the main pipeline nodes.
+    /// Returns a reference to the main pipeline nodes (receivers, processors, exporters).
     #[must_use]
     pub const fn nodes(&self) -> &PipelineNodes {
         &self.nodes
     }
 
-    /// Returns an iterator visiting all nodes in the pipeline.
+    /// Returns a reference to the pipeline extensions.
+    #[must_use]
+    pub const fn extensions(&self) -> &PipelineNodes {
+        &self.extensions
+    }
+
+    /// Returns an iterator visiting all data-path nodes in the pipeline.
     pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.nodes.iter()
+    }
+
+    /// Returns an iterator visiting all extension nodes in the pipeline.
+    pub fn extension_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
+        self.extensions.iter()
     }
 
     /// Returns true if the pipeline graph is defined with top-level connections.
@@ -496,9 +519,14 @@ impl PipelineConfig {
         self.connections.iter()
     }
 
-    /// Creates a consuming iterator over the nodes in the pipeline.
+    /// Creates a consuming iterator over the data-path nodes in the pipeline.
     pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
+    }
+
+    /// Creates a consuming iterator over the extensions in the pipeline.
+    pub fn extension_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
+        self.extensions.into_iter()
     }
 
     /// Remove unconnected nodes from the main pipeline graph and return removed node descriptors.
@@ -526,6 +554,8 @@ impl PipelineConfig {
                         !has_incoming || !has_outgoing
                     }
                     NodeKind::Exporter => !has_incoming,
+                    // Extensions are in a separate section and never appear in `nodes`.
+                    NodeKind::Extension => false,
                 };
 
                 if should_remove {
@@ -590,17 +620,20 @@ impl PipelineConfig {
             r#type: PipelineType::Otap,
             policies,
             nodes,
+            extensions: PipelineNodes::default(),
             connections,
         }
     }
 
-    /// Normalize plugin URNs for pipeline nodes.
+    /// Normalize plugin URNs for pipeline nodes and extensions.
     fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         self.nodes
+            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
+        self.extensions
             .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)
     }
 
@@ -878,6 +911,7 @@ fn prune_connection(
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
+    extensions: HashMap<NodeId, NodeUserConfig>,
     duplicate_nodes: Vec<NodeId>,
     pending_connections: Vec<PendingConnection>,
 }
@@ -896,6 +930,7 @@ impl PipelineConfigBuilder {
         Self {
             description: None,
             nodes: HashMap::new(),
+            extensions: HashMap::new(),
             duplicate_nodes: Vec::new(),
             pending_connections: Vec::new(),
         }
@@ -964,6 +999,33 @@ impl PipelineConfigBuilder {
         config: Option<Value>,
     ) -> Self {
         self.add_node(id, node_type, config)
+    }
+
+    /// Add an extension (configured as a sibling to nodes, not as a node).
+    pub fn add_extension<S: Into<NodeId>, U: Into<NodeUrn>>(
+        mut self,
+        id: S,
+        node_type: U,
+        config: Option<Value>,
+    ) -> Self {
+        let id = id.into();
+        let node_type = node_type.into();
+        if self.extensions.contains_key(&id) || self.nodes.contains_key(&id) {
+            self.duplicate_nodes.push(id.clone());
+        } else {
+            _ = self.extensions.insert(
+                id.clone(),
+                NodeUserConfig {
+                    r#type: node_type,
+                    description: None,
+                    entity: None,
+                    outputs: Vec::new(),
+                    default_output: None,
+                    config: config.unwrap_or(Value::Null),
+                },
+            );
+        }
+        self
     }
 
     /// Connects a source node output port to one or more target nodes
@@ -1163,6 +1225,11 @@ impl PipelineConfigBuilder {
             let mut spec = PipelineConfig {
                 nodes: self
                     .nodes
+                    .into_iter()
+                    .map(|(id, node)| (id, Arc::new(node)))
+                    .collect(),
+                extensions: self
+                    .extensions
                     .into_iter()
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),

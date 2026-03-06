@@ -9,10 +9,13 @@ use crate::Unwindable;
 use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, ExtensionControlSender, NodeControlMsg, PipelineCtrlMsgReceiver,
+    PipelineCtrlMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::extension::ExtensionWrapper;
+use crate::extension::registry::ExtensionRegistry;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{NodeMetricHandles, PipelineCtrlMsgManager};
 use crate::terminal_state::TerminalState;
@@ -90,8 +93,12 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
+    /// Extension runtime nodes (PData-free).
+    extensions: Vec<ExtensionWrapper>,
+    /// Extension registry for passing to receivers and exporters at start.
+    extension_registry: ExtensionRegistry,
 
-    /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
+    /// A precomputed map of all node IDs to their node definitions for efficient access.
     /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
@@ -127,6 +134,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
+        extensions: Vec<ExtensionWrapper>,
+        extension_registry: ExtensionRegistry,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -135,6 +144,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
+            extension_registry,
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
@@ -148,7 +159,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Returns the number of nodes in the pipeline.
     #[must_use]
     pub const fn node_count(&self) -> usize {
-        self.receivers.len() + self.processors.len() + self.exporters.len()
+        self.receivers.len() + self.processors.len() + self.exporters.len() + self.extensions.len()
     }
 
     /// Returns a reference to the pipeline configuration.
@@ -177,6 +188,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             receivers,
             processors,
             exporters,
+            extensions,
+            extension_registry,
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
@@ -194,7 +207,44 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
+        let mut extension_control_senders: Vec<ExtensionControlSender> = Vec::new();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
+
+        // Spawn extension tasks first so they are ready before other components.
+        // Extensions do NOT register in control_senders (they use ExtensionControlMsg,
+        // not NodeControlMsg<PData>). They do NOT receive pipeline_ctrl_msg_tx.
+        // Instead, their control senders are tracked separately for shutdown-last.
+        for extension in extensions {
+            let mut extension = extension;
+            extension_control_senders.push(extension.extension_control_sender());
+            let telemetry_guard = extension.take_telemetry_guard();
+            let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
+            let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let effect_metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
+            let fut = async move {
+                let result = extension
+                    .start(effect_metrics_reporter)
+                    .await
+                    .map(|terminal_state| {
+                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
+                    });
+                drop(telemetry_guard);
+                result
+            };
+            if let Some(handle) = telemetry_handle {
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else if let Some(key) = node_entity_key {
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else {
+                futures.push(local_tasks.spawn_local(fut));
+            }
+        }
 
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
@@ -216,11 +266,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = exporter
                     .start(
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
+                        extension_registry,
                         node_interests,
                     )
                     .await
@@ -300,11 +352,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = receiver
                     .start(
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
+                        extension_registry,
                         node_interests,
                     )
                     .await
@@ -347,6 +401,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 pipeline_context,
                 pipeline_ctrl_msg_rx,
                 control_senders,
+                extension_control_senders,
                 event_reporter,
                 metrics_reporter,
                 telemetry_policy,
@@ -391,7 +446,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
 }
 
 impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
-    /// Gets a reference to any node by its ID as a Node trait object
+    /// Gets a reference to any node by its ID as a Node trait object.
+    ///
+    /// Returns `None` for extensions — they do not implement `Node<PData>`.
     #[must_use]
     pub fn get_node(&self, node_id: usize) -> Option<&dyn Node<PData>> {
         let ndef = self.nodes.get(node_id)?;
@@ -409,6 +466,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get(ndef.inner.index)
                 .map(|e| e as &dyn Node<PData>),
+            // Extensions are PData-free and don't implement Node<PData>.
+            NodeType::Extension => None,
         }
     }
 
@@ -430,6 +489,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .get_mut(ndef.inner.index)
                 .map(|p| p as &mut dyn NodeWithPDataSender<PData>),
             NodeType::Exporter => None,
+            NodeType::Extension => None,
         }
     }
 
@@ -451,10 +511,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get_mut(ndef.inner.index)
                 .map(|e| e as &mut dyn NodeWithPDataReceiver<PData>),
+            NodeType::Extension => None,
         }
     }
 
     /// Sends a node control message to the specified node.
+    ///
+    /// Extensions cannot receive `NodeControlMsg<PData>` — they use
+    /// `ExtensionControlMsg` instead. Attempting to send to an extension
+    /// returns an error.
     pub async fn send_node_control_message(
         &self,
         node_id: &NodeId,
@@ -482,6 +547,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         .expect("precomputed")
                         .send_control_msg(ctrl_msg)
                         .await
+                }
+                NodeType::Extension => {
+                    // Extensions use ExtensionControlMsg, not NodeControlMsg<PData>.
+                    return Err(TypedError::Error(Error::InternalError {
+                        message: format!(
+                            "cannot send NodeControlMsg to extension {:?}; use ExtensionControlMsg",
+                            node_id
+                        ),
+                    }));
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {

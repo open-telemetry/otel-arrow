@@ -38,6 +38,7 @@ use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
+use crate::extension::registry::ExtensionRegistry;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -64,6 +65,7 @@ pub trait Receiver<PData> {
         self: Box<Self>,
         ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error>;
 }
 

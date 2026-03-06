@@ -128,6 +128,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
