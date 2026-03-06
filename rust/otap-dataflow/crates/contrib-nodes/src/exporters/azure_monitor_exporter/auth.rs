@@ -6,12 +6,19 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 use super::metrics::AzureMonitorExporterMetricsRc;
+
+/// Auth method name for system-assigned managed identity.
+const AUTH_METHOD_SYSTEM_ASSIGNED: &str = "system_assigned_managed_identity";
+/// Auth method name for user-assigned managed identity.
+const AUTH_METHOD_USER_ASSIGNED: &str = "user_assigned_managed_identity";
+/// Auth method name for developer tools (Azure CLI, etc.).
+const AUTH_METHOD_DEVELOPER_TOOLS: &str = "developer_tools";
 
 /// Minimum delay between token refresh retry attempts in seconds.
 const MIN_RETRY_DELAY_SECS: f64 = 5.0;
@@ -32,14 +39,17 @@ impl Auth {
     pub fn new(
         auth_config: &AuthConfig,
         metrics: AzureMonitorExporterMetricsRc,
-    ) -> Result<Self, Error> {
-        let credential = Self::create_credential(auth_config)?;
+    ) -> Result<(Self, &'static str), Error> {
+        let (credential, auth_method) = Self::create_credential(auth_config)?;
 
-        Ok(Self {
-            credential,
-            scope: auth_config.scope.clone(),
-            metrics,
-        })
+        Ok((
+            Self {
+                credential,
+                scope: auth_config.scope.clone(),
+                metrics,
+            },
+            auth_method,
+        ))
     }
 
     #[cfg(test)]
@@ -111,34 +121,31 @@ impl Auth {
         }
     }
 
-    fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, Error> {
+    fn create_credential(
+        auth_config: &AuthConfig,
+    ) -> Result<(Arc<dyn TokenCredential>, &'static str), Error> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
-                if let Some(client_id) = &auth_config.client_id {
-                    otel_info!("azure_monitor_exporter.auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
+                let auth_method = if let Some(client_id) = &auth_config.client_id {
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
+                    AUTH_METHOD_USER_ASSIGNED
                 } else {
-                    otel_info!(
-                        "azure_monitor_exporter.auth.credential_type",
-                        method = "system_assigned_managed_identity"
-                    );
-                }
+                    AUTH_METHOD_SYSTEM_ASSIGNED
+                };
 
-                Ok(ManagedIdentityCredential::new(Some(options))
-                    .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
+                Ok((
+                    ManagedIdentityCredential::new(Some(options))
+                        .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?,
+                    auth_method,
+                ))
             }
-            AuthMethod::Development => {
-                otel_info!(
-                    "azure_monitor_exporter.auth.credential_type",
-                    method = "developer_tools"
-                );
-                Ok(
-                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
-                )
-            }
+            AuthMethod::Development => Ok((
+                DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                    .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
+                AUTH_METHOD_DEVELOPER_TOOLS,
+            )),
         }
     }
 }

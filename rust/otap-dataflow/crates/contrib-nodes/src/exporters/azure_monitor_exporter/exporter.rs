@@ -463,21 +463,23 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let mut msg_id = 0;
+
+        let (mut auth, auth_method) =
+            Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
+                let error = Error::AuthHandlerCreation(Box::new(e));
+                EngineError::InternalError {
+                    message: error.to_string(),
+                }
+            })?;
+
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
-            dcr = self.config.api.dcr.as_str()
+            dcr = self.config.api.dcr.as_str(),
+            auth_method = auth_method
         );
-
-        let mut msg_id = 0;
-
-        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
-            let error = Error::AuthHandlerCreation(Box::new(e));
-            EngineError::InternalError {
-                message: error.to_string(),
-            }
-        })?;
 
         self.client_pool
             .initialize(&self.config.api)
