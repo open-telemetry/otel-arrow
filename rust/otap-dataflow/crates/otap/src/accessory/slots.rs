@@ -57,6 +57,12 @@ impl<UData> State<UData> {
         }
     }
 
+    /// Returns true when no more slots can be allocated.
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.slots.len() >= self.max_size
+    }
+
     /// Allocate a slot for a new request.  The closure is called only
     /// if a slot is available, creating the user data. This also
     /// returns additional user data (e.g., the receiver end of a
