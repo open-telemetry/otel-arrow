@@ -2893,14 +2893,12 @@ mod tests {
         // channel backpressure propagate naturally to the upstream receiver.
         // All sent messages must reach the exporter -- zero silent drops.
         assert_eq!(
-            nacked,
-            0,
+            nacked, 0,
             "BUG: {nacked} message(s) were nacked and silently lost -- \
              fanout should apply backpressure instead of nacking"
         );
         assert_eq!(
-            delivered,
-            TOTAL_SENT,
+            delivered, TOTAL_SENT,
             "all {TOTAL_SENT} messages must reach the exporter, got {delivered}"
         );
     }
