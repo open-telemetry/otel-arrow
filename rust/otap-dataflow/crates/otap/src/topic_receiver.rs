@@ -151,7 +151,8 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     ),
                 })?;
             let ack_propagation = topic.default_ack_propagation();
-            let metrics = pipeline.register_metrics::<TopicReceiverMetrics>();
+            let metrics =
+                pipeline.register_metrics_with_topic::<TopicReceiverMetrics>(topic.name().into());
             Ok(ReceiverWrapper::local(
                 TopicReceiver {
                     config,
@@ -225,7 +226,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(NodeControlMsg::Ack(ack)) => {
                                 if ack_propagation == TopicAckPropagationPolicy::Auto {
-                                    if let Some(message_id) = Self::decode_topic_message_id(&ack.calldata) {
+                                    if let Some(message_id) = Self::decode_topic_message_id(&ack.unwind.route.calldata) {
                                         match subscription.ack(message_id) {
                                             Ok(()) => metrics.bridged_downstream_acks.add(1),
                                             Err(e) => {
@@ -252,7 +253,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
                                 if ack_propagation == TopicAckPropagationPolicy::Auto {
-                                    if let Some(message_id) = Self::decode_topic_message_id(&nack.calldata) {
+                                    if let Some(message_id) = Self::decode_topic_message_id(&nack.unwind.route.calldata) {
                                         match subscription.nack(message_id, nack.reason.as_str()) {
                                             Ok(()) => metrics.bridged_downstream_nacks.add(1),
                                             Err(e) => {
@@ -359,8 +360,8 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN, TopicReceiver, TopicSubscriptionConfig};
-    use crate::pdata::{Context, OtapPdata};
-    use crate::testing::create_test_pdata;
+    use crate::pdata::OtapPdata;
+    use crate::testing::{create_test_pdata, next_ack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::topic::TopicAckPropagationPolicy;
     use otap_df_engine::config::ReceiverConfig;
@@ -481,7 +482,13 @@ mod tests {
             let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
-                receiver.start(pipeline_ctrl_tx, metrics_reporter).await
+                receiver
+                    .start(
+                        pipeline_ctrl_tx,
+                        metrics_reporter,
+                        otap_df_engine::Interests::empty(),
+                    )
+                    .await
             });
 
             let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(8);
@@ -496,7 +503,7 @@ mod tests {
                 .expect("timed out waiting for receiver output")
                 .expect("receiver output channel should stay open");
 
-            let (_node_id, ack_for_receiver) = Context::next_ack(AckMsg::new(forwarded))
+            let (_node_id, ack_for_receiver) = next_ack(AckMsg::new(forwarded))
                 .expect("receiver should attach ack calldata for topic bridge");
             receiver_ctrl
                 .send(NodeControlMsg::Ack(ack_for_receiver))

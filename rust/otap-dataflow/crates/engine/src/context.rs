@@ -5,7 +5,8 @@
 
 use crate::attributes::{
     ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    NodeWithCustomAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
+    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
+    PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::node::NodeId as EngineNodeId;
@@ -345,6 +346,43 @@ impl PipelineContext {
                 );
             }
         }
+    }
+
+    /// Registers a metric set for the current node entity extended with a topic attribute.
+    ///
+    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
+    #[must_use]
+    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> MetricSet<T> {
+        let entity_key = if self.node_telemetry_attrs.is_empty() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithTopicAttributeSet {
+                    node_attrs: self.node_attribute_set(),
+                    topic,
+                })
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithCustomTopicAttributeSet {
+                    node_custom_attrs: self.node_with_custom_attribute_set(),
+                    topic,
+                })
+        };
+
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key);
+
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+            telemetry.track_entity(entity_key);
+        }
+
+        metrics
     }
 
     /// Registers the pipeline entity for this context.

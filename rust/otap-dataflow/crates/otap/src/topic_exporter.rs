@@ -111,7 +111,8 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
                 .clone()
                 .unwrap_or_else(|| topic.default_queue_on_full());
             let ack_propagation = topic.default_ack_propagation();
-            let metrics = pipeline.register_metrics::<TopicExporterMetrics>();
+            let metrics =
+                pipeline.register_metrics_with_topic::<TopicExporterMetrics>(topic.name().into());
             Ok(ExporterWrapper::local(
                 TopicExporter {
                     topic,
@@ -338,7 +339,7 @@ impl Exporter<OtapPdata> for TopicExporter {
 mod tests {
     use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
     use crate::pdata::OtapPdata;
-    use crate::testing::{TestCallData, create_test_pdata};
+    use crate::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::topic::{TopicAckPropagationPolicy, TopicQueueOnFullPolicy};
     use otap_df_engine::Interests;
@@ -447,7 +448,9 @@ mod tests {
                 pipeline_ctrl_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let exporter_task = tokio::task::spawn_local(async move {
-                exporter.start(pipeline_ctrl_tx, metrics_reporter).await
+                exporter
+                    .start(pipeline_ctrl_tx, metrics_reporter, Interests::empty())
+                    .await
             });
 
             let mut subscriber = base_handle
@@ -494,10 +497,16 @@ mod tests {
             .await
             .expect("timed out waiting for upstream ack control");
             match delivered {
-                PipelineControlMsg::DeliverAck { node_id, ack } => {
+                PipelineControlMsg::DeliverAck { ack } => {
+                    let (node_id, ack) =
+                        next_ack(ack).expect("ack should route to exporter subscriber");
                     assert_eq!(node_id, 4242);
-                    let got: TestCallData =
-                        ack.calldata.try_into().expect("ack calldata should parse");
+                    let got: TestCallData = ack
+                        .unwind
+                        .route
+                        .calldata
+                        .try_into()
+                        .expect("ack calldata should parse");
                     assert_eq!(got, upstream_calldata);
                 }
                 other => panic!("expected DeliverAck, got: {other:?}"),
