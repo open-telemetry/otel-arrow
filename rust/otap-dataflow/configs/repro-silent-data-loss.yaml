@@ -1,0 +1,51 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+    repro:
+        pipelines:
+            main:
+                policies:
+                    channel_capacity:
+                        control:
+                            node: 100
+                            pipeline: 100
+                        # Must be > max_inflight so the channel doesn't throttle
+                        # before the inflight limit is hit.
+                        pdata: 200
+                    resources:
+                        core_allocation:
+                            type: core_count
+                            count: 2
+                nodes:
+                    traffic-gen:
+                        type: urn:otel:receiver:traffic_generator
+                        config:
+                            data_source: static
+                            traffic_config:
+                                signals_per_second: null
+                                max_batch_size: 100
+                                log_weight: 100
+                                metric_weight: 0
+                                trace_weight: 0
+                    fanout:
+                        type: urn:otel:processor:fanout
+                        outputs:
+                            - slow-exporter
+                        config:
+                            await_ack: all
+                            destinations:
+                                - port: slow-exporter
+                                  timeout: 30s
+                            # BUG: this causes silent data loss under load.
+                            # Changing to 0 will backpressure the traffic-gen and prevent drops.
+                            max_inflight: 100
+                            mode: parallel
+                    slow-exporter:
+                        type: urn:otel:exporter:noop
+                        config:
+                            delay: 500ms
+                connections:
+                    - from: [traffic-gen]
+                      to: [fanout]
+                    - from: ['fanout["slow-exporter"]']
+                      to: [slow-exporter]
