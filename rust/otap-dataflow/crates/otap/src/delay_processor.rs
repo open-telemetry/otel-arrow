@@ -17,8 +17,8 @@
 //!
 //! The `delay` field uses humantime format (e.g., "100ms", "1s", "2s500ms").
 
-use crate::pdata::OtapPdata;
 use crate::OTAP_PROCESSOR_FACTORIES;
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -64,12 +64,11 @@ pub fn create_delay_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let config: DelayConfig =
-        serde_json::from_value(node_config.config.clone()).map_err(|e| {
-            ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse delay processor configuration: {e}"),
-            }
-        })?;
+    let config: DelayConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
+        ConfigError::InvalidUserConfig {
+            error: format!("Failed to parse delay processor configuration: {e}"),
+        }
+    })?;
 
     Ok(ProcessorWrapper::local(
         DelayProcessor {
@@ -153,13 +152,8 @@ mod tests {
         let mut node_config = NodeUserConfig::new_processor_config(DELAY_PROCESSOR_URN);
         node_config.config = json!({ "delay": "1ms" });
 
-        let proc = create_delay_processor(
-            pipeline_ctx,
-            node,
-            Arc::new(node_config),
-            rt.config(),
-        )
-        .expect("create processor");
+        let proc = create_delay_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+            .expect("create processor");
 
         let phase = rt.set_processor(proc);
 
