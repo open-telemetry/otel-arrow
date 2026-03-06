@@ -1,4 +1,9 @@
 version: otel_dataflow/v1
+
+policies:
+  telemetry:
+    channel_metrics: detailed
+
 engine:
   telemetry:
     logs:

@@ -13,6 +13,7 @@
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
+use std::time::Instant;
 
 /// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
@@ -530,6 +531,46 @@ impl Mmsc {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Times a synchronous closure, recording the elapsed wall-clock
+    /// duration in nanoseconds as an observation.
+    #[inline]
+    pub fn timed<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let timer = Timer::start();
+        let result = f();
+        self.record_timer(timer);
+        result
+    }
+
+    /// Consume a [`Timer`], recording its elapsed wall-clock duration
+    /// in nanoseconds as an observation.
+    #[inline]
+    pub fn record_timer(&mut self, timer: Timer) {
+        self.record(timer.start.elapsed().as_nanos() as f64);
+    }
+}
+
+/// A lightweight wall-clock timer.
+///
+/// Call [`Timer::start`] to capture the current instant, then pass
+/// the timer to [`Mmsc::record_timer`] to record the elapsed
+/// duration.
+#[must_use]
+pub struct Timer {
+    start: Instant,
+}
+
+impl Timer {
+    /// Capture the current instant.
+    #[inline]
+    pub fn start() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
 }
 
 /// An immutable snapshot of MMSC (min, max, sum, count) values.
@@ -653,5 +694,18 @@ mod tests {
         assert_eq!(snap.max, -1.0);
         assert_eq!(snap.sum, -16.0);
         assert_eq!(snap.count, 3);
+    }
+
+    #[test]
+    fn test_mmsc_timed() {
+        let mut mmsc = Mmsc::default();
+        let result = mmsc.timed(|| {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            42
+        });
+        assert_eq!(result, 42);
+        let snap = mmsc.get();
+        assert_eq!(snap.count, 1);
+        assert!(snap.min > 0.0, "timed duration should be positive");
     }
 }
