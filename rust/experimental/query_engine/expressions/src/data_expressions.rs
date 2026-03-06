@@ -17,7 +17,7 @@ pub enum DataExpression {
     /// Conditional data expression.
     Conditional(ConditionalDataExpression),
 
-    /// Output data expression
+    /// Output data expression.
     Output(OutputDataExpression),
 }
 
@@ -358,7 +358,6 @@ pub enum OutputExpression {
     /// this to contain the more general `StaticExpression`.
     NamedSink(StringScalarExpression),
 }
-
 #[cfg(test)]
 mod test {
     use super::*;

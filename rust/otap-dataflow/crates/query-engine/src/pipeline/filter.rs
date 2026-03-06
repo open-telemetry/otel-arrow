@@ -532,9 +532,9 @@ impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
             ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
                 lit(regex.get_value().as_str().to_string())
             }
-            _ => {
+            other => {
                 return Err(Error::InvalidPipelineError {
-                    cause: "expected pattern to be a static regex".into(),
+                    cause: format!("expected pattern to be a static regex, got {other:?}"),
                     query_location: Some(matches_expr.get_query_location().clone()),
                 });
             }
@@ -1526,6 +1526,41 @@ impl PipelineStage for FilterPipelineStage {
         let otap_batch = filter_otap_batch(&selection_vec, otap_batch)?;
 
         Ok(otap_batch)
+    }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        let planning_error = || {
+            // we shouldn't end up here, unless there was a bug in the planner and it didn't call
+            // the correct optimizers on the FilterPlan to turn it into something that can operate
+            // directly on the attrs record batch
+            Error::InvalidPipelineError {
+                cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                query_location: None,
+            }
+        };
+
+        match &mut self.filter_exec {
+            Composite::Base(filter) => {
+                let predicate = filter.predicate.as_mut().ok_or_else(planning_error)?;
+                let selection_vec =
+                    predicate.evaluate_filter(&attrs_record_batch, session_context)?;
+                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
+
+                Ok(new_batch)
+            }
+            _ => Err(planning_error()),
+        }
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
     }
 }
 

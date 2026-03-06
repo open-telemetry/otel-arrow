@@ -89,15 +89,33 @@ impl PipelineExpression {
     }
 
     pub(crate) fn optimize(&mut self) -> Result<(), Vec<ExpressionError>> {
+        let mut errors = Vec::new();
+        {
+            let scope = PipelineResolutionScope {
+                constants: &self.constants,
+                functions: &self.functions,
+            };
+
+            for e in &mut self.expressions {
+                if let Err(e) = e.try_fold(&scope) {
+                    errors.push(e);
+                }
+            }
+        }
+
         let scope = PipelineResolutionScope {
             constants: &self.constants,
-            functions: &self.functions,
+            functions: &Vec::new(), // TODO not sure if this is right ...
         };
-
-        let mut errors = Vec::new();
-        for e in &mut self.expressions {
-            if let Err(e) = e.try_fold(&scope) {
-                errors.push(e);
+        for func in &mut self.functions {
+            if let PipelineFunctionImplementation::Expressions(func_exprs) =
+                &mut func.implementation
+            {
+                for e in func_exprs {
+                    if let Err(e) = e.try_fold(&scope) {
+                        errors.push(e);
+                    }
+                }
             }
         }
         Ok(())
@@ -319,8 +337,22 @@ impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineFunctionExpression {
+    Discard(DiscardDataExpression),
     Transform(TransformExpression),
     Return(ScalarExpression),
+}
+
+impl PipelineFunctionExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            Self::Discard(d) => d.try_fold(scope),
+            Self::Transform(t) => t.try_fold(scope),
+            Self::Return(_r) => Ok(()), // no need to fold return
+        }
+    }
 }
 
 impl PipelineFunctionExpression {
@@ -330,6 +362,10 @@ impl PipelineFunctionExpression {
         indent: &str,
     ) -> std::fmt::Result {
         match self {
+            PipelineFunctionExpression::Discard(d) => {
+                write!(f, "Discard: ")?;
+                d.fmt_with_indent(f, format!("{indent}           ").as_str())
+            }
             PipelineFunctionExpression::Transform(t) => {
                 write!(f, "Transform: ")?;
                 t.fmt_with_indent(f, format!("{indent}           ").as_str())
