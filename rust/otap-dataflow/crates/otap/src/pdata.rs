@@ -128,6 +128,14 @@ impl Context {
         self.stack.iter().any(|f| !f.interests.is_empty())
     }
 
+    /// Are there any subscribers interested in ACK or NACK notifications?
+    #[must_use]
+    pub fn has_ack_or_nack_subscribers(&self) -> bool {
+        self.stack
+            .iter()
+            .any(|f| (f.interests & Interests::ACKS_OR_NACKS) != Interests::empty())
+    }
+
     /// Set the source node for this context.
     pub fn set_source_node(&mut self, node_id: usize) {
         let mut interests = Interests::empty();
@@ -320,6 +328,12 @@ impl OtapPdata {
     #[must_use]
     pub fn get_source_node(&self) -> Option<usize> {
         self.context.source_node()
+    }
+
+    /// Returns `true` when this message has at least one upstream Ack/Nack interest.
+    #[must_use]
+    pub fn has_ack_or_nack_interests(&self) -> bool {
+        self.context.has_ack_or_nack_subscribers()
     }
 }
 

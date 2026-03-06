@@ -16,12 +16,15 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::CallData;
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
+use otap_df_engine::{
+    Interests, ProducerEffectHandlerExtension, ReceiverFactory, control::NodeControlMsg,
+};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
@@ -256,6 +259,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
         let max_batch_size = traffic_config.get_max_batch_size();
+        let enable_ack_nack = self.config.enable_ack_nack();
         let rate_limit_status = match signals_per_second {
             Some(rate) => format!("{} signals/sec", rate),
             None => "uncapped".to_string(),
@@ -342,6 +346,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     log_count,
                     &signal_generator,
                     &batch_cache,
+                    enable_ack_nack,
                 ), if max_signal_count.is_none_or(|max| max > signal_count) => {
                     // if signals per second is set then we should rate limit
                     match signal_status {
@@ -397,6 +402,7 @@ async fn send_signals(
     log_count: usize,
     generator: &SignalGenerator,
     batch_cache: &Option<BatchCache>,
+    enable_ack_nack: bool,
 ) -> Result<(), Error> {
     match batch_cache {
         Some(cache) => {
@@ -408,6 +414,7 @@ async fn send_signals(
                 trace_count,
                 log_count,
                 cache,
+                enable_ack_nack,
             )
             .await
         }
@@ -421,10 +428,28 @@ async fn send_signals(
                 trace_count,
                 log_count,
                 generator,
+                enable_ack_nack,
             )
             .await
         }
     }
+}
+
+/// Send one generated pdata message, optionally subscribing to Ack/Nack interests.
+async fn send_generated_pdata(
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    mut pdata: OtapPdata,
+    enable_ack_nack: bool,
+) -> Result<(), Error> {
+    if enable_ack_nack {
+        effect_handler.subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            CallData::default(),
+            &mut pdata,
+        );
+    }
+    effect_handler.send_message_with_source_node(pdata).await?;
+    Ok(())
 }
 
 /// Send signals from pre-generated cache (PreGenerated strategy).
@@ -437,6 +462,7 @@ async fn send_cached_signals(
     trace_count: usize,
     log_count: usize,
     cache: &BatchCache,
+    enable_ack_nack: bool,
 ) -> Result<(), Error> {
     let total_per_iteration = (metric_count + trace_count + log_count) as u64;
 
@@ -452,9 +478,7 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.metrics {
             let send_count = metric_count / cache.metrics_batch_size;
             for _ in 0..send_count {
-                effect_handler
-                    .send_message_with_source_node(batch.clone())
-                    .await?;
+                send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
             }
         }
     }
@@ -464,9 +488,7 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.traces {
             let send_count = trace_count / cache.traces_batch_size;
             for _ in 0..send_count {
-                effect_handler
-                    .send_message_with_source_node(batch.clone())
-                    .await?;
+                send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
             }
         }
     }
@@ -476,9 +498,7 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.logs {
             let send_count = log_count / cache.logs_batch_size;
             for _ in 0..send_count {
-                effect_handler
-                    .send_message_with_source_node(batch.clone())
-                    .await?;
+                send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
             }
         }
     }
@@ -497,6 +517,7 @@ async fn generate_signal_fresh(
     trace_count: usize,
     log_count: usize,
     generator: &SignalGenerator,
+    enable_ack_nack: bool,
 ) -> Result<(), Error> {
     // nothing to send
     if max_batch_size == 0 {
@@ -520,11 +541,12 @@ async fn generate_signal_fresh(
 
         for _ in 0..metric_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_metrics(max_batch_size).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_metrics(max_batch_size).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
                 current_count += max_batch_size as u64;
             } else {
                 // generate last remaining signals
@@ -537,11 +559,12 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_metrics(remaining_count).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_metrics(remaining_count).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
 
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -550,24 +573,26 @@ async fn generate_signal_fresh(
         }
         if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
         {
-            effect_handler
-                .send_message_with_source_node(
-                    generator
-                        .generate_metrics(metric_count_remainder)
-                        .try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator
+                    .generate_metrics(metric_count_remainder)
+                    .try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
             current_count += metric_count_remainder as u64;
         }
 
         // generate and send traces
         for _ in 0..trace_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_traces(max_batch_size).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_traces(max_batch_size).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -579,35 +604,38 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_traces(remaining_count).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_traces(remaining_count).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
             }
         }
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
-            effect_handler
-                .send_message_with_source_node(
-                    generator
-                        .generate_traces(trace_count_remainder)
-                        .try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator
+                    .generate_traces(trace_count_remainder)
+                    .try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
             current_count += trace_count_remainder as u64;
         }
 
         // generate and send logs
         for _ in 0..log_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_logs(max_batch_size).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_logs(max_batch_size).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -619,22 +647,24 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                effect_handler
-                    .send_message_with_source_node(
-                        generator.generate_logs(remaining_count).try_into()?,
-                    )
-                    .await?;
+                send_generated_pdata(
+                    &effect_handler,
+                    generator.generate_logs(remaining_count).try_into()?,
+                    enable_ack_nack,
+                )
+                .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
             }
         }
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
-            effect_handler
-                .send_message_with_source_node(
-                    generator.generate_logs(log_count_remainder).try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator.generate_logs(log_count_remainder).try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
             current_count += log_count_remainder as u64;
         }
 
@@ -642,52 +672,60 @@ async fn generate_signal_fresh(
     } else {
         // generate and send metric
         for _ in 0..metric_count_split {
-            effect_handler
-                .send_message_with_source_node(
-                    generator.generate_metrics(max_batch_size).try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator.generate_metrics(max_batch_size).try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
         if metric_count_remainder > 0 {
-            effect_handler
-                .send_message_with_source_node(
-                    generator
-                        .generate_metrics(metric_count_remainder)
-                        .try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator
+                    .generate_metrics(metric_count_remainder)
+                    .try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
 
         // generate and send traces
         for _ in 0..trace_count_split {
-            effect_handler
-                .send_message_with_source_node(
-                    generator.generate_traces(max_batch_size).try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator.generate_traces(max_batch_size).try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
         if trace_count_remainder > 0 {
-            effect_handler
-                .send_message_with_source_node(
-                    generator
-                        .generate_traces(trace_count_remainder)
-                        .try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator
+                    .generate_traces(trace_count_remainder)
+                    .try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
 
         // generate and send logs
         for _ in 0..log_count_split {
-            effect_handler
-                .send_message_with_source_node(generator.generate_logs(max_batch_size).try_into()?)
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator.generate_logs(max_batch_size).try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
         if log_count_remainder > 0 {
-            effect_handler
-                .send_message_with_source_node(
-                    generator.generate_logs(log_count_remainder).try_into()?,
-                )
-                .await?;
+            send_generated_pdata(
+                &effect_handler,
+                generator.generate_logs(log_count_remainder).try_into()?,
+                enable_ack_nack,
+            )
+            .await?;
         }
     }
 

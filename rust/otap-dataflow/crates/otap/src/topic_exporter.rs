@@ -10,7 +10,7 @@ use linkme::distributed_slice;
 use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::topic::TopicQueueOnFullPolicy;
+use otap_df_config::topic::{TopicAckPropagationPolicy, TopicQueueOnFullPolicy};
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -20,16 +20,18 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topic::{PublishOutcome, TopicHandle};
+use otap_df_engine::topic::{AckStatus, PublishOutcome, TopicHandle};
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 /// URN for the topic exporter.
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
@@ -44,6 +46,18 @@ pub struct TopicExporterMetrics {
     /// Number of messages dropped due to queue full policy.
     #[metric(unit = "{item}")]
     pub dropped_messages_on_full: Counter<u64>,
+    /// Number of end-to-end acks bridged back to upstream.
+    #[metric(unit = "{item}")]
+    pub end_to_end_acks: Counter<u64>,
+    /// Number of end-to-end nacks bridged back to upstream.
+    #[metric(unit = "{item}")]
+    pub end_to_end_nacks: Counter<u64>,
+    /// Number of ack events that could not be matched to pending messages.
+    #[metric(unit = "{event}")]
+    pub orphaned_ack_events: Counter<u64>,
+    /// Number of pending end-to-end messages nacked during shutdown.
+    #[metric(unit = "{item}")]
+    pub shutdown_nacks: Counter<u64>,
 }
 
 /// Topic exporter configuration.
@@ -62,6 +76,7 @@ pub struct TopicExporterConfig {
 pub struct TopicExporter {
     topic: TopicHandle<OtapPdata>,
     queue_on_full: TopicQueueOnFullPolicy,
+    ack_propagation: TopicAckPropagationPolicy,
     metrics: MetricSet<TopicExporterMetrics>,
 }
 
@@ -95,11 +110,13 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
                 .queue_on_full
                 .clone()
                 .unwrap_or_else(|| topic.default_queue_on_full());
+            let ack_propagation = topic.default_ack_propagation();
             let metrics = pipeline.register_metrics::<TopicExporterMetrics>();
             Ok(ExporterWrapper::local(
                 TopicExporter {
                     topic,
                     queue_on_full,
+                    ack_propagation,
                     metrics,
                 },
                 node,
@@ -128,16 +145,29 @@ impl Exporter<OtapPdata> for TopicExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let TopicExporter {
-            topic,
+            mut topic,
             queue_on_full,
+            ack_propagation,
             mut metrics,
         } = *self;
+
+        let mut ack_events_rx: Option<mpsc::Receiver<otap_df_engine::topic::AckEvent>> = None;
+        if ack_propagation == TopicAckPropagationPolicy::Auto {
+            // Capacity limits in-flight end-to-end tracked messages per exporter core.
+            let (ack_tx, ack_rx) = mpsc::channel(1024);
+            topic = topic.with_ack_sender(ack_tx);
+            ack_events_rx = Some(ack_rx);
+        }
+
+        let mut pending_messages: HashMap<u64, OtapPdata> = HashMap::new();
+
         let exporter_id = effect_handler.exporter_id();
         otel_info!(
             "topic_exporter.start",
             node = exporter_id.name.as_ref(),
             topic = topic.name().as_ref(),
             queue_on_full = format!("{queue_on_full:?}"),
+            ack_propagation = format!("{ack_propagation:?}"),
             message = "Topic exporter started"
         );
         let telemetry_cancel_handle = effect_handler
@@ -146,50 +176,152 @@ impl Exporter<OtapPdata> for TopicExporter {
 
         let run_result: Result<(), Error> = async {
             loop {
-                match msg_chan.recv().await? {
-                    Message::Control(NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    }) => {
-                        _ = metrics_reporter.report(&mut metrics);
-                    }
-                    Message::Control(NodeControlMsg::Shutdown { .. }) => break,
-                    Message::PData(data) => {
-                        // Topic hop is a transport boundary: do not propagate in-process
-                        // Ack/Nack routing state (node ids/call data) across pipelines.
-                        let published = Arc::new(data.clone_without_context());
-                        let publish_result = match queue_on_full {
-                            TopicQueueOnFullPolicy::Block => {
-                                topic.publish(published).await?;
-                                Ok(PublishOutcome::Published)
-                            }
-                            TopicQueueOnFullPolicy::DropNewest => topic.try_publish(published),
-                        };
+                tokio::select! {
+                    biased;
 
-                        match publish_result? {
-                            PublishOutcome::Published => {
-                                metrics.published_messages.add(1);
-                                effect_handler.notify_ack(AckMsg::new(data)).await?;
+                    maybe_event = async {
+                        match &mut ack_events_rx {
+                            Some(rx) => rx.recv().await,
+                            None => None,
+                        }
+                    }, if ack_events_rx.is_some() => {
+                        if let Some(event) = maybe_event {
+                            if let Some(data) = pending_messages.remove(&event.message_id) {
+                                match event.status {
+                                    AckStatus::Ack => {
+                                        metrics.end_to_end_acks.add(1);
+                                        effect_handler.notify_ack(AckMsg::new(data)).await?;
+                                    }
+                                    AckStatus::Nack => {
+                                        metrics.end_to_end_nacks.add(1);
+                                        let reason = event
+                                            .reason
+                                            .as_deref()
+                                            .unwrap_or("topic consumer nacked message");
+                                        effect_handler.notify_nack(NackMsg::new(reason, data)).await?;
+                                    }
+                                }
+                            } else {
+                                metrics.orphaned_ack_events.add(1);
                             }
-                            PublishOutcome::DroppedOnFull => {
-                                metrics.dropped_messages_on_full.add(1);
-                                let exporter_id = effect_handler.exporter_id();
-                                otel_warn!(
-                                    "topic_exporter.drop_newest",
+                        } else {
+                            // Sender side disappeared unexpectedly. Disable end-to-end mode for
+                            // new messages and nack any pending ones so upstream callers are unblocked.
+                            ack_events_rx = None;
+                            if !pending_messages.is_empty() {
+                                otel_error!(
+                                    "topic_exporter.ack_channel_closed",
                                     node = exporter_id.name.as_ref(),
                                     topic = topic.name().as_ref(),
-                                    message = "Dropping message because topic queue is full"
+                                    pending = pending_messages.len() as u64,
+                                    message = "Topic exporter ack channel closed unexpectedly"
                                 );
-                                effect_handler
-                                    .notify_nack(NackMsg::new(
-                                        "topic queue full: dropped newest",
-                                        data,
-                                    ))
-                                    .await?;
+                                for (_, data) in pending_messages.drain() {
+                                    metrics.shutdown_nacks.add(1);
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(
+                                            "topic ack channel closed",
+                                            data,
+                                        ))
+                                        .await?;
+                                }
                             }
                         }
-                        tokio::task::consume_budget().await;
                     }
-                    _ => {}
+
+                    msg = msg_chan.recv() => match msg? {
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            mut metrics_reporter,
+                        }) => {
+                            _ = metrics_reporter.report(&mut metrics);
+                        }
+                        Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                            if !pending_messages.is_empty() {
+                                for (_, data) in pending_messages.drain() {
+                                    metrics.shutdown_nacks.add(1);
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(
+                                            "topic exporter shutdown before downstream ack",
+                                            data,
+                                        ))
+                                        .await?;
+                                }
+                            }
+                            break;
+                        }
+                        Message::PData(data) => {
+                            // Topic hop is a transport boundary: do not propagate in-process
+                            // Ack/Nack routing state (node ids/call data) across pipelines.
+                            let published = Arc::new(data.clone_without_context());
+                            let should_track_end_to_end = ack_propagation == TopicAckPropagationPolicy::Auto
+                                && ack_events_rx.is_some()
+                                && data.has_ack_or_nack_interests();
+
+                            if should_track_end_to_end {
+                                let publish_result = match queue_on_full {
+                                    TopicQueueOnFullPolicy::Block => topic
+                                        .publish_with_id(published)
+                                        .await
+                                        .map(|id| (PublishOutcome::Published, id)),
+                                    TopicQueueOnFullPolicy::DropNewest => topic.try_publish_with_id(published),
+                                };
+
+                                match publish_result? {
+                                    (PublishOutcome::Published, message_id) => {
+                                        metrics.published_messages.add(1);
+                                        _ = pending_messages.insert(message_id, data);
+                                    }
+                                    (PublishOutcome::DroppedOnFull, _) => {
+                                        metrics.dropped_messages_on_full.add(1);
+                                        otel_warn!(
+                                            "topic_exporter.drop_newest",
+                                            node = exporter_id.name.as_ref(),
+                                            topic = topic.name().as_ref(),
+                                            message = "Dropping message because topic queue is full"
+                                        );
+                                        effect_handler
+                                            .notify_nack(NackMsg::new(
+                                                "topic queue full: dropped newest",
+                                                data,
+                                            ))
+                                            .await?;
+                                    }
+                                }
+                            } else {
+                                let publish_result = match queue_on_full {
+                                    TopicQueueOnFullPolicy::Block => {
+                                        topic.publish(published).await?;
+                                        Ok(PublishOutcome::Published)
+                                    }
+                                    TopicQueueOnFullPolicy::DropNewest => topic.try_publish(published),
+                                };
+
+                                match publish_result? {
+                                    PublishOutcome::Published => {
+                                        metrics.published_messages.add(1);
+                                        effect_handler.notify_ack(AckMsg::new(data)).await?;
+                                    }
+                                    PublishOutcome::DroppedOnFull => {
+                                        metrics.dropped_messages_on_full.add(1);
+                                        otel_warn!(
+                                            "topic_exporter.drop_newest",
+                                            node = exporter_id.name.as_ref(),
+                                            topic = topic.name().as_ref(),
+                                            message = "Dropping message because topic queue is full"
+                                        );
+                                        effect_handler
+                                            .notify_nack(NackMsg::new(
+                                                "topic queue full: dropped newest",
+                                                data,
+                                            ))
+                                            .await?;
+                                    }
+                                }
+                            }
+                            tokio::task::consume_budget().await;
+                        }
+                        _ => {}
+                    }
                 }
             }
             Ok(())
@@ -204,9 +336,28 @@ impl Exporter<OtapPdata> for TopicExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::TopicExporter;
-    use otap_df_config::topic::TopicQueueOnFullPolicy;
+    use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
+    use crate::pdata::OtapPdata;
+    use crate::testing::{TestCallData, create_test_pdata};
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::topic::{TopicAckPropagationPolicy, TopicQueueOnFullPolicy};
+    use otap_df_engine::Interests;
+    use otap_df_engine::config::ExporterConfig;
+    use otap_df_engine::control::{
+        Controllable, NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+    };
+    use otap_df_engine::local::message::LocalReceiver;
+    use otap_df_engine::message::Receiver as PDataReceiver;
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::exporter::create_test_pipeline_context;
+    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+    use otap_df_engine::topic::{
+        SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions, TopicSet,
+    };
+    use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn parse_config_accepts_minimal_topic() {
@@ -241,5 +392,126 @@ mod tests {
         let err = TopicExporter::parse_config(&json!({"topic": "   "}))
             .expect_err("empty topic should fail");
         assert!(err.to_string().contains("topic name must be non-empty"));
+    }
+
+    #[test]
+    fn bridges_topic_ack_event_back_to_upstream_when_enabled() {
+        let (rt, local_tasks) = setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async move {
+            let broker = TopicBroker::<OtapPdata>::new();
+            let topic_name =
+                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let base_handle = broker
+                .create_in_memory_topic(
+                    topic_name.clone(),
+                    TopicOptions::Mixed {
+                        balanced_capacity: 16,
+                        broadcast_capacity: 16,
+                    },
+                )
+                .expect("topic should be created");
+            let exporter_handle =
+                base_handle.with_default_ack_propagation(TopicAckPropagationPolicy::Auto);
+
+            let topic_set = TopicSet::new("exporter-set");
+            _ = topic_set.insert(topic_name.clone(), exporter_handle);
+
+            let mut exporter_ctx = create_test_pipeline_context();
+            exporter_ctx.set_topic_set(topic_set);
+
+            let exporter_node = test_node("topic_exporter");
+            let mut exporter_user_cfg = NodeUserConfig::new_exporter_config(TOPIC_EXPORTER_URN);
+            exporter_user_cfg.config = json!({
+                "topic": "ingress",
+                "queue_on_full": "block"
+            });
+
+            let mut exporter = (TOPIC_EXPORTER.create)(
+                exporter_ctx,
+                exporter_node.clone(),
+                Arc::new(exporter_user_cfg),
+                &ExporterConfig::new("topic_exporter"),
+            )
+            .expect("topic exporter should be created");
+
+            let (exporter_input_tx, exporter_input_rx) = create_not_send_channel::<OtapPdata>(8);
+            exporter
+                .set_pdata_receiver(
+                    exporter_node.clone(),
+                    PDataReceiver::Local(LocalReceiver::mpsc(exporter_input_rx)),
+                )
+                .expect("exporter input channel should be wired");
+
+            let exporter_ctrl = exporter.control_sender();
+            let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) =
+                pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            let exporter_task = tokio::task::spawn_local(async move {
+                exporter.start(pipeline_ctrl_tx, metrics_reporter).await
+            });
+
+            let mut subscriber = base_handle
+                .subscribe(
+                    SubscriptionMode::Balanced {
+                        group: "workers".into(),
+                    },
+                    SubscriberOptions::default(),
+                )
+                .expect("topic subscriber should be created");
+
+            let upstream_calldata = TestCallData::default();
+            exporter_input_tx
+                .send(create_test_pdata().test_subscribe_to(
+                    Interests::ACKS,
+                    upstream_calldata.clone().into(),
+                    4242,
+                ))
+                .expect("failed to send pdata to topic exporter");
+
+            let envelope = match tokio::time::timeout(Duration::from_secs(2), subscriber.recv())
+                .await
+                .expect("timed out waiting for topic message")
+                .expect("topic subscription closed unexpectedly")
+            {
+                otap_df_engine::topic::RecvItem::Message(env) => env,
+                other => panic!("unexpected topic receive item: {other:?}"),
+            };
+            subscriber
+                .ack(envelope.id)
+                .expect("topic ack should succeed");
+
+            let delivered = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let msg = pipeline_ctrl_rx
+                        .recv()
+                        .await
+                        .expect("pipeline control channel closed unexpectedly");
+                    if matches!(msg, PipelineControlMsg::DeliverAck { .. }) {
+                        break msg;
+                    }
+                }
+            })
+            .await
+            .expect("timed out waiting for upstream ack control");
+            match delivered {
+                PipelineControlMsg::DeliverAck { node_id, ack } => {
+                    assert_eq!(node_id, 4242);
+                    let got: TestCallData =
+                        ack.calldata.try_into().expect("ack calldata should parse");
+                    assert_eq!(got, upstream_calldata);
+                }
+                other => panic!("expected DeliverAck, got: {other:?}"),
+            }
+
+            exporter_ctrl
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .expect("exporter shutdown should be sent");
+            let exporter_result = exporter_task.await.expect("exporter task should join");
+            assert!(exporter_result.is_ok(), "exporter should stop cleanly");
+        }));
     }
 }

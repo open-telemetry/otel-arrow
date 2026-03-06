@@ -45,6 +45,9 @@ use tokio::sync::mpsc;
 /// noise compared to network I/O.
 pub type PublishFuture<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 
+/// The future type returned by [`TopicState::publish_with_id`].
+pub type PublishWithIdFuture<'a> = Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>>;
+
 /// Factory: creates per-topic state. One implementation per backend.
 pub trait TopicBackend<T: Send + Sync + 'static>: Send + Sync + 'static {
     /// Create a topic state instance for `name` with the provided options.
@@ -55,10 +58,26 @@ pub trait TopicBackend<T: Send + Sync + 'static>: Send + Sync + 'static {
 pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     /// Topic name.
     fn name(&self) -> &TopicName;
+    /// Publish one payload and return the broker-assigned message id.
+    fn publish_with_id(&self, publisher_id: u16, msg: Arc<T>) -> PublishWithIdFuture<'_>;
     /// Publish one payload under `publisher_id`.
-    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_>;
+    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_> {
+        Box::pin(async move {
+            _ = self.publish_with_id(publisher_id, msg).await?;
+            Ok(())
+        })
+    }
+    /// Try to publish one payload and return `(outcome, message_id)`.
+    fn try_publish_with_id(
+        &self,
+        publisher_id: u16,
+        msg: Arc<T>,
+    ) -> Result<(PublishOutcome, u64), Error>;
     /// Try to publish one payload under `publisher_id` without awaiting.
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error>;
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        self.try_publish_with_id(publisher_id, msg)
+            .map(|(outcome, _)| outcome)
+    }
     /// Create a balanced subscription backend for consumer-group `group`.
     fn subscribe_balanced(
         &self,

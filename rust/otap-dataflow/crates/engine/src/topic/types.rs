@@ -128,6 +128,21 @@ pub(crate) mod message_id {
     }
 }
 
+/// Extract the publisher id encoded in a topic message id.
+///
+/// `0` means no publisher-specific ack sender is registered.
+#[must_use]
+pub fn message_publisher_id(id: u64) -> u16 {
+    message_id::publisher_id(id)
+}
+
+/// Returns `true` when the message id is associated with a registered
+/// publisher ack sender.
+#[must_use]
+pub fn message_has_publisher_ack(id: u64) -> bool {
+    message_publisher_id(id) != 0
+}
+
 /// Options for creating/opening a topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopicOptions {

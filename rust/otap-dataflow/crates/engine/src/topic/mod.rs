@@ -22,5 +22,5 @@ pub use subscription::Subscription;
 pub use topic_set::TopicSet;
 pub use types::{
     AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode,
-    TopicOptions,
+    TopicOptions, message_has_publisher_ack, message_publisher_id,
 };

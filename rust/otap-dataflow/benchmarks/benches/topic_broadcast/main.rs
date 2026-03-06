@@ -29,7 +29,9 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_engine::topic::{InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions};
+use otap_df_engine::topic::{
+    InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
+};
 use tokio::runtime::Runtime;
 
 const MSG_COUNT: u64 = 10_000;

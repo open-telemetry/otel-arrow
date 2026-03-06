@@ -81,7 +81,7 @@ use crate::error::Error::{
     AckChannelClosed, AckChannelFull, AckNotEnabled, SubscribeBalancedNotSupported,
     SubscribeBroadcastNotSupported, SubscribeSingleGroupViolation, SubscriptionClosed, TopicClosed,
 };
-use crate::topic::backend::{PublishFuture, SubscriptionBackend, TopicState};
+use crate::topic::backend::{PublishFuture, PublishWithIdFuture, SubscriptionBackend, TopicState};
 use crate::topic::types::{
     AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions,
     message_id,
@@ -441,6 +441,13 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
 
     fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_> {
         Box::pin(async move {
+            _ = self.publish_with_id(publisher_id, msg).await?;
+            Ok(())
+        })
+    }
+
+    fn publish_with_id(&self, publisher_id: u16, msg: Arc<T>) -> PublishWithIdFuture<'_> {
+        Box::pin(async move {
             match self {
                 TopicInner::BalancedOnly(t) => t.publish(publisher_id, msg).await,
                 TopicInner::BroadcastOnly(t) => t.publish(publisher_id, msg),
@@ -450,6 +457,15 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
     }
 
     fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        self.try_publish_with_id(publisher_id, msg)
+            .map(|(outcome, _)| outcome)
+    }
+
+    fn try_publish_with_id(
+        &self,
+        publisher_id: u16,
+        msg: Arc<T>,
+    ) -> Result<(PublishOutcome, u64), Error> {
         match self {
             TopicInner::BalancedOnly(t) => t.try_publish(publisher_id, msg),
             TopicInner::BroadcastOnly(t) => t.try_publish(publisher_id, msg),
@@ -542,7 +558,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         message_id::encode(publisher_id, seq)
     }
 
-    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(), Error> {
+    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
@@ -555,10 +571,10 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         }
         // No subscribers yet → message silently dropped (consistent with Mixed mode).
 
-        Ok(())
+        Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
@@ -570,13 +586,13 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             match sg.tx.try_send(envelope) {
                 Ok(()) => {}
                 Err(async_channel::TrySendError::Full(_)) => {
-                    return Ok(PublishOutcome::DroppedOnFull);
+                    return Ok((PublishOutcome::DroppedOnFull, id));
                 }
                 Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
             }
         }
 
-        Ok(PublishOutcome::Published)
+        Ok((PublishOutcome::Published, id))
     }
 
     fn subscribe_balanced(
@@ -648,19 +664,19 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         }
     }
 
-    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(), Error> {
+    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        _ = self.broadcast_ring.publish_and_encode_id(publisher_id, msg);
+        let id = self.broadcast_ring.publish_and_encode_id(publisher_id, msg);
 
-        Ok(())
+        Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
-        self.publish(publisher_id, msg)?;
-        Ok(PublishOutcome::Published)
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+        let id = self.publish(publisher_id, msg)?;
+        Ok((PublishOutcome::Published, id))
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
@@ -733,7 +749,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         message_id::encode(publisher_id, seq)
     }
 
-    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(), Error> {
+    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
@@ -759,10 +775,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             }
         }
 
-        Ok(())
+        Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
@@ -774,7 +790,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             .publish_with_preencoded_id(id, Arc::clone(&msg));
 
         if !self.has_balanced_groups.load(Ordering::Acquire) {
-            return Ok(PublishOutcome::Published);
+            return Ok((PublishOutcome::Published, id));
         }
 
         let senders = self.group_senders.read().clone();
@@ -792,9 +808,9 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         if dropped_on_full {
-            Ok(PublishOutcome::DroppedOnFull)
+            Ok((PublishOutcome::DroppedOnFull, id))
         } else {
-            Ok(PublishOutcome::Published)
+            Ok((PublishOutcome::Published, id))
         }
     }
 

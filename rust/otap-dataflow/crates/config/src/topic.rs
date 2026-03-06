@@ -233,6 +233,9 @@ pub struct TopicPolicies {
     /// Behavior when `queue_capacity` is reached while publishing a new message.
     #[serde(default)]
     pub queue_on_full: TopicQueueOnFullPolicy,
+    /// Policy controlling cross-pipeline Ack/Nack propagation over topic hops.
+    #[serde(default)]
+    pub ack_propagation: TopicAckPropagationPolicy,
 }
 
 impl Default for TopicPolicies {
@@ -240,6 +243,7 @@ impl Default for TopicPolicies {
         Self {
             queue_capacity: default_topic_queue_capacity(),
             queue_on_full: TopicQueueOnFullPolicy::default(),
+            ack_propagation: TopicAckPropagationPolicy::default(),
         }
     }
 }
@@ -269,6 +273,17 @@ pub enum TopicQueueOnFullPolicy {
     Block,
 }
 
+/// Policy controlling whether topic hops can bridge Ack/Nack across pipelines.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicAckPropagationPolicy {
+    /// Disable cross-pipeline Ack/Nack propagation.
+    #[default]
+    Disabled,
+    /// Enable adaptive propagation only for messages carrying Ack/Nack interests.
+    Auto,
+}
+
 const fn default_topic_queue_capacity() -> usize {
     128
 }
@@ -276,8 +291,8 @@ const fn default_topic_queue_capacity() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        SubscriptionGroupName, TopicBackendKind, TopicImplSelectionPolicy, TopicName,
-        TopicQueueOnFullPolicy, TopicSpec,
+        SubscriptionGroupName, TopicAckPropagationPolicy, TopicBackendKind,
+        TopicImplSelectionPolicy, TopicName, TopicQueueOnFullPolicy, TopicSpec,
     };
     use crate::error::Error;
     use serde::Deserialize;
@@ -290,6 +305,10 @@ mod tests {
         assert_eq!(topic.impl_selection, None);
         assert_eq!(topic.policies.queue_capacity, 128);
         assert_eq!(topic.policies.queue_on_full, TopicQueueOnFullPolicy::Block);
+        assert_eq!(
+            topic.policies.ack_propagation,
+            TopicAckPropagationPolicy::Disabled
+        );
     }
 
     #[test]
@@ -315,6 +334,22 @@ policies:
         assert_eq!(
             topic.policies.queue_on_full,
             TopicQueueOnFullPolicy::DropNewest
+        );
+    }
+
+    #[test]
+    fn deserializes_ack_propagation_policy_values() {
+        let yaml = r#"
+backend: in_memory
+policies:
+  queue_capacity: 1
+  ack_propagation: auto
+"#;
+
+        let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
+        assert_eq!(
+            topic.policies.ack_propagation,
+            TopicAckPropagationPolicy::Auto
         );
     }
 

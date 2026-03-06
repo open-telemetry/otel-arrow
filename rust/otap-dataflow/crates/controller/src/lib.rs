@@ -71,8 +71,8 @@ use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter}
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
-    otel_warn, otel_error, self_tracing::LogContext,
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
+    otel_info_span, otel_warn, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
@@ -549,8 +549,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .map_err(|e| Error::PipelineRuntimeError {
                         source: Box::new(e),
                     })?;
-                let handle =
-                    handle.with_default_queue_on_full(topic_spec.policies.queue_on_full.clone());
+                let handle = handle
+                    .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone())
+                    .with_default_ack_propagation(topic_spec.policies.ack_propagation);
                 _ = set.insert(global_topic_name.clone(), handle);
             }
         }
@@ -569,7 +570,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 source: Box::new(e),
                             })?;
                     let handle = handle
-                        .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone());
+                        .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone())
+                        .with_default_ack_propagation(topic_spec.policies.ack_propagation);
                     // Group-local declarations override globals with the same local name.
                     _ = set.insert(group_topic_name.clone(), handle);
                 }
@@ -2116,6 +2118,7 @@ topics:
     policies:
       queue_capacity: 8
       queue_on_full: drop_newest
+      ack_propagation: auto
 groups:
   g1:
     topics:
@@ -2123,11 +2126,13 @@ groups:
         policies:
           queue_capacity: 8
           queue_on_full: block
+          ack_propagation: disabled
       # Same local alias as global to verify group-local override path.
       global_drop:
         policies:
           queue_capacity: 8
           queue_on_full: block
+          ack_propagation: disabled
     pipelines:
       p1:
         nodes:
@@ -2162,6 +2167,10 @@ groups:
             local_block.default_queue_on_full(),
             otap_df_config::topic::TopicQueueOnFullPolicy::Block
         );
+        assert_eq!(
+            local_block.default_ack_propagation(),
+            otap_df_config::topic::TopicAckPropagationPolicy::Disabled
+        );
 
         // group-local declaration must override global policy for same local name
         let overridden = set
@@ -2170,6 +2179,10 @@ groups:
         assert_eq!(
             overridden.default_queue_on_full(),
             otap_df_config::topic::TopicQueueOnFullPolicy::Block
+        );
+        assert_eq!(
+            overridden.default_ack_propagation(),
+            otap_df_config::topic::TopicAckPropagationPolicy::Disabled
         );
     }
 }

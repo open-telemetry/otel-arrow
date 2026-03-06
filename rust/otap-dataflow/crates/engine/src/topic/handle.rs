@@ -32,7 +32,7 @@ use crate::topic::backend::TopicState;
 use crate::topic::subscription::Subscription;
 use crate::topic::types::{AckEvent, PublishOutcome, SubscriberOptions, SubscriptionMode};
 use otap_df_config::TopicName;
-use otap_df_config::topic::TopicQueueOnFullPolicy;
+use otap_df_config::topic::{TopicAckPropagationPolicy, TopicQueueOnFullPolicy};
 use tokio::sync::mpsc;
 
 /// A handle to a topic, used for publishing and subscribing.
@@ -44,6 +44,7 @@ pub struct TopicHandle<T: Send + Sync + 'static> {
     inner: Arc<dyn TopicState<T>>,
     publisher_id: u16,
     queue_on_full_default: TopicQueueOnFullPolicy,
+    ack_propagation_default: TopicAckPropagationPolicy,
 }
 
 impl<T: Send + Sync + 'static> Clone for TopicHandle<T> {
@@ -52,6 +53,7 @@ impl<T: Send + Sync + 'static> Clone for TopicHandle<T> {
             inner: Arc::clone(&self.inner),
             publisher_id: self.publisher_id,
             queue_on_full_default: self.queue_on_full_default.clone(),
+            ack_propagation_default: self.ack_propagation_default,
         }
     }
 }
@@ -62,6 +64,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
             inner,
             publisher_id: 0,
             queue_on_full_default: TopicQueueOnFullPolicy::Block,
+            ack_propagation_default: TopicAckPropagationPolicy::Disabled,
         }
     }
 
@@ -78,6 +81,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
             inner: Arc::clone(&self.inner),
             publisher_id: id,
             queue_on_full_default: self.queue_on_full_default.clone(),
+            ack_propagation_default: self.ack_propagation_default,
         }
     }
 
@@ -88,6 +92,18 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
             inner: Arc::clone(&self.inner),
             publisher_id: self.publisher_id,
             queue_on_full_default: policy,
+            ack_propagation_default: self.ack_propagation_default,
+        }
+    }
+
+    /// Return a cloned handle with the topic-level default Ack/Nack propagation policy.
+    #[must_use]
+    pub fn with_default_ack_propagation(&self, policy: TopicAckPropagationPolicy) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            publisher_id: self.publisher_id,
+            queue_on_full_default: self.queue_on_full_default.clone(),
+            ack_propagation_default: policy,
         }
     }
 
@@ -99,11 +115,23 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         self.inner.publish(self.publisher_id, msg).await
     }
 
+    /// Publish a message and return the broker-assigned message id.
+    ///
+    /// This may await under backpressure when balanced consumer-group buffers are full.
+    pub async fn publish_with_id(&self, msg: Arc<T>) -> Result<u64, Error> {
+        self.inner.publish_with_id(self.publisher_id, msg).await
+    }
+
     /// Try to publish a message without awaiting under backpressure.
     ///
     /// Use this when publish behavior should be non-blocking (e.g. drop-on-full policy).
     pub fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error> {
         self.inner.try_publish(self.publisher_id, msg)
+    }
+
+    /// Try to publish without awaiting and return `(outcome, message_id)`.
+    pub fn try_publish_with_id(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+        self.inner.try_publish_with_id(self.publisher_id, msg)
     }
 
     /// Subscribe to this topic.
@@ -140,5 +168,11 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     #[must_use]
     pub fn default_queue_on_full(&self) -> TopicQueueOnFullPolicy {
         self.queue_on_full_default.clone()
+    }
+
+    /// Topic-level default behavior for cross-pipeline Ack/Nack propagation.
+    #[must_use]
+    pub const fn default_ack_propagation(&self) -> TopicAckPropagationPolicy {
+        self.ack_propagation_default
     }
 }

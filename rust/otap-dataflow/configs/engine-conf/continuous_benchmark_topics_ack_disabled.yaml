@@ -1,6 +1,8 @@
 version: otel_dataflow/v1
 
 # Topic-based variant of continuous_benchmark.yaml.
+# This variant keeps cross-pipeline Ack/Nack propagation disabled to provide
+# a baseline against the e2e Ack/Nack-enabled scenario.
 # This configuration keeps the same high-level benchmark shape (traffic
 # generators -> SUT -> backend) but replaces OTLP/gRPC inter-pipeline transport
 # with in-memory topics for direct performance comparison.
@@ -48,7 +50,7 @@ engine:
           to: sink
 
 groups:
-  continuous_benchmark_topics:
+  continuous_benchmark_topics_ack_disabled:
     policies:
       channel_capacity:
         control:
@@ -65,11 +67,13 @@ groups:
         policies:
           queue_capacity: 4096
           queue_on_full: block
+          ack_propagation: disabled
       backend_logs:
         description: "SUT logs output -> backend ingest"
         policies:
           queue_capacity: 4096
           queue_on_full: block
+          ack_propagation: disabled
 
     pipelines:
       # ======================================================================
