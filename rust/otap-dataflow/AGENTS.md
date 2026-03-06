@@ -11,6 +11,11 @@ directories).
 
 - Use only ASCII characters in Markdown files. No smart quotes, em-dashes, or
   Unicode symbols.
+- After editing Markdown files, run markdownlint on the changed files:
+
+```bash
+npx markdownlint-cli <file1.md> <file2.md>
+```
 
 ## Sanity checks
 
