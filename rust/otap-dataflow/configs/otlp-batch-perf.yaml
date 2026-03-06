@@ -1,0 +1,66 @@
+# Test config: OTLP receiver → batch processor → perf exporter
+#
+# Used to reproduce a high-volume telemetrygen logs workload:
+#   telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure \
+#     --rate 20000 --duration 60m \
+#     --telemetry-attributes 'key1="<~1KB>"' --telemetry-attributes 'key2="<~1KB>"'
+#
+# Each log record is ~2KB of attributes. At 20k/sec with default batch-size 100,
+# telemetrygen makes ~200 synchronous export calls/sec.
+
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "127.0.0.1"
+                port: 9090
+                path: "/metrics"
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+
+          batch:
+            type: processor:batch
+            config:
+              otap:
+                min_size: 1000
+                sizer: items
+              otlp:
+                min_size: 65536
+                sizer: bytes
+              format: preserve
+              flush_timeout: 3s
+
+          perf:
+            type: exporter:perf
+            config:
+              frequency: 1000
+              cpu_usage: true
+              mem_usage: true
+              disk_usage: false
+              io_usage: false
+
+        connections:
+          - from: receiver
+            to: batch
+          - from: batch
+            to: perf

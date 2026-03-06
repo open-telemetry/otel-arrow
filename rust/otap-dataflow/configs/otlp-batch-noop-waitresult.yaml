@@ -1,0 +1,56 @@
+# Test config: OTLP receiver → batch → noop with wait_for_result
+# This forces each gRPC call to wait for the full pipeline round-trip ack,
+# so max in-flight data is bounded by the number of concurrent telemetrygen workers.
+
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "127.0.0.1"
+                port: 9090
+                path: "/metrics"
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+                  wait_for_result: true
+
+          batch:
+            type: processor:batch
+            config:
+              otap:
+                min_size: 1000
+                sizer: items
+              otlp:
+                min_size: 65536
+                sizer: bytes
+              format: preserve
+              flush_timeout: 3s
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: batch
+          - from: batch
+            to: noop
