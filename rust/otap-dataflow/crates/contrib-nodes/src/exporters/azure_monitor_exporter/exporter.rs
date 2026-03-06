@@ -467,11 +467,11 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
-            dcr = self.config.api.dcr.as_str()
+            dcr = self.config.api.dcr.as_str(),
+            auth_method = self.config.auth.auth_method_name()
         );
 
         let mut msg_id = 0;
-
         let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
             let error = Error::AuthHandlerCreation(Box::new(e));
             EngineError::InternalError {
