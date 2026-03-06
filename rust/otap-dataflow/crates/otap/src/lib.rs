@@ -54,6 +54,9 @@ pub mod noop_exporter;
 /// Fan-out processor to clone data to multiple downstream outputs.
 pub mod fanout_processor;
 
+/// Delay processor that introduces artificial latency before forwarding data.
+pub mod delay_processor;
+
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
