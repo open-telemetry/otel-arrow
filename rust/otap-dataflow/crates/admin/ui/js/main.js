@@ -233,6 +233,11 @@
   let lastCoreIds = [];
   let stickyPanelsObserver = null;
   let dagPipelineScopeMode = DAG_SCOPE_SINGLE;
+  let pollTimer = null;
+  let fetchInFlight = false;
+  let activeFetchController = null;
+  let latestFetchRequestId = 0;
+  let latestAppliedFetchRequestId = 0;
   const CORE_ALL = "__all__";
   let windowMinutes = 5;
   let freezeActive = false;
@@ -1006,7 +1011,8 @@
     });
 
     nodes.forEach((node) => {
-      const nodeEl = dagNodes.querySelector(`.dag-node[data-node-id="${node.id}"]`);
+      const nodeSelectorId = escapeSelectorValue(node.id);
+      const nodeEl = dagNodes.querySelector(`.dag-node[data-node-id="${nodeSelectorId}"]`);
       if (!nodeEl) return;
       const hasError = (nodeErrors.get(node.id) || 0) > 0;
       const hasTraffic = (nodeTraffic.get(node.id) || 0) > 0;
@@ -1043,11 +1049,12 @@
     });
 
     edges.forEach((edge) => {
+      const edgeSelectorId = escapeSelectorValue(edge.id);
       const path = dagEdges.querySelector(
-        `.dag-edge[data-edge-id="${edge.id}"][data-edge-role="path"]`
+        `.dag-edge[data-edge-id="${edgeSelectorId}"][data-edge-role="path"]`
       );
       const label = dagEdges.querySelector(
-        `.dag-edge-label[data-edge-id="${edge.id}"][data-edge-role="label"]`
+        `.dag-edge-label[data-edge-id="${edgeSelectorId}"][data-edge-role="label"]`
       );
       if (!path || !label) return;
       const activity =
@@ -1231,10 +1238,14 @@
         const title = isAll ? `All cores • ${valueLabel}` : `Core ${id} • ${valueLabel}`;
         const displayLabel = isAll ? "ALL" : valueLabel;
         const subLabel = isAll ? valueLabel : "";
+        const safeCoreId = escapeAttr(id);
+        const safeTitle = escapeAttr(title);
+        const safeDisplayLabel = escapeHtml(displayLabel);
+        const safeSubLabel = escapeHtml(subLabel);
         return `
-          <button class="core-cell ${selectedClass}" data-core-id="${id}" style="--core-color:${color}; color:${textColor}" title="${title}">
-            <span>${displayLabel}</span>
-            ${subLabel ? `<span class="core-cell-sub">${subLabel}</span>` : ""}
+          <button class="core-cell ${selectedClass}" data-core-id="${safeCoreId}" style="--core-color:${color}; color:${textColor}" title="${safeTitle}">
+            <span>${safeDisplayLabel}</span>
+            ${subLabel ? `<span class="core-cell-sub">${safeSubLabel}</span>` : ""}
           </button>
         `;
       })
@@ -2834,6 +2845,36 @@
     return scaled.toFixed(2);
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(
+      /[&<>"']/g,
+      (ch) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[ch]
+    );
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/`/g, "&#96;");
+  }
+
+  function escapeSelectorValue(value) {
+    const raw = String(value == null ? "" : value);
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(raw);
+    }
+    return raw
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]");
+  }
+
   function normalizeUnit(unit) {
     return unit ? String(unit).replace(/[{}]/g, "").trim() : "";
   }
@@ -2936,23 +2977,32 @@
             if (entry.showRate && nodeId && setName) {
               const unitLabel = entry.scale.label || formatRateUnitLabel(metric.unit);
               const brief = metric.brief ? String(metric.brief) : "";
+              const safeMetricName = escapeHtml(metric.name);
+              const safeUnitLabel = escapeHtml(unitLabel);
+              const safeBrief = escapeHtml(brief);
+              const safeNodeId = escapeAttr(nodeId);
+              const safeSetName = escapeAttr(setName);
+              const safeMetricNameAttr = escapeAttr(metric.name);
+              const safeUnit = escapeAttr(normalizeUnit(metric.unit));
               return `
                 <div class="node-metric-rate-block">
                   <div class="node-metric-rate-title">
-                    <span>${metric.name}${unitLabel ? ` <span class="node-metric-rate-unit">(${unitLabel})</span>` : ""}</span>
+                    <span>${safeMetricName}${unitLabel ? ` <span class="node-metric-rate-unit">(${safeUnitLabel})</span>` : ""}</span>
                   </div>
-                  ${brief ? `<div class="node-metric-rate-brief">${brief}</div>` : ""}
-                  <div class="node-metric-rate-chart" data-node-id="${nodeId}" data-set-name="${setName}" data-metric-name="${metric.name}" data-unit="${normalizeUnit(metric.unit)}">
+                  ${brief ? `<div class="node-metric-rate-brief">${safeBrief}</div>` : ""}
+                  <div class="node-metric-rate-chart" data-node-id="${safeNodeId}" data-set-name="${safeSetName}" data-metric-name="${safeMetricNameAttr}" data-unit="${safeUnit}">
                     <canvas></canvas>
                     <div class="node-metric-rate-overlay hidden"></div>
                   </div>
                 </div>`;
             }
             const valueLabel = baseValue;
+            const safeMetricName = escapeHtml(metric.name);
+            const safeValueLabel = escapeHtml(valueLabel);
             return `
               <div class="flex items-start justify-between gap-3">
-                <span class="text-slate-300">${metric.name}</span>
-                <span class="font-mono text-slate-200">${valueLabel}</span>
+                <span class="text-slate-300">${safeMetricName}</span>
+                <span class="font-mono text-slate-200">${safeValueLabel}</span>
               </div>`;
           })
           .join("")}
@@ -3058,8 +3108,11 @@
     entries.sort(([a], [b]) => a.localeCompare(b));
     return entries
       .map(
-        ([key, value]) =>
-          `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${key}</span><span class="font-mono text-slate-200">${value}</span></div>`
+        ([key, value]) => {
+          const safeKey = escapeHtml(key);
+          const safeValue = escapeHtml(value);
+          return `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${safeKey}</span><span class="font-mono text-slate-200">${safeValue}</span></div>`;
+        }
       )
       .join("");
   }
@@ -3070,7 +3123,9 @@
     }
     return metrics
       .map((metric) => {
-        return `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${metric.name}</span><span class="font-mono text-slate-200">${formatValueWithUnit(metric.value, metric.unit)}</span></div>`;
+        const safeMetricName = escapeHtml(metric.name);
+        const safeValue = escapeHtml(formatValueWithUnit(metric.value, metric.unit));
+        return `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${safeMetricName}</span><span class="font-mono text-slate-200">${safeValue}</span></div>`;
       })
       .join("");
   }
@@ -3084,11 +3139,15 @@
       <div class="grid gap-1">
         ${filtered
           .map(
-            (metric) => `
+            (metric) => {
+              const safeMetricName = escapeHtml(metric.name);
+              const safeValue = escapeHtml(formatValueWithUnit(metric.value, metric.unit));
+              return `
               <div class="flex items-start justify-between gap-3">
-                <span class="text-slate-300">${metric.name}</span>
-                <span class="font-mono text-slate-200">${formatValueWithUnit(metric.value, metric.unit)}</span>
-              </div>`
+                <span class="text-slate-300">${safeMetricName}</span>
+                <span class="font-mono text-slate-200">${safeValue}</span>
+              </div>`;
+            }
           )
           .join("")}
       </div>
@@ -3975,14 +4034,17 @@
     legend.classList.remove("hidden");
     legend.innerHTML = rows
       .map(
-        (row) => `
+        (row) => {
+          const safeLabel = escapeHtml(row.label);
+          return `
           <div class="channel-chart-row">
             <span class="channel-chart-label">
               <span class="channel-chart-dot" style="color:${row.color}; background:${row.color};"></span>
-              ${row.label}
+              ${safeLabel}
             </span>
             <span class="font-mono text-slate-100">${formatLegendRate(row.value)}</span>
-          </div>`
+          </div>`;
+        }
       )
       .join("");
   }
@@ -4159,25 +4221,38 @@
       channelKind === "control" ? "Pipeline controller" : sourceDisplayId;
     const senderType =
       channelKind === "control" ? "controller" : senderAttrs["node.type"] || "node";
+    const safeSenderName = escapeHtml(senderName);
+    const safeSenderType = escapeHtml(senderType);
+    const safeSendRate = escapeHtml(formatRateWithUnit(sendRate, "message"));
+    const safeSendErrRate = escapeHtml(formatRateWithUnit(sendErrRate, "error"));
+    const safeChannelTitle = escapeHtml(channelTitle);
+    const safeCapacityValue = escapeHtml(capacityValue);
+    const safeQueuePercent = escapeHtml(queuePercent);
+    const safeQueueDepthValue = escapeHtml(queueDepthValue);
+    const safeTargetDisplayId = escapeHtml(targetDisplayId);
+    const safeReceiverType = escapeHtml(receiverAttrs["node.type"] || "node");
+    const safeRecvRate = escapeHtml(formatRateWithUnit(recvRate, "message"));
+    const safeRecvErrRate = escapeHtml(formatRateWithUnit(recvErrRate, "error"));
+    const safeWindowLabel = escapeHtml(formatWindowLabel());
     edgeDetailBody.innerHTML = `
       <div class="channel-rail">
         <div class="channel-end">
           <div class="channel-end-label">Sender</div>
-          <div class="channel-end-id">${senderName} <span class="text-slate-400 text-xs">(${senderType})</span></div>
-          <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${formatRateWithUnit(sendRate, "message")}</span></div>
-          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${formatRateWithUnit(sendErrRate, "error")}</span></div>
+          <div class="channel-end-id">${safeSenderName} <span class="text-slate-400 text-xs">(${safeSenderType})</span></div>
+          <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${safeSendRate}</span></div>
+          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${safeSendErrRate}</span></div>
         </div>
         <div class="channel-mid">
-          <div class="channel-mid-title">${channelTitle}</div>
+          <div class="channel-mid-title">${safeChannelTitle}</div>
           <div class="channel-mid-body">${renderAttributes(channelAttrsFiltered)}</div>
           <div class="channel-capacity">
             <span>Capacity</span>
-            <span class="font-mono">${capacityValue}</span>
+            <span class="font-mono">${safeCapacityValue}</span>
           </div>
           <div class="channel-util">
             <div class="flex items-center justify-between">
               <span>Queue utilization</span>
-              <span class="font-mono">${queuePercent}${queuePercent !== "n/a" ? ` (${queueDepthValue} / ${capacityValue})` : ""}</span>
+              <span class="font-mono">${safeQueuePercent}${queuePercent !== "n/a" ? ` (${safeQueueDepthValue} / ${safeCapacityValue})` : ""}</span>
             </div>
             <div class="channel-util-bar">
               <div class="channel-util-fill" style="width:${queueRatio == null ? 0 : queueRatio * 100}%; background:${queueColor};"></div>
@@ -4186,9 +4261,9 @@
         </div>
         <div class="channel-end channel-end-right">
           <div class="channel-end-label">Receiver</div>
-          <div class="channel-end-id">${targetDisplayId} <span class="text-slate-400 text-xs">(${receiverAttrs["node.type"] || "node"})</span></div>
-          <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${formatRateWithUnit(recvRate, "message")}</span></div>
-          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${formatRateWithUnit(recvErrRate, "error")}</span></div>
+          <div class="channel-end-id">${safeTargetDisplayId} <span class="text-slate-400 text-xs">(${safeReceiverType})</span></div>
+          <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${safeRecvRate}</span></div>
+          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${safeRecvErrRate}</span></div>
         </div>
       </div>
       <div class="mt-6 grid gap-6 md:grid-cols-[1fr_0.9fr_1fr]">
@@ -4215,7 +4290,7 @@
         </div>
       </div>
       <div class="mt-6">
-        <div class="text-xs uppercase tracking-wide text-slate-400">Activity (last ${formatWindowLabel()})</div>
+        <div class="text-xs uppercase tracking-wide text-slate-400">Activity (last ${safeWindowLabel})</div>
         <div class="mt-3 channel-chart-wrap">
           <div class="channel-chart-canvas">
             <canvas id="channelChart"></canvas>
@@ -4242,19 +4317,22 @@
     edgeDetailMeta.textContent = `${node.displayId || node.id} (${type})`;
 
     const summary = buildNodeSummary(node.id);
+    const safeInRate = escapeHtml(formatRateWithUnit(summary.inRate, "msg"));
+    const safeOutRate = escapeHtml(formatRateWithUnit(summary.outRate, "msg"));
+    const safeErrorRate = escapeHtml(formatRateWithUnit(summary.errorRate, "error"));
     const summaryHtml = `
       <div class="mt-4 grid gap-3 sm:grid-cols-3">
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">In rate</div>
-          <div class="text-lg font-semibold text-slate-200">${formatRateWithUnit(summary.inRate, "msg")}</div>
+          <div class="text-lg font-semibold text-slate-200">${safeInRate}</div>
         </div>
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Out rate</div>
-          <div class="text-lg font-semibold text-slate-200">${formatRateWithUnit(summary.outRate, "msg")}</div>
+          <div class="text-lg font-semibold text-slate-200">${safeOutRate}</div>
         </div>
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Errors</div>
-          <div class="text-lg font-semibold text-slate-200">${formatRateWithUnit(summary.errorRate, "error")}</div>
+          <div class="text-lg font-semibold text-slate-200">${safeErrorRate}</div>
         </div>
       </div>
     `;
@@ -4264,7 +4342,7 @@
       .map(
         (set) => `
           <div class="mt-4">
-            <div class="text-xs uppercase tracking-wide text-slate-400">${set.name}</div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">${escapeHtml(set.name)}</div>
             <div class="mt-2 text-xs">${renderNodeMetricTable(set.metrics, node.id, set.name)}</div>
           </div>`
       )
@@ -4292,10 +4370,10 @@
     return out;
   }
 
-  function showTooltip(html, event) {
-    tooltip.innerHTML = html;
+  function showTooltip(content, event) {
+    tooltip.textContent = String(content == null ? "" : content);
     tooltip.classList.remove("hidden");
-    activeTooltip = html;
+    activeTooltip = tooltip.textContent;
     moveTooltip(event);
   }
 
@@ -4946,14 +5024,17 @@
       }
 
       const visiblePorts = node.displayPorts || node.outPorts || [];
+      const safeNodeIdAttr = escapeAttr(node.id);
       const portRows = visiblePorts.length
         ? `<div>${visiblePorts
             .map((port) => {
               const isActive = (portScores.get(node.id)?.get(port) ?? 0) > 0;
+              const safePortLabel = escapeHtml(port);
+              const safePortAttr = escapeAttr(port);
               return `
                 <div class="dag-port">
-                  <span class="dag-port-label">${port}</span>
-                  <span class="dag-port-dot ${isActive ? "dag-port-dot-active" : ""}" data-node-id="${node.id}" data-port="${port}"></span>
+                  <span class="dag-port-label">${safePortLabel}</span>
+                  <span class="dag-port-dot ${isActive ? "dag-port-dot-active" : ""}" data-node-id="${safeNodeIdAttr}" data-port="${safePortAttr}"></span>
                 </div>`;
             })
             .join("")}</div>`
@@ -4961,7 +5042,7 @@
 
       const controlHtml =
         showControlChannels && controlInfo
-          ? `<button class="dag-control-indicator ${selectedEdgeId === controlInfo.primary?.id ? "dag-control-indicator-selected" : ""}" data-control-edge="${controlInfo.primary?.id || ""}" data-node-id="${node.id}">
+          ? `<button class="dag-control-indicator ${selectedEdgeId === controlInfo.primary?.id ? "dag-control-indicator-selected" : ""}" data-control-edge="${escapeAttr(controlInfo.primary?.id || "")}" data-node-id="${safeNodeIdAttr}">
               <svg class="dag-control-arrow" viewBox="0 0 10 22" aria-hidden="true">
                 <line x1="5" y1="0" x2="5" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
                 <path d="M 0 14 L 10 14 L 5 22 z" fill="currentColor"></path>
@@ -4970,10 +5051,11 @@
             </button>`
           : "";
 
+      const safeNodeDisplayId = escapeHtml(node.displayId || node.id);
       nodeEl.innerHTML = `
         ${controlHtml}
         <div class="dag-node-header">
-          <div class="dag-node-id">${node.displayId || node.id}</div>
+          <div class="dag-node-id">${safeNodeDisplayId}</div>
         </div>
         ${portRows}
       `;
@@ -5174,18 +5256,37 @@
   }
 
   // --- Polling loop ---
-  async function fetchMetricsSnapshot() {
+  function scheduleNextFetch() {
+    if (pollTimer != null) {
+      window.clearTimeout(pollTimer);
+    }
+    pollTimer = window.setTimeout(() => {
+      void fetchAndUpdate();
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function fetchMetricsSnapshot(signal) {
     const { data, resolvedUrl } = await fetchMetricsFromCandidates(
       METRICS_URL_CANDIDATES,
-      resolvedMetricsUrl
+      resolvedMetricsUrl,
+      { signal }
     );
     resolvedMetricsUrl = resolvedUrl;
     return data;
   }
 
   async function fetchAndUpdate() {
+    if (fetchInFlight) return;
+    fetchInFlight = true;
+    const requestId = ++latestFetchRequestId;
+    const controller = new AbortController();
+    activeFetchController = controller;
     try {
-      const data = await fetchMetricsSnapshot();
+      const data = await fetchMetricsSnapshot(controller.signal);
+      if (requestId < latestAppliedFetchRequestId) {
+        return;
+      }
+      latestAppliedFetchRequestId = requestId;
       const ts = new Date(data.timestamp);
       const sampleSeconds = lastSampleTs ? (ts - lastSampleTs) / 1000 : null;
       lastSampleTs = ts;
@@ -5199,10 +5300,18 @@
       updateFilterSelectors(metricSets);
       applyFilteredView(metricSets, true);
     } catch (err) {
+      if (err?.name === "AbortError") {
+        return;
+      }
       setConnected(false);
       showError(err.message || "Failed to load metrics.");
+    } finally {
+      if (activeFetchController === controller) {
+        activeFetchController = null;
+      }
+      fetchInFlight = false;
+      scheduleNextFetch();
     }
   }
 
-  fetchAndUpdate();
-  setInterval(fetchAndUpdate, POLL_INTERVAL_MS);
+  void fetchAndUpdate();

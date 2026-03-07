@@ -18,7 +18,12 @@ export function buildMetricsCandidates({ query }) {
 
 // Probe candidate URLs until one returns a valid JSON payload.
 // `resolvedUrl` is attempted first so the steady-state path is fast.
-export async function fetchMetricsFromCandidates(urlCandidates, resolvedUrl) {
+// Optional `fetchOptions` allows cancellation (AbortController signal).
+export async function fetchMetricsFromCandidates(
+  urlCandidates,
+  resolvedUrl,
+  fetchOptions = {}
+) {
   const urls = resolvedUrl
     ? [resolvedUrl, ...urlCandidates.filter((url) => url !== resolvedUrl)]
     : urlCandidates;
@@ -26,7 +31,7 @@ export async function fetchMetricsFromCandidates(urlCandidates, resolvedUrl) {
   let lastError = new Error("Failed to load metrics from any configured endpoint.");
   for (const url of urls) {
     try {
-      const resp = await fetch(url, { cache: "no-store" });
+      const resp = await fetch(url, { cache: "no-store", ...fetchOptions });
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
       }
