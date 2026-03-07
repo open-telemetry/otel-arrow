@@ -1,0 +1,1081 @@
+    /* Main UI stylesheet for index.html.
+       Organized by: page shell, DAG, cards/charts, selectors/toggles, channel details, themes. */
+    /* Theme tokens shared by the page and sticky-header backdrop clone. */
+    :root {
+      --sticky-panels-height: 0px;
+      --page-bg-night: radial-gradient(circle at top, #1e293b 0, #020617 50%, #000 100%);
+      --page-bg-day: radial-gradient(circle at top, #f8fafc 0, #e2e8f0 55%, #cbd5e1 100%);
+    }
+
+    /* Page background is fixed to avoid visible drift during scroll/freeze interactions. */
+    body {
+      background: var(--page-bg-night);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-position: center top;
+      background-size: 100vw 100vh;
+    }
+
+    /* Sticky shell for top controls/cards on desktop layouts. */
+    .sticky-panels {
+      position: sticky;
+      top: 0;
+      z-index: 32;
+      padding-top: 6px;
+      padding-bottom: 8px;
+      isolation: isolate;
+    }
+
+    /* Duplicate the page gradient behind sticky content to keep color continuity. */
+    .sticky-panels::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--page-bg-night);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: 100vw 100vh;
+      box-shadow: none;
+      backdrop-filter: none;
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    /* Lower content stack that scrolls under the sticky header area. */
+    .scroll-sections {
+      position: relative;
+      z-index: 1;
+      padding-top: 6px;
+    }
+
+    /* Keep anchor snapping and scroll-to-section behavior below sticky content. */
+    #dag-section,
+    #edge-detail-section,
+    #error-banner {
+      scroll-margin-top: calc(var(--sticky-panels-height) + 12px);
+    }
+
+    @media (max-width: 1023px) {
+      /* On small screens, fallback to normal document flow (no sticky container). */
+      .sticky-panels {
+        position: static;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+
+      .sticky-panels::before {
+        display: none;
+      }
+
+      .scroll-sections {
+        padding-top: 0;
+      }
+
+      #dag-section,
+      #edge-detail-section,
+      #error-banner {
+        scroll-margin-top: 24px;
+      }
+    }
+
+    /* DAG canvas layers: edges -> lanes -> nodes for readable overlap. */
+    .dag-canvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+      min-height: 520px;
+      transform-origin: 0 0;
+    }
+
+    .dag-zoom {
+      position: relative;
+    }
+
+    .dag-viewport-frame {
+      position: relative;
+    }
+
+    .dag-controls {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      z-index: 10;
+      pointer-events: auto;
+    }
+
+    #toggle-dag-scope {
+      display: none;
+    }
+
+    #dag-viewport {
+      height: 560px;
+      cursor: grab;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(56, 189, 248, 0.45) rgba(15, 23, 42, 0.55);
+    }
+
+    #dag-viewport.dag-dragging {
+      cursor: grabbing;
+      user-select: none;
+    }
+
+    #dag-viewport::-webkit-scrollbar {
+      width: 12px;
+      height: 12px;
+    }
+
+    #dag-viewport::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.55);
+      border-radius: 999px;
+      border: 1px solid rgba(51, 65, 85, 0.7);
+    }
+
+    #dag-viewport::-webkit-scrollbar-thumb {
+      background: linear-gradient(
+        180deg,
+        rgba(56, 189, 248, 0.72),
+        rgba(14, 165, 233, 0.55)
+      );
+      border-radius: 999px;
+      border: 2px solid rgba(15, 23, 42, 0.6);
+      background-clip: padding-box;
+    }
+
+    #dag-viewport::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(
+        180deg,
+        rgba(125, 211, 252, 0.86),
+        rgba(14, 165, 233, 0.66)
+      );
+    }
+
+    #dag-viewport::-webkit-scrollbar-corner {
+      background: rgba(15, 23, 42, 0.62);
+    }
+
+    .dag-edges {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+
+    .dag-nodes {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    .dag-lanes {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .dag-lane-label {
+      position: absolute;
+      top: 6px;
+      transform: translateX(-50%);
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: #94a3b8;
+    }
+
+    .dag-lane-bar {
+      position: absolute;
+      top: 30px;
+      height: 1px;
+      background: rgba(148, 163, 184, 0.35);
+    }
+
+    /* Topology nodes and activity states. */
+    .dag-node {
+      position: absolute;
+      padding: 4px 12px 8px;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.92);
+      box-shadow: 0 18px 35px rgba(15, 23, 42, 0.45);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+      pointer-events: auto;
+      color: rgba(148, 163, 184, 0.7);
+    }
+
+    .dag-node-active {
+      border-color: rgba(34, 197, 94, 0.9);
+      box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25);
+      color: rgba(34, 197, 94, 0.9);
+    }
+
+    .dag-node-selected {
+      border-color: currentColor;
+      animation: node-pulse 1.8s ease-in-out infinite;
+      box-shadow: 0 0 0 1px currentColor, 0 0 12px currentColor;
+    }
+
+    @keyframes node-pulse {
+      0% {
+        box-shadow: 0 0 0 1px currentColor, 0 0 6px currentColor;
+      }
+      50% {
+        box-shadow: 0 0 0 1px currentColor, 0 0 14px currentColor;
+      }
+      100% {
+        box-shadow: 0 0 0 1px currentColor, 0 0 6px currentColor;
+      }
+    }
+
+    .dag-node:hover {
+      border-color: rgba(56, 189, 248, 0.9);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.4), 0 18px 45px rgba(15, 23, 42, 0.6);
+      transform: translateY(-2px);
+    }
+
+    .dag-node-header {
+      height: 38px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 2px;
+    }
+
+    .dag-node-id {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #e2e8f0;
+      letter-spacing: 0.01em;
+    }
+
+    /* Control-channel indicator rendered above nodes when enabled. */
+    .dag-control-indicator {
+      position: absolute;
+      top: -24px;
+      left: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 4px;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      color: #7dd3fc;
+      font-size: 0.6rem;
+      line-height: 1;
+      cursor: pointer;
+      pointer-events: auto;
+      box-shadow: none;
+      transition: color 0.2s ease, transform 0.2s ease;
+    }
+
+    .dag-control-indicator:hover {
+      color: #bae6fd;
+      transform: translateY(-1px);
+    }
+
+    .dag-control-indicator-selected {
+      color: #e0f2fe;
+      text-shadow: 0 0 6px rgba(56, 189, 248, 0.7);
+    }
+
+    .dag-control-arrow {
+      width: 10px;
+      height: 22px;
+      display: block;
+      color: currentColor;
+    }
+
+    .dag-control-rate {
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Shared card chart containers (top cards). */
+    .metric-card-chart {
+      margin-top: 12px;
+      height: 120px;
+    }
+
+    .metric-card-chart canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* Metric labels can be highlighted to match active chart series colors. */
+    .metric-legend {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-left: 0;
+      transition: color 0.2s ease;
+    }
+
+    .metric-legend::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--legend-color, #94a3b8);
+      transform: translateY(-50%);
+      opacity: 0;
+      box-shadow: 0 0 6px var(--legend-color, #94a3b8);
+      transition: opacity 0.2s ease;
+    }
+
+    .metric-legend-active {
+      color: var(--legend-color, #94a3b8);
+      padding-left: 12px;
+    }
+
+    .metric-legend-active::before {
+      opacity: 1;
+    }
+
+    .brand-logo {
+      width: auto;
+      height: 36px;
+      display: block;
+      flex: 0 0 auto;
+    }
+
+    .dag-port {
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      font-size: 0.7rem;
+      color: #cbd5f5;
+    }
+
+    .dag-port-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 150px;
+      flex: 1;
+      text-align: right;
+    }
+
+    .dag-port-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 9999px;
+      background: rgba(148, 163, 184, 0.6);
+      box-shadow: 0 0 8px rgba(148, 163, 184, 0.5);
+      flex: 0 0 auto;
+      margin-left: 8px;
+    }
+
+    .dag-port-dot-active {
+      background: rgba(34, 197, 94, 0.9);
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.7);
+    }
+
+    .node-metric-rate-block {
+      display: grid;
+      gap: 6px;
+      padding: 10px 0;
+      border-top: 1px solid rgba(30, 41, 59, 0.6);
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .node-metric-rate-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+
+    .node-metric-rate-unit {
+      font-size: 0.65rem;
+      font-weight: 500;
+      color: #94a3b8;
+    }
+
+    .node-metric-rate-brief {
+      font-size: 0.7rem;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
+
+    .node-metric-rate-chart {
+      position: relative;
+      height: 192px;
+      border-radius: 12px;
+      border: 1px solid rgba(30, 41, 59, 0.6);
+      background: radial-gradient(circle at top, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.65));
+      padding: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .node-metric-rate-chart svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .node-metric-rate-chart canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .node-metric-rate-overlay {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 10px;
+      padding: 6px 8px;
+      font-size: 0.65rem;
+      color: #e2e8f0;
+      pointer-events: none;
+    }
+
+    /* Core selector popover and heatmap-like buttons. */
+    .core-overlay {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 220px;
+      max-width: 360px;
+      background: rgba(8, 13, 24, 0.98);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 12px;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
+      gap: 4px;
+      z-index: 30;
+      box-shadow: 0 18px 35px rgba(15, 23, 42, 0.55);
+    }
+
+    .core-cell {
+      height: 38px;
+      border-radius: 6px;
+      border: 1px solid rgba(15, 23, 42, 0.35);
+      font-size: 0.7rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 2px;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+      background: var(--core-color, rgba(51,65,85,0.7));
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.2);
+    }
+
+    .core-cell-sub {
+      font-size: 0.6rem;
+      font-weight: 500;
+      opacity: 0.9;
+    }
+
+    .core-cell:hover {
+      transform: translateY(-2px);
+      border-color: rgba(56, 189, 248, 0.8);
+    }
+
+    .core-cell-selected {
+      border-color: rgba(226, 232, 240, 0.85);
+      box-shadow: 0 0 0 2px rgba(248, 250, 252, 0.55);
+    }
+
+    .core-select-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.6);
+      background: rgba(51, 65, 85, 0.6);
+      box-shadow: 0 0 8px rgba(15, 23, 42, 0.6);
+    }
+
+    /* Inter-pipeline navigation chips rendered inside the DAG canvas. */
+    .pipeline-dag-nav {
+      position: absolute;
+      z-index: 4;
+      display: inline-flex;
+      align-items: center;
+      pointer-events: auto;
+      transform: translateY(-50%);
+    }
+
+    .pipeline-dag-nav-upstream {
+      transform: translate(-100%, -50%);
+    }
+
+    .pipeline-dag-nav-topic {
+      transform: translate(-50%, -50%);
+    }
+
+    .pipeline-dag-nav-line {
+      width: 14px;
+      height: 1px;
+      background: rgba(148, 163, 184, 0.6);
+      flex: 0 0 auto;
+    }
+
+    .pipeline-dag-nav-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      background: rgba(15, 23, 42, 0.92);
+      color: #e2e8f0;
+      padding: 4px 10px;
+      font-size: 0.68rem;
+      line-height: 1;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+    }
+
+    .pipeline-dag-nav-chip:hover {
+      border-color: rgba(56, 189, 248, 0.82);
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
+    }
+
+    .pipeline-dag-nav-chip:focus-visible {
+      outline: none;
+      border-color: rgba(56, 189, 248, 0.95);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+    }
+
+    .pipeline-dag-nav-chip-topic {
+      border-color: rgba(56, 189, 248, 0.38);
+      background: rgba(2, 132, 199, 0.22);
+      color: #dbeafe;
+      cursor: default;
+    }
+
+    .pipeline-dag-nav-chip-topic:hover {
+      transform: none;
+      border-color: rgba(56, 189, 248, 0.48);
+      box-shadow: none;
+    }
+
+    .dag-topic-link {
+      stroke: rgba(56, 189, 248, 0.62);
+      stroke-width: 1.6;
+      stroke-dasharray: 4 3;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+      fill: none;
+    }
+
+    /* Reusable custom switch used by zero/control/chart/theme toggles. */
+    .toggle-track {
+      position: relative;
+      width: 32px;
+      height: 16px;
+      border-radius: 999px;
+      background: rgba(51, 65, 85, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+
+    .toggle-thumb {
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      transition: transform 0.2s ease, background 0.2s ease;
+      box-shadow: 0 0 6px rgba(15, 23, 42, 0.4);
+    }
+
+    .toggle-track-active {
+      background: rgba(34, 197, 94, 0.35);
+      border-color: rgba(34, 197, 94, 0.7);
+    }
+
+    .toggle-track-active .toggle-thumb {
+      transform: translateX(16px);
+      background: #34d399;
+    }
+
+    .node-metric-rate-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      font-size: 0.7rem;
+      color: #94a3b8;
+    }
+
+    /* Edge styling states: idle/active/error + selection + dimming. */
+    .dag-edge {
+      fill: none;
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+      transition: stroke 0.2s ease, stroke-width 0.2s ease;
+    }
+
+    .dag-edge-label {
+      font-size: 10px;
+      paint-order: stroke;
+      stroke: rgba(2, 6, 23, 0.6);
+      stroke-width: 3px;
+      pointer-events: none;
+    }
+
+    .dag-edge-label-active {
+      fill: rgba(34, 197, 94, 0.9);
+    }
+
+    .dag-edge-label-idle {
+      fill: rgba(148, 163, 184, 0.45);
+    }
+
+    .dag-edge-error {
+      stroke: rgba(248, 113, 113, 0.9);
+      color: rgba(248, 113, 113, 0.9);
+    }
+
+    .dag-edge-label-error {
+      fill: rgba(248, 113, 113, 0.9);
+    }
+
+    .dag-dimmed {
+      opacity: 0.2;
+    }
+
+    .dag-node.dag-dimmed {
+      opacity: 0.25;
+    }
+
+    .dag-edge-selected {
+      opacity: 1;
+    }
+
+    .dag-edge-active {
+      stroke: rgba(34, 197, 94, 0.9);
+      color: rgba(34, 197, 94, 0.9);
+    }
+
+    .dag-edge-idle {
+      stroke: rgba(148, 163, 184, 0.45);
+      color: rgba(148, 163, 184, 0.45);
+    }
+
+    .dag-edge-active:hover,
+    .dag-edge-idle:hover {
+      stroke-width: 3;
+    }
+
+    .dag-edge-selected {
+      stroke-width: 4;
+      stroke-opacity: 1;
+      filter: drop-shadow(0 0 8px currentColor);
+      animation: edge-pulse 1.8s ease-in-out infinite;
+    }
+
+    /* Edge detail rail and channel-specific metric widgets. */
+    .channel-rail {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 0.9fr 1fr;
+      gap: 16px;
+      align-items: center;
+      margin-top: 12px;
+    }
+
+    .channel-rail::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 6%;
+      right: 6%;
+      height: 1px;
+      background: rgba(148, 163, 184, 0.35);
+    }
+
+    .channel-end,
+    .channel-mid {
+      position: relative;
+      z-index: 1;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.9);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.4);
+    }
+
+    .channel-end-label {
+      font-size: 0.55rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: #94a3b8;
+    }
+
+    .channel-end-id {
+      margin-top: 4px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+
+    .channel-end-right {
+      text-align: right;
+    }
+
+    .channel-metrics-right {
+      text-align: right;
+    }
+
+    .channel-mid-title {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: #94a3b8;
+      text-align: center;
+    }
+
+    .channel-mid-body {
+      margin-top: 8px;
+      font-size: 0.65rem;
+      text-align: left;
+    }
+
+    .channel-capacity {
+      margin-top: 8px;
+      font-size: 0.7rem;
+      color: #cbd5f5;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .channel-util {
+      margin-top: 10px;
+      font-size: 0.7rem;
+      color: #cbd5f5;
+      display: grid;
+      gap: 6px;
+    }
+
+    .channel-util-bar {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.2);
+      overflow: hidden;
+    }
+
+    .channel-util-fill {
+      height: 100%;
+      border-radius: 999px;
+    }
+
+    .channel-chart-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .channel-chart-canvas {
+      position: relative;
+      height: 192px;
+      align-self: start;
+    }
+
+    .channel-chart-canvas canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .channel-chart-legend {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-size: 0.65rem;
+      color: #e2e8f0;
+      display: grid;
+      gap: 6px;
+      min-width: 150px;
+    }
+
+    .channel-chart-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .channel-chart-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #cbd5f5;
+    }
+
+    .channel-chart-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      box-shadow: 0 0 8px currentColor;
+      flex: 0 0 auto;
+    }
+
+    @keyframes edge-pulse {
+      0% {
+        filter: drop-shadow(0 0 4px currentColor);
+        stroke-opacity: 0.7;
+      }
+      50% {
+        filter: drop-shadow(0 0 10px currentColor);
+        stroke-opacity: 1;
+      }
+      100% {
+        filter: drop-shadow(0 0 4px currentColor);
+        stroke-opacity: 0.7;
+      }
+    }
+
+    /* Invisible but wide click target for easier edge selection. */
+    .dag-edge-hit {
+      fill: none;
+      stroke: rgba(15, 23, 42, 0.01);
+      stroke-width: 14;
+      cursor: pointer;
+      pointer-events: stroke;
+    }
+
+    .dag-tooltip {
+      position: fixed;
+      max-width: 360px;
+      max-height: 360px;
+      overflow: auto;
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    /* Fullscreen mode only expands the DAG section; rest of page remains intact. */
+    body.dag-fullscreen {
+      overflow: hidden;
+    }
+
+    body.dag-fullscreen #top-panels {
+      display: none;
+    }
+
+    body.dag-fullscreen .scroll-sections {
+      padding-top: 0;
+    }
+
+    body.dag-fullscreen #dag-section {
+      position: fixed;
+      inset: 16px;
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+    }
+
+    body.dag-fullscreen .dag-viewport-frame {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    body.dag-fullscreen #dag-viewport {
+      height: 100%;
+    }
+
+    body.dag-fullscreen #toggle-dag-scope {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Day-mode palette overrides keep semantics while swapping luminance. */
+    body.day-mode {
+      background: var(--page-bg-day);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-position: center top;
+      background-size: 100vw 100vh;
+      color: #0f172a;
+    }
+
+    body.day-mode .sticky-panels::before {
+      background: var(--page-bg-day);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: 100vw 100vh;
+    }
+
+    body.day-mode .card {
+      background: rgba(255, 255, 255, 0.92);
+      border-color: rgba(148, 163, 184, 0.45);
+    }
+
+    body.day-mode .text-slate-100 { color: #0f172a; }
+    body.day-mode .text-slate-200 { color: #1e293b; }
+    body.day-mode .text-slate-300 { color: #1f2937; }
+    body.day-mode .text-slate-400 { color: #334155; }
+    body.day-mode .text-slate-500 { color: #475569; }
+
+    body.day-mode .bg-slate-900\/60,
+    body.day-mode .bg-slate-900\/70 {
+      background: rgba(248, 250, 252, 0.95);
+    }
+
+    body.day-mode .border-slate-700 { border-color: rgba(148, 163, 184, 0.6); }
+    body.day-mode .border-slate-600 { border-color: rgba(148, 163, 184, 0.7); }
+
+    body.day-mode .placeholder\:text-slate-500::placeholder {
+      color: #94a3b8;
+    }
+
+    body.day-mode #dag-viewport {
+      scrollbar-color: rgba(14, 116, 144, 0.5) rgba(226, 232, 240, 0.86);
+    }
+
+    body.day-mode #dag-viewport::-webkit-scrollbar-track {
+      background: rgba(226, 232, 240, 0.86);
+      border-color: rgba(148, 163, 184, 0.6);
+    }
+
+    body.day-mode #dag-viewport::-webkit-scrollbar-thumb {
+      background: linear-gradient(
+        180deg,
+        rgba(14, 116, 144, 0.66),
+        rgba(8, 145, 178, 0.55)
+      );
+      border-color: rgba(241, 245, 249, 0.95);
+    }
+
+    body.day-mode #dag-viewport::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(
+        180deg,
+        rgba(3, 105, 161, 0.72),
+        rgba(8, 145, 178, 0.64)
+      );
+    }
+
+    body.day-mode #dag-viewport::-webkit-scrollbar-corner {
+      background: rgba(226, 232, 240, 0.9);
+    }
+
+    body.day-mode .dag-node {
+      background: rgba(255, 255, 255, 0.95);
+      border-color: rgba(148, 163, 184, 0.6);
+      color: #475569;
+      box-shadow: 0 18px 35px rgba(148, 163, 184, 0.25);
+    }
+
+    body.day-mode .dag-node-id {
+      color: #0f172a;
+    }
+
+    body.day-mode .dag-port {
+      color: #334155;
+    }
+
+    body.day-mode .dag-lane-label { color: #475569; }
+    body.day-mode .dag-lane-bar { background: rgba(148, 163, 184, 0.7); }
+    body.day-mode .dag-edge-label { stroke: rgba(248, 250, 252, 0.9); }
+    body.day-mode .dag-edge-label-idle { fill: #475569; }
+    body.day-mode .dag-edge-idle {
+      stroke: rgba(100, 116, 139, 0.6);
+      color: rgba(100, 116, 139, 0.6);
+    }
+
+    body.day-mode .channel-end,
+    body.day-mode .channel-mid,
+    body.day-mode .channel-chart-legend,
+    body.day-mode .node-metric-rate-chart {
+      background: rgba(248, 250, 252, 0.95);
+      border-color: rgba(148, 163, 184, 0.45);
+    }
+
+    body.day-mode .pipeline-dag-nav-line {
+      background: rgba(100, 116, 139, 0.65);
+    }
+
+    body.day-mode .pipeline-dag-nav-chip {
+      background: rgba(241, 245, 249, 0.98);
+      border-color: rgba(148, 163, 184, 0.62);
+      color: #0f172a;
+    }
+
+    body.day-mode .pipeline-dag-nav-chip:hover,
+    body.day-mode .pipeline-dag-nav-chip:focus-visible {
+      border-color: rgba(3, 105, 161, 0.82);
+      box-shadow: 0 0 0 1px rgba(3, 105, 161, 0.3);
+    }
+
+    body.day-mode .pipeline-dag-nav-chip-topic {
+      background: rgba(224, 242, 254, 0.95);
+      border-color: rgba(56, 189, 248, 0.55);
+      color: #0c4a6e;
+      box-shadow: none;
+    }
+
+    body.day-mode .pipeline-dag-nav-chip-topic:hover {
+      border-color: rgba(14, 165, 233, 0.7);
+      box-shadow: none;
+    }
+
+    body.day-mode .dag-topic-link {
+      stroke: rgba(2, 132, 199, 0.68);
+    }
+
+    body.day-mode .channel-end-id,
+    body.day-mode .channel-capacity,
+    body.day-mode .channel-util,
+    body.day-mode .channel-mid-body {
+      color: #1f2937;
+    }
+
+    body.day-mode .channel-end-label,
+    body.day-mode .channel-mid-title {
+      color: #475569;
+    }
+
+    body.day-mode .node-metric-rate-chart {
+      background: radial-gradient(circle at top, rgba(248, 250, 252, 0.95), rgba(226, 232, 240, 0.85));
+    }
+
+    body.day-mode .node-metric-rate-overlay {
+      background: rgba(248, 250, 252, 0.95);
+      border-color: rgba(148, 163, 184, 0.5);
+      color: #0f172a;
+    }
+
+    body.day-mode .core-overlay {
+      background: rgba(255, 255, 255, 0.95);
+      border-color: rgba(148, 163, 184, 0.4);
+      box-shadow: 0 18px 35px rgba(148, 163, 184, 0.35);
+    }
+
+    body.day-mode .core-cell {
+      border-color: rgba(148, 163, 184, 0.4);
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25);
+    }
+
+    body.day-mode .dag-control-indicator {
+      color: #0284c7;
+    }
+
+    body.day-mode .dag-control-indicator-selected {
+      color: #0369a1;
+      text-shadow: 0 0 6px rgba(14, 116, 144, 0.45);
+    }
