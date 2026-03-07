@@ -1512,18 +1512,14 @@ mod test {
         assert_eq!(cloned.get_source_node(), None);
 
         let ack = AckMsg::new(cloned.clone());
-        assert!(
-            Context::next_ack(ack).is_none(),
-            "reset context must not route acks"
-        );
+        assert!(next_ack(ack).is_none(), "reset context must not route acks");
 
         let nack = NackMsg::new("test", cloned);
         assert!(
-            Context::next_nack(nack).is_none(),
+            next_nack(nack).is_none(),
             "reset context must not route nacks"
         );
     }
-
 
     // -----------------------------------------------------------------------
     // W13 — Interests gating tests for push_entry_frame / subscribe_to

@@ -24,7 +24,7 @@ policies:
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    channel_metrics: true
+    channel_metrics: basic
   resources:
     core_allocation:
       type: all_cores
@@ -98,7 +98,7 @@ groups:
               data_source: static
               generation_strategy: pre_generated
               traffic_config:
-                signals_per_second: 600000
+                signals_per_second: 100000
                 max_batch_size: 1000
                 max_signal_count: null
                 metric_weight: 0
@@ -129,7 +129,7 @@ groups:
             config:
               enable_ack_nack: true
               traffic_config:
-                signals_per_second: 600000
+                signals_per_second: 100000
                 max_batch_size: 1000
                 max_signal_count: null
                 metric_weight: 0
