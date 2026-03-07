@@ -1,0 +1,183 @@
+version: otel_dataflow/v1
+
+# Decoupled ingress scenario:
+# - ingress pipeline: OTLP receiver -> in-memory topic
+# - processing pipeline: topic receiver -> processing -> OTLP exporter
+# - backend pipeline: OTLP receiver sink for local end-to-end testing
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 1024
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config: {}
+        sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: itr
+          to: sink
+
+groups:
+  topic_decoupled_ingress:
+    topics:
+      ingress:
+        description: "Decoupled ingress buffer between OTLP ingest and processing/export"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+
+    pipelines:
+      traffic_gen:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 8
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          exporter:
+            type: exporter:otlp
+            config:
+              grpc_endpoint: "http://127.0.0.1:4527"
+              max_in_flight: 6
+
+        connections:
+          - from: receiver
+            to: exporter
+
+      ingress_otlp:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4527"
+                  wait_for_result: true
+
+          to_topic:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: otlp_recv
+            to: to_topic
+
+      processing_export:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          from_topic:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: processing_group
+
+          router:
+            type: processor:type_router
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+          retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          logs_exporter:
+            type: exporter:otlp
+            config:
+              grpc_endpoint: "http://127.0.0.1:4528"
+              max_in_flight: 6
+
+          metrics_exporter:
+            type: exporter:noop
+            config: null
+
+          traces_exporter:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: from_topic
+            to: router
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: traces_exporter
+          - from: retry
+            to: logs_exporter
+
+      backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          otlp_recv:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4528"
+                  wait_for_result: true
+
+          sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: otlp_recv
+            to: sink

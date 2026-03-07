@@ -47,6 +47,9 @@ byte-unit = { workspace = true }
 cpu-time = { workspace = true }
 memory-stats = { workspace = true }
 nix = { workspace = true, features = ["resource"] }
+parking_lot = { workspace = true }
+futures-core = { workspace = true }
+async-channel = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, optional = true }

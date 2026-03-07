@@ -130,6 +130,30 @@ pub struct NodeWithCustomAttributeSet {
     pub custom_attrs: CustomAttributeSet,
 }
 
+/// Node attributes extended with a topic name.
+#[attribute_set(name = "node.topic.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeWithTopicAttributeSet {
+    /// Base node attributes.
+    #[compose]
+    pub node_attrs: NodeAttributeSet,
+    /// Topic name associated with the node metrics.
+    #[attribute]
+    pub topic: Cow<'static, str>,
+}
+
+/// Node attributes (including custom telemetry attributes) extended with a topic name.
+#[attribute_set(name = "node.custom.topic.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeWithCustomTopicAttributeSet {
+    /// Base node + custom telemetry attributes.
+    #[compose]
+    pub node_custom_attrs: NodeWithCustomAttributeSet,
+    /// Topic name associated with the node metrics.
+    #[attribute]
+    pub topic: Cow<'static, str>,
+}
+
 /// A custom attribute set that holds arbitrary key-value pairs as a single
 /// "custom" attribute with a `Map` value. This allows extending telemetry
 /// with user-defined attributes without requiring static descriptors.

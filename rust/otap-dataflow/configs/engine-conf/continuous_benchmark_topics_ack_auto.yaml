@@ -1,0 +1,234 @@
+version: otel_dataflow/v1
+
+# Topic-based variant of continuous_benchmark.yaml.
+# This variant enables adaptive e2e Ack/Nack propagation across topic hops to
+# compare overhead/behavior against the disabled baseline.
+# This configuration keeps the same high-level benchmark shape (traffic
+# generators -> SUT -> backend) but replaces OTLP/gRPC inter-pipeline transport
+# with in-memory topics for direct performance comparison.
+#
+# Runtime CLI overrides:
+# - --num-cores / --core-id-range override top-level
+#   `policies.resources.core_allocation`.
+# - Pipeline/group-level `policies.resources` still take precedence over that
+#   top-level value.
+# - --http-admin-bind overrides `engine.http_admin.bind_address`.
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 4096
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config: {}
+        sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: itr
+          to: sink
+
+groups:
+  continuous_benchmark_topics_ack_auto:
+    policies:
+      channel_capacity:
+        control:
+          node: 256
+          pipeline: 256
+        pdata: 4096
+
+    # Topic declarations shared by all pipelines in this benchmark group.
+    # These two topics replace the ingress and backend gRPC sockets used in
+    # continuous_benchmark.yaml.
+    topics:
+      ingress:
+        description: "Traffic generators -> SUT ingress"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+          ack_propagation: auto
+      backend_logs:
+        description: "SUT logs output -> backend ingest"
+        policies:
+          queue_capacity: 4096
+          queue_on_full: block
+          ack_propagation: auto
+
+    pipelines:
+      # ======================================================================
+      # Traffic generation pipelines
+      # ======================================================================
+
+      traffic_gen1:
+        policies:
+          resources:
+            core_allocation:
+              # Keep traffic generation off SUT/backend cores to avoid starvation.
+              type: core_set
+              set:
+                - start: 2
+                  end: 16
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100000
+                max_batch_size: 1000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+          to_topic:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: receiver
+            to: to_topic
+
+      traffic_gen2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 21
+                  end: 35
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              traffic_config:
+                signals_per_second: 100000
+                max_batch_size: 1000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          to_topic:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: receiver
+            to: to_topic
+
+      # ======================================================================
+      # System Under Test pipeline
+      # ======================================================================
+      sut_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+
+        nodes:
+          topic_recv:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: sut_pipeline
+
+          router:
+            type: processor:type_router
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+          retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          logs_to_topic:
+            type: exporter:topic
+            config:
+              topic: backend_logs
+              queue_on_full: block
+
+          metrics_exporter:
+            type: exporter:noop
+            config: null
+
+          spans_exporter:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: topic_recv
+            to: router
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_to_topic
+
+      # ======================================================================
+      # Backend pipeline
+      # ======================================================================
+      backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                # Dedicated backend core (separate from SUT and generators).
+                - start: 17
+                  end: 17
+
+        nodes:
+          from_topic:
+            type: receiver:topic
+            config:
+              topic: backend_logs
+              subscription:
+                mode: balanced
+                group: backend_workers
+
+          perf_noop:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: from_topic
+            to: perf_noop
