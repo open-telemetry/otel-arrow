@@ -5250,6 +5250,17 @@
     return data;
   }
 
+  // Parse and validate snapshot timestamp payload.
+  // Returns null when value is missing or not a valid date.
+  function parseSnapshotTimestamp(value) {
+    if (value == null) return null;
+    const ts = new Date(value);
+    if (!Number.isFinite(ts.getTime())) {
+      return null;
+    }
+    return ts;
+  }
+
   async function fetchAndUpdate() {
     if (fetchInFlight) return;
     fetchInFlight = true;
@@ -5262,13 +5273,26 @@
         return;
       }
       latestAppliedFetchRequestId = requestId;
-      const ts = new Date(data.timestamp);
-      const sampleSeconds = lastSampleTs ? (ts - lastSampleTs) / 1000 : null;
+      setConnected(true);
+      hideError();
+
+      const ts = parseSnapshotTimestamp(data.timestamp);
+      if (!ts) {
+        showError("Received metrics snapshot with invalid timestamp; sample ignored.");
+        return;
+      }
+
+      const tsMs = ts.getTime();
+      const prevTsMs = lastSampleTs ? lastSampleTs.getTime() : null;
+      // Ignore stale/reordered snapshots to prevent negative or zero rate windows.
+      if (prevTsMs != null && tsMs <= prevTsMs) {
+        return;
+      }
+
+      const sampleSeconds = prevTsMs == null ? null : (tsMs - prevTsMs) / 1000;
       lastSampleTs = ts;
       lastSampleSeconds = sampleSeconds;
       lastUpdateEl.textContent = ts.toLocaleTimeString();
-      setConnected(true);
-      hideError();
       const metricSets = data.metric_sets || [];
       lastMetricSets = metricSets;
       updateInterPipelineTopologyState(metricSets);
