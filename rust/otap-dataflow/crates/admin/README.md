@@ -45,6 +45,7 @@ For the admin docs landing page, see
 - `ui/js/pipeline-utils.js`: attribute normalization and pipeline/core selectors.
 - `ui/js/engine-metrics.js`: engine card aggregation logic.
 - `ui/js/control-utils.js`, `ui/js/inter-pipeline-topology.js`: shared UI helpers.
+- `ui/js/dom-safety.js`: escaping helpers for HTML, attributes, and selector values.
 - `ui/vendor/*`: vendored browser runtime dependencies.
 
 Assets are embedded in the binary via `include_dir` and served by

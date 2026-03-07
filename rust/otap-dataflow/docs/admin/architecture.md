@@ -215,7 +215,8 @@ node --check crates/admin/ui/js/main.js \
   crates/admin/ui/js/pipeline-utils.js \
   crates/admin/ui/js/engine-metrics.js \
   crates/admin/ui/js/inter-pipeline-topology.js \
-  crates/admin/ui/js/control-utils.js
+  crates/admin/ui/js/control-utils.js \
+  crates/admin/ui/js/dom-safety.js
 ```
 
 ## Current limits

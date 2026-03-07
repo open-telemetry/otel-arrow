@@ -19,6 +19,7 @@
     resolveSelectedCoreId,
   } from "./pipeline-utils.js";
   import { deriveEngineCardValues, extractEngineSummary } from "./engine-metrics.js";
+  import { escapeAttr, escapeHtml, escapeSelectorValue } from "./dom-safety.js";
   import {
     buildInterPipelineTopology,
     createEmptyInterPipelineTopology,
@@ -128,7 +129,6 @@
   const dagLanes = document.getElementById("dag-lanes");
   const dagNodes = document.getElementById("dag-nodes");
   const dagEmpty = document.getElementById("dag-empty");
-  const tooltip = document.getElementById("tooltip");
   const edgeDetailMeta = document.getElementById("edge-detail-meta");
   const edgeDetailBody = document.getElementById("edge-detail-body");
   const pipelineSelect = document.getElementById("pipeline-select");
@@ -190,7 +190,6 @@
   const tabPanelTokio = document.getElementById("tab-panel-tokio");
 
   // Runtime state: selection, filtering, history caches, chart instances, and layout/zoom.
-  let activeTooltip = null;
   let zoomLevel = 1;
   let zoomUserOverridden = false;
   let dagDragState = null;
@@ -2822,36 +2821,6 @@
     return scaled.toFixed(2);
   }
 
-  function escapeHtml(value) {
-    return String(value == null ? "" : value).replace(
-      /[&<>"']/g,
-      (ch) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[ch]
-    );
-  }
-
-  function escapeAttr(value) {
-    return escapeHtml(value).replace(/`/g, "&#96;");
-  }
-
-  function escapeSelectorValue(value) {
-    const raw = String(value == null ? "" : value);
-    if (window.CSS && typeof window.CSS.escape === "function") {
-      return window.CSS.escape(raw);
-    }
-    return raw
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/\[/g, "\\[")
-      .replace(/\]/g, "\\]");
-  }
-
   function normalizeUnit(unit) {
     return unit ? String(unit).replace(/[{}]/g, "").trim() : "";
   }
@@ -3091,19 +3060,6 @@
           return `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${safeKey}</span><span class="font-mono text-slate-200">${safeValue}</span></div>`;
         }
       )
-      .join("");
-  }
-
-  function renderMetrics(metrics) {
-    if (!metrics || !metrics.length) {
-      return '<div class="text-slate-400">No metrics.</div>';
-    }
-    return metrics
-      .map((metric) => {
-        const safeMetricName = escapeHtml(metric.name);
-        const safeValue = escapeHtml(formatValueWithUnit(metric.value, metric.unit));
-        return `<div class="flex items-start justify-between gap-3"><span class="text-slate-300">${safeMetricName}</span><span class="font-mono text-slate-200">${safeValue}</span></div>`;
-      })
       .join("");
   }
 
@@ -4347,29 +4303,6 @@
     return out;
   }
 
-  function showTooltip(content, event) {
-    tooltip.textContent = String(content == null ? "" : content);
-    tooltip.classList.remove("hidden");
-    activeTooltip = tooltip.textContent;
-    moveTooltip(event);
-  }
-
-  function moveTooltip(event) {
-    if (!activeTooltip) return;
-    const padding = 12;
-    const maxX = window.innerWidth - tooltip.offsetWidth - padding;
-    const maxY = window.innerHeight - tooltip.offsetHeight - padding;
-    const x = Math.min(event.clientX + padding, maxX);
-    const y = Math.min(event.clientY + padding, maxY);
-    tooltip.style.left = `${x}px`;
-    tooltip.style.top = `${y}px`;
-  }
-
-  function hideTooltip() {
-    activeTooltip = null;
-    tooltip.classList.add("hidden");
-  }
-
   function computeEdgeRates(edges, displayTimeMs, sampleSeconds) {
     const rates = new Map();
     edges.forEach((edge) => {
@@ -4863,7 +4796,6 @@
 
     dagEmpty.classList.toggle("hidden", edges.length > 0);
 
-    hideTooltip();
     dagNodes.innerHTML = "";
     dagEdges.innerHTML = "";
     dagLanes.innerHTML = "";
