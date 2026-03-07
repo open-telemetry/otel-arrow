@@ -3,15 +3,15 @@
 ## Overview
 
 This document describes the architecture of the extension
-system in the OTAP dataflow engine — what extensions are,
+system in the OTAP dataflow engine -- what extensions are,
 how they integrate into the pipeline lifecycle, and how to
 implement new ones.
 
 ## What Are Extensions?
 
 Extensions are standalone pipeline components that provide
-**shared, cross-cutting capabilities** — such as authentication,
-service discovery, or health checking — to data-path nodes
+**shared, cross-cutting capabilities** -- such as authentication,
+service discovery, or health checking -- to data-path nodes
 (receivers, exporters). They are configured as siblings to
 `nodes`, not as nodes themselves, and they never touch pipeline
 data directly.
@@ -21,11 +21,11 @@ data directly.
 Before extensions, cross-cutting concerns like authentication
 were embedded directly inside individual exporters. This led to:
 
-- **Duplication** — every exporter needing auth carried its own
+- **Duplication** -- every exporter needing auth carried its own
   credential management, token refresh loop, and retry logic.
-- **Tight coupling** — credential-specific dependencies (e.g.,
+- **Tight coupling** -- credential-specific dependencies (e.g.,
   `azure_identity`) leaked into exporter crates even when unused.
-- **No sharing** — multiple exporters targeting the same tenant
+- **No sharing** -- multiple exporters targeting the same tenant
   each acquired and refreshed tokens independently.
 
 Extensions solve this by extracting shared capabilities into
@@ -40,36 +40,36 @@ no wasted resources.
 ## Architecture Overview
 
 ```text
-┌───────────────────────────────────────────────┐
-│               Pipeline Engine                 │
-│                                               │
-│  ┌─────────────┐  ┌─────────────┐             │
-│  │ Extension A │  │ Extension B │  ...        │
-│  │ (auth)      │  │ (background)│             │
-│  │ Arc<State>  │  └─────────────┘             │
-│  └──────┬──────┘                              │
-│         │ extension_traits!() macro           │
-│         │ clones self per trait, producing    │
-│         │ Vec<TraitRegistration>              │
-│         v                                     │
-│  ┌──────────────────────┐                     │
-│  │  ExtensionRegistry   │  (built once)       │
-│  │  stores cloned trait │                     │
-│  │  objects by name     │                     │
-│  └──┬───────────────┬───┘                     │
-│     │ clone()       │ clone()                 │
-│     v               v                         │
-│  ┌──────────┐  ┌──────────┐                   │
-│  │ Receiver │  │ Exporter │                   │
-│  │ (own     │  │ (own     │                   │
-│  │  registry│  │  registry│                   │
-│  │  clone)  │  │  clone)  │                   │
-│  └──────────┘  └──────────┘                   │
-│                                               │
-│  get() returns a cloned Box<dyn Trait>;       │
-│  all clones share state via Arc inside the    │
-│  extension — the registry itself is stateless.│
-└───────────────────────────────────────────────┘
++-----------------------------------------------+
+|               Pipeline Engine                 |
+|                                               |
+|  +-------------+  +-------------+             |
+|  | Extension A |  | Extension B |  ...        |
+|  | (auth)      |  | (background)|             |
+|  | Arc<State>  |  +-------------+             |
+|  +------+------+                              |
+|         | extension_traits!() macro           |
+|         | clones self per trait, producing    |
+|         | Vec<TraitRegistration>              |
+|         v                                     |
+|  +----------------------+                     |
+|  |  ExtensionRegistry   |  (built once)       |
+|  |  stores cloned trait |                     |
+|  |  objects by name     |                     |
+|  +--+---------------+---+                     |
+|     | clone()       | clone()                 |
+|     v               v                         |
+|  +----------+  +----------+                   |
+|  | Receiver |  | Exporter |                   |
+|  | (own     |  | (own     |                   |
+|  |  registry|  |  registry|                   |
+|  |  clone)  |  |  clone)  |                   |
+|  +----------+  +----------+                   |
+|                                               |
+|  get() returns a cloned Box<dyn Trait>;       |
+|  all clones share state via Arc inside the    |
+|  extension -- the registry itself is stateless|
++-----------------------------------------------+
 ```
 
 ### Key Design Decisions
@@ -78,7 +78,7 @@ no wasted resources.
    spawns extensions before any data-path nodes so their
    capabilities are available at initialization. At shutdown,
    extensions terminate only after all data-path nodes have
-   drained — ensuring capabilities like auth tokens remain
+   drained -- ensuring capabilities like auth tokens remain
    available during final flushes.
 
 2. **PData-free.** Extensions are completely decoupled from
@@ -104,7 +104,7 @@ no wasted resources.
 5. **Registry-based lookup.** Receivers and exporters receive
    an `ExtensionRegistry` at `start()` and look up extensions
    by name and trait. Processors don't currently receive the
-   registry, but adding it is trivial — the same
+   registry, but adding it is trivial -- the same
    `extension_registry.clone()` pattern applies directly.
    If you have a use case for this, please comment.
 
@@ -119,7 +119,7 @@ no wasted resources.
 ### Extension Trait
 
 The lifecycle contract every extension implements. Two
-variants exist — local and shared — mirroring the pattern
+variants exist -- local and shared -- mirroring the pattern
 used by receivers and exporters.
 
 **Local** (`engine/src/local/extension.rs`):
@@ -215,31 +215,31 @@ Each variant holds:
 
 Responsibilities:
 
-- **Construction** — `ExtensionWrapper::local()` and
+- **Construction** -- `ExtensionWrapper::local()` and
   `::shared()` create the control channel and box the
   extension.
-- **Trait registration** — `register_traits()` calls
+- **Trait registration** -- `register_traits()` calls
   the extension's `extension_traits()` and inserts the
   results into the `ExtensionRegistry` under the
   extension's name.
-- **Control sender** — `extension_control_sender()`
+- **Control sender** -- `extension_control_sender()`
   produces an `ExtensionControlSender` that the engine
   stores separately for shutdown orchestration.
-- **Start** — `start()` takes ownership, constructs the
+- **Start** -- `start()` takes ownership, constructs the
   appropriate `ControlChannel` and `EffectHandler`, and
   calls the extension's `start()` method. No
-  `PipelineCtrlMsgSender` is passed — extensions are
+  `PipelineCtrlMsgSender` is passed -- extensions are
   fully PData-free.
-- **Telemetry** — implements `TelemetryWrapped` for
+- **Telemetry** -- implements `TelemetryWrapped` for
   control-channel metrics and node telemetry guards.
 
 `ExtensionWrapper` does **not** implement `Node<PData>` or
-`Controllable<PData>` — extensions are not data-path nodes.
+`Controllable<PData>` -- extensions are not data-path nodes.
 
 ### ExtensionControlMsg
 
 Defined in `engine/src/control.rs`. A PData-free subset of
-`NodeControlMsg` — extensions never process pipeline data,
+`NodeControlMsg` -- extensions never process pipeline data,
 so they have no `Ack`, `Nack`, or `DelayedData` variants.
 
 ```rust
@@ -256,12 +256,12 @@ pub enum ExtensionControlMsg {
 
 Each variant:
 
-- **`Config`** — notifies the extension of a configuration
+- **`Config`** -- notifies the extension of a configuration
   change (hot reload).
-- **`TimerTick`** — periodic tick from the engine.
-- **`CollectTelemetry`** — asks the extension to flush its
+- **`TimerTick`** -- periodic tick from the engine.
+- **`CollectTelemetry`** -- asks the extension to flush its
   local metrics into the provided `MetricsReporter`.
-- **`Shutdown`** — requests graceful shutdown with a
+- **`Shutdown`** -- requests graceful shutdown with a
   deadline and human-readable reason.
 
 These messages flow through a dedicated channel per
@@ -331,20 +331,20 @@ different capabilities through granular interfaces:
 extension_traits!(BearerTokenProvider, HealthCheck);
 ```
 
-This is useful for extensibility and version management —
+This is useful for extensibility and version management --
 an extension can implement both `TraitA` and `TraitAv2`
 simultaneously, letting consumers migrate at their own
 pace while the extension supports both versions.
 
 Error discrimination:
 
-- **`NotFound`** — no extension registered under that name.
-- **`TraitNotImplemented`** — extension exists but doesn't
+- **`NotFound`** -- no extension registered under that name.
+- **`TraitNotImplemented`** -- extension exists but doesn't
   expose the requested trait.
 
 ### Sealed Traits and the `extension_traits!` Macro
 
-**Sealed traits** — The `ExtensionTrait` marker trait
+**Sealed traits** -- The `ExtensionTrait` marker trait
 (`engine/src/extension/registry.rs`) restricts which trait
 types can be stored in the registry. It uses a sealed
 pattern:
@@ -366,10 +366,10 @@ impl ExtensionTrait for dyn BearerTokenProvider {}
 
 Because `Sealed` is `pub(crate)`, external crates can
 *implement* existing extension traits but cannot define
-new trait types — keeping the set of extension capabilities
+new trait types -- keeping the set of extension capabilities
 well-defined and documented within the engine crate.
 
-**`extension_traits!` macro** — A convenience macro that
+**`extension_traits!` macro** -- A convenience macro that
 extension writers use inside their `impl Extension` block
 to wire up trait registration:
 
@@ -391,16 +391,16 @@ be error-prone:
 - Verifies the concrete type implements each listed trait
   plus `Clone + Send + 'static`.
 - Creates monomorphised `coerce` function pointers for
-  type-safe downcasting — these are the `fn` pointers
+  type-safe downcasting -- these are the `fn` pointers
   stored in `TraitRegistration` that the registry uses
   to produce `Box<dyn Trait>` on lookup.
 
 Without the macro, extension writers would need to
 manually construct `TraitRegistration` values with the
-correct `TypeId` and coerce functions — a process that
+correct `TypeId` and coerce functions -- a process that
 is both tedious and easy to get wrong.
 
-The macro's `Clone` requirement is intentional — it
+The macro's `Clone` requirement is intentional -- it
 signals to extension developers that their type will be
 cloned during registration (and again on each registry
 `get()` call). This encourages holding internal state
@@ -413,7 +413,7 @@ state.
 An alternative design would have the registry store
 `Arc<dyn Trait>` directly, giving true single-instance
 sharing via pointer incrementation. However, `Arc`
-requires `Sync` on the inner type — which conflicts with
+requires `Sync` on the inner type -- which conflicts with
 the engine's architecture where neither local nor shared
 components require `Sync`. By using boxed deep clones
 with a `Send`-only requirement, the registry works
@@ -426,7 +426,7 @@ imposing `Sync` at the trait boundary.
 
 Extension traits (e.g., `BearerTokenProvider`) require
 `Send` but not `Sync`. There is no `!Send` variant of
-extension traits — unlike the `Extension` lifecycle trait
+extension traits -- unlike the `Extension` lifecycle trait
 which has local/shared variants. This simplifies
 extension implementation: a single trait implementation
 works for both local and shared consumers.
@@ -439,7 +439,7 @@ adds complexity at multiple levels:
   (no separate registry needed). But it introduces a
   decision point for every new trait: `Send`-only or
   `Send + Sync`?
-- **`!Send`** cannot coexist in the same registry — any
+- **`!Send`** cannot coexist in the same registry -- any
   `!Send` value (e.g., `Rc`) poisons the registry's
   `Send` bound, making it unusable by shared components.
   A separate local-only registry or a split view would
@@ -450,12 +450,12 @@ adds complexity at multiple levels:
   storage path.
 
 `Send`-only avoids all of this: one storage mechanism,
-one macro, one mental model — and it covers all current
+one macro, one mental model -- and it covers all current
 use cases.
 
 #### Returning `Sync` Values from `Send`-Only Traits
 
-Some consumers need `Send + Sync` values — for example,
+Some consumers need `Send + Sync` values -- for example,
 tonic interceptors must be `Clone + Send + Sync`. The
 current design handles this without requiring `Sync` on
 the trait object itself: the extension trait stays
@@ -506,7 +506,7 @@ pub trait BearerTokenProvider: Send {
   to prevent accidental credential leakage in logs.
 - **`subscribe_token_refresh()`** returns a
   `tokio::sync::watch::Receiver` for reactive
-  notification when tokens are refreshed — consumers
+  notification when tokens are refreshed -- consumers
   can update HTTP headers in a `tokio::select!` branch
   without polling.
 
@@ -540,7 +540,7 @@ pub trait BearerTokenProvider: Send {
 }
 ```
 
-**2. Seal it** in the same file — these two lines
+**2. Seal it** in the same file -- these two lines
 register the trait for use with the registry:
 
 ```rust
@@ -579,7 +579,7 @@ pub struct AzureIdentityAuthExtension {
 }
 ```
 
-All state is behind `Arc` — cloning is cheap and all
+All state is behind `Arc` -- cloning is cheap and all
 clones observe the same token broadcast channel.
 
 **2. Implement the extension trait** on the struct:
@@ -654,7 +654,7 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION:
 
 ### Using an Extension
 
-**1. Configure it** in the pipeline YAML — extensions
+**1. Configure it** in the pipeline YAML -- extensions
 are siblings to `nodes`, not inside them:
 
 ```yaml
@@ -679,9 +679,9 @@ groups:
 
 Supports two auth methods:
 
-- **`managed_identity`** — system or user-assigned
+- **`managed_identity`** -- system or user-assigned
   managed identity (production).
-- **`development`** — Azure CLI / Developer CLI
+- **`development`** -- Azure CLI / Developer CLI
   credentials (local development).
 
 **2. Look it up** from a consumer at `start()` and
@@ -738,9 +738,9 @@ start, steady-state, and shutdown phases.
    |  then for extensions
    +- Create data-path nodes (receivers,
    |  processors, exporters)
-   +- create_extension() — factory lookup by URN,
+   +- create_extension() -- factory lookup by URN,
    |  config parsing, ExtensionWrapper creation
-   +- register_traits() — collect
+   +- register_traits() -- collect
    |  TraitRegistration from each extension,
    |  insert into ExtensionRegistry
    +- Telemetry setup (channel metrics, node
@@ -791,5 +791,4 @@ This is because extensions use `ExtensionControlMsg`
 (PData-free) rather than `NodeControlMsg<PData>`, and
 keeping them separate ensures the pipeline control
 channel can close naturally when all data-path senders
-are dropped — without extensions holding it open.
-
+are dropped -- without extensions holding it open.
