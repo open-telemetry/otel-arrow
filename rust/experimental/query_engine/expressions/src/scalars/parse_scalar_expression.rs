@@ -174,13 +174,13 @@ impl ParseJsonPathScalarExpression {
         match self.inner_expression.try_resolve_static(scope)? {
             Some(s) => match s.as_ref().to_value() {
                 Value::String(s) => {
-                    let mut values = Self::parse_json_path(&query_location, s.get_value())?;
+                    let values = Self::parse_json_path(&query_location, s.get_value())?;
 
                     Ok(Some(ResolvedStaticScalarExpression::Computed(
                         StaticScalarExpression::Array(ArrayScalarExpression::new(
                             self.query_location.clone(),
                             values
-                                .drain(..)
+                                .into_iter()
                                 .map(|v| match v {
                                     ParsedSelector::Index(i) => StaticScalarExpression::Integer(
                                         IntegerScalarExpression::new(QueryLocation::new_fake(), i),

@@ -169,6 +169,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "flaky test, see https://github.com/open-telemetry/otel-arrow/issues/2227"]
     fn multiple_input_output() {
         Scenario::new()
             .pipeline(
