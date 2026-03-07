@@ -9,8 +9,8 @@
 use crate::AppState;
 use axum::Router;
 use axum::extract::Path;
-use axum::http::StatusCode;
 use axum::http::header;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use include_dir::Dir;
@@ -18,6 +18,38 @@ use include_dir::Dir;
 /// Embedded UI files compiled into the binary.
 static UI_FILES: Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/ui");
 const CACHE_CONTROL_NO_STORE: &str = "no-store, no-cache, must-revalidate";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const X_CONTENT_TYPE_OPTIONS_NO_SNIFF: &str = "nosniff";
+const X_FRAME_OPTIONS_DENY: &str = "DENY";
+const REFERRER_POLICY_NO_REFERRER: &str = "no-referrer";
+
+fn build_ui_headers(content_type: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let _ = headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(CACHE_CONTROL_NO_STORE),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static(X_CONTENT_TYPE_OPTIONS_NO_SNIFF),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static(X_FRAME_OPTIONS_DENY),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static(REFERRER_POLICY_NO_REFERRER),
+    );
+    if let Some(value) = content_type.and_then(|v| HeaderValue::from_str(v).ok()) {
+        let _ = headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers
+}
 
 /// Routes for the embedded UI.
 pub(crate) fn routes() -> Router<AppState> {
@@ -45,11 +77,8 @@ async fn index() -> Response {
             .into_response();
     };
 
-    (
-        [(header::CACHE_CONTROL, CACHE_CONTROL_NO_STORE)],
-        Html(index_html),
-    )
-        .into_response()
+    let headers = build_ui_headers(Some("text/html; charset=utf-8"));
+    (headers, Html(index_html)).into_response()
 }
 
 /// Handler that serves embedded static assets for the UI.
@@ -64,12 +93,6 @@ async fn static_asset(Path(path): Path<String>) -> Response {
     };
 
     let mime = mime_guess::from_path(relative_path).first_or_octet_stream();
-    (
-        [
-            (header::CACHE_CONTROL, CACHE_CONTROL_NO_STORE),
-            (header::CONTENT_TYPE, mime.as_ref()),
-        ],
-        file.contents(),
-    )
-        .into_response()
+    let headers = build_ui_headers(Some(mime.as_ref()));
+    (headers, file.contents()).into_response()
 }

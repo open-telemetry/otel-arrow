@@ -1102,11 +1102,7 @@
       if (metricMode === "errors") {
         label.textContent = formatRateWithUnit(activity.errorRate, "error");
       } else {
-        const scaledRecvRate =
-          activity.recvRate == null || !Number.isFinite(activity.recvRate)
-            ? null
-            : activity.recvRate * 1000;
-        label.textContent = formatSignalRate(scaledRecvRate);
+        label.textContent = formatRateWithUnit(activity.recvRate, "message");
       }
       if (focusSets && !focusSets.edges.has(edge.id)) {
         label.classList.add("dag-dimmed");
@@ -2769,25 +2765,6 @@
     if (value >= 100) return `${value.toFixed(0)}/s`;
     if (value >= 10) return `${value.toFixed(1)}/s`;
     return `${value.toFixed(2)}/s`;
-  }
-
-  function formatCompactNumber(value) {
-    if (value == null || !Number.isFinite(value)) return "n/a";
-    const units = ["", "K", "M", "B"];
-    let unitIndex = 0;
-    let num = value;
-    while (num >= 1000 && unitIndex < units.length - 1) {
-      num /= 1000;
-      unitIndex += 1;
-    }
-    const precision = num >= 100 ? 0 : num >= 10 ? 1 : 2;
-    return `${num.toFixed(precision)}${units[unitIndex]}`;
-  }
-
-  function formatSignalRate(value) {
-    const compact = formatCompactNumber(value);
-    if (compact === "n/a") return compact;
-    return `${compact} signal/s`;
   }
 
   function formatRateWithUnit(rate, unit) {
@@ -5172,9 +5149,7 @@
       if (metricMode === "errors") {
         receiverLabel.textContent = formatRateWithUnit(activity.errorRate, "error");
       } else {
-        const scaledRecvRate =
-          recvRate == null || !Number.isFinite(recvRate) ? null : recvRate * 1000;
-        receiverLabel.textContent = formatSignalRate(scaledRecvRate);
+        receiverLabel.textContent = formatRateWithUnit(recvRate, "message");
       }
       if (focusSets && !focusSets.edges.has(edge.id)) {
         receiverLabel.classList.add("dag-dimmed");
