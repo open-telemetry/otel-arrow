@@ -1,0 +1,69 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for OTel-Arrow
+type: Feature
+labels: ["Feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement!
+        Please describe the feature you'd like to see and how it would help your use case.
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Pre-filing checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component(s)
+      description: Which component(s) does this feature relate to?
+      multiple: true
+      options:
+        - Rust OTAP dataflow (rust/otap-dataflow/)
+        - Rust Beaubourg (rust/beaubourg/)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of the problem.
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: A clear and concise description of what you want to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or features you've considered.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, references, or screenshots about the feature request.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        **Tip:** React with :+1: to help us prioritize this issue. Use comments to add helpful context, not just "+1".
