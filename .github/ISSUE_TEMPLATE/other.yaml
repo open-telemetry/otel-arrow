@@ -1,11 +1,11 @@
 name: Other Issue
-description: Report an issue that isn't a bug or feature request
+description: Report an issue that doesn't fit the bug, feature request, or task templates
 labels: ["triage:deciding"]
 body:
   - type: markdown
     attributes:
       value: |
-        Use this template for questions, refactoring proposals, CI/build problems, or anything else that doesn't fit the bug or feature request templates.
+        Use this template for questions, discussion topics, or anything else that doesn't fit the bug, feature request, or task templates.
 
   - type: checkboxes
     id: searched

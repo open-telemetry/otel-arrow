@@ -1,5 +1,6 @@
 name: Bug Report
 description: Report a bug in OTel-Arrow
+type: Bug
 labels: ["Bug"]
 body:
   - type: markdown
@@ -69,8 +70,8 @@ body:
     id: version
     attributes:
       label: OTel-Arrow Version
-      description: The OTel-Arrow version.
-      placeholder: "e.g., v0.46.0"
+      description: The OTel-Arrow version or commit hash.
+      placeholder: "e.g., bae72455"
     validations:
       required: true
 
