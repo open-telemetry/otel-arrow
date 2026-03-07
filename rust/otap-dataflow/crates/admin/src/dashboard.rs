@@ -1,31 +1,98 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Dashboard endpoint.
+//! Embedded admin UI endpoints.
 //!
-//! Serves a self-contained HTML page at `/dashboard` that auto-refreshes
-//! engine-level metrics (RSS, CPU, heap, uptime, core count) by polling
-//! the existing `/metrics?format=json` endpoint.
+//! Serves the embedded admin UI at `/` and `/dashboard`.
+//! Static assets are served from `/static/*`.
 
 use crate::AppState;
 use axum::Router;
+use axum::extract::Path;
 use axum::http::header;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use include_dir::Dir;
 
-/// The embedded dashboard HTML (compiled into the binary).
-const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+/// Embedded UI files compiled into the binary.
+static UI_FILES: Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/ui");
+const CACHE_CONTROL_NO_STORE: &str = "no-store, no-cache, must-revalidate";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const X_CONTENT_TYPE_OPTIONS_NO_SNIFF: &str = "nosniff";
+const X_FRAME_OPTIONS_DENY: &str = "DENY";
+const REFERRER_POLICY_NO_REFERRER: &str = "no-referrer";
 
-/// Routes for the dashboard.
-pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/dashboard", get(dashboard))
+fn build_ui_headers(content_type: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let _ = headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(CACHE_CONTROL_NO_STORE),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static(X_CONTENT_TYPE_OPTIONS_NO_SNIFF),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static(X_FRAME_OPTIONS_DENY),
+    );
+    let _ = headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static(REFERRER_POLICY_NO_REFERRER),
+    );
+    if let Some(value) = content_type.and_then(|v| HeaderValue::from_str(v).ok()) {
+        let _ = headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers
 }
 
-/// Handler that serves the dashboard page with no-cache headers.
-async fn dashboard() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(DASHBOARD_HTML),
-    )
-        .into_response()
+/// Routes for the embedded UI.
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(index))
+        .route("/dashboard", get(index))
+        .route("/static/{*path}", get(static_asset))
+}
+
+/// Handler that serves the UI index page with no-cache headers.
+async fn index() -> Response {
+    let Some(file) = UI_FILES.get_file("index.html") else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Embedded UI is missing index.html",
+        )
+            .into_response();
+    };
+
+    let Some(index_html) = file.contents_utf8() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Embedded index.html is not valid UTF-8",
+        )
+            .into_response();
+    };
+
+    let headers = build_ui_headers(Some("text/html; charset=utf-8"));
+    (headers, Html(index_html)).into_response()
+}
+
+/// Handler that serves embedded static assets for the UI.
+async fn static_asset(Path(path): Path<String>) -> Response {
+    let relative_path = path.trim_start_matches('/');
+    if relative_path.is_empty() {
+        return (StatusCode::NOT_FOUND, "Asset path is empty").into_response();
+    }
+
+    let Some(file) = UI_FILES.get_file(relative_path) else {
+        return (StatusCode::NOT_FOUND, "Asset not found").into_response();
+    };
+
+    let mime = mime_guess::from_path(relative_path).first_or_octet_stream();
+    let headers = build_ui_headers(Some(mime.as_ref()));
+    (headers, file.contents()).into_response()
 }

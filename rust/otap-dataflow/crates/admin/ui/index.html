@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rust Dataflow Engine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- External UI helpers: utility classes and chart runtime. -->
+  <script src="/static/vendor/tailwindcss.cdn.js"></script>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <!-- Base shell styles + app-specific visual system. -->
+  <link rel="stylesheet" href="/static/styles.css" />
+
+  <link rel="stylesheet" href="/static/css/ui.css" />
+</head>
+<body class="min-h-screen text-slate-100">
+<div class="max-w-6xl mx-auto px-4 py-6">
+  <!-- Sticky zone: remains pinned on desktop and contains global controls + summary cards. -->
+  <div id="top-panels" class="sticky-panels space-y-6">
+  <!-- App header: time controls, connection, and theme toggles. -->
+  <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <div class="flex items-center gap-3">
+        <img src="/static/opentelemetry-logo.svg" alt="OpenTelemetry logo" class="brand-logo" />
+        <h1 class="text-2xl font-semibold tracking-tight">
+          Rust Dataflow Engine
+        </h1>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <label class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+          <span>Window</span>
+          <select id="window-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
+            <option value="1">1m</option>
+            <option value="5" selected>5m</option>
+            <option value="15">15m</option>
+            <option value="60">1h</option>
+          </select>
+        </label>
+        <div class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+          <button id="scrub-toggle" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200">Freeze</button>
+          <input id="scrub-slider" type="range" min="0" max="300000" step="1000" value="300000" class="w-40 accent-emerald-500" disabled />
+          <span id="scrub-label" class="font-mono text-slate-300">Live</span>
+        </div>
+        <label id="toggle-zero-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input id="toggle-zero" type="checkbox" class="sr-only" />
+          <span>Hide zero activity</span>
+          <span id="toggle-zero-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div class="flex flex-col sm:items-end gap-2">
+      <div class="flex items-center gap-3 text-sm">
+        <label id="theme-toggle-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs cursor-pointer">
+          <input id="theme-toggle" type="checkbox" class="sr-only" />
+          <span id="theme-toggle-label" class="text-slate-400">Night</span>
+          <span id="theme-toggle-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+        <span id="connection-dot" class="status-dot bg-red-500 shadow-lg shadow-red-500/60"></span>
+        <span id="connection-status" class="font-medium text-red-400">
+            Disconnected
+          </span>
+      </div>
+      <div class="text-xs text-slate-400">
+        Last update:
+        <span id="last-update" class="font-mono">never</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="card rounded-2xl p-4 shadow-lg">
+    <!-- Engine-level metrics (aggregated across pipelines/groups). -->
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <h2 class="text-lg font-semibold tracking-tight">Engine Metrics</h2>
+    </div>
+    <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div id="card-engine-cpu" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          CPU
+        </div>
+        <div id="engine-cpu-util" class="text-2xl font-semibold">n/a</div>
+        <div class="metric-card-chart hidden mt-2" data-chart="engine-cpu">
+          <canvas id="engineChartCpu"></canvas>
+        </div>
+      </div>
+
+      <div id="card-engine-memory" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          RSS
+        </div>
+        <div id="engine-memory-rss" class="text-2xl font-semibold">n/a</div>
+        <div class="metric-card-chart hidden mt-2" data-chart="engine-memory">
+          <canvas id="engineChartMemory"></canvas>
+        </div>
+      </div>
+
+      <div id="card-engine-cores" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Cores
+        </div>
+        <div id="engine-core-count" class="text-2xl font-semibold">0</div>
+      </div>
+
+      <div id="card-engine-pipelines" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Pipelines
+        </div>
+        <div id="engine-pipeline-count" class="text-2xl font-semibold">0</div>
+      </div>
+
+      <div id="card-engine-groups" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Groups
+        </div>
+        <div id="engine-group-count" class="text-2xl font-semibold">0</div>
+      </div>
+
+      <div id="card-engine-uptime" class="card rounded-2xl px-3 py-2 shadow-lg">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Uptime
+        </div>
+        <div id="engine-uptime" class="text-2xl font-semibold">n/a</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card rounded-2xl p-4 shadow-lg">
+    <!-- Pipeline-focused cards; selectors scope all downstream topology/detail views. -->
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 class="text-lg font-semibold tracking-tight">Pipeline Engine Metrics</h2>
+        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <label class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+            <span>Pipeline</span>
+            <select id="pipeline-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none"></select>
+          </label>
+          <div id="core-selector" class="relative flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+            <span>Core</span>
+            <button id="core-select-btn" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
+              <span id="core-select-swatch" class="core-select-swatch"></span>
+              <span id="core-select-value">n/a</span>
+              <span class="text-slate-400">▾</span>
+            </button>
+            <div id="core-overlay" class="core-overlay hidden"></div>
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <label class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+          <span>View</span>
+          <select id="view-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
+            <option value="general" selected>General</option>
+            <option value="tokio">Tokio runtime</option>
+          </select>
+        </label>
+        <label id="pipeline-chart-toggle-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input id="pipeline-chart-toggle" type="checkbox" class="sr-only" />
+          <span>Charts</span>
+          <span id="pipeline-chart-toggle-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+    <div id="tab-panel-general" class="mt-6">
+      <!-- General OS/process metrics for the selected pipeline/core scope. -->
+      <div class="mt-4 grid gap-4 md:grid-cols-3">
+        <div id="card-pipe-cpu" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            CPU and uptime
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="pipe-cpu-util" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="cpu.utilization">% avg per instance</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Cores used: <span id="pipe-cpu-cores" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span>CPU time</span>: <span id="pipe-cpu-time-60" class="font-mono">n/a</span> s/s (sample)
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span>Uptime</span>: <span id="pipe-uptime" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Instances: <span id="pipe-instances" class="font-mono">0</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="cpu">
+            <canvas id="pipeChartCpu"></canvas>
+          </div>
+        </div>
+
+        <div id="card-pipe-memory" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Memory
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="pipe-mem-usage" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="memory.usage">MiB heap in use</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            <span>Alloc</span>: <span id="pipe-alloc-rate-60" class="font-mono">n/a</span> MiB/s (sample)
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span>Freed</span>: <span id="pipe-free-rate-60" class="font-mono">n/a</span> MiB/s (sample)
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span>Net</span>: <span id="pipe-net-alloc-rate-60" class="font-mono">n/a</span> MiB/s (sample)
+          </div>
+          <div class="metric-card-chart hidden" data-chart="memory">
+            <canvas id="pipeChartMemory"></canvas>
+          </div>
+        </div>
+
+        <div id="card-pipe-pressure" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Scheduling and faults
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="pipe-ctx-invol-rate-60" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="context.switches.involuntary">involuntary ctx/s (sample)</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            <span class="metric-legend" data-metric="context.switches.voluntary">Voluntary ctx/s</span>: <span id="pipe-ctx-vol-rate-60" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span class="metric-legend" data-metric="page.faults.minor">Minor faults/s</span>: <span id="pipe-fault-minor-rate-60" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            <span class="metric-legend" data-metric="page.faults.major">Major faults/s</span>: <span id="pipe-fault-major-rate-60" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="scheduling">
+            <canvas id="pipeChartScheduling"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-panel-tokio" class="mt-6 hidden">
+      <!-- Runtime scheduler metrics (Tokio view tab). -->
+      <div class="mt-4 grid gap-4 md:grid-cols-3">
+        <div id="card-tokio-workers" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Workers
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="tokio-worker-count" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400">threads</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Busy time: <span id="tokio-busy-rate" class="font-mono">n/a</span> s/s (sample)
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Runtime instances: <span id="tokio-instance-count" class="font-mono">0</span>
+          </div>
+        </div>
+
+        <div id="card-tokio-tasks" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Tasks and queue
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="tokio-active-tasks" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400">active tasks</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Global queue: <span id="tokio-queue-size" class="font-mono">n/a</span>
+          </div>
+        </div>
+
+        <div id="card-tokio-park" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Parking
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="tokio-park-rate" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400">park/s (sample)</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Unpark/s: <span id="tokio-unpark-rate" class="font-mono">n/a</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </div>
+
+  <!-- Scroll zone: topology and details move while top panels stay fixed. -->
+  <div class="scroll-sections space-y-6">
+
+  <section id="dag-section" class="card rounded-2xl p-4 shadow-lg">
+    <!-- Main topology workspace (DAG canvas + viewport controls). -->
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+      <h2 class="text-lg font-semibold tracking-tight">Pipeline Topology</h2>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <input id="dag-search" type="text" placeholder="Filter nodes / channels" class="w-48 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none" />
+        <label class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-400">
+          <span>Mode</span>
+          <select id="mode-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
+            <option value="throughput" selected>Throughput</option>
+            <option value="errors">Errors</option>
+          </select>
+        </label>
+        <label id="toggle-control-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input id="toggle-control" type="checkbox" class="sr-only" />
+          <span>Show <span id="control-toggle-text">control channels</span></span>
+          <span id="toggle-control-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div class="dag-viewport-frame mt-4">
+      <div id="dag-viewport" class="relative overflow-auto">
+        <div id="dag-zoom" class="dag-zoom">
+          <div id="dag-canvas" class="dag-canvas">
+            <svg id="dag-edges" class="dag-edges"></svg>
+            <div id="dag-lanes" class="dag-lanes"></div>
+            <div id="dag-nodes" class="dag-nodes"></div>
+          </div>
+        </div>
+        <div id="dag-empty" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 hidden">
+          No pdata channels found.
+        </div>
+      </div>
+      <div class="dag-controls flex flex-wrap items-center gap-2 text-xs">
+        <div class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+          <span class="text-slate-300">Zoom</span>
+          <button id="zoom-out" class="rounded-full border border-slate-600 px-2 py-0.5 text-slate-200 hover:border-sky-400 hover:text-sky-200">-</button>
+          <span id="zoom-value" class="font-mono text-slate-200">100%</span>
+          <button id="zoom-in" class="rounded-full border border-slate-600 px-2 py-0.5 text-slate-200 hover:border-sky-400 hover:text-sky-200">+</button>
+          <button id="zoom-reset" class="rounded-full border border-slate-600 px-2 py-0.5 text-slate-300 hover:border-sky-400 hover:text-sky-200">Reset</button>
+        </div>
+        <button id="toggle-fullscreen" class="rounded-full border border-slate-600 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200">
+          Full page
+        </button>
+        <button id="toggle-dag-scope" class="rounded-full border border-slate-600 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200">
+          Connected view
+        </button>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="edge-detail-section" class="card rounded-2xl p-4 shadow-lg">
+    <!-- Context panel reused for node and edge drill-down content. -->
+    <div class="flex items-center justify-between">
+      <h2 id="selection-title" class="text-lg font-semibold tracking-tight">Selection Details</h2>
+      <span id="edge-detail-meta" class="text-xs text-slate-400">None selected</span>
+    </div>
+    <div id="edge-detail-body" class="mt-3 text-sm text-slate-300">
+      Click a node or edge to show details.
+    </div>
+  </section>
+
+  <div id="error-banner" class="hidden card rounded-xl p-3 text-sm text-red-300 border border-red-500/60">
+    <span class="font-semibold">Error:</span>
+    <span id="error-text" class="ml-1"></span>
+  </div>
+  </div>
+</div>
+
+<!-- Lightweight templates used by JS to rebuild pipeline selector options safely. -->
+<template id="pipeline-optgroup-template">
+  <optgroup></optgroup>
+</template>
+<template id="pipeline-option-template">
+  <option></option>
+</template>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
