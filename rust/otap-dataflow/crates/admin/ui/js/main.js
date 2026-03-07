@@ -27,17 +27,14 @@
     getTransitivelyConnectedPipelineKeys,
   } from "./inter-pipeline-topology.js";
 
-  // Query params drive target routing and optional endpoint query tuning.
+  // Query params tune metrics query behavior.
   const urlParams = new URLSearchParams(window.location.search);
-  const targetParam = urlParams.get("target") || "sut";
-  const targetPath = targetParam.replace(/^\/+/, "").replace(/\/+$/, "");
 
   // Metrics endpoint strategy: reset snapshots each poll, and keep-all-zeroes is configurable.
   const keepAllZeroesParam = urlParams.get("keep_all_zeroes");
   const keepAllZeroes =
     keepAllZeroesParam == null ? true : keepAllZeroesParam === "true";
   const METRICS_URL_CANDIDATES = buildMetricsCandidates({
-    targetPath,
     query: `format=json&reset=true&keep_all_zeroes=${keepAllZeroes ? "true" : "false"}`,
   });
   let resolvedMetricsUrl = null;
@@ -82,7 +79,6 @@
   const lastUpdateEl = document.getElementById("last-update");
   const errorBanner = document.getElementById("error-banner");
   const errorText = document.getElementById("error-text");
-  const pageTarget = document.getElementById("page-target");
   const topPanels = document.getElementById("top-panels");
   const selectionTitle = document.getElementById("selection-title");
   const zeroToggleWrap = document.getElementById("toggle-zero-wrap");
@@ -99,10 +95,7 @@
   const themeToggle = document.getElementById("theme-toggle");
   const themeToggleLabel = document.getElementById("theme-toggle-label");
 
-  if (pageTarget) {
-    pageTarget.textContent = `(${targetPath || "sut"})`;
-  }
-  document.title = `Rust Dataflow Engine (${targetPath || "sut"})`;
+  document.title = "Rust Dataflow Engine";
 
   const THEME_STORAGE_KEY = "ogdp-theme";
 
