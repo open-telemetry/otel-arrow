@@ -6,7 +6,7 @@ TBD
 
 The embedded admin web UI architecture is documented in:
 
-- [Admin UI Architecture](admin-ui-architecture.md)
+- [Admin UI Architecture](admin/architecture.md)
 
 ## Load-balancing considerations
 

@@ -36,6 +36,23 @@ When calling endpoints directly outside browser-relative paths, use:
 - `http://<admin-host>:<admin-port>/telemetry/metrics`
 - `http://<admin-host>:<admin-port>/metrics`
 
+## Main design principles
+
+- Keep browser interactions single-origin.
+- Prefer deterministic transformations over implicit heuristics.
+- Handle sparse/missing metrics without UI flicker.
+- Keep topology readable first, then dense.
+- Keep the UI diagnostic-focused and near-real-time.
+- Favor modular JS boundaries over a growing monolith.
+
+## General development guidelines
+
+- Reuse existing controls/styles before introducing new UI patterns.
+- When adding metrics, wire extraction/aggregation/rendering together.
+- Preserve freeze/scrub and hover synchronization behavior.
+- Preserve default selector semantics (`ALL` core where applicable).
+- Avoid changing metric-name contracts silently.
+
 ## Data source and acquisition
 
 ### Endpoint strategy
@@ -96,7 +113,8 @@ Filter changes reset dependent visualization state through
 ### Derived and chart state
 
 - previous counters for rate derivation: `pipelinePrev`, `tokioPrev`
-- hold-last engine values: `lastEngineCpuUtilPercent`, `lastEngineMemoryRssMiB`
+- hold-last engine values: `lastEngineCpuUtilPercent`,
+  `lastEngineMemoryRssMiB`, `lastEngineUptimeSeconds`
 - bounded in-memory series: `pipelineSeries`, `channelSeries`, `nodeSeries`
 - live chart instances: `pipelineCharts`, `channelChart`, `nodeCharts`
 
@@ -180,23 +198,6 @@ Process:
 - invalid/stale selections are cleared automatically
 - node ports are re-sorted by current traffic intensity
 - control channels are overlaid only when explicitly enabled
-
-## Main design principles
-
-- Keep browser interactions single-origin.
-- Prefer deterministic transformations over implicit heuristics.
-- Handle sparse/missing metrics without UI flicker.
-- Keep topology readable first, then dense.
-- Keep the UI diagnostic-focused and near-real-time.
-- Favor modular JS boundaries over a growing monolith.
-
-## General development guidelines
-
-- Reuse existing controls/styles before introducing new UI patterns.
-- When adding metrics, wire extraction/aggregation/rendering together.
-- Preserve freeze/scrub and hover synchronization behavior.
-- Preserve default selector semantics (`ALL` core where applicable).
-- Avoid changing metric-name contracts silently.
 
 ## How to test
 

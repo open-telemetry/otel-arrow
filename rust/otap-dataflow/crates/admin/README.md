@@ -1,11 +1,14 @@
 # Admin Interface
 
-`otap-df-admin` exposes:
+`otap-df-admin` provides:
 
-- Admin and telemetry HTTP endpoints.
-- An embedded single-page UI served by the same process and origin.
+- admin, health, status, and telemetry HTTP endpoints;
+- an embedded single-page UI served from the same process and origin.
 
-For browser runtime details, see [`docs/admin-ui-architecture.md`](../../docs/admin-ui-architecture.md).
+For architecture and runtime behavior details, see
+[`docs/admin/architecture.md`](../../docs/admin/architecture.md).
+For the admin docs landing page, see
+[`docs/admin/README.md`](../../docs/admin/README.md).
 
 ## Main routes
 
@@ -47,90 +50,11 @@ For browser runtime details, see [`docs/admin-ui-architecture.md`](../../docs/ad
 Assets are embedded in the binary via `include_dir` and served by
 `src/dashboard.rs`.
 
-## UI runtime notes
+## Runtime notes
 
-- Poll interval is 2 seconds (`POLL_INTERVAL_MS`).
-- Optional query param:
-  - `keep_all_zeroes` (default `true`)
-- Endpoint candidate order is same-origin only:
-  - `/telemetry/metrics?...`
-  - `/metrics?...`
-- Current polling query: `format=json&reset=true&keep_all_zeroes=<...>`.
-- When accessed directly without browser relative paths, use:
-  - `http://<admin-host>:<admin-port>/telemetry/metrics`
-  - `http://<admin-host>:<admin-port>/metrics`
+- UI polling cadence is 2 seconds.
+- UI metrics polling uses same-origin `/telemetry/metrics` then `/metrics`.
+- Supported optional query param: `keep_all_zeroes=true|false`.
 
-### Operational notes
-
-- `reset=true` is intentional: rate-oriented UI views are derived from successive
-  snapshots and avoid long-lived counter accumulation in the browser view.
-- `keep_all_zeroes=true` keeps zero-valued metric sets in snapshots, which can
-  improve topology/selector stability in sparse or bursty traffic windows.
-- Engine cards can hold prior CPU/RSS values when current snapshots omit/zero
-  those fields, reducing visible flicker.
-
-## Project principles
-
-- Engine-embedded debugging UI first.
-- In-memory sliding window only (no persistence layer).
-- Signal-driven source of truth.
-- Runtime topology/state inferred from telemetry, not static config files.
-- Keep visual/system behavior deterministic and easy to reason about.
-- Keep dependencies and complexity proportional to debugging value.
-
-## Metric-name dependencies
-
-These names are referenced explicitly by the UI and should be treated as
-UI-facing contracts.
-
-- `engine.metrics`: `cpu.utilization`, `memory.rss`
-- `pipeline.metrics`: `cpu.utilization`, `memory.usage`, `uptime`, `cpu.time`,
-  `memory.allocated.delta`, `memory.freed.delta`,
-  `context.switches.voluntary`, `context.switches.involuntary`,
-  `page.faults.minor`, `page.faults.major`
-- `tokio.runtime`: `worker.count`, `task.active.count`,
-  `global.task.queue.size`, `worker.busy.time`, `worker.park.count`,
-  `worker.park.unpark.count`
-- `channel.sender`: `send.count`, `send.error_full`, `send.error_closed`,
-  `capacity`
-- `channel.receiver`: `recv.count`, `recv.error_empty`, `recv.error_closed`,
-  `capacity`, `queue.depth`
-- `topic.exporter.metrics`, `topic.receiver.metrics` are used for
-  inter-pipeline topology derivation.
-
-UI-derived series keys (not emitted by engine metric sets directly):
-
-- `engine.cpu.utilization`
-- `engine.memory.rss`
-- `cpu.time.rate`
-- `memory.alloc.rate`
-- `memory.free.rate`
-- `memory.net.rate`
-
-## Development guardrails
-
-- Keep single-origin behavior (`/`, `/static/*`, `/telemetry/*`) intact.
-- Prefer small JS modules over growing one monolithic file.
-- Preserve deterministic selector/filter behavior.
-- Keep topology rendering readable before adding density/features.
-- When adding metrics, wire extraction, rendering, and validation end-to-end.
-- Avoid changing metric-name contracts without updating docs and UI parsing.
-
-## How to test
-
-Minimal checks:
-
-```bash
-cargo check -p otap-df-admin
-```
-
-Optional JS syntax checks:
-
-```bash
-node --check crates/admin/ui/js/main.js \
-  crates/admin/ui/js/metrics-api.js \
-  crates/admin/ui/js/pipeline-utils.js \
-  crates/admin/ui/js/engine-metrics.js \
-  crates/admin/ui/js/inter-pipeline-topology.js \
-  crates/admin/ui/js/control-utils.js
-```
+For operational semantics, metric-name contracts, graph rules, and testing
+guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
