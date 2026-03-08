@@ -42,6 +42,8 @@
   const HOLD_LAST_ENGINE_VALUES = true;
   const SKIP_ENGINE_ALL_ZERO_SNAPSHOTS = true;
   const POLL_INTERVAL_MS = 2000;
+  const HEALTH_POLL_INTERVAL_MS = 5000;
+  const HEALTH_REQUEST_TIMEOUT_MS = 1200;
   const PERF_ENABLED = urlParams.get("perf") === "true";
   const PERF_LOG_EVERY = 30;
   const PERF_SLOW_MS = 16;
@@ -81,6 +83,8 @@
   // DOM references: top-level status/toggles.
   const connectionDot = document.getElementById("connection-dot");
   const connectionStatus = document.getElementById("connection-status");
+  const healthLivez = document.getElementById("health-livez");
+  const healthReadyz = document.getElementById("health-readyz");
   const lastUpdateEl = document.getElementById("last-update");
   const errorBanner = document.getElementById("error-banner");
   const errorText = document.getElementById("error-text");
@@ -278,7 +282,9 @@
   let stickyPanelsObserver = null;
   let dagPipelineScopeMode = DAG_SCOPE_SINGLE;
   let pollTimer = null;
+  let healthPollTimer = null;
   let fetchInFlight = false;
+  let healthFetchInFlight = false;
   let activeFetchController = null;
   let latestFetchRequestId = 0;
   let latestAppliedFetchRequestId = 0;
@@ -904,6 +910,79 @@
       connectionStatus.textContent = "Disconnected";
       connectionStatus.classList.remove("text-emerald-400");
       connectionStatus.classList.add("text-red-400");
+    }
+  }
+
+  function setHealthBadge(el, label, probe) {
+    if (!el) return;
+    const state = probe?.state || "unknown";
+    const statusText =
+      state === "up" ? "UP" : state === "down" ? "DOWN" : "UNKNOWN";
+    el.classList.remove("health-pill-up", "health-pill-down", "health-pill-unknown");
+    if (state === "up") {
+      el.classList.add("health-pill-up");
+    } else if (state === "down") {
+      el.classList.add("health-pill-down");
+    } else {
+      el.classList.add("health-pill-unknown");
+    }
+    el.textContent = `${label}: ${statusText}`;
+
+    const parts = [`${label} ${statusText}`];
+    if (Number.isFinite(probe?.status)) {
+      parts.push(`HTTP ${probe.status}`);
+    }
+    if (Number.isFinite(probe?.latencyMs)) {
+      parts.push(`${Math.round(probe.latencyMs)} ms`);
+    }
+    if (probe?.error) {
+      parts.push(probe.error);
+    }
+    if (probe?.checkedAt) {
+      parts.push(`at ${new Date(probe.checkedAt).toLocaleTimeString()}`);
+    }
+    el.title = parts.join(" | ");
+  }
+
+  async function probeHealthEndpoint(path) {
+    const controller = new AbortController();
+    const started =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, HEALTH_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(path, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const ended =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      return {
+        state: response.ok ? "up" : "down",
+        status: response.status,
+        latencyMs: ended - started,
+      };
+    } catch (error) {
+      const ended =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      return {
+        state: "unknown",
+        latencyMs: ended - started,
+        error:
+          error?.name === "AbortError"
+            ? `timeout>${HEALTH_REQUEST_TIMEOUT_MS}ms`
+            : error?.message || "request failed",
+      };
+    } finally {
+      window.clearTimeout(timeoutId);
     }
   }
 
@@ -5471,6 +5550,34 @@
     }, POLL_INTERVAL_MS);
   }
 
+  function scheduleNextHealthPoll() {
+    if (healthPollTimer != null) {
+      window.clearTimeout(healthPollTimer);
+    }
+    healthPollTimer = window.setTimeout(() => {
+      void pollHealthEndpoints();
+    }, HEALTH_POLL_INTERVAL_MS);
+  }
+
+  async function pollHealthEndpoints() {
+    if (healthFetchInFlight) return;
+    healthFetchInFlight = true;
+    const checkedAt = Date.now();
+    try {
+      const [livezProbe, readyzProbe] = await Promise.all([
+        probeHealthEndpoint("/livez"),
+        probeHealthEndpoint("/readyz"),
+      ]);
+      livezProbe.checkedAt = checkedAt;
+      readyzProbe.checkedAt = checkedAt;
+      setHealthBadge(healthLivez, "Livez", livezProbe);
+      setHealthBadge(healthReadyz, "Readyz", readyzProbe);
+    } finally {
+      healthFetchInFlight = false;
+      scheduleNextHealthPoll();
+    }
+  }
+
   async function fetchMetricsSnapshot(signal) {
     const { data, resolvedUrl } = await fetchMetricsFromCandidates(
       METRICS_URL_CANDIDATES,
@@ -5544,4 +5651,14 @@
     }
   }
 
+  setHealthBadge(healthLivez, "Livez", {
+    state: "unknown",
+    error: "not checked yet",
+  });
+  setHealthBadge(healthReadyz, "Readyz", {
+    state: "unknown",
+    error: "not checked yet",
+  });
+
   void fetchAndUpdate();
+  void pollHealthEndpoints();

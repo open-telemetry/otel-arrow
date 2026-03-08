@@ -611,6 +611,46 @@
       background: #34d399;
     }
 
+    .health-pill-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .health-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      padding: 2px 8px;
+      font-size: 0.7rem;
+      letter-spacing: 0.02em;
+      font-weight: 600;
+      background: rgba(15, 23, 42, 0.7);
+      color: #94a3b8;
+      white-space: nowrap;
+      transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+    }
+
+    .health-pill-up {
+      color: #34d399;
+      border-color: rgba(16, 185, 129, 0.55);
+      background: rgba(5, 150, 105, 0.16);
+    }
+
+    .health-pill-down {
+      color: #f87171;
+      border-color: rgba(239, 68, 68, 0.55);
+      background: rgba(185, 28, 28, 0.16);
+    }
+
+    .health-pill-unknown {
+      color: #94a3b8;
+      border-color: rgba(148, 163, 184, 0.45);
+      background: rgba(51, 65, 85, 0.3);
+    }
+
     .node-metric-rate-empty {
       display: flex;
       align-items: center;
@@ -1078,4 +1118,28 @@
     body.day-mode .dag-control-indicator-selected {
       color: #0369a1;
       text-shadow: 0 0 6px rgba(14, 116, 144, 0.45);
+    }
+
+    body.day-mode .health-pill {
+      background: rgba(241, 245, 249, 0.92);
+      color: #475569;
+      border-color: rgba(148, 163, 184, 0.65);
+    }
+
+    body.day-mode .health-pill-up {
+      color: #047857;
+      border-color: rgba(16, 185, 129, 0.65);
+      background: rgba(16, 185, 129, 0.13);
+    }
+
+    body.day-mode .health-pill-down {
+      color: #b91c1c;
+      border-color: rgba(239, 68, 68, 0.62);
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    body.day-mode .health-pill-unknown {
+      color: #475569;
+      border-color: rgba(100, 116, 139, 0.58);
+      background: rgba(148, 163, 184, 0.18);
     }
