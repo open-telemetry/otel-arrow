@@ -37,6 +37,7 @@ use crate::Interests;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
+use crate::extension::registry::ExtensionRegistry;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
@@ -88,6 +89,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error>;
 }
 

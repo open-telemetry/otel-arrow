@@ -484,6 +484,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
+        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         let grpc_enabled = self.config.protocols.grpc.is_some();
         let both_enabled = self.config.protocols.has_both();
