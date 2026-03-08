@@ -19,7 +19,7 @@
     resolveSelectedCoreId,
   } from "./pipeline-utils.js";
   import { deriveEngineCardValues, extractEngineSummary } from "./engine-metrics.js";
-  import { escapeAttr, escapeHtml, escapeSelectorValue } from "./dom-safety.js";
+  import { escapeAttr, escapeHtml } from "./dom-safety.js";
   import {
     buildInterPipelineTopology,
     createEmptyInterPipelineTopology,
@@ -270,6 +270,9 @@
   let lastRenderedControlEdges = [];
   let lastRenderedSampleSeconds = null;
   let lastRenderedStructureSignature = null;
+  let lastRenderedNodesById = new Map();
+  let lastRenderedEdgesById = new Map();
+  let lastRenderedControlEdgesById = new Map();
   let lastCoreUsageAvg = null;
   let lastCoreIds = [];
   let stickyPanelsObserver = null;
@@ -292,6 +295,11 @@
   const nodeCharts = new Map();
   const pipelineSeries = new Map();
   const pipelineCharts = new Map();
+  const dagNodeElements = new Map();
+  const dagNodePortDotsByNode = new Map();
+  const dagControlIndicatorsByNode = new Map();
+  const dagEdgeElements = new Map();
+  let dagEdgeDefsElement = null;
 
   const PIPELINE_CHART_CONFIG = {
     engineCpu: {
@@ -944,9 +952,53 @@
     channelSeries.clear();
     pipelineSeries.clear();
     lastRenderedStructureSignature = null;
+    clearDagRenderedDom();
     destroyNodeCharts();
     clearChannelChart();
     destroyPipelineCharts();
+  }
+
+  function clearDagElementCaches() {
+    dagNodeElements.clear();
+    dagNodePortDotsByNode.clear();
+    dagControlIndicatorsByNode.clear();
+    dagEdgeElements.clear();
+    dagEdgeDefsElement = null;
+    lastRenderedNodesById = new Map();
+    lastRenderedEdgesById = new Map();
+    lastRenderedControlEdgesById = new Map();
+  }
+
+  function clearDagRenderedDom() {
+    dagNodes.innerHTML = "";
+    dagEdges.innerHTML = "";
+    dagLanes.innerHTML = "";
+    clearDagElementCaches();
+  }
+
+  function ensureDagEdgeDefs() {
+    if (dagEdgeDefsElement && dagEdgeDefsElement.isConnected) {
+      return;
+    }
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    defs.innerHTML = `
+      <marker id="dag-arrow-idle" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(148,163,184,0.7)"></path>
+      </marker>
+      <marker id="dag-arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(34,197,94,0.9)"></path>
+      </marker>
+      <marker id="dag-arrow-error" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(248,113,113,0.9)"></path>
+      </marker>
+    `;
+    dagEdgeDefsElement = defs;
+    dagEdges.prepend(defs);
+  }
+
+  function clearDagNavigationOverlayElements() {
+    dagNodes.querySelectorAll(".pipeline-dag-nav").forEach((el) => el.remove());
+    dagEdges.querySelectorAll(".dag-topic-link").forEach((el) => el.remove());
   }
 
   function getWindowMs() {
@@ -1055,8 +1107,7 @@
       });
 
       nodes.forEach((node) => {
-        const nodeSelectorId = escapeSelectorValue(node.id);
-        const nodeEl = dagNodes.querySelector(`.dag-node[data-node-id="${nodeSelectorId}"]`);
+        const nodeEl = dagNodeElements.get(node.id);
         if (!nodeEl) return;
         const hasError = (nodeErrors.get(node.id) || 0) > 0;
         const hasTraffic = (nodeTraffic.get(node.id) || 0) > 0;
@@ -1074,32 +1125,25 @@
         }
       });
 
-      dagNodes.querySelectorAll(".dag-port-dot").forEach((dot) => {
-        const nodeId = dot.dataset.nodeId;
-        const port = dot.dataset.port;
-        if (!nodeId || !port) return;
-        const isActive = (portScores.get(nodeId)?.get(port) ?? 0) > 0;
-        dot.classList.toggle("dag-port-dot-active", isActive);
+      dagNodePortDotsByNode.forEach((portDots, nodeId) => {
+        portDots.forEach((dot, port) => {
+          const isActive = (portScores.get(nodeId)?.get(port) ?? 0) > 0;
+          dot.classList.toggle("dag-port-dot-active", isActive);
+        });
       });
 
-      dagNodes.querySelectorAll(".dag-control-indicator").forEach((indicator) => {
-        const nodeId = indicator.dataset.nodeId;
-        if (!nodeId) return;
+      dagControlIndicatorsByNode.forEach((control, nodeId) => {
         const info = controlByTarget.get(nodeId);
-        const rateEl = indicator.querySelector(".dag-control-rate");
+        const rateEl = control.rateEl;
         if (rateEl) {
           rateEl.textContent = formatRateWithUnit(info ? info.total : 0, "msg");
         }
       });
 
       edges.forEach((edge) => {
-        const edgeSelectorId = escapeSelectorValue(edge.id);
-        const path = dagEdges.querySelector(
-          `.dag-edge[data-edge-id="${edgeSelectorId}"][data-edge-role="path"]`
-        );
-        const label = dagEdges.querySelector(
-          `.dag-edge-label[data-edge-id="${edgeSelectorId}"][data-edge-role="label"]`
-        );
+        const edgeEntry = dagEdgeElements.get(edge.id);
+        const path = edgeEntry?.path;
+        const label = edgeEntry?.label;
         if (!path || !label) return;
         const activity =
           dataEdgeRates.get(edge.id) || {
@@ -1710,11 +1754,7 @@
     }
   }
 
-  function clearSelection() {
-    selectedEdgeId = null;
-    selectedNodeId = null;
-    selectedEdgeData = null;
-    selectedNodeData = null;
+  function clearDagSelectionClasses() {
     dagEdges
       .querySelectorAll(".dag-edge-selected")
       .forEach((el) => el.classList.remove("dag-edge-selected"));
@@ -1730,7 +1770,53 @@
     dagNodes
       .querySelectorAll(".dag-control-indicator-selected")
       .forEach((el) => el.classList.remove("dag-control-indicator-selected"));
+  }
+
+  function clearSelection() {
+    selectedEdgeId = null;
+    selectedNodeId = null;
+    selectedEdgeData = null;
+    selectedNodeData = null;
+    clearDagSelectionClasses();
     renderSelectionNone();
+  }
+
+  function selectEdgeById(edgeId, options = {}) {
+    const edge = lastRenderedEdgesById.get(edgeId) || lastRenderedControlEdgesById.get(edgeId);
+    if (!edge) return;
+    clearDagSelectionClasses();
+    selectedNodeId = null;
+    selectedNodeData = null;
+    selectedEdgeId = edge.id;
+    selectedEdgeData = edge;
+
+    const edgeEls = dagEdgeElements.get(edge.id);
+    if (edgeEls?.path) {
+      edgeEls.path.classList.add("dag-edge-selected");
+    }
+    const controlInfo = dagControlIndicatorsByNode.get(edge.target);
+    if (controlInfo?.indicator && controlInfo.edgeId === edge.id) {
+      controlInfo.indicator.classList.add("dag-control-indicator-selected");
+    }
+    renderEdgeDetails(edge);
+    if (options.scrollDetails) {
+      edgeDetailBody.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  function selectNodeById(nodeId) {
+    const node = lastRenderedNodesById.get(nodeId);
+    if (!node) return;
+    clearDagSelectionClasses();
+    selectedEdgeId = null;
+    selectedEdgeData = null;
+    selectedNodeId = node.id;
+    selectedNodeData = node;
+    const nodeEl = dagNodeElements.get(node.id);
+    if (nodeEl) {
+      nodeEl.classList.add("dag-node-selected");
+    }
+    renderNodeDetails(node);
   }
 
   function mergeAttributes(target, source) {
@@ -4764,6 +4850,38 @@
     }
   });
 
+  dagNodes.addEventListener("click", (event) => {
+    const controlIndicator = event.target.closest(".dag-control-indicator");
+    if (controlIndicator && dagNodes.contains(controlIndicator)) {
+      event.stopPropagation();
+      const controlEdgeId = controlIndicator.dataset.controlEdge || "";
+      if (controlEdgeId) {
+        selectEdgeById(controlEdgeId);
+      }
+      return;
+    }
+
+    const nodeEl = event.target.closest(".dag-node");
+    if (!nodeEl || !dagNodes.contains(nodeEl)) {
+      return;
+    }
+    event.stopPropagation();
+    const nodeId = nodeEl.dataset.nodeId || "";
+    if (!nodeId) return;
+    selectNodeById(nodeId);
+  });
+
+  dagEdges.addEventListener("click", (event) => {
+    const hit = event.target.closest(".dag-edge-hit");
+    if (!hit || !dagEdges.contains(hit)) {
+      return;
+    }
+    event.stopPropagation();
+    const edgeId = hit.dataset.edgeId || "";
+    if (!edgeId) return;
+    selectEdgeById(edgeId, { scrollDetails: true });
+  });
+
   function hashString32(hash, value) {
     const text = String(value == null ? "" : value);
     let next = hash >>> 0;
@@ -4854,6 +4972,223 @@
       return;
     }
     renderSelectionNone();
+  }
+
+  function upsertDagNodeElement(node, options) {
+    const { controlInfo, portScores, nodeTraffic, nodeErrors, focusSets } = options;
+    let nodeEl = dagNodeElements.get(node.id);
+    if (!nodeEl) {
+      nodeEl = document.createElement("div");
+      nodeEl.className = "dag-node";
+      nodeEl.dataset.nodeId = node.id;
+      dagNodeElements.set(node.id, nodeEl);
+    }
+
+    nodeEl.style.left = `${node.x}px`;
+    nodeEl.style.top = `${node.y}px`;
+    nodeEl.style.height = `${node.height}px`;
+    nodeEl.style.width = `${node.width}px`;
+    nodeEl.className = "dag-node";
+    nodeEl.style.color = "";
+    nodeEl.style.borderColor = "";
+
+    if (metricMode === "errors") {
+      if ((nodeErrors.get(node.id) || 0) > 0) {
+        nodeEl.classList.add("dag-node-active");
+        nodeEl.style.color = "rgba(248,113,113,0.95)";
+        nodeEl.style.borderColor = "rgba(248,113,113,0.9)";
+      }
+    } else if ((nodeTraffic.get(node.id) || 0) > 0) {
+      nodeEl.classList.add("dag-node-active");
+      nodeEl.style.color = "rgba(34,197,94,0.9)";
+      nodeEl.style.borderColor = "rgba(34,197,94,0.9)";
+    }
+    if (selectedNodeId && node.id === selectedNodeId) {
+      nodeEl.classList.add("dag-node-selected");
+    }
+    if (focusSets && !focusSets.nodes.has(node.id)) {
+      nodeEl.classList.add("dag-dimmed");
+    }
+
+    const visiblePorts = node.displayPorts || node.outPorts || [];
+    const controlEdgeId = showControlChannels ? controlInfo?.primary?.id || "" : "";
+    const renderKey = `${node.displayId || node.id}|${visiblePorts.join(",")}|${controlEdgeId}`;
+    if (nodeEl.dataset.renderKey !== renderKey) {
+      const safeNodeIdAttr = escapeAttr(node.id);
+      const portRows = visiblePorts.length
+        ? `<div>${visiblePorts
+            .map((port) => {
+              const isActive = (portScores.get(node.id)?.get(port) ?? 0) > 0;
+              const safePortLabel = escapeHtml(port);
+              const safePortAttr = escapeAttr(port);
+              return `
+                <div class="dag-port">
+                  <span class="dag-port-label">${safePortLabel}</span>
+                  <span class="dag-port-dot ${isActive ? "dag-port-dot-active" : ""}" data-node-id="${safeNodeIdAttr}" data-port="${safePortAttr}"></span>
+                </div>`;
+            })
+            .join("")}</div>`
+        : "";
+
+      const controlHtml =
+        showControlChannels && controlInfo
+          ? `<button class="dag-control-indicator ${selectedEdgeId === controlInfo.primary?.id ? "dag-control-indicator-selected" : ""}" data-control-edge="${escapeAttr(controlInfo.primary?.id || "")}" data-node-id="${safeNodeIdAttr}">
+              <svg class="dag-control-arrow" viewBox="0 0 10 22" aria-hidden="true">
+                <line x1="5" y1="0" x2="5" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
+                <path d="M 0 14 L 10 14 L 5 22 z" fill="currentColor"></path>
+              </svg>
+              <span class="dag-control-rate">${formatRateWithUnit(controlInfo.total, "msg")}</span>
+            </button>`
+          : "";
+
+      const safeNodeDisplayId = escapeHtml(node.displayId || node.id);
+      nodeEl.innerHTML = `
+        ${controlHtml}
+        <div class="dag-node-header">
+          <div class="dag-node-id">${safeNodeDisplayId}</div>
+        </div>
+        ${portRows}
+      `;
+      nodeEl.dataset.renderKey = renderKey;
+    }
+
+    const portDots = new Map();
+    nodeEl.querySelectorAll(".dag-port-dot").forEach((dot) => {
+      const port = dot.dataset.port;
+      if (!port) return;
+      portDots.set(port, dot);
+    });
+    dagNodePortDotsByNode.set(node.id, portDots);
+
+    const controlIndicator = nodeEl.querySelector(".dag-control-indicator");
+    if (controlIndicator) {
+      const rateEl = controlIndicator.querySelector(".dag-control-rate");
+      controlIndicator.classList.toggle(
+        "dag-control-indicator-selected",
+        controlEdgeId && controlEdgeId === selectedEdgeId
+      );
+      dagControlIndicatorsByNode.set(node.id, {
+        indicator: controlIndicator,
+        rateEl,
+        edgeId: controlIndicator.dataset.controlEdge || "",
+      });
+    } else {
+      dagControlIndicatorsByNode.delete(node.id);
+    }
+
+    dagNodes.appendChild(nodeEl);
+  }
+
+  function pruneRemovedDagNodes(validNodeIds) {
+    for (const [nodeId, nodeEl] of dagNodeElements) {
+      if (validNodeIds.has(nodeId)) continue;
+      nodeEl.remove();
+      dagNodeElements.delete(nodeId);
+      dagNodePortDotsByNode.delete(nodeId);
+      dagControlIndicatorsByNode.delete(nodeId);
+    }
+  }
+
+  function upsertDagEdgeElement(edge, source, target, options) {
+    const { focusSets, dataEdgeRates } = options;
+    let entry = dagEdgeElements.get(edge.id);
+    if (!entry) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.dataset.edgeId = edge.id;
+      path.dataset.edgeRole = "path";
+
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.dataset.edgeId = edge.id;
+      label.dataset.edgeRole = "label";
+
+      const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      hit.setAttribute("class", "dag-edge-hit");
+      hit.dataset.edgeId = edge.id;
+
+      entry = { path, label, hit };
+      dagEdgeElements.set(edge.id, entry);
+    }
+
+    const activity =
+      dataEdgeRates.get(edge.id) || {
+        sendRate: 0,
+        recvRate: 0,
+        sendErrorRate: 0,
+        recvErrorRate: 0,
+        errorRate: 0,
+        active: false,
+        errorActive: false,
+      };
+    const edgeActive = metricMode === "errors" ? activity.errorActive : activity.active;
+    const recvRate = activity.recvRate ?? 0;
+
+    const startX = source.x + source.width - EDGE_INSET;
+    const startY = getNodeOutputAnchorY(source, edge.port);
+    const endX = target.x - EDGE_INSET;
+    const endY = target.y + target.height / 2;
+    const curvature = Math.min(120, Math.max(60, (endX - startX) * 0.4));
+    const pathData = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+
+    const edgeClass =
+      metricMode === "errors"
+        ? edgeActive
+          ? "dag-edge-error"
+          : "dag-edge-idle"
+        : edgeActive
+          ? "dag-edge-active"
+          : "dag-edge-idle";
+    entry.path.setAttribute("d", pathData);
+    entry.path.setAttribute("class", `dag-edge ${edgeClass}`);
+    if (selectedEdgeId && edge.id === selectedEdgeId) {
+      entry.path.classList.add("dag-edge-selected");
+    }
+    if (focusSets && !focusSets.edges.has(edge.id)) {
+      entry.path.classList.add("dag-dimmed");
+    }
+    const marker =
+      edgeActive && metricMode === "errors"
+        ? "url(#dag-arrow-error)"
+        : edgeActive
+          ? "url(#dag-arrow-active)"
+          : "url(#dag-arrow-idle)";
+    entry.path.setAttribute("marker-end", marker);
+
+    entry.label.setAttribute("x", endX - 10);
+    entry.label.setAttribute("y", endY - 8);
+    entry.label.setAttribute("text-anchor", "end");
+    entry.label.setAttribute(
+      "class",
+      edgeActive
+        ? metricMode === "errors"
+          ? "dag-edge-label dag-edge-label-error"
+          : "dag-edge-label dag-edge-label-active"
+        : "dag-edge-label dag-edge-label-idle"
+    );
+    if (metricMode === "errors") {
+      entry.label.textContent = formatRateWithUnit(activity.errorRate, "error");
+    } else {
+      entry.label.textContent = formatRateWithUnit(recvRate, "message");
+    }
+    if (focusSets && !focusSets.edges.has(edge.id)) {
+      entry.label.classList.add("dag-dimmed");
+    }
+
+    entry.hit.setAttribute("d", pathData);
+    entry.hit.dataset.edgeId = edge.id;
+
+    dagEdges.appendChild(entry.path);
+    dagEdges.appendChild(entry.label);
+    dagEdges.appendChild(entry.hit);
+  }
+
+  function pruneRemovedDagEdges(validEdgeIds) {
+    for (const [edgeId, entry] of dagEdgeElements) {
+      if (validEdgeIds.has(edgeId)) continue;
+      entry.path.remove();
+      entry.label.remove();
+      entry.hit.remove();
+      dagEdgeElements.delete(edgeId);
+    }
   }
 
   // Main DAG renderer for data and control edge layers.
@@ -4963,6 +5298,9 @@
     lastRenderedNodes = nodes;
     lastRenderedEdges = edges;
     lastRenderedControlEdges = controlEdges;
+    lastRenderedNodesById = new Map(nodes.map((node) => [node.id, node]));
+    lastRenderedEdgesById = new Map(edges.map((edge) => [edge.id, edge]));
+    lastRenderedControlEdgesById = new Map(controlEdges.map((edge) => [edge.id, edge]));
     lastRenderedSampleSeconds = sampleSeconds;
     lastGraph = dataGraphResolved;
 
@@ -4988,10 +5326,7 @@
     }
 
     lastRenderedStructureSignature = structureSignature;
-
-    dagNodes.innerHTML = "";
-    dagEdges.innerHTML = "";
-    dagLanes.innerHTML = "";
+    renderMode = "incremental";
 
     const layout = layoutGraph(nodes, edges);
     const baseNodeMap = new Map(nodes.map((node) => [node.id, node]));
@@ -5022,19 +5357,7 @@
     applyDefaultOverviewZoom();
     applyZoom();
 
-    const svgDefs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-    svgDefs.innerHTML = `
-      <marker id="dag-arrow-idle" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(148,163,184,0.7)"></path>
-      </marker>
-      <marker id="dag-arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(34,197,94,0.9)"></path>
-      </marker>
-      <marker id="dag-arrow-error" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(248,113,113,0.9)"></path>
-      </marker>
-    `;
-    dagEdges.appendChild(svgDefs);
+    ensureDagEdgeDefs();
 
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
     const focusSets = buildFocusSets(edges);
@@ -5061,12 +5384,16 @@
       };
       entry.total += recvRate;
       entry.edges.push(edge);
-      if (!entry.primary || (rates?.recvRate ?? 0) > (controlEdgeRates.get(entry.primary.id)?.recvRate ?? 0)) {
+      if (
+        !entry.primary ||
+        (rates?.recvRate ?? 0) > (controlEdgeRates.get(entry.primary.id)?.recvRate ?? 0)
+      ) {
         entry.primary = edge;
       }
       controlByTarget.set(edge.target, entry);
     });
 
+    dagLanes.innerHTML = "";
     layout.lanes.forEach((lane) => {
       const hasAbsoluteLane = Number.isFinite(lane.x) && Number.isFinite(lane.width);
       const startX = hasAbsoluteLane
@@ -5089,212 +5416,28 @@
       dagLanes.appendChild(bar);
     });
 
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    pruneRemovedDagNodes(nodeIds);
     nodes.forEach((node) => {
-      const nodeEl = document.createElement("div");
-      nodeEl.className = "dag-node";
-      nodeEl.dataset.nodeId = node.id;
-      nodeEl.style.left = `${node.x}px`;
-      nodeEl.style.top = `${node.y}px`;
-      nodeEl.style.height = `${node.height}px`;
-      nodeEl.style.width = `${node.width}px`;
-      const controlInfo = controlByTarget.get(node.id);
-      if (metricMode === "errors") {
-        if ((nodeErrors.get(node.id) || 0) > 0) {
-          nodeEl.classList.add("dag-node-active");
-          nodeEl.style.color = "rgba(248,113,113,0.95)";
-          nodeEl.style.borderColor = "rgba(248,113,113,0.9)";
-        }
-      } else if ((nodeTraffic.get(node.id) || 0) > 0) {
-        nodeEl.classList.add("dag-node-active");
-        nodeEl.style.color = "rgba(34,197,94,0.9)";
-        nodeEl.style.borderColor = "rgba(34,197,94,0.9)";
-      }
-      if (selectedNodeId && node.id === selectedNodeId) {
-        nodeEl.classList.add("dag-node-selected");
-      }
-      if (focusSets && !focusSets.nodes.has(node.id)) {
-        nodeEl.classList.add("dag-dimmed");
-      }
-
-      const visiblePorts = node.displayPorts || node.outPorts || [];
-      const safeNodeIdAttr = escapeAttr(node.id);
-      const portRows = visiblePorts.length
-        ? `<div>${visiblePorts
-            .map((port) => {
-              const isActive = (portScores.get(node.id)?.get(port) ?? 0) > 0;
-              const safePortLabel = escapeHtml(port);
-              const safePortAttr = escapeAttr(port);
-              return `
-                <div class="dag-port">
-                  <span class="dag-port-label">${safePortLabel}</span>
-                  <span class="dag-port-dot ${isActive ? "dag-port-dot-active" : ""}" data-node-id="${safeNodeIdAttr}" data-port="${safePortAttr}"></span>
-                </div>`;
-            })
-            .join("")}</div>`
-        : "";
-
-      const controlHtml =
-        showControlChannels && controlInfo
-          ? `<button class="dag-control-indicator ${selectedEdgeId === controlInfo.primary?.id ? "dag-control-indicator-selected" : ""}" data-control-edge="${escapeAttr(controlInfo.primary?.id || "")}" data-node-id="${safeNodeIdAttr}">
-              <svg class="dag-control-arrow" viewBox="0 0 10 22" aria-hidden="true">
-                <line x1="5" y1="0" x2="5" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
-                <path d="M 0 14 L 10 14 L 5 22 z" fill="currentColor"></path>
-              </svg>
-              <span class="dag-control-rate">${formatRateWithUnit(controlInfo.total, "msg")}</span>
-            </button>`
-          : "";
-
-      const safeNodeDisplayId = escapeHtml(node.displayId || node.id);
-      nodeEl.innerHTML = `
-        ${controlHtml}
-        <div class="dag-node-header">
-          <div class="dag-node-id">${safeNodeDisplayId}</div>
-        </div>
-        ${portRows}
-      `;
-
-      const controlIndicator = nodeEl.querySelector(".dag-control-indicator");
-      if (controlIndicator && controlInfo?.primary) {
-        controlIndicator.addEventListener("click", (event) => {
-          event.stopPropagation();
-          dagEdges
-            .querySelectorAll(".dag-edge-selected")
-            .forEach((el) => el.classList.remove("dag-edge-selected"));
-          dagNodes
-            .querySelectorAll(".dag-node-selected")
-            .forEach((el) => el.classList.remove("dag-node-selected"));
-          dagNodes
-            .querySelectorAll(".dag-control-indicator-selected")
-            .forEach((el) => el.classList.remove("dag-control-indicator-selected"));
-          selectedNodeId = null;
-          selectedNodeData = null;
-          selectedEdgeId = controlInfo.primary.id;
-          selectedEdgeData = controlInfo.primary;
-          controlIndicator.classList.add("dag-control-indicator-selected");
-          renderEdgeDetails(controlInfo.primary);
-        });
-      }
-
-      nodeEl.addEventListener("click", () => {
-        dagEdges
-          .querySelectorAll(".dag-edge-selected")
-          .forEach((el) => el.classList.remove("dag-edge-selected"));
-        dagNodes
-          .querySelectorAll(".dag-node-selected")
-          .forEach((el) => el.classList.remove("dag-node-selected"));
-        dagNodes
-          .querySelectorAll(".dag-control-indicator-selected")
-          .forEach((el) => el.classList.remove("dag-control-indicator-selected"));
-        selectedEdgeId = null;
-        selectedEdgeData = null;
-        selectedNodeId = node.id;
-        selectedNodeData = node;
-        nodeEl.classList.add("dag-node-selected");
-        renderNodeDetails(node);
+      upsertDagNodeElement(node, {
+        controlInfo: controlByTarget.get(node.id),
+        portScores,
+        nodeTraffic,
+        nodeErrors,
+        focusSets,
       });
-
-      dagNodes.appendChild(nodeEl);
     });
 
+    const edgeIds = new Set(edges.map((edge) => edge.id));
+    pruneRemovedDagEdges(edgeIds);
     edges.forEach((edge) => {
       const source = nodeMap.get(edge.source);
       const target = nodeMap.get(edge.target);
       if (!source || !target) return;
+      upsertDagEdgeElement(edge, source, target, { focusSets, dataEdgeRates });
+    });
 
-      const activity =
-        dataEdgeRates.get(edge.id) || {
-          sendRate: 0,
-          recvRate: 0,
-          sendErrorRate: 0,
-          recvErrorRate: 0,
-          errorRate: 0,
-          active: false,
-          errorActive: false,
-        };
-      const edgeActive = metricMode === "errors" ? activity.errorActive : activity.active;
-      const recvRate = activity.recvRate ?? 0;
-
-      const startX = source.x + source.width - EDGE_INSET;
-      const startY = getNodeOutputAnchorY(source, edge.port);
-      const endX = target.x - EDGE_INSET;
-      const endY = target.y + target.height / 2;
-      const curvature = Math.min(120, Math.max(60, (endX - startX) * 0.4));
-      const pathData = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", pathData);
-      path.dataset.edgeId = edge.id;
-      path.dataset.edgeRole = "path";
-      const edgeClass =
-        metricMode === "errors"
-          ? edgeActive
-            ? "dag-edge-error"
-            : "dag-edge-idle"
-          : edgeActive
-            ? "dag-edge-active"
-            : "dag-edge-idle";
-      path.setAttribute("class", `dag-edge ${edgeClass}`);
-      if (selectedEdgeId && edge.id === selectedEdgeId) {
-        path.classList.add("dag-edge-selected");
-      }
-      if (focusSets && !focusSets.edges.has(edge.id)) {
-        path.classList.add("dag-dimmed");
-      }
-      const marker =
-        edgeActive && metricMode === "errors"
-          ? "url(#dag-arrow-error)"
-          : edgeActive
-            ? "url(#dag-arrow-active)"
-            : "url(#dag-arrow-idle)";
-      path.setAttribute("marker-end", marker);
-      dagEdges.appendChild(path);
-
-      const receiverLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      receiverLabel.setAttribute("x", endX - 10);
-      receiverLabel.setAttribute("y", endY - 8);
-      receiverLabel.dataset.edgeId = edge.id;
-      receiverLabel.dataset.edgeRole = "label";
-      receiverLabel.setAttribute("text-anchor", "end");
-      receiverLabel.setAttribute(
-        "class",
-        edgeActive
-          ? metricMode === "errors"
-            ? "dag-edge-label dag-edge-label-error"
-            : "dag-edge-label dag-edge-label-active"
-          : "dag-edge-label dag-edge-label-idle"
-      );
-      if (metricMode === "errors") {
-        receiverLabel.textContent = formatRateWithUnit(activity.errorRate, "error");
-      } else {
-        receiverLabel.textContent = formatRateWithUnit(recvRate, "message");
-      }
-      if (focusSets && !focusSets.edges.has(edge.id)) {
-        receiverLabel.classList.add("dag-dimmed");
-      }
-      dagEdges.appendChild(receiverLabel);
-
-      const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      hit.setAttribute("d", pathData);
-      hit.setAttribute("class", "dag-edge-hit");
-      hit.addEventListener("click", () => {
-        dagEdges
-          .querySelectorAll(".dag-edge-selected")
-          .forEach((el) => el.classList.remove("dag-edge-selected"));
-        dagNodes
-          .querySelectorAll(".dag-node-selected")
-          .forEach((el) => el.classList.remove("dag-node-selected"));
-        dagNodes
-          .querySelectorAll(".dag-control-indicator-selected")
-          .forEach((el) => el.classList.remove("dag-control-indicator-selected"));
-        selectedNodeId = null;
-        selectedNodeData = null;
-        selectedEdgeId = edge.id;
-        selectedEdgeData = edge;
-        path.classList.add("dag-edge-selected");
-        renderEdgeDetails(edge);
-        edgeDetailBody.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
-      dagEdges.appendChild(hit);
-      });
+    clearDagNavigationOverlayElements();
 
     if (activeDagScope.mode === DAG_SCOPE_CONNECTED) {
       try {
