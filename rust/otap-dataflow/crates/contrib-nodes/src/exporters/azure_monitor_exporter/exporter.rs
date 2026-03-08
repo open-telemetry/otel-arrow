@@ -442,7 +442,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
-            dcr = self.config.api.dcr.as_str()
+            dcr = self.config.api.dcr.as_str(),
+            auth_extension = self.config.auth.as_str()
         );
 
         let mut msg_id = 0;

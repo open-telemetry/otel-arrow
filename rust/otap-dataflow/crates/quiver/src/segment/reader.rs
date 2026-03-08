@@ -400,16 +400,34 @@ impl SegmentReader {
         let path = path.as_ref();
         let file = File::open(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
-        // SAFETY: We use map_copy_read_only() which creates a private (copy-on-write)
-        // mapping. If another process modifies the underlying file, our view remains
-        // stable. The kernel provides us with a private copy of the original data.
-        // This mitigates the UB risk from concurrent file modification, although
-        // we would still be vulnerable to truncation (leading to SIGBUS) if the file
-        // is shrunk while mapped.
+        // SAFETY: We use a shared read-only mapping.
+        // On Unix: MAP_SHARED | PROT_READ — pages are backed by the file and
+        // freely reclaimable by the kernel under memory pressure.
+        // On Windows: FILE_MAP_READ — pages are backed by the file and
+        // reclaimable by the Windows memory manager.
+        //
+        // Segment files are immutable after finalization. Quiver never
+        // modifies or truncates a finalized segment, and permissions are set
+        // to read-only on a best-effort basis (see PR #2041).
+        //
+        // Note on MAP_SHARED vs MAP_PRIVATE security tradeoff: with
+        // MAP_PRIVATE, external file modifications are invisible to the
+        // process (private copy-on-write pages). With MAP_SHARED, an
+        // attacker with write access to the segment directory could modify
+        // a file after CRC validation and inject data visible to the reader.
+        // We accept this tradeoff because: (a) an attacker with write access
+        // to the data directory can already corrupt WAL, config, and progress
+        // files, (b) the CRC is for integrity not security, and (c)
+        // MAP_PRIVATE causes RSS to grow proportionally to disk usage during
+        // outages, making the system unusable under the exact conditions
+        // durable buffering is designed for.
+        //
+        // Truncation while mapped could cause SIGBUS (Unix) or an access
+        // violation (Windows), but Quiver never truncates finalized segments.
         #[allow(unsafe_code)]
         let mmap = unsafe {
             memmap2::MmapOptions::new()
-                .map_copy_read_only(&file)
+                .map(&file)
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?
         };
 
@@ -417,7 +435,18 @@ impl SegmentReader {
         let bytes = bytes::Bytes::from_owner(mmap);
         let buffer = Buffer::from(bytes);
 
-        Self::from_buffer(buffer, Some(path.to_path_buf()))
+        let reader = Self::from_buffer(buffer, Some(path.to_path_buf()))?;
+
+        // CRC validation in from_buffer() faults in every page of the mapping.
+        // Advise the kernel that we don't need those pages right now — the
+        // subscriber will re-fault only the specific pages it reads on demand.
+        //
+        // With MAP_SHARED this merely removes page-table entries; the data
+        // stays in the page cache and re-faulting is a cheap TLB miss, not
+        // disk I/O (unless under severe memory pressure).
+        reader.advise_dontneed();
+
+        Ok(reader)
     }
 
     /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
@@ -524,6 +553,41 @@ impl SegmentReader {
     pub fn file_size(&self) -> usize {
         self.buffer.len()
     }
+
+    /// Advise the kernel that the mapped pages are not currently needed.
+    ///
+    /// For MAP_SHARED mappings on Unix, this removes page-table entries without
+    /// evicting data from the page cache, so re-faulting is cheap (TLB miss
+    /// only, no disk I/O unless the system is under severe memory pressure).
+    ///
+    /// On Windows, file-backed shared mappings (FILE_MAP_READ) are already
+    /// reclaimable by the memory manager, so no explicit advice is needed.
+    #[cfg(all(unix, feature = "mmap"))]
+    fn advise_dontneed(&self) {
+        let Some(ptr) = std::ptr::NonNull::new(self.buffer.as_ptr() as *mut std::ffi::c_void)
+        else {
+            return;
+        };
+        #[allow(unsafe_code)]
+        // SAFETY: The buffer pointer and length describe a valid mapped region
+        // created by open_mmap(). MADV_DONTNEED on a MAP_SHARED mapping is
+        // safe — it merely tells the kernel it may reclaim the pages.
+        let _ = unsafe {
+            nix::sys::mman::madvise(
+                ptr,
+                self.buffer.len(),
+                nix::sys::mman::MmapAdvise::MADV_DONTNEED,
+            )
+        };
+    }
+
+    /// No-op fallback for Windows and non-mmap builds.
+    ///
+    /// On Windows, file-backed shared mappings (FILE_MAP_READ) are already
+    /// reclaimable by the memory manager without explicit advice.
+    #[cfg(not(all(unix, feature = "mmap")))]
+    #[allow(dead_code)]
+    fn advise_dontneed(&self) {}
 
     /// Returns the stream directory.
     #[must_use]
