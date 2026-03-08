@@ -35,9 +35,18 @@
     resolveScopedNodeId,
   } from "./graph-model.js";
   import {
+    computeEdgeRates as computeEdgeRatesFromSeries,
+    getChannelPoint as getChannelPointFromSeries,
+    getPointAtTime as getPointAtTimeFromSeries,
+    getSeriesWindow as getSeriesWindowFromRange,
+    updateChannelSeries as updateChannelSeriesFromMetrics,
+    updateNodeSeries as updateNodeSeriesFromMetrics,
+  } from "./charts-controller.js";
+  import {
     getNodeOutputAnchorY as getLayoutNodeOutputAnchorY,
     layoutGraph as computeLayoutGraph,
   } from "./graph-layout.js";
+  import { renderGraphFrame } from "./graph-renderer.js";
   import {
     filterMetricSets as filterMetricSetsBySelection,
     getDagMetricSets as getDagMetricSetsBySelection,
@@ -1460,31 +1469,24 @@
   }
 
   function getSeriesWindow(points, startMs, endMs) {
-    return points.filter((point) => point.ts >= startMs && point.ts <= endMs);
+    return getSeriesWindowFromRange(points, startMs, endMs);
   }
 
   function getPointAtTime(points, ts) {
-    if (!points || !points.length) return null;
-    let chosen = null;
-    for (const point of points) {
-      if (point.ts <= ts) {
-        chosen = point;
-      } else {
-        break;
-      }
-    }
-    return chosen || points[0] || null;
+    return getPointAtTimeFromSeries(points, ts);
   }
 
   function getChannelPoint(channelId, ts) {
-    const series = channelSeries.get(channelId);
-    if (!series || !series.points.length) return null;
-    const endMs = getWindowEndMs();
-    const startMs = endMs - getWindowMs();
-    const points = getSeriesWindow(series.points, startMs, endMs);
-    if (!points.length) return null;
-    const targetTs = Number.isFinite(ts) ? ts : getDisplayTimeMs();
-    return getPointAtTime(points, targetTs) || points[points.length - 1];
+    return getChannelPointFromSeries({
+      channelSeries,
+      channelId,
+      ts,
+      endMs: getWindowEndMs(),
+      windowMs: getWindowMs(),
+      displayTimeMs: getDisplayTimeMs(),
+      getSeriesWindowFn: getSeriesWindowFromRange,
+      getPointAtTimeFn: getPointAtTimeFromSeries,
+    });
   }
 
   // --- Pipeline/Core selector construction and filtering ---
@@ -3081,146 +3083,36 @@
 
   // Append rate samples for node-scoped metrics and trim old points.
   function updateNodeSeries(metricSets, sampleSeconds, ts, dagScope = null) {
-    const perfMs = perfStart();
-    try {
-      if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
-      if (!ts) return;
-      const nowMs = ts.getTime();
-      const cutoff = nowMs - MAX_WINDOW_MS;
-      const scopeByPipeline = dagScope?.scopeByPipeline === true;
-      metricSets.forEach((set) => {
-        if (
-          set.name === "channel.sender" ||
-          set.name === "channel.receiver" ||
-          set.name === "pipeline.metrics" ||
-          set.name === "tokio.runtime"
-        ) {
-          return;
-        }
-        const attrs = normalizeAttributes(set.attributes || {});
-        const nodeId = resolveScopedNodeId(attrs, scopeByPipeline);
-        if (!nodeId) return;
-        const entry = nodeSeries.get(nodeId) || { metrics: new Map() };
-        (set.metrics || []).forEach((metric) => {
-          if (!shouldShowNodeRate(metric)) return;
-          if (!Number.isFinite(metric.value)) return;
-          const rate = metric.value / sampleSeconds;
-          const metricKey = buildNodeMetricKey(set.name, metric.name);
-          const series = entry.metrics.get(metricKey) || { points: [] };
-          series.points.push({ ts: nowMs, value: rate });
-          series.points = series.points.filter((point) => point.ts >= cutoff);
-          entry.metrics.set(metricKey, series);
-        });
-        nodeSeries.set(nodeId, entry);
-      });
-    } finally {
-      perfEnd("updateNodeSeries", perfMs, { sets: metricSets?.length || 0 });
-    }
+    updateNodeSeriesFromMetrics({
+      metricSets,
+      sampleSeconds,
+      ts,
+      dagScope,
+      nodeSeries,
+      maxWindowMs: MAX_WINDOW_MS,
+      shouldShowNodeRate,
+      resolveScopedNodeId,
+      normalizeAttributes,
+      buildNodeMetricKey,
+      perfStart,
+      perfEnd,
+    });
   }
 
   // Build per-channel send/recv/error series for edge detail charts and rate computation.
   function updateChannelSeries(metricSets, sampleSeconds, ts, dagScope = null) {
-    const perfMs = perfStart();
-    try {
-      if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
-      if (!ts) return;
-      const scopeByPipeline = dagScope?.scopeByPipeline === true;
-
-      const perChannel = new Map();
-      const ensureChannel = (id) => {
-        if (!perChannel.has(id)) {
-          perChannel.set(id, {
-            send: 0,
-            recv: 0,
-            sendErrorFull: 0,
-            sendErrorClosed: 0,
-            recvErrorEmpty: 0,
-            recvErrorClosed: 0,
-          });
-        }
-        return perChannel.get(id);
-      };
-
-      metricSets.forEach((set) => {
-        if (set.name !== "channel.sender" && set.name !== "channel.receiver") {
-          return;
-        }
-        const attrs = normalizeAttributes(set.attributes || {});
-        const channelId = resolveScopedChannelId(attrs, scopeByPipeline);
-        if (!channelId) return;
-
-        const metrics = set.metrics || [];
-        if (set.name === "channel.sender") {
-          const sendMetric = metrics.find((metric) => metric.name === "send.count");
-          const sendValue = sendMetric && typeof sendMetric.value === "number" ? sendMetric.value : 0;
-          const sendErrorFullMetric = metrics.find(
-            (metric) => metric.name === "send.error_full"
-          );
-          const sendErrorClosedMetric = metrics.find(
-            (metric) => metric.name === "send.error_closed"
-          );
-          const sendErrorFullValue =
-            sendErrorFullMetric && typeof sendErrorFullMetric.value === "number"
-              ? sendErrorFullMetric.value
-              : 0;
-          const sendErrorClosedValue =
-            sendErrorClosedMetric && typeof sendErrorClosedMetric.value === "number"
-              ? sendErrorClosedMetric.value
-              : 0;
-          const channelEntry = ensureChannel(channelId);
-          channelEntry.send += sendValue;
-          channelEntry.sendErrorFull += sendErrorFullValue;
-          channelEntry.sendErrorClosed += sendErrorClosedValue;
-        } else {
-          const recvMetric = metrics.find((metric) => metric.name === "recv.count");
-          const recvValue = recvMetric && typeof recvMetric.value === "number" ? recvMetric.value : 0;
-          const recvErrorEmptyMetric = metrics.find(
-            (metric) => metric.name === "recv.error_empty"
-          );
-          const recvErrorClosedMetric = metrics.find(
-            (metric) => metric.name === "recv.error_closed"
-          );
-          const recvErrorEmptyValue =
-            recvErrorEmptyMetric && typeof recvErrorEmptyMetric.value === "number"
-              ? recvErrorEmptyMetric.value
-              : 0;
-          const recvErrorClosedValue =
-            recvErrorClosedMetric && typeof recvErrorClosedMetric.value === "number"
-              ? recvErrorClosedMetric.value
-              : 0;
-          const channelEntry = ensureChannel(channelId);
-          channelEntry.recv += recvValue;
-          channelEntry.recvErrorEmpty += recvErrorEmptyValue;
-          channelEntry.recvErrorClosed += recvErrorClosedValue;
-        }
-      });
-
-      const nowMs = ts.getTime();
-      const cutoff = nowMs - MAX_WINDOW_MS;
-
-      perChannel.forEach((counts, channelId) => {
-        const sendRate = counts.send / sampleSeconds;
-        const recvRate = counts.recv / sampleSeconds;
-        const sendErrorFullRate = counts.sendErrorFull / sampleSeconds;
-        const sendErrorClosedRate = counts.sendErrorClosed / sampleSeconds;
-        const recvErrorEmptyRate = counts.recvErrorEmpty / sampleSeconds;
-        const recvErrorClosedRate = counts.recvErrorClosed / sampleSeconds;
-        const series = channelSeries.get(channelId) || { points: [] };
-        series.points.push({
-          ts: nowMs,
-          sendRate,
-          recvRate,
-          sendErrorFullRate,
-          sendErrorClosedRate,
-          recvErrorEmptyRate,
-          recvErrorClosedRate,
-        });
-        series.points = series.points.filter((point) => point.ts >= cutoff);
-        channelSeries.set(channelId, series);
-      });
-    } finally {
-      perfEnd("updateChannelSeries", perfMs, { sets: metricSets?.length || 0 });
-    }
+    updateChannelSeriesFromMetrics({
+      metricSets,
+      sampleSeconds,
+      ts,
+      dagScope,
+      channelSeries,
+      maxWindowMs: MAX_WINDOW_MS,
+      resolveScopedChannelId,
+      normalizeAttributes,
+      perfStart,
+      perfEnd,
+    });
   }
 
   // Edge detail chart renderer (single chart reused per selected channel).
@@ -3755,49 +3647,19 @@
   }
 
   function computeEdgeRates(edges, displayTimeMs, sampleSeconds) {
-    const rates = new Map();
-    edges.forEach((edge) => {
-      const senderMetrics = metricMap(edge.data.sender?.metrics || []);
-      const receiverMetrics = metricMap(edge.data.receiver?.metrics || []);
-      const channelId = edge.channelId || edge.data?.id || edge.id;
-      const useChannelSeries = !(edge.data?.multiSender || edge.data?.multiReceiver);
-      const point = useChannelSeries ? getChannelPoint(channelId, displayTimeMs) : null;
-      const fallbackSendRate = calcRate(senderMetrics["send.count"] ?? 0, sampleSeconds) ?? 0;
-      const fallbackRecvRate = calcRate(receiverMetrics["recv.count"] ?? 0, sampleSeconds) ?? 0;
-      const fallbackSendErrRate =
-        calcRate(
-          (senderMetrics["send.error_full"] ?? 0) +
-            (senderMetrics["send.error_closed"] ?? 0),
-          sampleSeconds
-        ) ?? 0;
-      const fallbackRecvErrRate =
-        calcRate(
-          (receiverMetrics["recv.error_empty"] ?? 0) +
-            (receiverMetrics["recv.error_closed"] ?? 0),
-          sampleSeconds
-        ) ?? 0;
-      const sendRate = point?.sendRate ?? fallbackSendRate;
-      const recvRate = point?.recvRate ?? fallbackRecvRate;
-      const sendErrorRate =
-        point == null
-          ? fallbackSendErrRate
-          : (point.sendErrorFullRate || 0) + (point.sendErrorClosedRate || 0);
-      const recvErrorRate =
-        point == null
-          ? fallbackRecvErrRate
-          : (point.recvErrorEmptyRate || 0) + (point.recvErrorClosedRate || 0);
-      const errorRate = sendErrorRate + recvErrorRate;
-      rates.set(edge.id, {
-        sendRate,
-        recvRate,
-        sendErrorRate,
-        recvErrorRate,
-        errorRate,
-        active: sendRate > 0 || recvRate > 0,
-        errorActive: errorRate > 0,
-      });
+    return computeEdgeRatesFromSeries({
+      edges,
+      displayTimeMs,
+      sampleSeconds,
+      channelSeries,
+      getWindowEndMs,
+      getWindowMs,
+      getDisplayTimeMs,
+      calcRate,
+      metricMap,
+      getSeriesWindowFn: getSeriesWindowFromRange,
+      getPointAtTimeFn: getPointAtTimeFromSeries,
     });
-    return rates;
   }
 
   // --- Interaction wiring (zoom, filters, toggles, theme, search) ---
@@ -4249,98 +4111,6 @@
     selectEdgeById(edgeId, { scrollDetails: true });
   });
 
-  function hashString32(hash, value) {
-    const text = String(value == null ? "" : value);
-    let next = hash >>> 0;
-    for (let i = 0; i < text.length; i += 1) {
-      next ^= text.charCodeAt(i);
-      next = Math.imul(next, 16777619);
-    }
-    return next >>> 0;
-  }
-
-  function buildRenderedStructureSignature(
-    nodes,
-    edges,
-    controlEdges,
-    dagScopeMode,
-    includeControlChannels
-  ) {
-    let hash = 2166136261;
-    hash = hashString32(hash, dagScopeMode);
-    hash = hashString32(hash, includeControlChannels ? "1" : "0");
-
-    const nodeParts = nodes
-      .map((node) => {
-        const ports = Array.from(new Set((node.displayPorts || node.outPorts || []).map(String)))
-          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
-          .join(",");
-        const nodeType = node.attrs?.["node.type"] || "";
-        return `${node.id}|${nodeType}|${ports}`;
-      })
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-    nodeParts.forEach((part) => {
-      hash = hashString32(hash, part);
-    });
-
-    const edgeParts = edges
-      .map((edge) => `${edge.id}|${edge.source}|${edge.target}|${edge.port || ""}`)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-    edgeParts.forEach((part) => {
-      hash = hashString32(hash, part);
-    });
-
-    const visibleControlEdges = includeControlChannels ? controlEdges : [];
-    const controlParts = visibleControlEdges
-      .map((edge) => `${edge.id}|${edge.source}|${edge.target}|${edge.port || ""}`)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-    controlParts.forEach((part) => {
-      hash = hashString32(hash, part);
-    });
-
-    return `${nodes.length}:${edges.length}:${visibleControlEdges.length}:${hash.toString(16)}`;
-  }
-
-  function syncSelectionDetails(nodes, edges, controlEdges) {
-    if (selectedEdgeId) {
-      const selectedEdge =
-        edges.find((edge) => edge.id === selectedEdgeId) ||
-        (showControlChannels
-          ? controlEdges.find((edge) => edge.id === selectedEdgeId)
-          : null);
-      if (selectedEdge) {
-        selectedEdgeData = selectedEdge;
-        renderEdgeDetails(selectedEdge);
-        return;
-      }
-      if (selectedEdgeData && selectedEdgeData.id === selectedEdgeId) {
-        renderEdgeDetails(selectedEdgeData);
-        return;
-      }
-      selectedEdgeId = null;
-      selectedEdgeData = null;
-      renderSelectionNone();
-      return;
-    }
-    if (selectedNodeId) {
-      const selectedNode = nodes.find((node) => node.id === selectedNodeId);
-      if (selectedNode) {
-        selectedNodeData = selectedNode;
-        renderNodeDetails(selectedNode);
-        return;
-      }
-      if (selectedNodeData && selectedNodeData.id === selectedNodeId) {
-        renderNodeDetails(selectedNodeData);
-        return;
-      }
-      selectedNodeId = null;
-      selectedNodeData = null;
-      renderSelectionNone();
-      return;
-    }
-    renderSelectionNone();
-  }
-
   function upsertDagNodeElement(node, options) {
     const { controlInfo, portScores, nodeTraffic, nodeErrors, focusSets } = options;
     let nodeEl = dagNodeElements.get(node.id);
@@ -4560,271 +4330,76 @@
 
   // Main DAG renderer for data and control edge layers.
   function renderGraph(dataGraph, controlGraph) {
-    const perfMs = perfStart();
-    let renderMode = "full";
-    try {
-      const dataGraphResolved = dataGraph || { nodes: [], edges: [], meta: {} };
-      const controlGraphResolved = controlGraph || { nodes: [], edges: [], meta: {} };
-      let nodes = [...(dataGraphResolved.nodes || [])];
-      let edges = [...(dataGraphResolved.edges || [])];
-      const controlEdges = controlGraphResolved.edges || [];
-      const controlEdgeIds = new Set(controlEdges.map((edge) => edge.id));
-      const sampleSeconds =
-        dataGraphResolved.meta?.sampleSeconds ?? controlGraphResolved.meta?.sampleSeconds;
-      const displayTimeMs = getDisplayTimeMs();
-      const dataEdgeRates = computeEdgeRates(edges, displayTimeMs, sampleSeconds);
-      const controlEdgeRates = computeEdgeRates(controlEdges, displayTimeMs, sampleSeconds);
-      lastEdgeRates = dataEdgeRates;
-
-    if (hideZeroActivity) {
-      const visibleEdges = edges.filter((edge) => {
-        const activity = dataEdgeRates.get(edge.id);
-        if (!activity) return false;
-        return metricMode === "errors" ? activity.errorActive : activity.active;
-      });
-      const activeNodeIds = new Set();
-      visibleEdges.forEach((edge) => {
-        activeNodeIds.add(edge.source);
-        activeNodeIds.add(edge.target);
-      });
-      const portMap = new Map();
-      visibleEdges.forEach((edge) => {
-        if (!portMap.has(edge.source)) portMap.set(edge.source, new Set());
-        portMap.get(edge.source).add(edge.port);
-      });
-      nodes = nodes
-        .filter((node) => activeNodeIds.has(node.id))
-        .map((node) => ({
-          ...node,
-          outPorts: portMap.get(node.id) ? Array.from(portMap.get(node.id)) : [],
-        }));
-      edges = edges.filter(
-        (edge) => activeNodeIds.has(edge.source) && activeNodeIds.has(edge.target)
-      );
-      if (selectedNodeId && !nodes.find((node) => node.id === selectedNodeId)) {
-        selectedNodeId = null;
-        selectedNodeData = null;
-      }
-    }
-
-    if (dagSearchQuery) {
-      const searchResult = filterGraphByQuery(nodes, edges, dagSearchQuery);
-      nodes = searchResult.nodes;
-      edges = searchResult.edges;
-      if (selectedNodeId && !nodes.find((node) => node.id === selectedNodeId)) {
-        selectedNodeId = null;
-        selectedNodeData = null;
-      }
-    }
-
-    const dataEdgeIds = new Set(edges.map((edge) => edge.id));
-    if (
-      selectedEdgeId &&
-      !controlEdgeIds.has(selectedEdgeId) &&
-      !dataEdgeIds.has(selectedEdgeId)
-    ) {
-      selectedEdgeId = null;
-      selectedEdgeData = null;
-    }
-
-    if (!showControlChannels && selectedEdgeId && controlEdgeIds.has(selectedEdgeId)) {
-      selectedEdgeId = null;
-      selectedEdgeData = null;
-    }
-
-    const portScores = new Map();
-    edges.forEach((edge) => {
-      const rate = dataEdgeRates.get(edge.id)?.sendRate ?? 0;
-      if (!portScores.has(edge.source)) {
-        portScores.set(edge.source, new Map());
-      }
-      const nodePorts = portScores.get(edge.source);
-      nodePorts.set(edge.port, (nodePorts.get(edge.port) || 0) + rate);
-    });
-
-    nodes.forEach((node) => {
-      if (!node.outPorts || node.outPorts.length < 2) return;
-      const scores = portScores.get(node.id);
-      node.outPorts = [...node.outPorts].sort((a, b) => {
-        const scoreA = scores?.get(a) ?? 0;
-        const scoreB = scores?.get(b) ?? 0;
-        if (scoreB !== scoreA) return scoreB - scoreA;
-        return a.localeCompare(b);
-      });
-    });
-
-    const activeDagScope = getDagRenderScope();
-    const structureSignature = buildRenderedStructureSignature(
-      nodes,
-      edges,
-      controlEdges,
-      activeDagScope.mode,
-      showControlChannels
-    );
-
-    lastRenderedNodes = nodes;
-    lastRenderedEdges = edges;
-    lastRenderedControlEdges = controlEdges;
-    lastRenderedNodesById = new Map(nodes.map((node) => [node.id, node]));
-    lastRenderedEdgesById = new Map(edges.map((edge) => [edge.id, edge]));
-    lastRenderedControlEdgesById = new Map(controlEdges.map((edge) => [edge.id, edge]));
-    lastRenderedSampleSeconds = sampleSeconds;
-    lastGraph = dataGraphResolved;
-
-    dagEmpty.classList.toggle("hidden", edges.length > 0);
-    if (!edges.length) {
-      selectedEdgeId = null;
-      selectedEdgeData = null;
-    }
-    if (!nodes.length) {
-      selectedNodeId = null;
-      selectedNodeData = null;
-    }
-
-    const hasRenderedDagDom =
-      dagNodes.childElementCount > 0 ||
-      dagEdges.childElementCount > 0 ||
-      dagLanes.childElementCount > 0;
-    if (structureSignature === lastRenderedStructureSignature && hasRenderedDagDom) {
-      renderMode = "reuse";
-      updateTopologyForHover(displayTimeMs);
-      syncSelectionDetails(nodes, edges, controlEdges);
-      return;
-    }
-
-    lastRenderedStructureSignature = structureSignature;
-    renderMode = "incremental";
-
-    const layout = layoutGraph(nodes, edges);
-    const baseNodeMap = new Map(nodes.map((node) => [node.id, node]));
-    const pipelineNavAnchors =
-      activeDagScope.mode === DAG_SCOPE_CONNECTED
-        ? []
-        : collectPipelineDagAnchors(baseNodeMap);
-    const pipelineNavLayout = computePipelineDagNavLayout(pipelineNavAnchors);
-    const leftNavGutter = pipelineNavLayout.leftGutter;
-    const rightNavGutter = pipelineNavLayout.rightGutter;
-    if (leftNavGutter > 0) {
-      nodes.forEach((node) => {
-        node.x += leftNavGutter;
-      });
-    }
-    layout.width += leftNavGutter + rightNavGutter;
-
-    layoutSize = { width: layout.width, height: layout.height };
-    dagCanvas.style.width = `${layout.width}px`;
-    dagCanvas.style.height = `${layout.height}px`;
-    dagEdges.setAttribute("width", layout.width);
-    dagEdges.setAttribute("height", layout.height);
-    dagEdges.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
-    dagNodes.style.width = `${layout.width}px`;
-    dagNodes.style.height = `${layout.height}px`;
-    dagLanes.style.width = `${layout.width}px`;
-    dagLanes.style.height = `${layout.height}px`;
-    applyDefaultOverviewZoom();
-    applyZoom();
-
-    ensureDagEdgeDefs();
-
-    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-    const focusSets = buildFocusSets(edges);
-    const columnWidth = layout.columnWidth ?? NODE_WIDTH;
-    const nodeTraffic = new Map(nodes.map((node) => [node.id, 0]));
-    const nodeErrors = new Map(nodes.map((node) => [node.id, 0]));
-    edges.forEach((edge) => {
-      const rates = dataEdgeRates.get(edge.id);
-      if (!rates) return;
-      nodeTraffic.set(edge.source, (nodeTraffic.get(edge.source) || 0) + rates.sendRate);
-      nodeTraffic.set(edge.target, (nodeTraffic.get(edge.target) || 0) + rates.recvRate);
-      nodeErrors.set(edge.source, (nodeErrors.get(edge.source) || 0) + rates.sendErrorRate);
-      nodeErrors.set(edge.target, (nodeErrors.get(edge.target) || 0) + rates.recvErrorRate);
-    });
-
-    const controlByTarget = new Map();
-    controlEdges.forEach((edge) => {
-      const rates = controlEdgeRates.get(edge.id);
-      const recvRate = rates?.recvRate ?? 0;
-      const entry = controlByTarget.get(edge.target) || {
-        total: 0,
-        edges: [],
-        primary: null,
-      };
-      entry.total += recvRate;
-      entry.edges.push(edge);
-      if (
-        !entry.primary ||
-        (rates?.recvRate ?? 0) > (controlEdgeRates.get(entry.primary.id)?.recvRate ?? 0)
-      ) {
-        entry.primary = edge;
-      }
-      controlByTarget.set(edge.target, entry);
-    });
-
-    dagLanes.innerHTML = "";
-    layout.lanes.forEach((lane) => {
-      const hasAbsoluteLane = Number.isFinite(lane.x) && Number.isFinite(lane.width);
-      const startX = hasAbsoluteLane
-        ? leftNavGutter + lane.x
-        : leftNavGutter + MARGIN + lane.start * (columnWidth + LEVEL_GAP);
-      const width = hasAbsoluteLane
-        ? lane.width
-        : (lane.end - lane.start + 1) * columnWidth +
-          (lane.end - lane.start) * LEVEL_GAP;
-      const label = document.createElement("div");
-      label.className = "dag-lane-label";
-      label.style.left = `${startX + width / 2}px`;
-      label.textContent = lane.label;
-      dagLanes.appendChild(label);
-
-      const bar = document.createElement("div");
-      bar.className = "dag-lane-bar";
-      bar.style.left = `${startX}px`;
-      bar.style.width = `${width}px`;
-      dagLanes.appendChild(bar);
-    });
-
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    pruneRemovedDagNodes(nodeIds);
-    nodes.forEach((node) => {
-      upsertDagNodeElement(node, {
-        controlInfo: controlByTarget.get(node.id),
-        portScores,
-        nodeTraffic,
-        nodeErrors,
-        focusSets,
-      });
-    });
-
-    const edgeIds = new Set(edges.map((edge) => edge.id));
-    pruneRemovedDagEdges(edgeIds);
-    edges.forEach((edge) => {
-      const source = nodeMap.get(edge.source);
-      const target = nodeMap.get(edge.target);
-      if (!source || !target) return;
-      upsertDagEdgeElement(edge, source, target, { focusSets, dataEdgeRates });
-    });
-
-    clearDagNavigationOverlayElements();
-
-    if (activeDagScope.mode === DAG_SCOPE_CONNECTED) {
-      try {
-        renderConnectedTopicNavigation(nodeMap, activeDagScope);
-      } catch (error) {
-        // Do not block base DAG rendering if overlay computation fails.
+    const result = renderGraphFrame({
+      dataGraph,
+      controlGraph,
+      perfStart,
+      perfEnd,
+      metricMode,
+      hideZeroActivity,
+      dagSearchQuery,
+      showControlChannels,
+      selectedEdgeId,
+      selectedEdgeData,
+      selectedNodeId,
+      selectedNodeData,
+      lastRenderedStructureSignature,
+      getDisplayTimeMs,
+      computeEdgeRates,
+      filterGraphByQuery,
+      getDagRenderScope,
+      updateTopologyForHover,
+      layoutGraph,
+      collectPipelineDagAnchors,
+      computePipelineDagNavLayout,
+      applyDefaultOverviewZoom,
+      applyZoom,
+      ensureDagEdgeDefs,
+      buildFocusSets,
+      pruneRemovedDagNodes,
+      upsertDagNodeElement,
+      pruneRemovedDagEdges,
+      upsertDagEdgeElement,
+      clearDagNavigationOverlayElements,
+      renderConnectedTopicNavigation,
+      renderPipelineDagNavigation,
+      renderEdgeDetails,
+      renderNodeDetails,
+      renderSelectionNone,
+      dagCanvas,
+      dagEdges,
+      dagNodes,
+      dagLanes,
+      dagEmpty,
+      layoutSize,
+      NODE_WIDTH,
+      MARGIN,
+      LEVEL_GAP,
+      onOverlayError: (error) => {
         console.error("Connected topic overlay render failed", error);
-      }
-    } else {
-      renderPipelineDagNavigation(nodeMap, pipelineNavAnchors, pipelineNavLayout);
-    }
+      },
+    });
 
-      syncSelectionDetails(nodes, edges, controlEdges);
-    } finally {
-      perfEnd("renderGraph", perfMs, {
-        mode: renderMode,
-        nodes: lastRenderedNodes.length,
-        edges: lastRenderedEdges.length,
-        control: lastRenderedControlEdges.length,
-      });
+    selectedEdgeId = result.selectedEdgeId;
+    selectedEdgeData = result.selectedEdgeData;
+    selectedNodeId = result.selectedNodeId;
+    selectedNodeData = result.selectedNodeData;
+    lastRenderedStructureSignature = result.lastRenderedStructureSignature;
+    lastRenderedNodes = result.lastRenderedNodes;
+    lastRenderedEdges = result.lastRenderedEdges;
+    lastRenderedControlEdges = result.lastRenderedControlEdges;
+    lastRenderedNodesById = result.lastRenderedNodesById;
+    lastRenderedEdgesById = result.lastRenderedEdgesById;
+    lastRenderedControlEdgesById = result.lastRenderedControlEdgesById;
+    lastRenderedSampleSeconds = result.lastRenderedSampleSeconds;
+    lastGraph = result.lastGraph;
+    lastEdgeRates = result.lastEdgeRates;
+    if (
+      result.layoutSize &&
+      Number.isFinite(result.layoutSize.width) &&
+      Number.isFinite(result.layoutSize.height)
+    ) {
+      layoutSize = result.layoutSize;
     }
   }
 
