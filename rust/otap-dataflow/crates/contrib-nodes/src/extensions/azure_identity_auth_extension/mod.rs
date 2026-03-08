@@ -82,11 +82,12 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
             })?;
 
         // Create the extension
-        let extension = AzureIdentityAuthExtension::new(cfg).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
+        let extension =
+            AzureIdentityAuthExtension::new(node.name.to_string(), cfg).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?;
 
         Ok(ExtensionWrapper::local(
             extension,

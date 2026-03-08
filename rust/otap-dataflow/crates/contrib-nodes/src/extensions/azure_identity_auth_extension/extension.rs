@@ -64,64 +64,68 @@ const TOKEN_REFRESH_RETRY_SECS: u64 = 10;
 /// Cheap to clone — all state is behind `Arc`.
 #[derive(Clone)]
 pub struct AzureIdentityAuthExtension {
+    /// The configured name of this extension instance (from YAML config key).
+    name: String,
     /// The Azure credential provider.
     credential: Arc<dyn TokenCredential>,
+    /// Human-readable description of the credential type created.
+    credential_type: &'static str,
     /// The OAuth scope for token acquisition.
     scope: String,
     /// The authentication method being used.
     method: AuthMethod,
+    /// Optional client ID for user-assigned managed identity.
+    client_id: Option<String>,
     /// Sender for broadcasting / subscribing to token refresh events.
     token_sender: Arc<watch::Sender<Option<BearerToken>>>,
 }
 
 impl AzureIdentityAuthExtension {
     /// Creates a new Azure Identity Auth Extension.
-    pub fn new(config: Config) -> Result<Self, Error> {
-        let credential = Self::create_credential(&config)?;
+    pub fn new(name: String, config: Config) -> Result<Self, Error> {
+        let (credential, credential_type) = Self::create_credential(&config)?;
         let (token_sender, _) = watch::channel(None);
         let token_sender = Arc::new(token_sender);
 
         Ok(Self {
+            name,
             credential,
+            credential_type,
             scope: config.scope,
             method: config.method,
+            client_id: config.client_id,
             token_sender,
         })
     }
 
     /// Creates a credential provider based on the configuration.
-    fn create_credential(config: &Config) -> Result<Arc<dyn TokenCredential>, Error> {
+    ///
+    /// Returns the credential and a human-readable description of the credential type.
+    fn create_credential(
+        config: &Config,
+    ) -> Result<(Arc<dyn TokenCredential>, &'static str), Error> {
         match config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
-                if let Some(client_id) = &config.client_id {
-                    otel_info!(
-                        "azure_identity_auth.credential_type",
-                        method = "user_assigned_managed_identity",
-                        client_id = %client_id
-                    );
+                let credential_type = if let Some(client_id) = &config.client_id {
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
+                    "user_assigned_managed_identity"
                 } else {
-                    otel_info!(
-                        "azure_identity_auth.credential_type",
-                        method = "system_assigned_managed_identity"
-                    );
-                }
+                    "system_assigned_managed_identity"
+                };
 
-                Ok(ManagedIdentityCredential::new(Some(options))
-                    .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
+                Ok((
+                    ManagedIdentityCredential::new(Some(options))
+                        .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?,
+                    credential_type,
+                ))
             }
-            AuthMethod::Development => {
-                otel_info!(
-                    "azure_identity_auth.credential_type",
-                    method = "developer_tools"
-                );
-                Ok(
-                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
-                )
-            }
+            AuthMethod::Development => Ok((
+                DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                    .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
+                "developer_tools",
+            )),
         }
     }
 
@@ -244,12 +248,13 @@ impl Extension for AzureIdentityAuthExtension {
         mut ctrl_chan: ControlChannel,
         effect_handler: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
-        effect_handler
-            .info(&format!(
-                "[AzureIdentityAuthExtension] Started with {} authentication",
-                self.method
-            ))
-            .await;
+        otel_info!(
+            "azure_identity_auth.start",
+            name = self.name.as_str(),
+            credential_type = self.credential_type,
+            scope = self.scope.as_str(),
+            client_id = self.client_id.as_deref().unwrap_or("none"),
+        );
 
         // Fetch initial token immediately
         let mut next_token_refresh = tokio::time::Instant::now();
@@ -378,9 +383,12 @@ mod tests {
     ) -> AzureIdentityAuthExtension {
         let (token_sender, _) = watch::channel(None);
         AzureIdentityAuthExtension {
+            name: "test".to_string(),
             credential,
+            credential_type: "mock",
             scope: scope.to_string(),
             method: AuthMethod::ManagedIdentity,
+            client_id: None,
             token_sender: Arc::new(token_sender),
         }
     }
@@ -395,7 +403,7 @@ mod tests {
             scope: "https://test.scope".to_string(),
         };
 
-        let result = AzureIdentityAuthExtension::new(config);
+        let result = AzureIdentityAuthExtension::new("test".to_string(), config);
         assert!(result.is_ok());
         let ext = result.unwrap();
         assert_eq!(ext.scope(), "https://test.scope");
@@ -409,7 +417,7 @@ mod tests {
             scope: "https://test.scope".to_string(),
         };
 
-        let result = AzureIdentityAuthExtension::new(config);
+        let result = AzureIdentityAuthExtension::new("test".to_string(), config);
         assert!(result.is_ok());
     }
 
@@ -422,7 +430,7 @@ mod tests {
         };
 
         // May fail if Azure CLI not installed — both outcomes are valid
-        let result = AzureIdentityAuthExtension::new(config);
+        let result = AzureIdentityAuthExtension::new("test".to_string(), config);
         match result {
             Ok(ext) => assert_eq!(ext.scope(), "https://test.scope"),
             Err(Error::Auth {
@@ -505,9 +513,12 @@ mod tests {
         let (token_sender, _) = watch::channel(None);
         let token_sender = Arc::new(token_sender);
         let service = AzureIdentityAuthExtension {
+            name: "test".to_string(),
             credential,
+            credential_type: "mock",
             scope: "scope".to_string(),
             method: AuthMethod::ManagedIdentity,
+            client_id: None,
             token_sender: token_sender.clone(),
         };
 
@@ -541,9 +552,12 @@ mod tests {
         let (token_sender, _) = watch::channel(None);
         let token_sender = Arc::new(token_sender);
         let service = AzureIdentityAuthExtension {
+            name: "test".to_string(),
             credential,
+            credential_type: "mock",
             scope: "scope".to_string(),
             method: AuthMethod::ManagedIdentity,
+            client_id: None,
             token_sender: token_sender.clone(),
         };
 
