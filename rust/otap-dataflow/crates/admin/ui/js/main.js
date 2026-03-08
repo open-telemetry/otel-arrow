@@ -44,6 +44,21 @@
   const POLL_INTERVAL_MS = 2000;
   const HEALTH_POLL_INTERVAL_MS = 5000;
   const HEALTH_REQUEST_TIMEOUT_MS = 1200;
+  const STATUS_POLL_INTERVAL_MS = 10000;
+  const STATUS_REQUEST_TIMEOUT_MS = 1800;
+  const PIPELINE_STATUS_COLORS = {
+    up: "#34d399",
+    down: "#f87171",
+    unknown: "#facc15",
+  };
+  const ACCEPTED_BENIGN_FALSE_REASONS = new Set([
+    "Pending",
+    "StartRequested",
+    "Deleting",
+    "ForceDeleting",
+    "Deleted",
+    "NoPipelineRuntime",
+  ]);
   const PERF_ENABLED = urlParams.get("perf") === "true";
   const PERF_LOG_EVERY = 30;
   const PERF_SLOW_MS = 16;
@@ -176,6 +191,11 @@
   const dagEmpty = document.getElementById("dag-empty");
   const edgeDetailMeta = document.getElementById("edge-detail-meta");
   const edgeDetailBody = document.getElementById("edge-detail-body");
+  const pipelineSelector = document.getElementById("pipeline-selector");
+  const pipelineSelectBtn = document.getElementById("pipeline-select-btn");
+  const pipelineSelectIcon = document.getElementById("pipeline-select-icon");
+  const pipelineSelectValue = document.getElementById("pipeline-select-value");
+  const pipelineOverlay = document.getElementById("pipeline-overlay");
   const pipelineSelect = document.getElementById("pipeline-select");
   const coreSelector = document.getElementById("core-selector");
   const coreSelectBtn = document.getElementById("core-select-btn");
@@ -199,6 +219,13 @@
   const scrubLabel = document.getElementById("scrub-label");
   const pipelineOptgroupTemplate = document.getElementById("pipeline-optgroup-template");
   const pipelineOptionTemplate = document.getElementById("pipeline-option-template");
+  const runtimeStatusAnchor = document.getElementById("runtime-status-anchor");
+  const runtimeStatusOverlay = document.getElementById("runtime-status-overlay");
+  const runtimeStatusPanel = document.getElementById("runtime-status-panel");
+  const runtimeStatusCloseBtn = document.getElementById("runtime-status-close");
+  const runtimeStatusRefreshBtn = document.getElementById("runtime-status-refresh");
+  const runtimeStatusMeta = document.getElementById("runtime-status-meta");
+  const runtimeStatusTbody = document.getElementById("runtime-status-tbody");
 
   const engineCpuUtilEl = document.getElementById("engine-cpu-util");
   const engineMemoryRssEl = document.getElementById("engine-memory-rss");
@@ -283,8 +310,14 @@
   let dagPipelineScopeMode = DAG_SCOPE_SINGLE;
   let pollTimer = null;
   let healthPollTimer = null;
+  let statusPollTimer = null;
   let fetchInFlight = false;
   let healthFetchInFlight = false;
+  let statusFetchInFlight = false;
+  let statusSnapshot = null;
+  let statusLastCheckedAtMs = null;
+  let statusLastProbe = null;
+  let pipelineOptionLabelByKey = new Map();
   let activeFetchController = null;
   let latestFetchRequestId = 0;
   let latestAppliedFetchRequestId = 0;
@@ -362,10 +395,12 @@
   }
 
   function navigateToPipeline(pipelineKey) {
+    closePipelineOverlay();
     if (!pipelineKey || pipelineKey === selectedPipelineKey) {
       return;
     }
     selectedPipelineKey = pipelineKey;
+    ensureRecentStatusSnapshot();
     selectedCoreId = null;
     zoomUserOverridden = false;
     resetVisualizationStateForFilterChange();
@@ -944,6 +979,497 @@
     el.title = parts.join(" | ");
   }
 
+  function normalizeStatusCondition(rawCondition) {
+    if (!rawCondition || typeof rawCondition !== "object") return null;
+    const rawKind = rawCondition.kind ?? rawCondition.type;
+    return {
+      kind: rawKind == null ? "" : String(rawKind),
+      status: rawCondition.status == null ? "" : String(rawCondition.status),
+      reason: rawCondition.reason == null ? "" : String(rawCondition.reason),
+      message: rawCondition.message == null ? "" : String(rawCondition.message),
+    };
+  }
+
+  function findStatusCondition(conditions, kind) {
+    if (!Array.isArray(conditions)) return null;
+    for (const rawCondition of conditions) {
+      const condition = normalizeStatusCondition(rawCondition);
+      if (!condition) continue;
+      if (condition.kind === kind) {
+        return condition;
+      }
+    }
+    return null;
+  }
+
+  function isAcceptedConditionFailure(condition) {
+    if (!condition) return false;
+    if (condition.status === "True") return false;
+    if (condition.status === "Unknown") {
+      return condition.reason !== "NoPipelineRuntime";
+    }
+    if (condition.status === "False") {
+      return !ACCEPTED_BENIGN_FALSE_REASONS.has(condition.reason || "");
+    }
+    return false;
+  }
+
+  function classifyPipelineStatus(rawPipelineStatus) {
+    const accepted = findStatusCondition(rawPipelineStatus?.conditions, "Accepted");
+    const ready = findStatusCondition(rawPipelineStatus?.conditions, "Ready");
+    const totalCoresRaw = Number(
+      rawPipelineStatus?.totalCores ?? rawPipelineStatus?.total_cores ?? 0
+    );
+    const runningCoresRaw = Number(
+      rawPipelineStatus?.runningCores ?? rawPipelineStatus?.running_cores ?? 0
+    );
+    const totalCores =
+      Number.isFinite(totalCoresRaw) && totalCoresRaw > 0 ? Math.floor(totalCoresRaw) : 0;
+    const runningCores =
+      Number.isFinite(runningCoresRaw) && runningCoresRaw >= 0
+        ? Math.floor(runningCoresRaw)
+        : 0;
+
+    let state = "unknown";
+    let summary = "Unknown";
+    if (isAcceptedConditionFailure(accepted)) {
+      state = "down";
+      summary = "Rejected";
+    } else if (ready?.status === "False") {
+      if (ready.reason === "NoActiveCores" || ready.reason === "NoPipelineRuntime") {
+        state = "unknown";
+        summary = "Pending";
+      } else {
+        state = "down";
+        summary = "Not ready";
+      }
+    } else if (accepted?.status === "True" && ready?.status === "True") {
+      state = "up";
+      summary = "Ready";
+    } else if (accepted?.status === "False") {
+      state = "unknown";
+      summary = "Pending";
+    } else if (accepted?.status === "Unknown" || ready?.status === "Unknown") {
+      state = "unknown";
+      summary = "Pending";
+    }
+
+    const details = [];
+    if (totalCores > 0) {
+      details.push(`${runningCores}/${totalCores} cores running`);
+    } else {
+      details.push("no runtime cores");
+    }
+    if (accepted) {
+      details.push(`Accepted=${accepted.status}${accepted.reason ? ` (${accepted.reason})` : ""}`);
+    }
+    if (ready) {
+      details.push(`Ready=${ready.status}${ready.reason ? ` (${ready.reason})` : ""}`);
+    }
+    if (ready?.message) {
+      details.push(ready.message);
+    } else if (accepted?.message) {
+      details.push(accepted.message);
+    }
+
+    return {
+      state,
+      summary,
+      totalCores,
+      runningCores,
+      details,
+    };
+  }
+
+  function statusSeverity(state) {
+    if (state === "down") return 2;
+    if (state === "unknown") return 1;
+    return 0;
+  }
+
+  function parseStatusPipelineSelectionKeys(rawPipelineKey) {
+    const keys = new Set();
+    if (typeof rawPipelineKey !== "string" || rawPipelineKey.length === 0) {
+      return keys;
+    }
+
+    const firstSep = rawPipelineKey.indexOf(":");
+    if (firstSep < 0) {
+      return keys;
+    }
+    keys.add(
+      makePipelineSelectionKey(
+        rawPipelineKey.slice(0, firstSep),
+        rawPipelineKey.slice(firstSep + 1)
+      )
+    );
+
+    const lastSep = rawPipelineKey.lastIndexOf(":");
+    if (lastSep > firstSep) {
+      keys.add(
+        makePipelineSelectionKey(
+          rawPipelineKey.slice(0, lastSep),
+          rawPipelineKey.slice(lastSep + 1)
+        )
+      );
+    }
+    return keys;
+  }
+
+  function buildStatusSnapshot(statusPayload) {
+    const pipelineStatuses =
+      statusPayload?.pipelines && typeof statusPayload.pipelines === "object"
+        ? statusPayload.pipelines
+        : {};
+    const byPipelineKey = new Map();
+    const rows = [];
+    let total = 0;
+    let up = 0;
+    let down = 0;
+    let unknown = 0;
+
+    for (const [rawPipelineKey, rawPipelineStatus] of Object.entries(pipelineStatuses)) {
+      const classified = classifyPipelineStatus(rawPipelineStatus);
+      const accepted = findStatusCondition(rawPipelineStatus?.conditions, "Accepted");
+      const ready = findStatusCondition(rawPipelineStatus?.conditions, "Ready");
+      total += 1;
+      if (classified.state === "up") {
+        up += 1;
+      } else if (classified.state === "down") {
+        down += 1;
+      } else {
+        unknown += 1;
+      }
+
+      rows.push({
+        rawPipelineKey,
+        acceptedStatus: accepted?.status || "Unknown",
+        readyStatus: ready?.status || "Unknown",
+        runningCores: classified.runningCores,
+        totalCores: classified.totalCores,
+        topReason:
+          (accepted && accepted.status !== "True" && (accepted.reason || accepted.message)) ||
+          (ready && ready.status !== "True" && (ready.reason || ready.message)) ||
+          "-",
+        summary: classified.summary,
+        state: classified.state,
+      });
+
+      const selectionKeys = parseStatusPipelineSelectionKeys(rawPipelineKey);
+      selectionKeys.forEach((selectionKey) => {
+        const previous = byPipelineKey.get(selectionKey);
+        if (
+          !previous ||
+          statusSeverity(classified.state) > statusSeverity(previous.state)
+        ) {
+          byPipelineKey.set(selectionKey, {
+            rawPipelineKey,
+            ...classified,
+          });
+        }
+      });
+    }
+
+    return {
+      generatedAt: statusPayload?.generatedAt || statusPayload?.generated_at || null,
+      checkedAt: Date.now(),
+      total,
+      up,
+      down,
+      unknown,
+      rows,
+      byPipelineKey,
+    };
+  }
+
+  function formatSnapshotTime(ts) {
+    if (!ts) return null;
+    const parsed = new Date(ts);
+    if (!Number.isFinite(parsed.getTime())) return null;
+    return parsed.toLocaleTimeString();
+  }
+
+  function getPipelineStatusState(pipelineKey) {
+    const pipelineStatus = statusSnapshot?.byPipelineKey?.get(pipelineKey);
+    if (!pipelineStatus) return "unknown";
+    return pipelineStatus.state === "up" || pipelineStatus.state === "down"
+      ? pipelineStatus.state
+      : "unknown";
+  }
+
+  function getPipelineSelectorStatusTitle(pipelineKey) {
+    const pipelineStatus = statusSnapshot?.byPipelineKey?.get(pipelineKey);
+    if (!pipelineStatus) return "Runtime status unavailable (no /status snapshot yet).";
+    return [
+      pipelineStatus.rawPipelineKey,
+      pipelineStatus.summary,
+      ...pipelineStatus.details,
+    ].join(" | ");
+  }
+
+  function createStatusIconSvg(state, size = 12) {
+    const normalizedState =
+      state === "up" || state === "down" ? state : "unknown";
+    const color = PIPELINE_STATUS_COLORS[normalizedState] || PIPELINE_STATUS_COLORS.unknown;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", String(size));
+    svg.setAttribute("height", String(size));
+    svg.setAttribute("aria-hidden", "true");
+
+    const circle = document.createElementNS(ns, "circle");
+    circle.setAttribute("cx", "8");
+    circle.setAttribute("cy", "8");
+    circle.setAttribute("r", "7");
+    circle.setAttribute("fill", color);
+    circle.setAttribute("opacity", "0.22");
+    circle.setAttribute("stroke", color);
+    circle.setAttribute("stroke-width", "1.2");
+    svg.appendChild(circle);
+
+    const glyph = document.createElementNS(ns, "path");
+    glyph.setAttribute("fill", "none");
+    glyph.setAttribute("stroke", color);
+    glyph.setAttribute("stroke-width", "1.8");
+    glyph.setAttribute("stroke-linecap", "round");
+    glyph.setAttribute("stroke-linejoin", "round");
+    if (normalizedState === "up") {
+      glyph.setAttribute("d", "M4.4 8.3l2.2 2.2L11.8 5.7");
+    } else if (normalizedState === "down") {
+      glyph.setAttribute("d", "M5.2 5.2l5.6 5.6M10.8 5.2l-5.6 5.6");
+    } else {
+      glyph.setAttribute("d", "M5 8h6");
+    }
+    svg.appendChild(glyph);
+    return svg;
+  }
+
+  function setStatusIconContainer(container, state, size = 12) {
+    if (!container) return;
+    container.innerHTML = "";
+    container.appendChild(createStatusIconSvg(state, size));
+  }
+
+  function formatPipelineOptionLabel(pipelineId) {
+    return pipelineId;
+  }
+
+  function updatePipelineSelectionDisplay() {
+    if (!pipelineSelectValue || !pipelineSelectIcon) return;
+    if (!selectedPipelineKey) {
+      pipelineSelectValue.textContent = "n/a";
+      setStatusIconContainer(pipelineSelectIcon, "unknown", 13);
+      return;
+    }
+    const label = pipelineOptionLabelByKey.get(selectedPipelineKey) || selectedPipelineKey;
+    pipelineSelectValue.textContent = label;
+    setStatusIconContainer(
+      pipelineSelectIcon,
+      getPipelineStatusState(selectedPipelineKey),
+      13
+    );
+  }
+
+  function closePipelineOverlay() {
+    if (!pipelineOverlay) return;
+    pipelineOverlay.classList.add("hidden");
+  }
+
+  function renderPipelineOverlayFromSelect() {
+    if (!pipelineOverlay) return;
+    pipelineOverlay.innerHTML = "";
+
+    const children = Array.from(pipelineSelect.children || []);
+    if (!children.length) {
+      const empty = document.createElement("div");
+      empty.className = "pipeline-overlay-group";
+      empty.textContent = "No pipelines";
+      pipelineOverlay.appendChild(empty);
+      return;
+    }
+
+    children.forEach((child, index) => {
+      if (child.tagName === "OPTGROUP") {
+        const label = document.createElement("div");
+        label.className = "pipeline-overlay-group";
+        label.textContent = child.label || "Group";
+        pipelineOverlay.appendChild(label);
+
+        Array.from(child.children).forEach((optionEl) => {
+          if (optionEl.tagName !== "OPTION") return;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "pipeline-overlay-option";
+          if (optionEl.value === selectedPipelineKey) {
+            button.classList.add("pipeline-overlay-option-selected");
+          }
+          button.dataset.pipelineKey = optionEl.value;
+          button.title = optionEl.title || "";
+
+          const iconWrap = document.createElement("span");
+          iconWrap.className = "pipeline-select-icon";
+          setStatusIconContainer(iconWrap, getPipelineStatusState(optionEl.value), 12);
+
+          const labelSpan = document.createElement("span");
+          labelSpan.className = "pipeline-overlay-option-label";
+          labelSpan.textContent = optionEl.dataset.pipelineLabel || optionEl.textContent || "";
+
+          button.appendChild(iconWrap);
+          button.appendChild(labelSpan);
+          pipelineOverlay.appendChild(button);
+        });
+      } else if (child.tagName === "OPTION") {
+        // Handle non-grouped options if present.
+        if (index > 0) {
+          const separator = document.createElement("div");
+          separator.className = "pipeline-overlay-group";
+          separator.textContent = "Pipelines";
+          pipelineOverlay.appendChild(separator);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "pipeline-overlay-option";
+        if (child.value === selectedPipelineKey) {
+          button.classList.add("pipeline-overlay-option-selected");
+        }
+        button.dataset.pipelineKey = child.value;
+        button.title = child.title || "";
+
+        const iconWrap = document.createElement("span");
+        iconWrap.className = "pipeline-select-icon";
+        setStatusIconContainer(iconWrap, getPipelineStatusState(child.value), 12);
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "pipeline-overlay-option-label";
+        labelSpan.textContent = child.dataset.pipelineLabel || child.textContent || "";
+
+        button.appendChild(iconWrap);
+        button.appendChild(labelSpan);
+        pipelineOverlay.appendChild(button);
+      }
+    });
+  }
+
+  function refreshPipelineSelectorStatusDecorations() {
+    if (!pipelineSelect) return;
+    Array.from(pipelineSelect.options).forEach((option) => {
+      const pipelineId = option.dataset.pipelineLabel;
+      if (!pipelineId) return;
+      option.textContent = formatPipelineOptionLabel(pipelineId);
+      option.title = getPipelineSelectorStatusTitle(option.value);
+    });
+    renderPipelineOverlayFromSelect();
+    updatePipelineSelectionDisplay();
+  }
+
+  function isRuntimeStatusOverlayOpen() {
+    return !!runtimeStatusOverlay && !runtimeStatusOverlay.classList.contains("hidden");
+  }
+
+  function setRuntimeStatusMetaText(text) {
+    if (!runtimeStatusMeta) return;
+    runtimeStatusMeta.textContent = text;
+  }
+
+  function createRuntimeStatusCell(value, className = "") {
+    const td = document.createElement("td");
+    td.textContent = value;
+    if (className) {
+      td.className = className;
+    }
+    return td;
+  }
+
+  function renderRuntimeStatusOverlay() {
+    if (!runtimeStatusTbody || !runtimeStatusMeta) return;
+    runtimeStatusTbody.innerHTML = "";
+
+    if (!statusSnapshot) {
+      const tr = document.createElement("tr");
+      tr.appendChild(createRuntimeStatusCell("No runtime status snapshot.", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell(statusLastProbe?.error || "-", "runtime-status-state"));
+      runtimeStatusTbody.appendChild(tr);
+      setRuntimeStatusMetaText("No /status snapshot available yet.");
+      return;
+    }
+
+    const rows = [...statusSnapshot.rows].sort((a, b) => {
+      const severityDelta = statusSeverity(b.state) - statusSeverity(a.state);
+      if (severityDelta !== 0) return severityDelta;
+      return a.rawPipelineKey.localeCompare(b.rawPipelineKey, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+    if (rows.length === 0) {
+      const tr = document.createElement("tr");
+      tr.appendChild(createRuntimeStatusCell("No pipelines reported."));
+      tr.appendChild(createRuntimeStatusCell("-"));
+      tr.appendChild(createRuntimeStatusCell("-"));
+      tr.appendChild(createRuntimeStatusCell("-"));
+      tr.appendChild(createRuntimeStatusCell("-"));
+      tr.appendChild(createRuntimeStatusCell("-"));
+      runtimeStatusTbody.appendChild(tr);
+    }
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.className = `runtime-status-row-${row.state}`;
+      tr.appendChild(createRuntimeStatusCell(row.rawPipelineKey));
+      tr.appendChild(createRuntimeStatusCell(row.acceptedStatus, "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell(row.readyStatus, "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell(String(row.runningCores)));
+      tr.appendChild(createRuntimeStatusCell(String(row.totalCores)));
+      tr.appendChild(createRuntimeStatusCell(row.topReason));
+      runtimeStatusTbody.appendChild(tr);
+    });
+
+    const parts = [
+      `pipelines=${statusSnapshot.total}`,
+      `ready=${statusSnapshot.up}`,
+      `issues=${statusSnapshot.down}`,
+      `unknown=${statusSnapshot.unknown}`,
+    ];
+    const generatedAt = formatSnapshotTime(statusSnapshot.generatedAt);
+    if (generatedAt) parts.push(`generated ${generatedAt}`);
+    if (Number.isFinite(statusLastProbe?.status)) parts.push(`HTTP ${statusLastProbe.status}`);
+    if (Number.isFinite(statusLastProbe?.latencyMs)) {
+      parts.push(`${Math.round(statusLastProbe.latencyMs)} ms`);
+    }
+    if (statusLastProbe?.error) parts.push(statusLastProbe.error);
+    setRuntimeStatusMetaText(parts.join(" | "));
+  }
+
+  function openRuntimeStatusOverlay() {
+    if (!runtimeStatusOverlay) return;
+    runtimeStatusOverlay.classList.remove("hidden");
+    runtimeStatusOverlay.setAttribute("aria-hidden", "false");
+    renderRuntimeStatusOverlay();
+    ensureRecentStatusSnapshot(2500);
+  }
+
+  function closeRuntimeStatusOverlay() {
+    if (!runtimeStatusOverlay) return;
+    runtimeStatusOverlay.classList.add("hidden");
+    runtimeStatusOverlay.setAttribute("aria-hidden", "true");
+  }
+
+  function ensureRecentStatusSnapshot(maxAgeMs = STATUS_POLL_INTERVAL_MS) {
+    if (statusFetchInFlight) return;
+    const nowMs = Date.now();
+    if (!Number.isFinite(statusLastCheckedAtMs)) {
+      void pollStatusEndpoint();
+      return;
+    }
+    if (nowMs - statusLastCheckedAtMs > maxAgeMs) {
+      void pollStatusEndpoint();
+    }
+  }
+
   async function probeHealthEndpoint(path) {
     const controller = new AbortController();
     const started =
@@ -1467,11 +1993,21 @@
     if (!sortedPipelineEntries.length) {
       pipelineSelect.innerHTML = '<option value="">n/a</option>';
       pipelineSelect.disabled = true;
+      pipelineOptionLabelByKey = new Map();
       selectedPipelineKey = null;
       selectedCoreId = null;
       lastCoreUsageAvg = null;
       lastCoreIds = [];
       updateCoreSelectionDisplay();
+      updatePipelineSelectionDisplay();
+      if (pipelineSelectBtn) {
+        pipelineSelectBtn.disabled = true;
+        pipelineSelectBtn.classList.add("opacity-50", "cursor-not-allowed");
+      }
+      if (pipelineOverlay) {
+        pipelineOverlay.classList.add("hidden");
+        pipelineOverlay.innerHTML = "";
+      }
       coreSelectBtn.disabled = true;
       coreSelectBtn.classList.add("opacity-50", "cursor-not-allowed");
       coreOverlay.classList.add("hidden");
@@ -1498,23 +2034,33 @@
     });
 
     pipelineSelect.innerHTML = "";
+    pipelineOptionLabelByKey = new Map();
     groupedPipelines.forEach((entries, groupKey) => {
       const optgroup = buildPipelineOptgroupElement(
         pipelineOptgroupTemplate,
         formatPipelineGroupLabel(groupKey)
       );
       entries.forEach((entry) => {
+        pipelineOptionLabelByKey.set(entry.key, entry.pipelineId);
         const option = buildPipelineOptionElement(
           pipelineOptionTemplate,
           entry.key,
-          entry.pipelineId
+          formatPipelineOptionLabel(entry.pipelineId)
         );
+        option.dataset.pipelineLabel = entry.pipelineId;
+        option.title = getPipelineSelectorStatusTitle(entry.key);
         optgroup.appendChild(option);
       });
       pipelineSelect.appendChild(optgroup);
     });
     pipelineSelect.value = selectedPipelineKey;
     pipelineSelect.disabled = sortedPipelineEntries.length <= 1;
+    if (pipelineSelectBtn) {
+      pipelineSelectBtn.disabled = sortedPipelineEntries.length <= 1;
+      pipelineSelectBtn.classList.toggle("opacity-50", sortedPipelineEntries.length <= 1);
+      pipelineSelectBtn.classList.toggle("cursor-not-allowed", sortedPipelineEntries.length <= 1);
+    }
+    refreshPipelineSelectorStatusDecorations();
 
     const pipelineFiltered = metricSets
       .map((set) => ({ set, attrs: normalizeAttributes(set.attributes || {}) }))
@@ -1539,6 +2085,7 @@
       coreSelectBtn.classList.add("opacity-50", "cursor-not-allowed");
       renderCoreOverlay([], usageMap, null);
       syncInterPipelineTopologyState();
+      ensureRecentStatusSnapshot();
       return;
     }
 
@@ -1550,6 +2097,7 @@
     coreSelectBtn.classList.toggle("cursor-not-allowed", coreIds.length === 0);
     renderCoreOverlay(coreIds, usageMap, lastCoreUsageAvg);
     syncInterPipelineTopologyState();
+    ensureRecentStatusSnapshot();
   }
 
   function getAggregationMode(metric) {
@@ -4776,6 +5324,59 @@
 
   updateScrubControls();
 
+  if (healthReadyz) {
+    healthReadyz.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (isRuntimeStatusOverlayOpen()) {
+        closeRuntimeStatusOverlay();
+      } else {
+        openRuntimeStatusOverlay();
+      }
+    });
+  }
+  if (runtimeStatusCloseBtn) {
+    runtimeStatusCloseBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeRuntimeStatusOverlay();
+    });
+  }
+  if (runtimeStatusRefreshBtn) {
+    runtimeStatusRefreshBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void pollStatusEndpoint();
+    });
+  }
+  if (runtimeStatusPanel) {
+    runtimeStatusPanel.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+  }
+
+  if (pipelineSelectBtn) {
+    pipelineSelectBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (pipelineSelectBtn.disabled || !pipelineOverlay) return;
+      pipelineOverlay.classList.toggle("hidden");
+    });
+  }
+
+  if (pipelineOverlay) {
+    pipelineOverlay.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const button = event.target.closest(".pipeline-overlay-option");
+      if (!button) return;
+      const pipelineKey = button.dataset.pipelineKey;
+      if (!pipelineKey || pipelineKey === selectedPipelineKey) {
+        closePipelineOverlay();
+        return;
+      }
+      closePipelineOverlay();
+      navigateToPipeline(pipelineKey);
+    });
+  }
+
   pipelineSelect.addEventListener("change", () => {
     navigateToPipeline(pipelineSelect.value || null);
   });
@@ -4800,6 +5401,23 @@
   document.addEventListener("click", (event) => {
     if (!coreSelector.contains(event.target)) {
       coreOverlay.classList.add("hidden");
+    }
+    if (pipelineSelector && !pipelineSelector.contains(event.target)) {
+      closePipelineOverlay();
+    }
+    if (runtimeStatusAnchor && !runtimeStatusAnchor.contains(event.target)) {
+      closeRuntimeStatusOverlay();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (pipelineOverlay && !pipelineOverlay.classList.contains("hidden")) {
+        closePipelineOverlay();
+      }
+      if (isRuntimeStatusOverlayOpen()) {
+        closeRuntimeStatusOverlay();
+      }
     }
   });
 
@@ -5559,6 +6177,15 @@
     }, HEALTH_POLL_INTERVAL_MS);
   }
 
+  function scheduleNextStatusPoll() {
+    if (statusPollTimer != null) {
+      window.clearTimeout(statusPollTimer);
+    }
+    statusPollTimer = window.setTimeout(() => {
+      void pollStatusEndpoint();
+    }, STATUS_POLL_INTERVAL_MS);
+  }
+
   async function pollHealthEndpoints() {
     if (healthFetchInFlight) return;
     healthFetchInFlight = true;
@@ -5575,6 +6202,79 @@
     } finally {
       healthFetchInFlight = false;
       scheduleNextHealthPoll();
+    }
+  }
+
+  async function pollStatusEndpoint() {
+    if (statusFetchInFlight) return;
+    statusFetchInFlight = true;
+    const checkedAt = Date.now();
+    const controller = new AbortController();
+    const started =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, STATUS_REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch("/status", {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const ended =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      const probe = {
+        status: response.status,
+        latencyMs: ended - started,
+        checkedAt,
+      };
+
+      if (!response.ok) {
+        statusLastProbe = {
+          ...probe,
+          error: `status endpoint returned HTTP ${response.status}`,
+        };
+        refreshPipelineSelectorStatusDecorations();
+        if (isRuntimeStatusOverlayOpen()) {
+          renderRuntimeStatusOverlay();
+        }
+        return;
+      }
+
+      const payload = await response.json();
+      statusSnapshot = buildStatusSnapshot(payload);
+      statusLastCheckedAtMs = checkedAt;
+      statusLastProbe = probe;
+      refreshPipelineSelectorStatusDecorations();
+      if (isRuntimeStatusOverlayOpen()) {
+        renderRuntimeStatusOverlay();
+      }
+    } catch (error) {
+      const ended =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      statusLastProbe = {
+        latencyMs: ended - started,
+        checkedAt,
+        error:
+          error?.name === "AbortError"
+            ? `timeout>${STATUS_REQUEST_TIMEOUT_MS}ms`
+            : error?.message || "status request failed",
+      };
+      refreshPipelineSelectorStatusDecorations();
+      if (isRuntimeStatusOverlayOpen()) {
+        renderRuntimeStatusOverlay();
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      statusFetchInFlight = false;
+      scheduleNextStatusPoll();
     }
   }
 
@@ -5659,6 +6359,8 @@
     state: "unknown",
     error: "not checked yet",
   });
+  updatePipelineSelectionDisplay();
 
   void fetchAndUpdate();
   void pollHealthEndpoints();
+  void pollStatusEndpoint();

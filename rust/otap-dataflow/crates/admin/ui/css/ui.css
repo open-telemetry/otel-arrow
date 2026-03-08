@@ -633,6 +633,24 @@
       transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
     }
 
+    .health-pill-button {
+      cursor: pointer;
+      user-select: none;
+      appearance: none;
+      -webkit-appearance: none;
+      background-clip: padding-box;
+    }
+
+    .health-pill-button:hover {
+      border-color: rgba(125, 211, 252, 0.72);
+      color: #dbeafe;
+    }
+
+    .health-pill-button:focus-visible {
+      outline: 2px solid rgba(56, 189, 248, 0.65);
+      outline-offset: 2px;
+    }
+
     .health-pill-up {
       color: #34d399;
       border-color: rgba(16, 185, 129, 0.55);
@@ -649,6 +667,221 @@
       color: #94a3b8;
       border-color: rgba(148, 163, 184, 0.45);
       background: rgba(51, 65, 85, 0.3);
+    }
+
+    .runtime-status-anchor {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .runtime-status-popover {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 70;
+    }
+
+    .runtime-status-panel {
+      width: min(980px, calc(100vw - 24px));
+      max-height: min(70vh, 740px);
+      background: rgba(8, 13, 24, 0.98);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 16px;
+      box-shadow: 0 24px 48px rgba(2, 6, 23, 0.6);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .runtime-status-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    }
+
+    .runtime-status-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+      color: #e2e8f0;
+    }
+
+    .runtime-status-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .runtime-status-btn {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid rgba(148, 163, 184, 0.42);
+      background: rgba(15, 23, 42, 0.65);
+      color: #e2e8f0;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+    }
+
+    .runtime-status-btn:hover {
+      border-color: rgba(125, 211, 252, 0.66);
+      color: #e0f2fe;
+    }
+
+    .runtime-status-meta {
+      padding: 8px 16px 10px;
+      font-size: 0.72rem;
+      color: #94a3b8;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .runtime-status-table-wrap {
+      overflow: auto;
+      padding: 0 0 6px;
+    }
+
+    .runtime-status-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+      font-size: 0.76rem;
+      color: #cbd5e1;
+    }
+
+    .runtime-status-table th,
+    .runtime-status-table td {
+      text-align: left;
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      white-space: nowrap;
+    }
+
+    .runtime-status-table th {
+      font-size: 0.67rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #94a3b8;
+      position: sticky;
+      top: 0;
+      background: rgba(10, 15, 28, 0.98);
+      z-index: 1;
+    }
+
+    .runtime-status-table td:last-child {
+      white-space: normal;
+      min-width: 260px;
+    }
+
+    .runtime-status-row-up .runtime-status-state {
+      color: #34d399;
+      font-weight: 700;
+    }
+
+    .runtime-status-row-down .runtime-status-state {
+      color: #f87171;
+      font-weight: 700;
+    }
+
+    .runtime-status-row-unknown .runtime-status-state {
+      color: #facc15;
+      font-weight: 700;
+    }
+
+    .pipeline-selector {
+      position: relative;
+      min-width: 230px;
+    }
+
+    .pipeline-select-btn {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 24px;
+      font-size: 0.74rem;
+    }
+
+    .pipeline-select-icon {
+      display: inline-flex;
+      width: 13px;
+      height: 13px;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+
+    #pipeline-select-value {
+      flex: 1 1 auto;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pipeline-overlay {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      min-width: 100%;
+      max-height: 340px;
+      overflow: auto;
+      background: rgba(8, 13, 24, 0.98);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 12px;
+      padding: 8px;
+      z-index: 35;
+      box-shadow: 0 18px 35px rgba(15, 23, 42, 0.55);
+    }
+
+    .pipeline-overlay-group {
+      font-size: 0.63rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #94a3b8;
+      margin: 4px 4px 5px;
+    }
+
+    .pipeline-overlay-option {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: #e2e8f0;
+      padding: 5px 6px;
+      margin-bottom: 2px;
+      cursor: pointer;
+      text-align: left;
+      font-size: 0.74rem;
+    }
+
+    .pipeline-overlay-option:hover {
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(14, 116, 144, 0.2);
+    }
+
+    .pipeline-overlay-option-selected {
+      border-color: rgba(125, 211, 252, 0.58);
+      background: rgba(14, 116, 144, 0.26);
+    }
+
+    .pipeline-overlay-option-label {
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .node-metric-rate-empty {
@@ -1126,6 +1359,11 @@
       border-color: rgba(148, 163, 184, 0.65);
     }
 
+    body.day-mode .health-pill-button:hover {
+      border-color: rgba(2, 132, 199, 0.58);
+      color: #0f172a;
+    }
+
     body.day-mode .health-pill-up {
       color: #047857;
       border-color: rgba(16, 185, 129, 0.65);
@@ -1142,4 +1380,67 @@
       color: #475569;
       border-color: rgba(100, 116, 139, 0.58);
       background: rgba(148, 163, 184, 0.18);
+    }
+
+    body.day-mode .runtime-status-panel {
+      background: rgba(248, 250, 252, 0.98);
+      border-color: rgba(100, 116, 139, 0.35);
+      box-shadow: 0 20px 40px rgba(100, 116, 139, 0.32);
+    }
+
+    body.day-mode .runtime-status-header {
+      border-bottom-color: rgba(148, 163, 184, 0.36);
+    }
+
+    body.day-mode .runtime-status-title {
+      color: #0f172a;
+    }
+
+    body.day-mode .runtime-status-meta {
+      color: #334155;
+      border-bottom-color: rgba(148, 163, 184, 0.3);
+    }
+
+    body.day-mode .runtime-status-btn {
+      background: rgba(255, 255, 255, 0.88);
+      border-color: rgba(100, 116, 139, 0.44);
+      color: #0f172a;
+    }
+
+    body.day-mode .runtime-status-btn:hover {
+      border-color: rgba(2, 132, 199, 0.62);
+      color: #075985;
+    }
+
+    body.day-mode .runtime-status-table {
+      color: #334155;
+    }
+
+    body.day-mode .runtime-status-table th {
+      color: #475569;
+      background: rgba(241, 245, 249, 0.98);
+    }
+
+    body.day-mode .pipeline-overlay {
+      background: rgba(255, 255, 255, 0.97);
+      border-color: rgba(148, 163, 184, 0.45);
+      box-shadow: 0 18px 35px rgba(148, 163, 184, 0.35);
+    }
+
+    body.day-mode .pipeline-overlay-group {
+      color: #475569;
+    }
+
+    body.day-mode .pipeline-overlay-option {
+      color: #0f172a;
+    }
+
+    body.day-mode .pipeline-overlay-option:hover {
+      border-color: rgba(2, 132, 199, 0.45);
+      background: rgba(186, 230, 253, 0.48);
+    }
+
+    body.day-mode .pipeline-overlay-option-selected {
+      border-color: rgba(2, 132, 199, 0.6);
+      background: rgba(186, 230, 253, 0.6);
     }

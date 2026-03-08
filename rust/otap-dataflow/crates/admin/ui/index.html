@@ -67,7 +67,36 @@
       </div>
       <div class="health-pill-row">
         <span id="health-livez" class="health-pill health-pill-unknown" title="Livez status pending">Livez: unknown</span>
-        <span id="health-readyz" class="health-pill health-pill-unknown" title="Readyz status pending">Readyz: unknown</span>
+        <div id="runtime-status-anchor" class="runtime-status-anchor">
+          <button id="health-readyz" type="button" class="health-pill health-pill-unknown health-pill-button" title="Readyz status pending">Readyz: unknown</button>
+          <div id="runtime-status-overlay" class="runtime-status-popover hidden" aria-hidden="true">
+            <div id="runtime-status-panel" class="runtime-status-panel">
+              <div class="runtime-status-header">
+                <h2 class="runtime-status-title">Runtime Status</h2>
+                <div class="runtime-status-actions">
+                  <button id="runtime-status-refresh" type="button" class="runtime-status-btn">Refresh</button>
+                  <button id="runtime-status-close" type="button" class="runtime-status-btn">Close</button>
+                </div>
+              </div>
+              <div id="runtime-status-meta" class="runtime-status-meta">No status snapshot yet.</div>
+              <div class="runtime-status-table-wrap">
+                <table class="runtime-status-table">
+                  <thead>
+                    <tr>
+                      <th>Pipeline</th>
+                      <th>Accepted</th>
+                      <th>Ready</th>
+                      <th>Running Cores</th>
+                      <th>Total Cores</th>
+                      <th>Top Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody id="runtime-status-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="text-xs text-slate-400">
         Last update:
@@ -138,10 +167,22 @@
       <div class="flex flex-wrap items-center gap-3">
         <h2 class="text-lg font-semibold tracking-tight">Pipeline Engine Metrics</h2>
         <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-          <label class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
+          <div class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
             <span>Pipeline</span>
-            <select id="pipeline-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none"></select>
-          </label>
+            <div id="pipeline-selector" class="pipeline-selector">
+              <button
+                id="pipeline-select-btn"
+                type="button"
+                class="pipeline-select-btn rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none"
+              >
+                <span id="pipeline-select-icon" class="pipeline-select-icon"></span>
+                <span id="pipeline-select-value">n/a</span>
+                <span class="text-slate-400">▾</span>
+              </button>
+              <div id="pipeline-overlay" class="pipeline-overlay hidden"></div>
+              <select id="pipeline-select" class="sr-only"></select>
+            </div>
+          </div>
           <div id="core-selector" class="relative flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1">
             <span>Core</span>
             <button id="core-select-btn" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
