@@ -8,7 +8,7 @@
     buildPipelineOptionElement,
     setToggleVisualState,
   } from "./control-utils.js";
-  import { buildMetricsCandidates, fetchMetricsFromCandidates } from "./metrics-api.js";
+  import { buildMetricsCandidates } from "./metrics-api.js";
   import {
     formatPipelineGroupLabel,
     getPipelineGroupId,
@@ -43,6 +43,12 @@
     getDagMetricSets as getDagMetricSetsBySelection,
     isDeltaCounterMetric,
   } from "./metric-filters.js";
+  import {
+    runHealthPoll,
+    runMetricsPoll,
+    runStatusPoll,
+    scheduleNextTimer,
+  } from "./polling-controller.js";
   import { buildStatusSnapshot, getStatusSeverity } from "./status-runtime.js";
   import {
     buildInterPipelineTopology,
@@ -62,7 +68,6 @@
   const METRICS_URL_CANDIDATES = buildMetricsCandidates({
     query: `format=json&reset=true&keep_all_zeroes=${keepAllZeroes ? "true" : "false"}`,
   });
-  let resolvedMetricsUrl = null;
   const HOLD_LAST_ENGINE_VALUES = true;
   const SKIP_ENGINE_ALL_ZERO_SNAPSHOTS = true;
   const POLL_INTERVAL_MS = 2000;
@@ -337,19 +342,22 @@
   let lastCoreIds = [];
   let stickyPanelsObserver = null;
   let dagPipelineScopeMode = DAG_SCOPE_SINGLE;
-  let pollTimer = null;
-  let healthPollTimer = null;
-  let statusPollTimer = null;
-  let fetchInFlight = false;
-  let healthFetchInFlight = false;
-  let statusFetchInFlight = false;
+  const pollingState = {
+    pollTimer: null,
+    healthPollTimer: null,
+    statusPollTimer: null,
+    fetchInFlight: false,
+    healthFetchInFlight: false,
+    statusFetchInFlight: false,
+    statusLastCheckedAtMs: null,
+    statusLastProbe: null,
+    resolvedMetricsUrl: null,
+    activeFetchController: null,
+    latestFetchRequestId: 0,
+    latestAppliedFetchRequestId: 0,
+  };
   let statusSnapshot = null;
-  let statusLastCheckedAtMs = null;
-  let statusLastProbe = null;
   let pipelineOptionLabelByKey = new Map();
-  let activeFetchController = null;
-  let latestFetchRequestId = 0;
-  let latestAppliedFetchRequestId = 0;
   const CORE_ALL = "__all__";
   let windowMinutes = 5;
   let freezeActive = false;
@@ -1070,7 +1078,9 @@
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
-      tr.appendChild(createRuntimeStatusCell(statusLastProbe?.error || "-", "runtime-status-state"));
+      tr.appendChild(
+        createRuntimeStatusCell(pollingState.statusLastProbe?.error || "-", "runtime-status-state")
+      );
       runtimeStatusTbody.appendChild(tr);
       setRuntimeStatusMetaText("No /status snapshot available yet.");
       return;
@@ -1114,11 +1124,15 @@
     ];
     const generatedAt = formatSnapshotTime(statusSnapshot.generatedAt);
     if (generatedAt) parts.push(`generated ${generatedAt}`);
-    if (Number.isFinite(statusLastProbe?.status)) parts.push(`HTTP ${statusLastProbe.status}`);
-    if (Number.isFinite(statusLastProbe?.latencyMs)) {
-      parts.push(`${Math.round(statusLastProbe.latencyMs)} ms`);
+    if (Number.isFinite(pollingState.statusLastProbe?.status)) {
+      parts.push(`HTTP ${pollingState.statusLastProbe.status}`);
     }
-    if (statusLastProbe?.error) parts.push(statusLastProbe.error);
+    if (Number.isFinite(pollingState.statusLastProbe?.latencyMs)) {
+      parts.push(`${Math.round(pollingState.statusLastProbe.latencyMs)} ms`);
+    }
+    if (pollingState.statusLastProbe?.error) {
+      parts.push(pollingState.statusLastProbe.error);
+    }
     setRuntimeStatusMetaText(parts.join(" | "));
   }
 
@@ -1137,56 +1151,14 @@
   }
 
   function ensureRecentStatusSnapshot(maxAgeMs = STATUS_POLL_INTERVAL_MS) {
-    if (statusFetchInFlight) return;
+    if (pollingState.statusFetchInFlight) return;
     const nowMs = Date.now();
-    if (!Number.isFinite(statusLastCheckedAtMs)) {
+    if (!Number.isFinite(pollingState.statusLastCheckedAtMs)) {
       void pollStatusEndpoint();
       return;
     }
-    if (nowMs - statusLastCheckedAtMs > maxAgeMs) {
+    if (nowMs - pollingState.statusLastCheckedAtMs > maxAgeMs) {
       void pollStatusEndpoint();
-    }
-  }
-
-  async function probeHealthEndpoint(path) {
-    const controller = new AbortController();
-    const started =
-      typeof performance !== "undefined" && typeof performance.now === "function"
-        ? performance.now()
-        : Date.now();
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, HEALTH_REQUEST_TIMEOUT_MS);
-    try {
-      const response = await fetch(path, {
-        method: "GET",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const ended =
-        typeof performance !== "undefined" && typeof performance.now === "function"
-          ? performance.now()
-          : Date.now();
-      return {
-        state: response.ok ? "up" : "down",
-        status: response.status,
-        latencyMs: ended - started,
-      };
-    } catch (error) {
-      const ended =
-        typeof performance !== "undefined" && typeof performance.now === "function"
-          ? performance.now()
-          : Date.now();
-      return {
-        state: "unknown",
-        latencyMs: ended - started,
-        error:
-          error?.name === "AbortError"
-            ? `timeout>${HEALTH_REQUEST_TIMEOUT_MS}ms`
-            : error?.message || "request failed",
-      };
-    } finally {
-      window.clearTimeout(timeoutId);
     }
   }
 
@@ -4858,195 +4830,77 @@
 
   // --- Polling loop ---
   function scheduleNextFetch() {
-    if (pollTimer != null) {
-      window.clearTimeout(pollTimer);
-    }
-    pollTimer = window.setTimeout(() => {
-      void fetchAndUpdate();
-    }, POLL_INTERVAL_MS);
+    pollingState.pollTimer = scheduleNextTimer(
+      pollingState.pollTimer,
+      POLL_INTERVAL_MS,
+      fetchAndUpdate
+    );
   }
 
   function scheduleNextHealthPoll() {
-    if (healthPollTimer != null) {
-      window.clearTimeout(healthPollTimer);
-    }
-    healthPollTimer = window.setTimeout(() => {
-      void pollHealthEndpoints();
-    }, HEALTH_POLL_INTERVAL_MS);
+    pollingState.healthPollTimer = scheduleNextTimer(
+      pollingState.healthPollTimer,
+      HEALTH_POLL_INTERVAL_MS,
+      pollHealthEndpoints
+    );
   }
 
   function scheduleNextStatusPoll() {
-    if (statusPollTimer != null) {
-      window.clearTimeout(statusPollTimer);
-    }
-    statusPollTimer = window.setTimeout(() => {
-      void pollStatusEndpoint();
-    }, STATUS_POLL_INTERVAL_MS);
+    pollingState.statusPollTimer = scheduleNextTimer(
+      pollingState.statusPollTimer,
+      STATUS_POLL_INTERVAL_MS,
+      pollStatusEndpoint
+    );
   }
 
   async function pollHealthEndpoints() {
-    if (healthFetchInFlight) return;
-    healthFetchInFlight = true;
-    const checkedAt = Date.now();
-    try {
-      const [livezProbe, readyzProbe] = await Promise.all([
-        probeHealthEndpoint("/livez"),
-        probeHealthEndpoint("/readyz"),
-      ]);
-      livezProbe.checkedAt = checkedAt;
-      readyzProbe.checkedAt = checkedAt;
-      setHealthBadge(healthLivez, "Livez", livezProbe);
-      setHealthBadge(healthReadyz, "Readyz", readyzProbe);
-    } finally {
-      healthFetchInFlight = false;
-      scheduleNextHealthPoll();
-    }
+    await runHealthPoll({
+      state: pollingState,
+      healthRequestTimeoutMs: HEALTH_REQUEST_TIMEOUT_MS,
+      onProbeResult: (livezProbe, readyzProbe) => {
+        setHealthBadge(healthLivez, "Livez", livezProbe);
+        setHealthBadge(healthReadyz, "Readyz", readyzProbe);
+      },
+      scheduleNext: scheduleNextHealthPoll,
+    });
   }
 
   async function pollStatusEndpoint() {
-    if (statusFetchInFlight) return;
-    statusFetchInFlight = true;
-    const checkedAt = Date.now();
-    const controller = new AbortController();
-    const started =
-      typeof performance !== "undefined" && typeof performance.now === "function"
-        ? performance.now()
-        : Date.now();
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, STATUS_REQUEST_TIMEOUT_MS);
-
-    try {
-      const response = await fetch("/status", {
-        method: "GET",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const ended =
-        typeof performance !== "undefined" && typeof performance.now === "function"
-          ? performance.now()
-          : Date.now();
-      const probe = {
-        status: response.status,
-        latencyMs: ended - started,
-        checkedAt,
-      };
-
-      if (!response.ok) {
-        statusLastProbe = {
-          ...probe,
-          error: `status endpoint returned HTTP ${response.status}`,
-        };
-        refreshPipelineSelectorStatusDecorations();
-        if (isRuntimeStatusOverlayOpen()) {
-          renderRuntimeStatusOverlay();
-        }
-        return;
-      }
-
-      const payload = await response.json();
-      statusSnapshot = buildStatusSnapshot(payload);
-      statusLastCheckedAtMs = checkedAt;
-      statusLastProbe = probe;
-      refreshPipelineSelectorStatusDecorations();
-      if (isRuntimeStatusOverlayOpen()) {
-        renderRuntimeStatusOverlay();
-      }
-    } catch (error) {
-      const ended =
-        typeof performance !== "undefined" && typeof performance.now === "function"
-          ? performance.now()
-          : Date.now();
-      statusLastProbe = {
-        latencyMs: ended - started,
-        checkedAt,
-        error:
-          error?.name === "AbortError"
-            ? `timeout>${STATUS_REQUEST_TIMEOUT_MS}ms`
-            : error?.message || "status request failed",
-      };
-      refreshPipelineSelectorStatusDecorations();
-      if (isRuntimeStatusOverlayOpen()) {
-        renderRuntimeStatusOverlay();
-      }
-    } finally {
-      window.clearTimeout(timeoutId);
-      statusFetchInFlight = false;
-      scheduleNextStatusPoll();
-    }
-  }
-
-  async function fetchMetricsSnapshot(signal) {
-    const { data, resolvedUrl } = await fetchMetricsFromCandidates(
-      METRICS_URL_CANDIDATES,
-      resolvedMetricsUrl,
-      { signal }
-    );
-    resolvedMetricsUrl = resolvedUrl;
-    return data;
-  }
-
-  // Parse and validate snapshot timestamp payload.
-  // Returns null when value is missing or not a valid date.
-  function parseSnapshotTimestamp(value) {
-    if (value == null) return null;
-    const ts = new Date(value);
-    if (!Number.isFinite(ts.getTime())) {
-      return null;
-    }
-    return ts;
+    await runStatusPoll({
+      state: pollingState,
+      statusRequestTimeoutMs: STATUS_REQUEST_TIMEOUT_MS,
+      buildStatusSnapshot,
+      onSnapshotReady: (snapshot) => {
+        statusSnapshot = snapshot;
+      },
+      onProbeUpdate: () => {},
+      onRefreshDecorations: refreshPipelineSelectorStatusDecorations,
+      isOverlayOpen: isRuntimeStatusOverlayOpen,
+      renderOverlay: renderRuntimeStatusOverlay,
+      scheduleNext: scheduleNextStatusPoll,
+    });
   }
 
   async function fetchAndUpdate() {
-    if (fetchInFlight) return;
-    fetchInFlight = true;
-    const requestId = ++latestFetchRequestId;
-    const controller = new AbortController();
-    activeFetchController = controller;
-    try {
-      const data = await fetchMetricsSnapshot(controller.signal);
-      if (requestId < latestAppliedFetchRequestId) {
-        return;
-      }
-      latestAppliedFetchRequestId = requestId;
-      setConnected(true);
-      hideError();
-
-      const ts = parseSnapshotTimestamp(data.timestamp);
-      if (!ts) {
-        showError("Received metrics snapshot with invalid timestamp; sample ignored.");
-        return;
-      }
-
-      const tsMs = ts.getTime();
-      const prevTsMs = lastSampleTs ? lastSampleTs.getTime() : null;
-      // Ignore stale/reordered snapshots to prevent negative or zero rate windows.
-      if (prevTsMs != null && tsMs <= prevTsMs) {
-        return;
-      }
-
-      const sampleSeconds = prevTsMs == null ? null : (tsMs - prevTsMs) / 1000;
-      lastSampleTs = ts;
-      lastSampleSeconds = sampleSeconds;
-      lastUpdateEl.textContent = ts.toLocaleTimeString();
-      const metricSets = data.metric_sets || [];
-      lastMetricSets = metricSets;
-      updateInterPipelineTopologyState(metricSets);
-      updateFilterSelectors(metricSets);
-      applyFilteredView(metricSets, true);
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        return;
-      }
-      setConnected(false);
-      showError(err.message || "Failed to load metrics.");
-    } finally {
-      if (activeFetchController === controller) {
-        activeFetchController = null;
-      }
-      fetchInFlight = false;
-      scheduleNextFetch();
-    }
+    await runMetricsPoll({
+      state: pollingState,
+      metricsUrlCandidates: METRICS_URL_CANDIDATES,
+      getLastSampleTs: () => lastSampleTs,
+      onConnected: () => setConnected(true),
+      onDisconnected: () => setConnected(false),
+      onHideError: hideError,
+      onShowError: showError,
+      onSampleAccepted: ({ ts, sampleSeconds, metricSets }) => {
+        lastSampleTs = ts;
+        lastSampleSeconds = sampleSeconds;
+        lastUpdateEl.textContent = ts.toLocaleTimeString();
+        lastMetricSets = metricSets;
+        updateInterPipelineTopologyState(metricSets);
+        updateFilterSelectors(metricSets);
+        applyFilteredView(metricSets, true);
+      },
+      scheduleNext: scheduleNextFetch,
+    });
   }
 
   setHealthBadge(healthLivez, "Livez", {
