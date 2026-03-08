@@ -42,6 +42,10 @@
   const HOLD_LAST_ENGINE_VALUES = true;
   const SKIP_ENGINE_ALL_ZERO_SNAPSHOTS = true;
   const POLL_INTERVAL_MS = 2000;
+  const PERF_ENABLED = urlParams.get("perf") === "true";
+  const PERF_LOG_EVERY = 30;
+  const PERF_SLOW_MS = 16;
+  const perfStats = new Map();
 
   // DAG sizing/layout constants.
   const NODE_WIDTH = 210;
@@ -99,6 +103,43 @@
   document.title = "Rust Dataflow Engine";
 
   const THEME_STORAGE_KEY = "ogdp-theme";
+
+  function perfStart() {
+    if (!PERF_ENABLED) return null;
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  function perfEnd(label, startMs, fields = null) {
+    if (!PERF_ENABLED || !Number.isFinite(startMs)) return;
+    const now =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const duration = now - startMs;
+    const entry = perfStats.get(label) || { count: 0, totalMs: 0, maxMs: 0 };
+    entry.count += 1;
+    entry.totalMs += duration;
+    entry.maxMs = Math.max(entry.maxMs, duration);
+    perfStats.set(label, entry);
+
+    const shouldLog =
+      duration >= PERF_SLOW_MS || entry.count % PERF_LOG_EVERY === 0;
+    if (!shouldLog) return;
+
+    const avgMs = entry.totalMs / entry.count;
+    const fieldSuffix =
+      fields && typeof fields === "object"
+        ? ` ${Object.entries(fields)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" ")}`
+        : "";
+    console.info(
+      `[ui perf] ${label} last=${duration.toFixed(2)}ms avg=${avgMs.toFixed(2)}ms max=${entry.maxMs.toFixed(2)}ms count=${entry.count}${fieldSuffix}`
+    );
+  }
 
   // Applies the visual theme and updates chart colors to match.
   function applyTheme(theme) {
@@ -228,6 +269,7 @@
   let lastRenderedEdges = [];
   let lastRenderedControlEdges = [];
   let lastRenderedSampleSeconds = null;
+  let lastRenderedStructureSignature = null;
   let lastCoreUsageAvg = null;
   let lastCoreIds = [];
   let stickyPanelsObserver = null;
@@ -901,6 +943,7 @@
     nodeSeries.clear();
     channelSeries.clear();
     pipelineSeries.clear();
+    lastRenderedStructureSignature = null;
     destroyNodeCharts();
     clearChannelChart();
     destroyPipelineCharts();
@@ -956,157 +999,165 @@
 
   // Re-apply activity styling for the currently rendered topology at a specific hover timestamp.
   function updateTopologyForHover(ts) {
-    if (!lastRenderedEdges.length && !lastRenderedNodes.length) return;
-    const edges = lastRenderedEdges;
-    const nodes = lastRenderedNodes;
-    const controlEdges = lastRenderedControlEdges;
-    const sampleSeconds = lastRenderedSampleSeconds ?? lastSampleSeconds;
-    const displayTimeMs = Number.isFinite(ts) ? ts : getDisplayTimeMs();
-    const dataEdgeRates = computeEdgeRates(edges, displayTimeMs, sampleSeconds);
-    const controlEdgeRates = computeEdgeRates(controlEdges, displayTimeMs, sampleSeconds);
-    lastEdgeRates = dataEdgeRates;
+    const perfMs = perfStart();
+    try {
+      if (!lastRenderedEdges.length && !lastRenderedNodes.length) return;
+      const edges = lastRenderedEdges;
+      const nodes = lastRenderedNodes;
+      const controlEdges = lastRenderedControlEdges;
+      const sampleSeconds = lastRenderedSampleSeconds ?? lastSampleSeconds;
+      const displayTimeMs = Number.isFinite(ts) ? ts : getDisplayTimeMs();
+      const dataEdgeRates = computeEdgeRates(edges, displayTimeMs, sampleSeconds);
+      const controlEdgeRates = computeEdgeRates(controlEdges, displayTimeMs, sampleSeconds);
+      lastEdgeRates = dataEdgeRates;
 
-    const focusSets = buildFocusSets(edges);
-    const nodeTraffic = new Map(nodes.map((node) => [node.id, 0]));
-    const nodeErrors = new Map(nodes.map((node) => [node.id, 0]));
-    edges.forEach((edge) => {
-      const rates = dataEdgeRates.get(edge.id);
-      if (!rates) return;
-      nodeTraffic.set(edge.source, (nodeTraffic.get(edge.source) || 0) + rates.sendRate);
-      nodeTraffic.set(edge.target, (nodeTraffic.get(edge.target) || 0) + rates.recvRate);
-      nodeErrors.set(edge.source, (nodeErrors.get(edge.source) || 0) + rates.sendErrorRate);
-      nodeErrors.set(edge.target, (nodeErrors.get(edge.target) || 0) + rates.recvErrorRate);
-    });
+      const focusSets = buildFocusSets(edges);
+      const nodeTraffic = new Map(nodes.map((node) => [node.id, 0]));
+      const nodeErrors = new Map(nodes.map((node) => [node.id, 0]));
+      edges.forEach((edge) => {
+        const rates = dataEdgeRates.get(edge.id);
+        if (!rates) return;
+        nodeTraffic.set(edge.source, (nodeTraffic.get(edge.source) || 0) + rates.sendRate);
+        nodeTraffic.set(edge.target, (nodeTraffic.get(edge.target) || 0) + rates.recvRate);
+        nodeErrors.set(edge.source, (nodeErrors.get(edge.source) || 0) + rates.sendErrorRate);
+        nodeErrors.set(edge.target, (nodeErrors.get(edge.target) || 0) + rates.recvErrorRate);
+      });
 
-    const portScores = new Map();
-    edges.forEach((edge) => {
-      const rate = dataEdgeRates.get(edge.id)?.sendRate ?? 0;
-      if (!portScores.has(edge.source)) {
-        portScores.set(edge.source, new Map());
-      }
-      const nodePorts = portScores.get(edge.source);
-      nodePorts.set(edge.port, (nodePorts.get(edge.port) || 0) + rate);
-    });
+      const portScores = new Map();
+      edges.forEach((edge) => {
+        const rate = dataEdgeRates.get(edge.id)?.sendRate ?? 0;
+        if (!portScores.has(edge.source)) {
+          portScores.set(edge.source, new Map());
+        }
+        const nodePorts = portScores.get(edge.source);
+        nodePorts.set(edge.port, (nodePorts.get(edge.port) || 0) + rate);
+      });
 
-    const controlByTarget = new Map();
-    controlEdges.forEach((edge) => {
-      const rates = controlEdgeRates.get(edge.id);
-      const recvRate = rates?.recvRate ?? 0;
-      const entry = controlByTarget.get(edge.target) || {
-        total: 0,
-        edges: [],
-        primary: null,
-      };
-      entry.total += recvRate;
-      entry.edges.push(edge);
-      if (
-        !entry.primary ||
-        (rates?.recvRate ?? 0) >
-          (controlEdgeRates.get(entry.primary.id)?.recvRate ?? 0)
-      ) {
-        entry.primary = edge;
-      }
-      controlByTarget.set(edge.target, entry);
-    });
-
-    nodes.forEach((node) => {
-      const nodeSelectorId = escapeSelectorValue(node.id);
-      const nodeEl = dagNodes.querySelector(`.dag-node[data-node-id="${nodeSelectorId}"]`);
-      if (!nodeEl) return;
-      const hasError = (nodeErrors.get(node.id) || 0) > 0;
-      const hasTraffic = (nodeTraffic.get(node.id) || 0) > 0;
-      const isActive = metricMode === "errors" ? hasError : hasTraffic;
-      nodeEl.classList.toggle("dag-node-active", isActive);
-      if (metricMode === "errors" && hasError) {
-        nodeEl.style.color = "rgba(248,113,113,0.95)";
-        nodeEl.style.borderColor = "rgba(248,113,113,0.9)";
-      } else if (metricMode !== "errors" && hasTraffic) {
-        nodeEl.style.color = "rgba(34,197,94,0.9)";
-        nodeEl.style.borderColor = "rgba(34,197,94,0.9)";
-      } else {
-        nodeEl.style.color = "";
-        nodeEl.style.borderColor = "";
-      }
-    });
-
-    dagNodes.querySelectorAll(".dag-port-dot").forEach((dot) => {
-      const nodeId = dot.dataset.nodeId;
-      const port = dot.dataset.port;
-      if (!nodeId || !port) return;
-      const isActive = (portScores.get(nodeId)?.get(port) ?? 0) > 0;
-      dot.classList.toggle("dag-port-dot-active", isActive);
-    });
-
-    dagNodes.querySelectorAll(".dag-control-indicator").forEach((indicator) => {
-      const nodeId = indicator.dataset.nodeId;
-      if (!nodeId) return;
-      const info = controlByTarget.get(nodeId);
-      const rateEl = indicator.querySelector(".dag-control-rate");
-      if (rateEl) {
-        rateEl.textContent = formatRateWithUnit(info ? info.total : 0, "msg");
-      }
-    });
-
-    edges.forEach((edge) => {
-      const edgeSelectorId = escapeSelectorValue(edge.id);
-      const path = dagEdges.querySelector(
-        `.dag-edge[data-edge-id="${edgeSelectorId}"][data-edge-role="path"]`
-      );
-      const label = dagEdges.querySelector(
-        `.dag-edge-label[data-edge-id="${edgeSelectorId}"][data-edge-role="label"]`
-      );
-      if (!path || !label) return;
-      const activity =
-        dataEdgeRates.get(edge.id) || {
-          sendRate: 0,
-          recvRate: 0,
-          sendErrorRate: 0,
-          recvErrorRate: 0,
-          errorRate: 0,
-          active: false,
-          errorActive: false,
+      const controlByTarget = new Map();
+      controlEdges.forEach((edge) => {
+        const rates = controlEdgeRates.get(edge.id);
+        const recvRate = rates?.recvRate ?? 0;
+        const entry = controlByTarget.get(edge.target) || {
+          total: 0,
+          edges: [],
+          primary: null,
         };
-      const edgeActive = metricMode === "errors" ? activity.errorActive : activity.active;
-      const edgeClass =
-        metricMode === "errors"
-          ? edgeActive
-            ? "dag-edge-error"
-            : "dag-edge-idle"
-          : edgeActive
-            ? "dag-edge-active"
-            : "dag-edge-idle";
-      path.setAttribute("class", `dag-edge ${edgeClass}`);
-      if (selectedEdgeId && edge.id === selectedEdgeId) {
-        path.classList.add("dag-edge-selected");
-      }
-      if (focusSets && !focusSets.edges.has(edge.id)) {
-        path.classList.add("dag-dimmed");
-      }
-      const marker =
-        edgeActive && metricMode === "errors"
-          ? "url(#dag-arrow-error)"
-          : edgeActive
-            ? "url(#dag-arrow-active)"
-            : "url(#dag-arrow-idle)";
-      path.setAttribute("marker-end", marker);
+        entry.total += recvRate;
+        entry.edges.push(edge);
+        if (
+          !entry.primary ||
+          (rates?.recvRate ?? 0) >
+            (controlEdgeRates.get(entry.primary.id)?.recvRate ?? 0)
+        ) {
+          entry.primary = edge;
+        }
+        controlByTarget.set(edge.target, entry);
+      });
 
-      label.setAttribute(
-        "class",
-        edgeActive
-          ? metricMode === "errors"
-            ? "dag-edge-label dag-edge-label-error"
-            : "dag-edge-label dag-edge-label-active"
-          : "dag-edge-label dag-edge-label-idle"
-      );
-      if (metricMode === "errors") {
-        label.textContent = formatRateWithUnit(activity.errorRate, "error");
-      } else {
-        label.textContent = formatRateWithUnit(activity.recvRate, "message");
-      }
-      if (focusSets && !focusSets.edges.has(edge.id)) {
-        label.classList.add("dag-dimmed");
-      }
-    });
+      nodes.forEach((node) => {
+        const nodeSelectorId = escapeSelectorValue(node.id);
+        const nodeEl = dagNodes.querySelector(`.dag-node[data-node-id="${nodeSelectorId}"]`);
+        if (!nodeEl) return;
+        const hasError = (nodeErrors.get(node.id) || 0) > 0;
+        const hasTraffic = (nodeTraffic.get(node.id) || 0) > 0;
+        const isActive = metricMode === "errors" ? hasError : hasTraffic;
+        nodeEl.classList.toggle("dag-node-active", isActive);
+        if (metricMode === "errors" && hasError) {
+          nodeEl.style.color = "rgba(248,113,113,0.95)";
+          nodeEl.style.borderColor = "rgba(248,113,113,0.9)";
+        } else if (metricMode !== "errors" && hasTraffic) {
+          nodeEl.style.color = "rgba(34,197,94,0.9)";
+          nodeEl.style.borderColor = "rgba(34,197,94,0.9)";
+        } else {
+          nodeEl.style.color = "";
+          nodeEl.style.borderColor = "";
+        }
+      });
+
+      dagNodes.querySelectorAll(".dag-port-dot").forEach((dot) => {
+        const nodeId = dot.dataset.nodeId;
+        const port = dot.dataset.port;
+        if (!nodeId || !port) return;
+        const isActive = (portScores.get(nodeId)?.get(port) ?? 0) > 0;
+        dot.classList.toggle("dag-port-dot-active", isActive);
+      });
+
+      dagNodes.querySelectorAll(".dag-control-indicator").forEach((indicator) => {
+        const nodeId = indicator.dataset.nodeId;
+        if (!nodeId) return;
+        const info = controlByTarget.get(nodeId);
+        const rateEl = indicator.querySelector(".dag-control-rate");
+        if (rateEl) {
+          rateEl.textContent = formatRateWithUnit(info ? info.total : 0, "msg");
+        }
+      });
+
+      edges.forEach((edge) => {
+        const edgeSelectorId = escapeSelectorValue(edge.id);
+        const path = dagEdges.querySelector(
+          `.dag-edge[data-edge-id="${edgeSelectorId}"][data-edge-role="path"]`
+        );
+        const label = dagEdges.querySelector(
+          `.dag-edge-label[data-edge-id="${edgeSelectorId}"][data-edge-role="label"]`
+        );
+        if (!path || !label) return;
+        const activity =
+          dataEdgeRates.get(edge.id) || {
+            sendRate: 0,
+            recvRate: 0,
+            sendErrorRate: 0,
+            recvErrorRate: 0,
+            errorRate: 0,
+            active: false,
+            errorActive: false,
+          };
+        const edgeActive = metricMode === "errors" ? activity.errorActive : activity.active;
+        const edgeClass =
+          metricMode === "errors"
+            ? edgeActive
+              ? "dag-edge-error"
+              : "dag-edge-idle"
+            : edgeActive
+              ? "dag-edge-active"
+              : "dag-edge-idle";
+        path.setAttribute("class", `dag-edge ${edgeClass}`);
+        if (selectedEdgeId && edge.id === selectedEdgeId) {
+          path.classList.add("dag-edge-selected");
+        }
+        if (focusSets && !focusSets.edges.has(edge.id)) {
+          path.classList.add("dag-dimmed");
+        }
+        const marker =
+          edgeActive && metricMode === "errors"
+            ? "url(#dag-arrow-error)"
+            : edgeActive
+              ? "url(#dag-arrow-active)"
+              : "url(#dag-arrow-idle)";
+        path.setAttribute("marker-end", marker);
+
+        label.setAttribute(
+          "class",
+          edgeActive
+            ? metricMode === "errors"
+              ? "dag-edge-label dag-edge-label-error"
+              : "dag-edge-label dag-edge-label-active"
+            : "dag-edge-label dag-edge-label-idle"
+        );
+        if (metricMode === "errors") {
+          label.textContent = formatRateWithUnit(activity.errorRate, "error");
+        } else {
+          label.textContent = formatRateWithUnit(activity.recvRate, "message");
+        }
+        if (focusSets && !focusSets.edges.has(edge.id)) {
+          label.classList.add("dag-dimmed");
+        }
+      });
+    } finally {
+      perfEnd("updateTopologyForHover", perfMs, {
+        nodes: lastRenderedNodes.length,
+        edges: lastRenderedEdges.length,
+      });
+    }
   }
 
   function getSeriesWindow(points, startMs, endMs) {
@@ -1617,39 +1668,46 @@
 
   // Central render pipeline after data/filter updates.
   function applyFilteredView(metricSets, updateSeries) {
-    const dagScope = getDagRenderScope();
-    const panelMetricSets = filterMetricSets(metricSets);
-    const dagMetricSets = getDagMetricSets(metricSets, dagScope);
-    if (updateSeries) {
-      updateNodeSeries(dagMetricSets, lastSampleSeconds, lastSampleTs, dagScope);
-      updateChannelSeries(dagMetricSets, lastSampleSeconds, lastSampleTs, dagScope);
-    }
-    const dataGraph = buildGraph(dagMetricSets, lastSampleSeconds, ["pdata"], dagScope);
-    const controlGraph = buildGraph(
-      dagMetricSets,
-      lastSampleSeconds,
-      ["control"],
-      dagScope
-    );
-    lastDataGraph = dataGraph;
-    lastControlGraph = controlGraph;
-    renderGraph(dataGraph, controlGraph);
-    if (selectedEdgeData) {
-      renderChannelChart(
-        selectedEdgeData.channelId || selectedEdgeData.data?.id || selectedEdgeData.id
+    const perfMs = perfStart();
+    try {
+      const dagScope = getDagRenderScope();
+      const panelMetricSets = filterMetricSets(metricSets);
+      const dagMetricSets = getDagMetricSets(metricSets, dagScope);
+      if (updateSeries) {
+        updateNodeSeries(dagMetricSets, lastSampleSeconds, lastSampleTs, dagScope);
+        updateChannelSeries(dagMetricSets, lastSampleSeconds, lastSampleTs, dagScope);
+      }
+      const dataGraph = buildGraph(dagMetricSets, lastSampleSeconds, ["pdata"], dagScope);
+      const controlGraph = buildGraph(
+        dagMetricSets,
+        lastSampleSeconds,
+        ["control"],
+        dagScope
       );
+      lastDataGraph = dataGraph;
+      lastControlGraph = controlGraph;
+      renderGraph(dataGraph, controlGraph);
+      if (selectedEdgeData) {
+        renderChannelChart(
+          selectedEdgeData.channelId || selectedEdgeData.data?.id || selectedEdgeData.id
+        );
+      }
+      const engineSummary = extractEngineSummary(metricSets, {
+        skipAllZeroSnapshots: SKIP_ENGINE_ALL_ZERO_SNAPSHOTS,
+      });
+      updateEngineCards(engineSummary, lastSampleTs);
+      const pipelineSummary = extractPipelineSummary(panelMetricSets);
+      updatePipelineCards(pipelineSummary, lastSampleSeconds, lastSampleTs);
+      if (showPipelineCharts) {
+        updatePipelineCharts();
+      }
+      const tokioSummary = extractTokioSummary(panelMetricSets);
+      updateTokioCards(tokioSummary, lastSampleSeconds);
+    } finally {
+      perfEnd("applyFilteredView", perfMs, {
+        series: updateSeries ? 1 : 0,
+      });
     }
-    const engineSummary = extractEngineSummary(metricSets, {
-      skipAllZeroSnapshots: SKIP_ENGINE_ALL_ZERO_SNAPSHOTS,
-    });
-    updateEngineCards(engineSummary, lastSampleTs);
-    const pipelineSummary = extractPipelineSummary(panelMetricSets);
-    updatePipelineCards(pipelineSummary, lastSampleSeconds, lastSampleTs);
-    if (showPipelineCharts) {
-      updatePipelineCharts();
-    }
-    const tokioSummary = extractTokioSummary(panelMetricSets);
-    updateTokioCards(tokioSummary, lastSampleSeconds);
   }
 
   function clearSelection() {
@@ -3640,136 +3698,146 @@
 
   // Append rate samples for node-scoped metrics and trim old points.
   function updateNodeSeries(metricSets, sampleSeconds, ts, dagScope = null) {
-    if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
-    if (!ts) return;
-    const nowMs = ts.getTime();
-    const cutoff = nowMs - MAX_WINDOW_MS;
-    const scopeByPipeline = dagScope?.scopeByPipeline === true;
-    metricSets.forEach((set) => {
-      if (
-        set.name === "channel.sender" ||
-        set.name === "channel.receiver" ||
-        set.name === "pipeline.metrics" ||
-        set.name === "tokio.runtime"
-      ) {
-        return;
-      }
-      const attrs = normalizeAttributes(set.attributes || {});
-      const nodeId = resolveScopedNodeId(attrs, scopeByPipeline);
-      if (!nodeId) return;
-      const entry = nodeSeries.get(nodeId) || { metrics: new Map() };
-      (set.metrics || []).forEach((metric) => {
-        if (!shouldShowNodeRate(metric)) return;
-        if (!Number.isFinite(metric.value)) return;
-        const rate = metric.value / sampleSeconds;
-        const metricKey = buildNodeMetricKey(set.name, metric.name);
-        const series = entry.metrics.get(metricKey) || { points: [] };
-        series.points.push({ ts: nowMs, value: rate });
-        series.points = series.points.filter((point) => point.ts >= cutoff);
-        entry.metrics.set(metricKey, series);
+    const perfMs = perfStart();
+    try {
+      if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
+      if (!ts) return;
+      const nowMs = ts.getTime();
+      const cutoff = nowMs - MAX_WINDOW_MS;
+      const scopeByPipeline = dagScope?.scopeByPipeline === true;
+      metricSets.forEach((set) => {
+        if (
+          set.name === "channel.sender" ||
+          set.name === "channel.receiver" ||
+          set.name === "pipeline.metrics" ||
+          set.name === "tokio.runtime"
+        ) {
+          return;
+        }
+        const attrs = normalizeAttributes(set.attributes || {});
+        const nodeId = resolveScopedNodeId(attrs, scopeByPipeline);
+        if (!nodeId) return;
+        const entry = nodeSeries.get(nodeId) || { metrics: new Map() };
+        (set.metrics || []).forEach((metric) => {
+          if (!shouldShowNodeRate(metric)) return;
+          if (!Number.isFinite(metric.value)) return;
+          const rate = metric.value / sampleSeconds;
+          const metricKey = buildNodeMetricKey(set.name, metric.name);
+          const series = entry.metrics.get(metricKey) || { points: [] };
+          series.points.push({ ts: nowMs, value: rate });
+          series.points = series.points.filter((point) => point.ts >= cutoff);
+          entry.metrics.set(metricKey, series);
+        });
+        nodeSeries.set(nodeId, entry);
       });
-      nodeSeries.set(nodeId, entry);
-    });
+    } finally {
+      perfEnd("updateNodeSeries", perfMs, { sets: metricSets?.length || 0 });
+    }
   }
 
   // Build per-channel send/recv/error series for edge detail charts and rate computation.
   function updateChannelSeries(metricSets, sampleSeconds, ts, dagScope = null) {
-    if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
-    if (!ts) return;
-    const scopeByPipeline = dagScope?.scopeByPipeline === true;
+    const perfMs = perfStart();
+    try {
+      if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
+      if (!ts) return;
+      const scopeByPipeline = dagScope?.scopeByPipeline === true;
 
-    const perChannel = new Map();
-    const ensureChannel = (id) => {
-      if (!perChannel.has(id)) {
-        perChannel.set(id, {
-          send: 0,
-          recv: 0,
-          sendErrorFull: 0,
-          sendErrorClosed: 0,
-          recvErrorEmpty: 0,
-          recvErrorClosed: 0,
-        });
-      }
-      return perChannel.get(id);
-    };
+      const perChannel = new Map();
+      const ensureChannel = (id) => {
+        if (!perChannel.has(id)) {
+          perChannel.set(id, {
+            send: 0,
+            recv: 0,
+            sendErrorFull: 0,
+            sendErrorClosed: 0,
+            recvErrorEmpty: 0,
+            recvErrorClosed: 0,
+          });
+        }
+        return perChannel.get(id);
+      };
 
-    metricSets.forEach((set) => {
-      if (set.name !== "channel.sender" && set.name !== "channel.receiver") {
-        return;
-      }
-      const attrs = normalizeAttributes(set.attributes || {});
-      const channelId = resolveScopedChannelId(attrs, scopeByPipeline);
-      if (!channelId) return;
+      metricSets.forEach((set) => {
+        if (set.name !== "channel.sender" && set.name !== "channel.receiver") {
+          return;
+        }
+        const attrs = normalizeAttributes(set.attributes || {});
+        const channelId = resolveScopedChannelId(attrs, scopeByPipeline);
+        if (!channelId) return;
 
-      const metrics = set.metrics || [];
-      if (set.name === "channel.sender") {
-        const sendMetric = metrics.find((metric) => metric.name === "send.count");
-        const sendValue = sendMetric && typeof sendMetric.value === "number" ? sendMetric.value : 0;
-        const sendErrorFullMetric = metrics.find(
-          (metric) => metric.name === "send.error_full"
-        );
-        const sendErrorClosedMetric = metrics.find(
-          (metric) => metric.name === "send.error_closed"
-        );
-        const sendErrorFullValue =
-          sendErrorFullMetric && typeof sendErrorFullMetric.value === "number"
-            ? sendErrorFullMetric.value
-            : 0;
-        const sendErrorClosedValue =
-          sendErrorClosedMetric && typeof sendErrorClosedMetric.value === "number"
-            ? sendErrorClosedMetric.value
-            : 0;
-        const channelEntry = ensureChannel(channelId);
-        channelEntry.send += sendValue;
-        channelEntry.sendErrorFull += sendErrorFullValue;
-        channelEntry.sendErrorClosed += sendErrorClosedValue;
-      } else {
-        const recvMetric = metrics.find((metric) => metric.name === "recv.count");
-        const recvValue = recvMetric && typeof recvMetric.value === "number" ? recvMetric.value : 0;
-        const recvErrorEmptyMetric = metrics.find(
-          (metric) => metric.name === "recv.error_empty"
-        );
-        const recvErrorClosedMetric = metrics.find(
-          (metric) => metric.name === "recv.error_closed"
-        );
-        const recvErrorEmptyValue =
-          recvErrorEmptyMetric && typeof recvErrorEmptyMetric.value === "number"
-            ? recvErrorEmptyMetric.value
-            : 0;
-        const recvErrorClosedValue =
-          recvErrorClosedMetric && typeof recvErrorClosedMetric.value === "number"
-            ? recvErrorClosedMetric.value
-            : 0;
-        const channelEntry = ensureChannel(channelId);
-        channelEntry.recv += recvValue;
-        channelEntry.recvErrorEmpty += recvErrorEmptyValue;
-        channelEntry.recvErrorClosed += recvErrorClosedValue;
-      }
-    });
-
-    const nowMs = ts.getTime();
-    const cutoff = nowMs - MAX_WINDOW_MS;
-
-    perChannel.forEach((counts, channelId) => {
-      const sendRate = counts.send / sampleSeconds;
-      const recvRate = counts.recv / sampleSeconds;
-      const sendErrorFullRate = counts.sendErrorFull / sampleSeconds;
-      const sendErrorClosedRate = counts.sendErrorClosed / sampleSeconds;
-      const recvErrorEmptyRate = counts.recvErrorEmpty / sampleSeconds;
-      const recvErrorClosedRate = counts.recvErrorClosed / sampleSeconds;
-      const series = channelSeries.get(channelId) || { points: [] };
-      series.points.push({
-        ts: nowMs,
-        sendRate,
-        recvRate,
-        sendErrorFullRate,
-        sendErrorClosedRate,
-        recvErrorEmptyRate,
-        recvErrorClosedRate,
+        const metrics = set.metrics || [];
+        if (set.name === "channel.sender") {
+          const sendMetric = metrics.find((metric) => metric.name === "send.count");
+          const sendValue = sendMetric && typeof sendMetric.value === "number" ? sendMetric.value : 0;
+          const sendErrorFullMetric = metrics.find(
+            (metric) => metric.name === "send.error_full"
+          );
+          const sendErrorClosedMetric = metrics.find(
+            (metric) => metric.name === "send.error_closed"
+          );
+          const sendErrorFullValue =
+            sendErrorFullMetric && typeof sendErrorFullMetric.value === "number"
+              ? sendErrorFullMetric.value
+              : 0;
+          const sendErrorClosedValue =
+            sendErrorClosedMetric && typeof sendErrorClosedMetric.value === "number"
+              ? sendErrorClosedMetric.value
+              : 0;
+          const channelEntry = ensureChannel(channelId);
+          channelEntry.send += sendValue;
+          channelEntry.sendErrorFull += sendErrorFullValue;
+          channelEntry.sendErrorClosed += sendErrorClosedValue;
+        } else {
+          const recvMetric = metrics.find((metric) => metric.name === "recv.count");
+          const recvValue = recvMetric && typeof recvMetric.value === "number" ? recvMetric.value : 0;
+          const recvErrorEmptyMetric = metrics.find(
+            (metric) => metric.name === "recv.error_empty"
+          );
+          const recvErrorClosedMetric = metrics.find(
+            (metric) => metric.name === "recv.error_closed"
+          );
+          const recvErrorEmptyValue =
+            recvErrorEmptyMetric && typeof recvErrorEmptyMetric.value === "number"
+              ? recvErrorEmptyMetric.value
+              : 0;
+          const recvErrorClosedValue =
+            recvErrorClosedMetric && typeof recvErrorClosedMetric.value === "number"
+              ? recvErrorClosedMetric.value
+              : 0;
+          const channelEntry = ensureChannel(channelId);
+          channelEntry.recv += recvValue;
+          channelEntry.recvErrorEmpty += recvErrorEmptyValue;
+          channelEntry.recvErrorClosed += recvErrorClosedValue;
+        }
       });
-      series.points = series.points.filter((point) => point.ts >= cutoff);
-      channelSeries.set(channelId, series);
-    });
+
+      const nowMs = ts.getTime();
+      const cutoff = nowMs - MAX_WINDOW_MS;
+
+      perChannel.forEach((counts, channelId) => {
+        const sendRate = counts.send / sampleSeconds;
+        const recvRate = counts.recv / sampleSeconds;
+        const sendErrorFullRate = counts.sendErrorFull / sampleSeconds;
+        const sendErrorClosedRate = counts.sendErrorClosed / sampleSeconds;
+        const recvErrorEmptyRate = counts.recvErrorEmpty / sampleSeconds;
+        const recvErrorClosedRate = counts.recvErrorClosed / sampleSeconds;
+        const series = channelSeries.get(channelId) || { points: [] };
+        series.points.push({
+          ts: nowMs,
+          sendRate,
+          recvRate,
+          sendErrorFullRate,
+          sendErrorClosedRate,
+          recvErrorEmptyRate,
+          recvErrorClosedRate,
+        });
+        series.points = series.points.filter((point) => point.ts >= cutoff);
+        channelSeries.set(channelId, series);
+      });
+    } finally {
+      perfEnd("updateChannelSeries", perfMs, { sets: metricSets?.length || 0 });
+    }
   }
 
   // Edge detail chart renderer (single chart reused per selected channel).
@@ -4696,20 +4764,115 @@
     }
   });
 
+  function hashString32(hash, value) {
+    const text = String(value == null ? "" : value);
+    let next = hash >>> 0;
+    for (let i = 0; i < text.length; i += 1) {
+      next ^= text.charCodeAt(i);
+      next = Math.imul(next, 16777619);
+    }
+    return next >>> 0;
+  }
+
+  function buildRenderedStructureSignature(
+    nodes,
+    edges,
+    controlEdges,
+    dagScopeMode,
+    includeControlChannels
+  ) {
+    let hash = 2166136261;
+    hash = hashString32(hash, dagScopeMode);
+    hash = hashString32(hash, includeControlChannels ? "1" : "0");
+
+    const nodeParts = nodes
+      .map((node) => {
+        const ports = Array.from(new Set((node.displayPorts || node.outPorts || []).map(String)))
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+          .join(",");
+        const nodeType = node.attrs?.["node.type"] || "";
+        return `${node.id}|${nodeType}|${ports}`;
+      })
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    nodeParts.forEach((part) => {
+      hash = hashString32(hash, part);
+    });
+
+    const edgeParts = edges
+      .map((edge) => `${edge.id}|${edge.source}|${edge.target}|${edge.port || ""}`)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    edgeParts.forEach((part) => {
+      hash = hashString32(hash, part);
+    });
+
+    const visibleControlEdges = includeControlChannels ? controlEdges : [];
+    const controlParts = visibleControlEdges
+      .map((edge) => `${edge.id}|${edge.source}|${edge.target}|${edge.port || ""}`)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    controlParts.forEach((part) => {
+      hash = hashString32(hash, part);
+    });
+
+    return `${nodes.length}:${edges.length}:${visibleControlEdges.length}:${hash.toString(16)}`;
+  }
+
+  function syncSelectionDetails(nodes, edges, controlEdges) {
+    if (selectedEdgeId) {
+      const selectedEdge =
+        edges.find((edge) => edge.id === selectedEdgeId) ||
+        (showControlChannels
+          ? controlEdges.find((edge) => edge.id === selectedEdgeId)
+          : null);
+      if (selectedEdge) {
+        selectedEdgeData = selectedEdge;
+        renderEdgeDetails(selectedEdge);
+        return;
+      }
+      if (selectedEdgeData && selectedEdgeData.id === selectedEdgeId) {
+        renderEdgeDetails(selectedEdgeData);
+        return;
+      }
+      selectedEdgeId = null;
+      selectedEdgeData = null;
+      renderSelectionNone();
+      return;
+    }
+    if (selectedNodeId) {
+      const selectedNode = nodes.find((node) => node.id === selectedNodeId);
+      if (selectedNode) {
+        selectedNodeData = selectedNode;
+        renderNodeDetails(selectedNode);
+        return;
+      }
+      if (selectedNodeData && selectedNodeData.id === selectedNodeId) {
+        renderNodeDetails(selectedNodeData);
+        return;
+      }
+      selectedNodeId = null;
+      selectedNodeData = null;
+      renderSelectionNone();
+      return;
+    }
+    renderSelectionNone();
+  }
+
   // Main DAG renderer for data and control edge layers.
   function renderGraph(dataGraph, controlGraph) {
-    const dataGraphResolved = dataGraph || { nodes: [], edges: [], meta: {} };
-    const controlGraphResolved = controlGraph || { nodes: [], edges: [], meta: {} };
-    let nodes = [...(dataGraphResolved.nodes || [])];
-    let edges = [...(dataGraphResolved.edges || [])];
-    const controlEdges = controlGraphResolved.edges || [];
-    const controlEdgeIds = new Set(controlEdges.map((edge) => edge.id));
-    const sampleSeconds =
-      dataGraphResolved.meta?.sampleSeconds ?? controlGraphResolved.meta?.sampleSeconds;
-    const displayTimeMs = getDisplayTimeMs();
-    const dataEdgeRates = computeEdgeRates(edges, displayTimeMs, sampleSeconds);
-    const controlEdgeRates = computeEdgeRates(controlEdges, displayTimeMs, sampleSeconds);
-    lastEdgeRates = dataEdgeRates;
+    const perfMs = perfStart();
+    let renderMode = "full";
+    try {
+      const dataGraphResolved = dataGraph || { nodes: [], edges: [], meta: {} };
+      const controlGraphResolved = controlGraph || { nodes: [], edges: [], meta: {} };
+      let nodes = [...(dataGraphResolved.nodes || [])];
+      let edges = [...(dataGraphResolved.edges || [])];
+      const controlEdges = controlGraphResolved.edges || [];
+      const controlEdgeIds = new Set(controlEdges.map((edge) => edge.id));
+      const sampleSeconds =
+        dataGraphResolved.meta?.sampleSeconds ?? controlGraphResolved.meta?.sampleSeconds;
+      const displayTimeMs = getDisplayTimeMs();
+      const dataEdgeRates = computeEdgeRates(edges, displayTimeMs, sampleSeconds);
+      const controlEdgeRates = computeEdgeRates(controlEdges, displayTimeMs, sampleSeconds);
+      lastEdgeRates = dataEdgeRates;
 
     if (hideZeroActivity) {
       const visibleEdges = edges.filter((edge) => {
@@ -4788,6 +4951,15 @@
       });
     });
 
+    const activeDagScope = getDagRenderScope();
+    const structureSignature = buildRenderedStructureSignature(
+      nodes,
+      edges,
+      controlEdges,
+      activeDagScope.mode,
+      showControlChannels
+    );
+
     lastRenderedNodes = nodes;
     lastRenderedEdges = edges;
     lastRenderedControlEdges = controlEdges;
@@ -4795,13 +4967,33 @@
     lastGraph = dataGraphResolved;
 
     dagEmpty.classList.toggle("hidden", edges.length > 0);
+    if (!edges.length) {
+      selectedEdgeId = null;
+      selectedEdgeData = null;
+    }
+    if (!nodes.length) {
+      selectedNodeId = null;
+      selectedNodeData = null;
+    }
+
+    const hasRenderedDagDom =
+      dagNodes.childElementCount > 0 ||
+      dagEdges.childElementCount > 0 ||
+      dagLanes.childElementCount > 0;
+    if (structureSignature === lastRenderedStructureSignature && hasRenderedDagDom) {
+      renderMode = "reuse";
+      updateTopologyForHover(displayTimeMs);
+      syncSelectionDetails(nodes, edges, controlEdges);
+      return;
+    }
+
+    lastRenderedStructureSignature = structureSignature;
 
     dagNodes.innerHTML = "";
     dagEdges.innerHTML = "";
     dagLanes.innerHTML = "";
 
     const layout = layoutGraph(nodes, edges);
-    const activeDagScope = getDagRenderScope();
     const baseNodeMap = new Map(nodes.map((node) => [node.id, node]));
     const pipelineNavAnchors =
       activeDagScope.mode === DAG_SCOPE_CONNECTED
@@ -4829,14 +5021,6 @@
     dagLanes.style.height = `${layout.height}px`;
     applyDefaultOverviewZoom();
     applyZoom();
-      if (!edges.length) {
-        selectedEdgeId = null;
-        selectedEdgeData = null;
-      }
-      if (!nodes.length) {
-        selectedNodeId = null;
-        selectedNodeData = null;
-      }
 
     const svgDefs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
     svgDefs.innerHTML = `
@@ -5123,43 +5307,15 @@
       renderPipelineDagNavigation(nodeMap, pipelineNavAnchors, pipelineNavLayout);
     }
 
-    if (selectedEdgeId) {
-      const selectedEdge =
-        edges.find((edge) => edge.id === selectedEdgeId) ||
-        (showControlChannels
-          ? controlEdges.find((edge) => edge.id === selectedEdgeId)
-          : null);
-      if (selectedEdge) {
-        selectedEdgeData = selectedEdge;
-        renderEdgeDetails(selectedEdge);
-        return;
-      }
-      if (selectedEdgeData && selectedEdgeData.id === selectedEdgeId) {
-        renderEdgeDetails(selectedEdgeData);
-        return;
-      }
-      selectedEdgeId = null;
-      selectedEdgeData = null;
-      renderSelectionNone();
-      return;
+      syncSelectionDetails(nodes, edges, controlEdges);
+    } finally {
+      perfEnd("renderGraph", perfMs, {
+        mode: renderMode,
+        nodes: lastRenderedNodes.length,
+        edges: lastRenderedEdges.length,
+        control: lastRenderedControlEdges.length,
+      });
     }
-    if (selectedNodeId) {
-      const selectedNode = nodes.find((node) => node.id === selectedNodeId);
-      if (selectedNode) {
-        selectedNodeData = selectedNode;
-        renderNodeDetails(selectedNode);
-        return;
-      }
-      if (selectedNodeData && selectedNodeData.id === selectedNodeId) {
-        renderNodeDetails(selectedNodeData);
-        return;
-      }
-      selectedNodeId = null;
-      selectedNodeData = null;
-      renderSelectionNone();
-      return;
-    }
-    renderSelectionNone();
   }
 
   // --- Polling loop ---
