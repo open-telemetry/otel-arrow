@@ -237,7 +237,6 @@ mod attributes_32 {
 mod logs {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
-    use crate::schema::consts::dotted;
 
     static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
     static OBSERVED_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
@@ -293,20 +292,20 @@ mod logs {
             RESOURCE => Some(&RESOURCE_DEF),
             SCOPE => Some(&SCOPE_DEF),
             // Dotted paths for nested columns
-            dotted::BODY_TYPE => Some(&BODY_TYPE_DEF),
-            dotted::BODY_STR => Some(&BODY_STR_DEF),
-            dotted::BODY_INT => Some(&BODY_INT_DEF),
-            dotted::BODY_DOUBLE => Some(&BODY_DOUBLE_DEF),
-            dotted::BODY_BOOL => Some(&BODY_BOOL_DEF),
-            dotted::BODY_BYTES => Some(&BODY_BYTES_DEF),
-            dotted::BODY_SER => Some(&BODY_SER_DEF),
-            dotted::RESOURCE_ID => Some(&RESOURCE_ID_DEF),
-            dotted::RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
-            dotted::SCOPE_ID => Some(&SCOPE_ID_DEF),
-            dotted::SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::SCOPE_NAME => Some(&SCOPE_NAME_DEF),
-            dotted::SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
+            BODY_TYPE => Some(&BODY_TYPE_DEF),
+            BODY_STR => Some(&BODY_STR_DEF),
+            BODY_INT => Some(&BODY_INT_DEF),
+            BODY_DOUBLE => Some(&BODY_DOUBLE_DEF),
+            BODY_BOOL => Some(&BODY_BOOL_DEF),
+            BODY_BYTES => Some(&BODY_BYTES_DEF),
+            BODY_SER => Some(&BODY_SER_DEF),
+            RESOURCE_ID => Some(&RESOURCE_ID_DEF),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
+            SCOPE_ID => Some(&SCOPE_ID_DEF),
+            SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            SCOPE_NAME => Some(&SCOPE_NAME_DEF),
+            SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
             _ => None,
         }
     }
@@ -344,7 +343,6 @@ mod logs {
 mod spans {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
-    use crate::schema::consts::dotted;
 
     static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
     static DURATION_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::DurationNs);
@@ -399,15 +397,15 @@ mod spans {
             SCOPE => Some(&SCOPE_DEF),
             STATUS => Some(&STATUS_DEF),
             // Dotted paths for nested columns
-            dotted::RESOURCE_ID => Some(&RESOURCE_ID_DEF),
-            dotted::RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
-            dotted::SCOPE_ID => Some(&SCOPE_ID_DEF),
-            dotted::SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::SCOPE_NAME => Some(&SCOPE_NAME_DEF),
-            dotted::SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
-            dotted::STATUS_CODE => Some(&STATUS_CODE_DEF),
-            dotted::STATUS_MESSAGE => Some(&STATUS_MESSAGE_DEF),
+            RESOURCE_ID => Some(&RESOURCE_ID_DEF),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
+            SCOPE_ID => Some(&SCOPE_ID_DEF),
+            SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            SCOPE_NAME => Some(&SCOPE_NAME_DEF),
+            SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
+            STATUS_DOT_CODE => Some(&STATUS_CODE_DEF),
+            STATUS_DOT_STATUS_MESSAGE => Some(&STATUS_MESSAGE_DEF),
             _ => None,
         }
     }
@@ -499,7 +497,6 @@ mod span_links {
 mod univariate_metrics {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
-    use crate::schema::consts::dotted;
 
     static ID_DEF: ColumnDef = native(NativeType::UInt16);
     static METRIC_TYPE_DEF: ColumnDef = native(NativeType::UInt8);
@@ -538,13 +535,13 @@ mod univariate_metrics {
             RESOURCE => Some(&RESOURCE_DEF),
             SCOPE => Some(&SCOPE_DEF),
             // Dotted paths for nested columns
-            dotted::RESOURCE_ID => Some(&RESOURCE_ID_DEF),
-            dotted::RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
-            dotted::SCOPE_ID => Some(&SCOPE_ID_DEF),
-            dotted::SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
-            dotted::SCOPE_NAME => Some(&SCOPE_NAME_DEF),
-            dotted::SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
+            RESOURCE_ID => Some(&RESOURCE_ID_DEF),
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            RESOURCE_SCHEMA_URL => Some(&RESOURCE_SCHEMA_URL_DEF),
+            SCOPE_ID => Some(&SCOPE_ID_DEF),
+            SCOPE_DROPPED_ATTRIBUTES_COUNT => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            SCOPE_NAME => Some(&SCOPE_NAME_DEF),
+            SCOPE_VERSION => Some(&SCOPE_VERSION_DEF),
             _ => None,
         }
     }
@@ -606,7 +603,6 @@ mod number_data_points {
 mod summary_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
-    use crate::schema::consts::dotted;
 
     static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
     static ID_DEF: ColumnDef = native(NativeType::UInt32);
@@ -636,8 +632,8 @@ mod summary_data_points {
             SUMMARY_QUANTILE_VALUES => Some(&QUANTILE_DEF),
             METRIC_VALUE => Some(&VALUE_DEF),
             // Dotted paths for nested columns
-            dotted::QUANTILE_QUANTILE => Some(&QUANTILE_QUANTILE_DEF),
-            dotted::QUANTILE_VALUE => Some(&QUANTILE_VALUE_DEF),
+            QUANTILE_QUANTILE => Some(&QUANTILE_QUANTILE_DEF),
+            QUANTILE_VALUE => Some(&QUANTILE_VALUE_DEF),
             _ => None,
         }
     }
@@ -700,7 +696,6 @@ mod histogram_data_points {
 mod exp_histogram_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
-    use crate::schema::consts::dotted;
 
     static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
     static ID_DEF: ColumnDef = native(NativeType::UInt32);
@@ -738,10 +733,10 @@ mod exp_histogram_data_points {
             TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
             FLAGS => Some(&FLAGS_DEF),
             // Dotted paths for nested columns
-            dotted::POSITIVE_BUCKET_COUNTS => Some(&BUCKET_COUNTS_DEF),
-            dotted::POSITIVE_OFFSET => Some(&OFFSET_DEF),
-            dotted::NEGATIVE_BUCKET_COUNTS => Some(&BUCKET_COUNTS_DEF),
-            dotted::NEGATIVE_OFFSET => Some(&OFFSET_DEF),
+            POSITIVE_BUCKET_COUNTS => Some(&BUCKET_COUNTS_DEF),
+            POSITIVE_OFFSET => Some(&OFFSET_DEF),
+            NEGATIVE_BUCKET_COUNTS => Some(&BUCKET_COUNTS_DEF),
+            NEGATIVE_OFFSET => Some(&OFFSET_DEF),
             _ => None,
         }
     }
@@ -798,6 +793,7 @@ mod exemplars {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::consts::*;
 
     #[test]
     fn test_get_top_level_column() {
@@ -872,10 +868,8 @@ mod tests {
 
     #[test]
     fn test_logs_body_columns_require_u16() {
-        use crate::schema::consts::dotted;
-
         let def = get(ArrowPayloadType::Logs);
-        for path in &[dotted::BODY_STR, dotted::BODY_INT, dotted::BODY_BYTES, dotted::BODY_SER] {
+        for path in &[BODY_STR, BODY_INT, BODY_BYTES, BODY_SER] {
             let col = def
                 .get(path)
                 .unwrap_or_else(|| panic!("missing column: {}", path));
@@ -1033,105 +1027,123 @@ mod tests {
 
     #[test]
     fn test_dotted_path_logs() {
-        use crate::schema::consts::dotted;
-
         let def = get(ArrowPayloadType::Logs);
 
         let cases = [
-            (dotted::BODY_TYPE, NativeType::UInt8, None),
-            (dotted::BODY_STR, NativeType::Utf8, Some(MinDictKeySize::U16)),
-            (dotted::BODY_INT, NativeType::Int64, Some(MinDictKeySize::U16)),
-            (dotted::BODY_DOUBLE, NativeType::Float64, None),
-            (dotted::BODY_BOOL, NativeType::Boolean, None),
-            (dotted::BODY_BYTES, NativeType::Binary, Some(MinDictKeySize::U16)),
-            (dotted::BODY_SER, NativeType::Binary, Some(MinDictKeySize::U16)),
-            (dotted::RESOURCE_ID, NativeType::UInt16, None),
-            (dotted::RESOURCE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
-            (dotted::RESOURCE_SCHEMA_URL, NativeType::Utf8, Some(MinDictKeySize::U8)),
-            (dotted::SCOPE_ID, NativeType::UInt16, None),
-            (dotted::SCOPE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
-            (dotted::SCOPE_NAME, NativeType::Utf8, Some(MinDictKeySize::U8)),
-            (dotted::SCOPE_VERSION, NativeType::Utf8, Some(MinDictKeySize::U8)),
+            (BODY_TYPE, NativeType::UInt8, None),
+            (BODY_STR, NativeType::Utf8, Some(MinDictKeySize::U16)),
+            (BODY_INT, NativeType::Int64, Some(MinDictKeySize::U16)),
+            (BODY_DOUBLE, NativeType::Float64, None),
+            (BODY_BOOL, NativeType::Boolean, None),
+            (BODY_BYTES, NativeType::Binary, Some(MinDictKeySize::U16)),
+            (BODY_SER, NativeType::Binary, Some(MinDictKeySize::U16)),
+            (RESOURCE_ID, NativeType::UInt16, None),
+            (RESOURCE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
+            (
+                RESOURCE_SCHEMA_URL,
+                NativeType::Utf8,
+                Some(MinDictKeySize::U8),
+            ),
+            (SCOPE_ID, NativeType::UInt16, None),
+            (SCOPE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
+            (SCOPE_NAME, NativeType::Utf8, Some(MinDictKeySize::U8)),
+            (SCOPE_VERSION, NativeType::Utf8, Some(MinDictKeySize::U8)),
         ];
         for (path, expected_type, expected_dict) in cases {
-            let col = def.get(path).unwrap_or_else(|| panic!("missing dotted path: {}", path));
+            let col = def
+                .get(path)
+                .unwrap_or_else(|| panic!("missing dotted path: {}", path));
             assert_eq!(col.native_type, expected_type, "type mismatch for {}", path);
-            assert_eq!(col.min_dict_key_size, expected_dict, "dict mismatch for {}", path);
+            assert_eq!(
+                col.min_dict_key_size, expected_dict,
+                "dict mismatch for {}",
+                path
+            );
         }
     }
 
     #[test]
     fn test_dotted_path_spans() {
-        use crate::schema::consts::dotted;
-
         let def = get(ArrowPayloadType::Spans);
 
         let cases = [
-            (dotted::RESOURCE_ID, NativeType::UInt16, None),
-            (dotted::RESOURCE_SCHEMA_URL, NativeType::Utf8, Some(MinDictKeySize::U8)),
-            (dotted::SCOPE_NAME, NativeType::Utf8, None),
-            (dotted::SCOPE_VERSION, NativeType::Utf8, None),
-            (dotted::STATUS_CODE, NativeType::Int32, Some(MinDictKeySize::U8)),
-            (dotted::STATUS_MESSAGE, NativeType::Utf8, Some(MinDictKeySize::U8)),
+            (RESOURCE_ID, NativeType::UInt16, None),
+            (
+                RESOURCE_SCHEMA_URL,
+                NativeType::Utf8,
+                Some(MinDictKeySize::U8),
+            ),
+            (SCOPE_NAME, NativeType::Utf8, None),
+            (SCOPE_VERSION, NativeType::Utf8, None),
+            (STATUS_DOT_CODE, NativeType::Int32, Some(MinDictKeySize::U8)),
+            (
+                STATUS_DOT_STATUS_MESSAGE,
+                NativeType::Utf8,
+                Some(MinDictKeySize::U8),
+            ),
         ];
         for (path, expected_type, expected_dict) in cases {
-            let col = def.get(path).unwrap_or_else(|| panic!("missing dotted path: {}", path));
+            let col = def
+                .get(path)
+                .unwrap_or_else(|| panic!("missing dotted path: {}", path));
             assert_eq!(col.native_type, expected_type, "type mismatch for {}", path);
-            assert_eq!(col.min_dict_key_size, expected_dict, "dict mismatch for {}", path);
+            assert_eq!(
+                col.min_dict_key_size, expected_dict,
+                "dict mismatch for {}",
+                path
+            );
         }
     }
 
     #[test]
     fn test_dotted_path_exp_histogram() {
-        use crate::schema::consts::dotted;
-
         let def = get(ArrowPayloadType::ExpHistogramDataPoints);
 
         let cases = [
-            (dotted::POSITIVE_BUCKET_COUNTS, NativeType::ListUInt64),
-            (dotted::POSITIVE_OFFSET, NativeType::Int32),
-            (dotted::NEGATIVE_BUCKET_COUNTS, NativeType::ListUInt64),
-            (dotted::NEGATIVE_OFFSET, NativeType::Int32),
+            (POSITIVE_BUCKET_COUNTS, NativeType::ListUInt64),
+            (POSITIVE_OFFSET, NativeType::Int32),
+            (NEGATIVE_BUCKET_COUNTS, NativeType::ListUInt64),
+            (NEGATIVE_OFFSET, NativeType::Int32),
         ];
         for (path, expected_type) in cases {
-            let col = def.get(path).unwrap_or_else(|| panic!("missing dotted path: {}", path));
+            let col = def
+                .get(path)
+                .unwrap_or_else(|| panic!("missing dotted path: {}", path));
             assert_eq!(col.native_type, expected_type, "type mismatch for {}", path);
         }
     }
 
     #[test]
     fn test_dotted_path_matches_get_nested() {
-        use crate::schema::consts::dotted;
-
         let logs = get(ArrowPayloadType::Logs);
         assert!(std::ptr::eq(
-            logs.get(dotted::BODY_STR).unwrap(),
+            logs.get(BODY_STR).unwrap(),
             logs.get_nested("body", "str").unwrap(),
         ));
         assert!(std::ptr::eq(
-            logs.get(dotted::RESOURCE_SCHEMA_URL).unwrap(),
+            logs.get(RESOURCE_SCHEMA_URL).unwrap(),
             logs.get_nested("resource", "schema_url").unwrap(),
         ));
         assert!(std::ptr::eq(
-            logs.get(dotted::SCOPE_NAME).unwrap(),
+            logs.get(SCOPE_NAME).unwrap(),
             logs.get_nested("scope", "name").unwrap(),
         ));
 
         let spans = get(ArrowPayloadType::Spans);
         assert!(std::ptr::eq(
-            spans.get(dotted::STATUS_CODE).unwrap(),
+            spans.get(STATUS_DOT_CODE).unwrap(),
             spans.get_nested("status", "code").unwrap(),
         ));
 
         let exp = get(ArrowPayloadType::ExpHistogramDataPoints);
         assert!(std::ptr::eq(
-            exp.get(dotted::POSITIVE_BUCKET_COUNTS).unwrap(),
+            exp.get(POSITIVE_BUCKET_COUNTS).unwrap(),
             exp.get_nested("positive", "bucket_counts").unwrap(),
         ));
 
         let summary = get(ArrowPayloadType::SummaryDataPoints);
         assert!(std::ptr::eq(
-            summary.get(dotted::QUANTILE_QUANTILE).unwrap(),
+            summary.get(QUANTILE_QUANTILE).unwrap(),
             summary.get_nested("quantile", "quantile").unwrap(),
         ));
     }
