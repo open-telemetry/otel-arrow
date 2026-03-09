@@ -1,3 +1,6 @@
+// Incremental graph-render orchestration.
+// Computes a structural signature to skip expensive DOM rebuilds when topology
+// is unchanged, while still updating selection and activity state each frame.
 function hashString32(hash, value) {
   const text = String(value == null ? "" : value);
   let next = hash >>> 0;

@@ -1,3 +1,6 @@
+// Pure graph layout helpers.
+// Produces deterministic coordinates for nodes/lanes to minimize topology jitter
+// between refreshes and keep interaction hitboxes stable.
 const DEFAULT_CONSTANTS = {
   NODE_WIDTH: 210,
   NODE_HEADER_HEIGHT: 38,

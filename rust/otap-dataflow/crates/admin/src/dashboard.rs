@@ -17,12 +17,23 @@ use include_dir::Dir;
 
 /// Embedded UI files compiled into the binary.
 static UI_FILES: Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/ui");
+// Admin UI responses carry live operational metadata. Disable caching so shared
+// browsers/proxies do not retain stale or sensitive snapshots.
 const CACHE_CONTROL_NO_STORE: &str = "no-store, no-cache, must-revalidate";
+// Restrict resource loading and execution to same-origin assets. This reduces
+// XSS impact, blocks plugin/object execution, prevents clickjacking framing,
+// and disallows <base> URL rewriting attacks.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+// Prevent MIME type sniffing that could reinterpret static files as executable
+// script content.
 const X_CONTENT_TYPE_OPTIONS_NO_SNIFF: &str = "nosniff";
+// Legacy clickjacking protection for browsers that do not fully rely on CSP's
+// frame-ancestors directive.
 const X_FRAME_OPTIONS_DENY: &str = "DENY";
+// Avoid leaking admin endpoint URLs via the Referer header when following links.
 const REFERRER_POLICY_NO_REFERRER: &str = "no-referrer";
 
+// Build a consistent hardened header set for all UI/static responses.
 fn build_ui_headers(content_type: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let _ = headers.insert(

@@ -1,3 +1,6 @@
+// Controller for pipeline metric card charts.
+// Maintains bounded in-memory series, keeps chart hover synchronized with the
+// global timeline, and delegates rendering to the injected Chart runtime.
 function getClosestIndex(labels, ts) {
   if (!labels.length || !Number.isFinite(ts)) return null;
   if (ts <= labels[0]) return 0;

@@ -1,3 +1,6 @@
+// Runtime status normalization and health-condition summarization.
+// Adapts /status payload shapes into stable pipeline-keyed data for selector
+// decorations and the runtime overlay table.
 import { makePipelineSelectionKey } from "./pipeline-utils.js";
 
 const ACCEPTED_BENIGN_FALSE_REASONS = new Set([

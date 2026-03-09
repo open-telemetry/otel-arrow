@@ -1,3 +1,6 @@
+// Interaction controller for DAG viewport zoom, drag, search, and fullscreen.
+// Owns transient interaction state only; layout data and side effects are
+// injected through callbacks to keep rendering and interaction decoupled.
 function formatZoomPercent(value) {
   const percent = value * 100;
   const rounded = Math.round(percent);

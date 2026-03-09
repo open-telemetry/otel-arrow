@@ -6,6 +6,8 @@ import {
   updateChannelSeries,
 } from '../charts-controller.js';
 
+// Verifies per-channel sender/receiver counters are converted into rates and
+// merged into a single channel sample point.
 test('updateChannelSeries aggregates sender/receiver rates per channel', () => {
   const channelSeries = new Map();
   const metricSets = [
@@ -52,6 +54,8 @@ test('updateChannelSeries aggregates sender/receiver rates per channel', () => {
   });
 });
 
+// Verifies edge-rate computation prefers the sampled channel-series point when
+// available instead of recalculating from raw cumulative counters.
 test('computeEdgeRates uses channel series point when available', () => {
   const channelSeries = new Map([
     [

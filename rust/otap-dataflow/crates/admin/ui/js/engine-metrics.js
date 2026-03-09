@@ -1,3 +1,5 @@
+// Engine-level metrics summarization for top cards.
+// Converts raw metric sets into stable aggregate values used by the UI.
 import {
   getPipelineGroupId,
   getPipelineId,

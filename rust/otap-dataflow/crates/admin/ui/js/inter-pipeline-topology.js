@@ -1,10 +1,11 @@
+// Inter-pipeline topic topology derivation and query helpers.
+// Builds deterministic upstream/downstream relationships for selectors and DAG scope.
 import {
   getPipelineGroupId,
   getPipelineId,
   makePipelineSelectionKey,
   normalizeAttributes,
 } from "./pipeline-utils.js";
-
 const EMPTY_PIPELINE_INTERCONNECT = Object.freeze({
   hasTopicExporters: false,
   hasTopicReceivers: false,

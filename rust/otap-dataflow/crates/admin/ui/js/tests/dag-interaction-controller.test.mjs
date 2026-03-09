@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createDagInteractionController } from '../dag-interaction-controller.js';
 
+// Minimal classList shim for DOM-less node:test execution.
 function createClassList() {
   const set = new Set();
   return {
@@ -28,6 +29,7 @@ function createClassList() {
   };
 }
 
+// Minimal element shim that supports listener registration and dispatch.
 function createElement(overrides = {}) {
   const listeners = new Map();
   return {
@@ -44,6 +46,9 @@ function createElement(overrides = {}) {
   };
 }
 
+// Verifies two guardrails:
+// 1) invalid layout size does not crash zoom sizing (canvas remains 0x0),
+// 2) search/fullscreen callbacks are correctly wired to UI events.
 test('dag interaction handles invalid layout size and search callback wiring', () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;

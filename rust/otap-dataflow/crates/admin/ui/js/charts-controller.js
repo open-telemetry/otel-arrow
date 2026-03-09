@@ -1,6 +1,6 @@
-// Shared chart/time-series helpers extracted from main.js.
-// Functions are intentionally dependency-injected so main.js keeps ownership
-// of UI state and configuration while this module stays testable and reusable.
+// Time-series helpers for channel/edge activity views.
+// This module only transforms metric samples and does not read or mutate DOM.
+// Callers inject scoping and lookup functions to keep behavior deterministic.
 
 export function getSeriesWindow(points, startMs, endMs) {
   const list = Array.isArray(points) ? points : [];

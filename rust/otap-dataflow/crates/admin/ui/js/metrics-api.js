@@ -1,3 +1,5 @@
+// Metrics endpoint candidate selection and fetch fallback logic.
+// Keeps same-origin probing deterministic and resilient to endpoint aliases.
 // Keep fallback endpoint lists stable and duplicate-free.
 function dedupeUrls(urls) {
   const seen = new Set();

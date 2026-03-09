@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { createPipelineChartsController } from '../pipeline-charts-controller.js';
 
+// Verifies controller behavior in a DOM-lite environment:
+// metric recording, formatted value application, hover tracking, and cleanup.
 test('pipeline charts controller records metrics and applies formatted values', () => {
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;

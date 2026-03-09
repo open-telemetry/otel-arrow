@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { renderGraphFrame } from '../graph-renderer.js';
 
+// Reuses the same hashing logic shape used by structure signatures so this test
+// can emulate a "render reuse" frame transition.
 function hashString32(hash, value) {
   const text = String(value == null ? '' : value);
   let next = hash >>> 0;
@@ -13,6 +15,7 @@ function hashString32(hash, value) {
   return next >>> 0;
 }
 
+// Build an empty-graph signature that matches the renderer's reuse fast-path.
 function emptySignature() {
   let hash = 2166136261;
   hash = hashString32(hash, 'single');
@@ -20,6 +23,8 @@ function emptySignature() {
   return `0:0:0:${hash.toString(16)}`;
 }
 
+// Verifies the reuse path never returns a null layout size, which protects
+// downstream zoom code that reads width/height unconditionally.
 test('renderGraphFrame reuse path keeps a non-null layout size', () => {
   const result = renderGraphFrame({
     dataGraph: { nodes: [], edges: [], meta: {} },

@@ -1,5 +1,12 @@
+// Pipeline/core selector rendering helpers.
+// Keeps selector/overlay/status icon rendering logic isolated from app state
+// management while enforcing DOM escaping for dynamic values.
 import { escapeAttr, escapeHtml } from "./dom-safety.js";
 import { normalizeAttributes } from "./pipeline-utils.js";
+
+// UI rendering helpers for pipeline/core selectors and status badges.
+// Encapsulates DOM generation and escaping while caller-owned state drives
+// selected values and status lookups.
 
 function formatPipelineOptionLabel(pipelineId) {
   return pipelineId;

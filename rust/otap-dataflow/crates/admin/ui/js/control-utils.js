@@ -1,18 +1,19 @@
-// Shared UI-control helpers used by main.js. These stay DOM-focused and stateless.
+// DOM helpers for selector/toggle controls.
+// Functions are intentionally stateless: callers keep selection/application state.
 export function cloneTemplateElement(templateEl, fallbackTagName) {
   const root = templateEl?.content?.firstElementChild;
   if (root) return root.cloneNode(true);
   return document.createElement(fallbackTagName);
 }
 
-// Build a selectable pipeline-group bucket from the template/fallback element.
+// Create an optgroup from template fallback while preserving native semantics.
 export function buildPipelineOptgroupElement(templateEl, label) {
   const optgroup = cloneTemplateElement(templateEl, "optgroup");
   optgroup.label = label;
   return optgroup;
 }
 
-// Build one leaf option in the pipeline selector.
+// Create one selectable option for the pipeline selector.
 export function buildPipelineOptionElement(templateEl, value, text) {
   const option = cloneTemplateElement(templateEl, "option");
   option.value = value;
@@ -20,7 +21,7 @@ export function buildPipelineOptionElement(templateEl, value, text) {
   return option;
 }
 
-// Keep the visual representation of switch-like controls in sync with boolean state.
+// Keep switch-like control visuals synchronized with a boolean state value.
 export function setToggleVisualState({
   wrapEl,
   trackEl,

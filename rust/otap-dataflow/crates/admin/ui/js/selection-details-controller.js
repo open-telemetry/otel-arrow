@@ -1,3 +1,6 @@
+// Selection details controller for node/edge side panel rendering.
+// Builds detail panels from normalized graph data and synchronizes channel
+// chart hover with the global timeline.
 function findMetric(metrics, name) {
   if (!metrics) return null;
   return metrics.find((metric) => metric.name === name) || null;

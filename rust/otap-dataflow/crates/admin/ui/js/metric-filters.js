@@ -1,8 +1,13 @@
+// Metric-set filtering and aggregation for selector-scoped views.
+// Handles per-core collapse and metric aggregation semantics.
 import {
   getPipelineSelectionKeyFromAttrs,
   normalizeAttributes,
 } from "./pipeline-utils.js";
 
+// Filter and aggregate metric sets for selector-scoped views.
+// When "all cores" is selected, aggregation removes per-core/thread dimensions
+// so cards/charts represent pipeline-level values.
 export function isDeltaCounterMetric(metric) {
   if (!metric) return false;
   if (String(metric.temporality || "").toLowerCase() === "delta") return true;

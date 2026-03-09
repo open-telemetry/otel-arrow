@@ -1,6 +1,10 @@
+// Shared pipeline/core attribute and selector key utilities.
+// Centralizes normalization and key encoding so all UI modules use the same
+// pipeline identity semantics.
 const PIPELINE_KEY_SEPARATOR = "|";
 
-// Convert incoming attribute payloads (plain or OTLP-like nested values) to flat strings.
+// Convert incoming attribute payloads (plain or OTLP-like nested values) to
+// flat strings.
 export function normalizeAttributes(attrs) {
   const out = {};
   if (!attrs) return out;

@@ -59,3 +59,49 @@ Assets are embedded in the binary via `include_dir` and served by
 
 For operational semantics, metric-name contracts, graph rules, and testing
 guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
+
+## Security
+
+### Security controls currently in place
+
+- Embedded UI assets are compiled into the binary via `include_dir` and served
+  from in-memory embedded files (no runtime static file directory exposure).
+- Default admin bind address is loopback (`127.0.0.1:8080`) unless explicitly
+  overridden in config.
+- UI/static responses include hardened browser headers:
+  - `Content-Security-Policy` (self-only scripts/connect/object/base/frame
+    restrictions)
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Referrer-Policy: no-referrer`
+  - `Cache-Control: no-store, no-cache, must-revalidate`
+- UI dependencies are vendored and served locally from `/static/vendor/*`
+  (no CDN dependency at runtime).
+- UI code uses explicit escaping helpers (`ui/js/dom-safety.js`) for dynamic
+  HTML, attributes, and selector values.
+
+### Security improvement TODO
+
+- [ ] Add authentication and authorization for admin endpoints (or require it
+  through an enforced integration layer).
+- [ ] Add TLS support in-process or enforce TLS at a mandatory front proxy
+  boundary.
+- [ ] Protect `POST /pipeline-groups/shutdown` with stricter access controls
+  than read-only endpoints.
+- [ ] Apply the same hardened response headers to API endpoints
+  (`/status`, `/livez`, `/readyz`, `/telemetry/*`, `/metrics`), not only UI/static.
+- [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
+  nonce/hash-based style policies).
+- [ ] Add rate limiting / throttling to protect admin and telemetry endpoints.
+- [ ] Add CSRF protection strategy for mutating endpoints when deployed behind
+  cookie-based auth proxies.
+
+### Deployment recommendations
+
+- Keep admin bound to loopback whenever possible.
+- If remote access is needed, place admin behind a reverse proxy with:
+  - TLS termination
+  - strong authentication/authorization
+  - network ACLs / source allow-listing
+  - route-level restrictions for mutating endpoints such as
+    `/pipeline-groups/shutdown`

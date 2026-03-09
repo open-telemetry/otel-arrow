@@ -1,8 +1,9 @@
+// Graph model builder from telemetry snapshots.
+// Produces normalized nodes/channels/edges for layout and rendering stages.
 import {
   getPipelineSelectionKeyFromAttrs,
   normalizeAttributes,
 } from "./pipeline-utils.js";
-
 const DEFAULT_SCOPED_ID_SEPARATOR = "@@";
 
 export function buildScopedMetricId(
@@ -55,7 +56,8 @@ function resolveChannelPort(attrs) {
   return "default";
 }
 
-// Convert metric sets into DAG nodes/edges with optional per-pipeline ID scoping.
+// Build DAG nodes/edges from metric snapshots with optional per-pipeline ID
+// scoping.
 export function buildGraph(
   metricSets,
   sampleSeconds,

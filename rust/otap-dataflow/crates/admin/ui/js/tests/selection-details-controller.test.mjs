@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createSelectionDetailsController } from '../selection-details-controller.js';
 
+// Minimal classList shim for headless tests.
 function createClassList() {
   const set = new Set();
   return {
@@ -12,6 +13,8 @@ function createClassList() {
   };
 }
 
+// Verifies the "no selection" branch resets UI text, tears down chart state,
+// and clears legend visibility/content.
 test('renderSelectionNone resets detail panel and clears chart', () => {
   const previousDocument = globalThis.document;
 

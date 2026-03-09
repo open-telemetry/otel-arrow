@@ -1,3 +1,6 @@
+// Polling loop primitives for metrics, health probes, and runtime status.
+// Enforces single in-flight requests per endpoint family and callback-driven
+// state updates.
 import { fetchMetricsFromCandidates } from "./metrics-api.js";
 
 function nowMs() {
