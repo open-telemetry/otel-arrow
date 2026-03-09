@@ -143,9 +143,9 @@ impl From<AnyValue> for OwnedValue {
                 OtlpAnyValue::DoubleValue(d) => OwnedValue::Double(d),
                 OtlpAnyValue::ArrayValue(a) => OwnedValue::Array(a.into()),
                 OtlpAnyValue::KvlistValue(k) => OwnedValue::Map(k.into()),
-                OtlpAnyValue::BytesValue(mut b) => OwnedValue::Array(ArrayValueStorage::new(
+                OtlpAnyValue::BytesValue(b) => OwnedValue::Array(ArrayValueStorage::new(
                     b.values
-                        .drain(..)
+                        .into_iter()
                         .map(|v| OwnedValue::Integer(IntegerValueStorage::new(v.get_value())))
                         .collect(),
                 )),
