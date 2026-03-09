@@ -601,17 +601,16 @@ fn select_dictionary_type<'a>(
     }
 
     // Compute the cardinality-based key type
-    //
-    // Upper bound is below u8::MAX, so cardinality fits in u8
     let cardinality = if info.total_value_count <= MAX_U8_CARDINALITY {
+        // Upper bound is below u8::MAX, so cardinality fits in u8
         Cardinality::WithinU8
-    // Between (u8, u16], so u16 is needed
     } else if info.total_value_count <= MAX_U16_CARDINALITY
         && info.largest_value_count > MAX_U8_CARDINALITY
     {
+        // Between (u8, u16]
         Cardinality::WithinU16
-    // Do a full estimate
     } else {
+        // Do a full estimate
         estimate_cardinality(info)
     };
 
