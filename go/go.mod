@@ -2,11 +2,11 @@ module github.com/open-telemetry/otel-arrow/go
 
 go 1.25.0
 
-toolchain go1.26.0
+toolchain go1.26.1
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
-	github.com/apache/arrow-go/v18 v18.5.1
+	github.com/apache/arrow-go/v18 v18.5.2
 	github.com/axiomhq/hyperloglog v0.2.6
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
@@ -20,7 +20,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.40.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
-	google.golang.org/grpc v1.79.1
+	google.golang.org/grpc v1.79.2
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -40,12 +40,12 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
-	github.com/pierrec/lz4/v4 v4.1.23 // indirect
+	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zeebo/assert v1.3.1 // indirect
-	github.com/zeebo/xxh3 v1.0.2 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/collector/featuregate v1.53.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect

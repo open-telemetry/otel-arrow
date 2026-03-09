@@ -13,7 +13,7 @@ nodes:
         grpc:
           listening_addr: "127.0.0.1:4317"
   exporter1:
-    type: "urn:otel:exporter:otlp"
+    type: "urn:otel:exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
 connections:

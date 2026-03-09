@@ -14,7 +14,7 @@ pub struct CompletedExport {
     pub batch_id: u64,
     pub client: LogsIngestionClient,
     pub result: Result<Duration, Error>,
-    pub row_count: f64,
+    pub row_count: u64,
 }
 
 pub struct InFlightExports {
@@ -65,7 +65,7 @@ impl InFlightExports {
         &mut self,
         client: LogsIngestionClient,
         batch_id: u64,
-        row_count: f64,
+        row_count: u64,
         body: Bytes,
     ) -> Option<CompletedExport> {
         let fut = Self::make_export_future(client, batch_id, row_count, body);
@@ -76,7 +76,7 @@ impl InFlightExports {
     pub fn make_export_future(
         mut client: LogsIngestionClient,
         batch_id: u64,
-        row_count: f64,
+        row_count: u64,
         body: Bytes,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
@@ -147,7 +147,7 @@ mod tests {
                 batch_id,
                 client: create_test_client(),
                 result: Ok(StdDuration::from_millis(1)),
-                row_count: 1.0,
+                row_count: 1,
             }
         })
     }
@@ -240,7 +240,7 @@ mod tests {
 
         // This should not block because we are under the limit
         let result = exports
-            .push_export(client, 1, 10.0, Bytes::from("data"))
+            .push_export(client, 1, 10, Bytes::from("data"))
             .await;
 
         assert!(result.is_none());
@@ -261,7 +261,7 @@ mod tests {
         // It should receive the completion from our dummy future immediately.
         let client = create_test_client();
         let result = exports
-            .push_export(client, 2, 20.0, Bytes::from("data"))
+            .push_export(client, 2, 20, Bytes::from("data"))
             .await;
 
         // Should get the completed dummy export

@@ -80,7 +80,9 @@ def fmt(v, unit="", instrument=""):
         return "-"
     if is_mmsc(v):
         c = v["count"]
-        avg = v["sum"] / c if c else 0
+        if c == 0:
+            return "n=0"
+        avg = v["sum"] / c
         return (
             f"min={v['min']:.1f} max={v['max']:.1f} "
             f"avg={avg:.1f} n={_fmt_num(c)}"
