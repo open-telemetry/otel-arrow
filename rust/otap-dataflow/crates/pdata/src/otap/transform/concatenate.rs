@@ -74,12 +74,12 @@ const MAX_U16_CARDINALITY: usize = 65535;
 pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
+    let mut result = [const { None }; N];
     if items.is_empty() {
-        return Ok([const { None }; N]);
+        return Ok(result);
     }
 
     if items.len() == 1 {
-        let mut result = [const { None }; N];
         for i in 0..N {
             result[i] = items[0][i].take();
         }
@@ -90,12 +90,13 @@ pub fn concatenate<const N: usize>(
         Logs::COUNT => concatenate_signal::<Logs, N>(items),
         Metrics::COUNT => concatenate_signal::<Metrics, N>(items),
         Traces::COUNT => concatenate_signal::<Traces, N>(items),
+        // FIXME: This is a hack for now to avoid having to rewrite a lot of
+        // the tests. We can make the tests a lot better now that we have payload
+        // definitions.
         _ => concatenate_without_spec(items),
     }
 }
 
-/// Fallback concatenation without spec enforcement. Used only for test code
-/// where N doesn't match a known signal type count.
 fn concatenate_without_spec<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
@@ -870,7 +871,7 @@ fn select_all_mut<const N: usize>(
 #[cfg(test)]
 mod schema_tests {
     use super::*;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{LogAttrs, Logs, ScopeAttrs};
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{LogAttrs, Logs};
     use crate::record_batch;
     use crate::schema::payload_definitions::{ColumnDef, DictKeySize, NativeType};
     use arrow::array::{

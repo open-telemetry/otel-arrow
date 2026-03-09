@@ -6,9 +6,9 @@
 //! Each payload type has a definition that describes the columns it contains,
 //! their native Arrow types, and dictionary encoding constraints.
 //!
-//! In the future we can extend these definitions to also include:
+//! In the future we can improve definitions to:
 //!
-//! - Inluce which columns are optional or not
+//! - Include which columns are optional or not
 //! - Add iterators over all the columns and their definitions per payload
 //! - Be automatically generated from some common spec definition
 
