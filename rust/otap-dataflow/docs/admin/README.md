@@ -1,0 +1,45 @@
+# Admin Docs
+
+This section documents the admin surface of the OTAP Dataflow Engine:
+
+- runtime endpoints used for health, status, and telemetry;
+- embedded browser UI behavior and architecture.
+
+## Document map
+
+- [Admin UI Architecture](architecture.md)
+- [Crate README (admin endpoints and crate layout)](../../crates/admin/README.md)
+
+## Quick start
+
+Assuming the engine is running with admin HTTP enabled:
+
+- Open UI: `http://<admin-host>:<admin-port>/`
+- Metrics JSON: `http://<admin-host>:<admin-port>/telemetry/metrics?format=json`
+- Prometheus output: `http://<admin-host>:<admin-port>/metrics`
+
+For architecture details (state model, derivation rules, graph rules, testing),
+start with [Admin UI Architecture](architecture.md).
+
+## UI module tests
+
+Prerequisite:
+
+- Node.js available on `PATH` (or set `NODE_BIN=/path/to/node`)
+
+Start all UI JS module tests from repository root:
+
+```bash
+./scripts/run-ui-js-tests.sh
+```
+
+Run a single test file (or glob):
+
+```bash
+./scripts/run-ui-js-tests.sh crates/admin/ui/js/tests/graph-renderer.test.mjs
+```
+
+The script currently runs:
+
+- `node --test --experimental-default-type=module`
+- all `crates/admin/ui/js/tests/*.test.mjs` files by default
