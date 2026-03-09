@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773072370287,
+  "lastUpdate": 1773074844800,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f0dd51b8b00600fd485240729bbaa42aac1e43e1",
-          "message": "chore: Replace duplicated OpenSSL/rcgen test cert helpers with shared dev crate (#2003)\n\n### Summary\n\nPulls the TLS/mTLS test certificate generation code into a small,\nunpublished workspace crate (`otap-test-tls-certs`) so all the exporter,\nreceiver, and tls_utils unit tests share one `rcgen`-based\nimplementation. Removes all `OpenSSL` CLI calls from test paths.\n\n### Motivation\n\nWe had the same cert-generation logic duplicated across multiple test\nfiles, some using `OpenSSL` CLI calls and some using inline `rcgen`.\nThis made tests flaky on systems without `OpenSSL` installed and meant\nbug fixes had to be applied in several places. This consolidates\neverything into one shared rcgen-only helper.\n\n### What changed\n\n- New internal crate `crates/otap-test-tls-certs` (publish = false) with\nCA, leaf, and self-signed cert helpers using rcgen.\n- All TLS integration tests and `tls_utils` unit tests now import from\n`otap_test_tls_certs` instead of per-file OpenSSL/rcgen copies.\n- Removed `skip_if_no_openssl()` guards - tests no longer depend on the\n`OpenSSL` CLI being installed.\n   - Added `#[must_use]` where clippy asked for it.\n\n### Alternatives considered\n\n1. **_Shared module in tests/common/_** - works for integration tests,\nbut unit tests in src/ can't import from tests/common/ without\ninclude!(), which is fragile and poorly supported by tooling.\n2. **_Feature-gated module in src/_** - avoids a new crate, but\n#[cfg(test)] doesn't apply when the crate is built as a dependency for\nintegration tests, so you end up\nneeding an extra Cargo feature and awkward wiring. Mixing test-only code\ninto the main crate felt wrong.\n3. **_Dedicated dev helper crate (this PR)_** - standard pattern in Rust\nworkspaces (publish = false, listed in [dev-dependencies]). Clean\nimports everywhere, no special tricks, no impact on production builds.\n\n**_Went with option 3 because it's the most straightforward to maintain\nand extend._**",
-          "timestamp": "2026-02-09T17:25:03Z",
-          "tree_id": "330969f2bbd431140197b4a504af0f7100a3ad67",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/f0dd51b8b00600fd485240729bbaa42aac1e43e1"
-        },
-        "date": 1770661045822,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.834346890449524,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 95.79479923928335,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.46942679491157,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 45.91627604166667,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 47.6484375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 516349.60028673586,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 525821.2432057977,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002262,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11506422.768883148,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11446049.626600873,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10912663.190729477,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "321966624790711de81afae226b1f8106d30cf8c",
+          "message": "Ignore flaky again (#2232)",
+          "timestamp": "2026-03-09T15:31:16Z",
+          "tree_id": "c7ba4e0a66a2e23cc7c8f12fab5ac4c20e3834d1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/321966624790711de81afae226b1f8106d30cf8c"
+        },
+        "date": 1773074843861,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.0523096323013306,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.66615117142177,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.08928644012694,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 52.817057291666664,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 54.53515625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 474360.218097242,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 479351.95661333937,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003143,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10948518.251410605,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10886515.500522578,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
