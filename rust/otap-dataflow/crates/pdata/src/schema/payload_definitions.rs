@@ -67,10 +67,6 @@ pub struct ColumnDef {
 }
 
 /// Schema definition for a payload type.
-///
-/// Columns are looked up via match statements for O(1) dispatch on string
-/// names. Top-level columns use `get()`, struct sub-fields use
-/// `get_nested(parent, child)`.
 pub struct PayloadDefinition {
     pub(crate) get_fn: fn(&str) -> Option<&'static ColumnDef>,
     pub(crate) get_nested_fn: fn(&str, &str) -> Option<&'static ColumnDef>,
@@ -99,10 +95,6 @@ impl PayloadDefinition {
         (self.get_nested_fn)(parent, child)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Lookup
-// ---------------------------------------------------------------------------
 
 /// Get the payload definition for a given payload type.
 #[must_use]
