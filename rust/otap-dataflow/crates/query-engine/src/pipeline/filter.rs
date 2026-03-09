@@ -532,9 +532,9 @@ impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
             ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
                 lit(regex.get_value().as_str().to_string())
             }
-            other => {
+            _ => {
                 return Err(Error::InvalidPipelineError {
-                    cause: format!("expected pattern to be a static regex, got {other:?}"),
+                    cause: "expected pattern to be a static regex".into(),
                     query_location: Some(matches_expr.get_query_location().clone()),
                 });
             }
