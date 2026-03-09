@@ -591,6 +591,7 @@ fn select_dictionary_type<'a>(
             None => return Ok(info.value_type.clone()),
         },
         // Column not in definition, use cardinality-based selection with no minimum
+        // TODO: This is defensive and probably not a case that should be possible
         None => None,
     };
 
@@ -600,36 +601,39 @@ fn select_dictionary_type<'a>(
     }
 
     // Compute the cardinality-based key type
-    let cardinality_key = if info.total_value_count <= MAX_U8_CARDINALITY {
-        // Upper bound is below u8::MAX, so cardinality fits in u8
-        DataType::UInt8
+    //
+    // Upper bound is below u8::MAX, so cardinality fits in u8
+    let cardinality = if info.total_value_count <= MAX_U8_CARDINALITY {
+        Cardinality::WithinU8
+    // Between (u8, u16], so u16 is needed
     } else if info.total_value_count <= MAX_U16_CARDINALITY
         && info.largest_value_count > MAX_U8_CARDINALITY
     {
-        // Between (u8, u16], so u16 is needed
-        DataType::UInt16
+        Cardinality::WithinU16
+    // Do a full estimate
     } else {
-        // Need cardinality estimation
-        match estimate_cardinality(info) {
-            Cardinality::WithinU8 => DataType::UInt8,
-            Cardinality::WithinU16 => DataType::UInt16,
-            Cardinality::GreaterThanU16 => return Ok(info.value_type.clone()),
-        }
+        estimate_cardinality(info)
     };
 
-    // Enforce the minimum key size from the spec if present
-    let final_key = match (&cardinality_key, min_key_size) {
-        (DataType::UInt8, Some(DictKeySize::U16)) => DataType::UInt16,
-        _ => cardinality_key,
+    let mut dict_key_size = match cardinality {
+        Cardinality::WithinU8 => DataType::UInt8,
+        Cardinality::WithinU16 => DataType::UInt16,
+        Cardinality::GreaterThanU16 => return Ok(info.value_type.clone()),
+    };
+
+    // Upgrade key size if we have to
+    if min_key_size == Some(DictKeySize::U16) && cardinality == Cardinality::WithinU8 {
+        dict_key_size = DataType::UInt16;
     };
 
     Ok(DataType::Dictionary(
-        Box::new(final_key),
+        Box::new(dict_key_size),
         Box::new(info.value_type.clone()),
     ))
 }
 
 /// Estimate of the cardinality of a field
+#[derive(PartialEq)]
 pub enum Cardinality {
     WithinU8,
     WithinU16,
