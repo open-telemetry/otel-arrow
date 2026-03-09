@@ -109,9 +109,13 @@ impl PipelineExpression {
             // that they can be folded. The trick here is that we take the expressions from the
             // body temporarily.
             //
-            // TODO The main limitation of this approach is that we are not able to optimize an
-            // expression inside a recursive function call by inspecting the body. This will be
-            // left as a challenge for future maintainers.
+            // The main limitation of this approach is that we will not to optimize an expression
+            // inside a recursive function by inspecting the body the function's body. However,
+            // currently this kind of optimization only occurs for functions without mutable
+            // parameters that have a single static return
+            // (see crate::scalars::scalar_expressions::InvokeFunctionScalarExpression::try_fold`)
+            // It would be very unusual to write such a function recursively, and in the off-chance
+            // that such a function, which is why we can accept this limitation.
 
             // if the function is defined as a list of expressions, temporarily take the
             // expressions so we can fold them, while still borrowing immutably the other functions
