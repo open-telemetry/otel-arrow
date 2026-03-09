@@ -137,7 +137,7 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
-        row_count: f64,
+        row_count: u64,
         duration: std::time::Duration,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
@@ -145,7 +145,7 @@ impl AzureMonitorExporter {
         {
             let mut m = self.metrics.borrow_mut();
             m.add_messages(completed_messages.len() as u64);
-            m.add_rows(row_count as u64);
+            m.add_rows(row_count);
             m.add_batch();
         }
 
@@ -168,7 +168,7 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
-        row_count: f64,
+        row_count: u64,
         error: Error,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
@@ -176,7 +176,7 @@ impl AzureMonitorExporter {
         {
             let mut m = self.metrics.borrow_mut();
             m.add_failed_messages(failed_messages.len() as u64);
-            m.add_failed_rows(row_count as u64);
+            m.add_failed_rows(row_count);
             m.add_failed_batch();
         }
 
@@ -718,7 +718,7 @@ mod tests {
             .handle_export_success(
                 &effect_handler,
                 batch_id,
-                10.0,
+                10,
                 std::time::Duration::from_secs(1),
             )
             .await;
@@ -766,7 +766,7 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, 10.0, error)
+            .handle_export_failure(&effect_handler, batch_id, 10, error)
             .await;
 
         // Verify stats
