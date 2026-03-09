@@ -21,7 +21,8 @@ Main public model types:
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
-- `policy::Policies`: channel-capacity/health/telemetry/resources policy families
+- `policy::Policies`: channel-capacity/health/telemetry/resources
+  policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
@@ -67,7 +68,8 @@ For runtime consumption, resolve hierarchy once:
 
 Resolved model highlights:
 
-- deterministic pipeline ordering for regular pipelines (`group_id`, `pipeline_id`)
+- deterministic pipeline ordering for regular pipelines
+  (`group_id`, `pipeline_id`)
 - role-tagged resolved pipelines:
   - `ResolvedPipelineRole::Regular`
   - `ResolvedPipelineRole::ObservabilityInternal`
@@ -104,8 +106,8 @@ Resolution precedence:
 
 Observability note:
 
-- `engine.observability.pipeline.policies.resources` is intentionally unsupported
-  and rejected.
+- `engine.observability.pipeline.policies.resources` is intentionally
+  unsupported and rejected.
 
 Resolution semantics:
 
@@ -182,9 +184,11 @@ Topic declaration precedence (for a pipeline in a given group):
 
 - `config.queue_on_full`: `block` | `drop_newest`
 - effective precedence:
-  `topic:exporter.config.queue_on_full` -> `topic.policies.balanced.on_full` -> `block`
+  `topic:exporter.config.queue_on_full` ->
+  `topic.policies.balanced.on_full` -> `block`
 - queue capacities remain topic-scope only
-- broadcast lag handling remains topic-scope only via `policies.broadcast.on_lag`
+- broadcast lag handling remains topic-scope only via
+  `policies.broadcast.on_lag`
 
 ## Engine Observability Pipeline
 
@@ -249,8 +253,11 @@ struct MyProcessorConfig {
     mode: String,
 }
 
-fn parse_node_config(raw: &serde_json::Value) -> Result<MyProcessorConfig, String> {
-    serde_json::from_value(raw.clone()).map_err(|e| format!("invalid my_processor config: {e}"))
+fn parse_node_config(
+    raw: &serde_json::Value,
+) -> Result<MyProcessorConfig, String> {
+    serde_json::from_value(raw.clone())
+        .map_err(|e| format!("invalid my_processor config: {e}"))
 }
 ```
 

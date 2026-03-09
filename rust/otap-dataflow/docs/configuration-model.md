@@ -68,7 +68,8 @@ A **pipeline group** is a logical container for related pipelines.
 
 - It scopes a set of pipelines under one group id.
 - It can define group-level `policies` applied to pipelines in that group.
-- It is the intermediate level between root defaults and pipeline-specific overrides.
+- It is the intermediate level between root defaults and
+  pipeline-specific overrides.
 
 A **pipeline** is an executable dataflow graph.
 
@@ -160,7 +161,8 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 - `engine.topics.impl_selection`:
   - `auto` (default): infer the most efficient runtime variant from topology
-  - `force_mixed`: disable topology-based optimization and always use the mixed implementation
+  - `force_mixed`: disable topology-based optimization and always use the
+    mixed implementation
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
@@ -196,7 +198,8 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include channel capacity, health, runtime telemetry, and resources controls:
+Policies include channel capacity, health, runtime telemetry, and
+resources controls:
 
 ```yaml
 policies:
@@ -266,8 +269,10 @@ Topics are declared in two places:
 General topic capabilities:
 
 - Inter-pipeline decoupling between ingest, transform, and egress stages.
-- Balanced worker-pool processing with one logical stream per subscription group.
-- Broadcast fan-out / tap pipelines where multiple downstream consumers observe the same stream.
+- Balanced worker-pool processing with one logical stream per subscription
+  group.
+- Broadcast fan-out / tap pipelines where multiple downstream consumers
+  observe the same stream.
 - Mixed topologies where one topic serves both balanced and broadcast consumers.
 
 Current topic declaration shape:
@@ -345,10 +350,11 @@ nodes:
 Exporter-local `queue_on_full` behavior:
 
 - optional (`block` or `drop_newest`)
-- precedence: exporter `config.queue_on_full` -> topic `policies.balanced.on_full`
-  -> default `block`
+- precedence: exporter `config.queue_on_full` ->
+  topic `policies.balanced.on_full` -> default `block`
 - queue capacities remain topic-declaration-only (no exporter-local override)
-- broadcast lag handling remains topic-declaration-only via `policies.broadcast.on_lag`
+- broadcast lag handling remains topic-declaration-only via
+  `policies.broadcast.on_lag`
 
 ## Output Ports
 
