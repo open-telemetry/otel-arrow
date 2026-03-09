@@ -224,7 +224,7 @@ impl std::fmt::Display for TopicImplSelectionPolicy {
 }
 
 /// Policies supported for topics.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TopicPolicies {
     /// Policies for balanced delivery paths.
@@ -236,16 +236,6 @@ pub struct TopicPolicies {
     /// Policy controlling cross-pipeline Ack/Nack propagation over topic hops.
     #[serde(default)]
     pub ack_propagation: TopicAckPropagationPolicy,
-}
-
-impl Default for TopicPolicies {
-    fn default() -> Self {
-        Self {
-            balanced: TopicBalancedPolicies::default(),
-            broadcast: TopicBroadcastPolicies::default(),
-            ack_propagation: TopicAckPropagationPolicy::default(),
-        }
-    }
 }
 
 impl TopicPolicies {
