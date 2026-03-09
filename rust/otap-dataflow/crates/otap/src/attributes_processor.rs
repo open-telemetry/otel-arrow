@@ -294,9 +294,11 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64), EngineError> {
+    ) -> Result<(u64, u64, u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
+        let mut inserted_total: u64 = 0;
+        let mut upserted_total: u64 = 0;
 
         // Only apply if we have transforms to apply
         if !self.is_noop() {
@@ -307,6 +309,8 @@ impl AttributesProcessor {
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
+                    inserted_total += stats.inserted_entries;
+                    upserted_total += stats.upserted_entries;
                     if rb.num_rows() == 0 {
                         records.remove(payload_ty);
                     } else {
@@ -316,7 +320,7 @@ impl AttributesProcessor {
             }
         }
 
-        Ok((deleted_total, renamed_total))
+        Ok((deleted_total, renamed_total, inserted_total, upserted_total))
     }
 }
 
@@ -368,13 +372,19 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
                 // Apply transform across selected domains and collect exact stats
                 match self.apply_transform_with_stats(&mut records, signal) {
-                    Ok((deleted_total, renamed_total)) => {
+                    Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
                                 m.deleted_entries.add(deleted_total);
                             }
                             if renamed_total > 0 {
                                 m.renamed_entries.add(renamed_total);
+                            }
+                            if inserted_total > 0 {
+                                m.inserted_entries.add(inserted_total);
+                            }
+                            if upserted_total > 0 {
+                                m.upserted_entries.add(upserted_total);
                             }
                         }
                     }
@@ -1796,11 +1806,12 @@ mod telemetry_tests {
         let controller = ControllerContext::new(rt.metrics_registry().clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
 
-        // 3) Build processor with simple rename+delete (applies to signal domain by default)
+        // 3) Build processor with rename+delete+upsert (applies to signal domain by default)
         let cfg = json!({
             "actions": [
                 {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
+                {"action": "delete", "key": "x"},
+                {"action": "upsert", "key": "u", "value": "upserted"}
             ]
         });
         let mut node_cfg = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
@@ -1884,6 +1895,7 @@ mod telemetry_tests {
                 // Inspect current metrics; fields with non-zero values should be present
                 let mut found_renamed_entries = false;
                 let mut found_deleted_entries = false;
+                let mut found_upserted_entries = false;
                 let mut found_domain_signal = false;
 
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
@@ -1892,6 +1904,7 @@ mod telemetry_tests {
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
+                                ("upserted.entries", x) if x >= 1 => found_upserted_entries = true,
                                 ("domains.signal", x) if x >= 1 => found_domain_signal = true,
                                 _ => {}
                             }
@@ -1901,6 +1914,7 @@ mod telemetry_tests {
 
                 assert!(found_renamed_entries, "renamed.entries should be >= 1");
                 assert!(found_deleted_entries, "deleted.entries should be >= 1");
+                assert!(found_upserted_entries, "upserted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");
             });
     }
