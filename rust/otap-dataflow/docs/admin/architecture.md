@@ -201,16 +201,27 @@ Process:
 
 ## How to test
 
-Core check:
+UI JS module tests (from repo root):
 
 ```bash
-cargo check -p otap-df-admin
+./scripts/run-ui-js-tests.sh
+```
+
+Single UI test (or glob):
+
+```bash
+./scripts/run-ui-js-tests.sh crates/admin/ui/js/tests/graph-renderer.test.mjs
 ```
 
 Recommended JS syntax check:
 
 ```bash
 node --check crates/admin/ui/js/main.js \
+  crates/admin/ui/js/charts-controller.js \
+  crates/admin/ui/js/dag-interaction-controller.js \
+  crates/admin/ui/js/graph-renderer.js \
+  crates/admin/ui/js/pipeline-charts-controller.js \
+  crates/admin/ui/js/selection-details-controller.js \
   crates/admin/ui/js/metrics-api.js \
   crates/admin/ui/js/pipeline-utils.js \
   crates/admin/ui/js/engine-metrics.js \
@@ -218,6 +229,26 @@ node --check crates/admin/ui/js/main.js \
   crates/admin/ui/js/control-utils.js \
   crates/admin/ui/js/dom-safety.js
 ```
+
+## Future CI integration
+
+UI module tests should be integrated as a **separate GitHub Actions job**
+focused only on JavaScript UI validation.
+
+Recommended UI-only CI job:
+
+1. Trigger only when UI JS paths change:
+   - `rust/otap-dataflow/crates/admin/ui/js/**`
+   - `rust/otap-dataflow/scripts/run-ui-js-tests.sh`
+2. Run only:
+   - `./rust/otap-dataflow/scripts/run-ui-js-tests.sh`
+3. Mark this job as its own required PR status check (independent from Rust checks).
+
+Practical CI notes:
+
+- Pin a Node.js version in CI to avoid drift.
+- Keep the JS tests browserless and deterministic (no network, no timers by default).
+- Keep this job independent from `rust-required-status-check` so UI failures are isolated.
 
 ## Current limits
 
