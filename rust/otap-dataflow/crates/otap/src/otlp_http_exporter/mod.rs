@@ -61,7 +61,7 @@ use otap_df_telemetry::otel_warn;
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
-use crate::otlp_exporter::InFlightExports;
+use crate::otlp_grpc_exporter::InFlightExports;
 use crate::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use crate::otlp_http_exporter::config::Config;
