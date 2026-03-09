@@ -18,6 +18,7 @@ mod tests;
 pub use backend::{InMemoryBackend, SubscriptionBackend, TopicBackend, TopicState};
 pub use broker::TopicBroker;
 pub use handle::TopicHandle;
+pub use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 pub use subscription::Subscription;
 pub use topic_set::TopicSet;
 pub use types::{

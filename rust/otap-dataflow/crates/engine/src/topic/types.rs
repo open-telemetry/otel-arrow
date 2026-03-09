@@ -23,6 +23,7 @@
 //! For example, `BalancedOnly` exposes only balanced capacity, and
 //! `BroadcastOnly` exposes only broadcast capacity.
 
+use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::sync::Arc;
 
@@ -76,7 +77,7 @@ pub enum SubscriptionMode {
         /// Consumer-group identifier.
         group: SubscriptionGroupName,
     },
-    /// Broadcast mode: each subscriber gets every message (drop-oldest on slow consumers).
+    /// Broadcast mode: each subscriber gets every message with configurable lag behavior.
     Broadcast,
 }
 
@@ -155,6 +156,8 @@ pub enum TopicOptions {
     BroadcastOnly {
         /// Ring-buffer capacity for broadcast subscribers.
         capacity: usize,
+        /// Behavior when a broadcast subscriber falls behind the retained ring window.
+        on_lag: TopicBroadcastOnLagPolicy,
     },
     /// Both balanced and broadcast subscriptions.
     Mixed {
@@ -162,6 +165,8 @@ pub enum TopicOptions {
         balanced_capacity: usize,
         /// Ring-buffer capacity for broadcast subscribers.
         broadcast_capacity: usize,
+        /// Behavior when a broadcast subscriber falls behind the retained ring window.
+        on_lag: TopicBroadcastOnLagPolicy,
     },
 }
 
@@ -177,6 +182,7 @@ impl Default for TopicOptions {
         Self::Mixed {
             balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
             broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
+            on_lag: TopicBroadcastOnLagPolicy::DropOldest,
         }
     }
 }

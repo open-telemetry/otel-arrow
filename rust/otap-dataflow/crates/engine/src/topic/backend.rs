@@ -35,6 +35,7 @@ use std::task::{Context, Poll};
 use crate::error::Error;
 use crate::topic::topic::TopicInner;
 use crate::topic::types::{AckEvent, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions};
+use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use tokio::sync::mpsc;
 
@@ -89,6 +90,8 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
         &self,
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error>;
+    /// Effective broadcast lag policy for this topic.
+    fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
     /// Register an ack sender for a publisher handle and return its publisher id.
     fn register_publisher(&self, sender: mpsc::Sender<AckEvent>) -> u16;
     /// Close the topic. Existing subscriptions eventually observe closure.

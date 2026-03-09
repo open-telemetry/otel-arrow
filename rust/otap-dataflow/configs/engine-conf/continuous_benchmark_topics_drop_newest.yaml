@@ -63,18 +63,27 @@ groups:
       ingress_1:
         description: "Traffic generator 1 -> SUT ingress"
         policies:
-          queue_capacity: 4096
-          queue_on_full: drop_newest
+          balanced:
+            queue_capacity: 4096
+            on_full: drop_newest
+          broadcast:
+            queue_capacity: 4096
       ingress_2:
         description: "Traffic generator 2 -> SUT ingress"
         policies:
-          queue_capacity: 4096
-          queue_on_full: drop_newest
+          balanced:
+            queue_capacity: 4096
+            on_full: drop_newest
+          broadcast:
+            queue_capacity: 4096
       backend_logs:
         description: "SUT logs output -> backend ingest"
         policies:
-          queue_capacity: 4096
-          queue_on_full: drop_newest
+          balanced:
+            queue_capacity: 4096
+            on_full: drop_newest
+          broadcast:
+            queue_capacity: 4096
 
     pipelines:
       # ======================================================================

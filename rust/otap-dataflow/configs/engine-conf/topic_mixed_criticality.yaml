@@ -47,8 +47,11 @@ groups:
       ingress:
         description: "Shared ingress topic consumed by critical and best-effort pipelines"
         policies:
-          queue_capacity: 8192
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
 
     pipelines:
       traffic_gen:

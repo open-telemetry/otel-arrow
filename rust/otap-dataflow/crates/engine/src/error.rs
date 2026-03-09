@@ -475,7 +475,8 @@ pub enum Error {
     #[error("this topic only supports a single consumer group")]
     SubscribeSingleGroupViolation,
 
-    /// A subscription operation failed because the subscription was closed.
+    /// A subscription operation failed because the subscription was closed or
+    /// disconnected by topic policy.
     #[error("subscription closed")]
     SubscriptionClosed,
 }

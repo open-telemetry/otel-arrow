@@ -30,7 +30,8 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
-    InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
+    InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
+    TopicBroker, TopicOptions,
 };
 use tokio::runtime::Runtime;
 
@@ -145,6 +146,7 @@ async fn run_topic_broadcast_lag_case(msg_size: usize) {
             "bench-broadcast-lag",
             TopicOptions::BroadcastOnly {
                 capacity: LAG_CAPACITY,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
         )
         .expect("benchmark topic creation failed");
@@ -234,6 +236,7 @@ fn bench_topic_broadcast_vs_tokio(c: &mut Criterion) {
                         *case,
                         TopicOptions::BroadcastOnly {
                             capacity: BROADCAST_CAPACITY,
+                            on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                         },
                     )
                 });
@@ -266,6 +269,7 @@ fn bench_topic_mixed_broadcast_vs_tokio(c: &mut Criterion) {
                         TopicOptions::Mixed {
                             balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                             broadcast_capacity: BROADCAST_CAPACITY,
+                            on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                         },
                     )
                 });

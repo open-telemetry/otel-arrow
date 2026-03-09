@@ -48,20 +48,29 @@ groups:
       ingress_main:
         description: "Shared ingress topic consumed by primary and tap pipelines"
         policies:
-          queue_capacity: 8192
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
 
       backend_logs:
         description: "Primary path logs forwarded to backend sink"
         policies:
-          queue_capacity: 8192
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
 
       analytics_tap:
         description: "Best-effort tap fanout topic for analytics pipelines"
         policies:
-          queue_capacity: 2048
-          queue_on_full: drop_newest
+          balanced:
+            queue_capacity: 2048
+            on_full: drop_newest
+          broadcast:
+            queue_capacity: 2048
 
     pipelines:
       traffic_gen:

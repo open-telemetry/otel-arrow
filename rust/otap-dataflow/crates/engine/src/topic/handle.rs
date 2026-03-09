@@ -32,7 +32,9 @@ use crate::topic::backend::TopicState;
 use crate::topic::subscription::Subscription;
 use crate::topic::types::{AckEvent, PublishOutcome, SubscriberOptions, SubscriptionMode};
 use otap_df_config::TopicName;
-use otap_df_config::topic::{TopicAckPropagationPolicy, TopicQueueOnFullPolicy};
+use otap_df_config::topic::{
+    TopicAckPropagationPolicy, TopicBroadcastOnLagPolicy, TopicQueueOnFullPolicy,
+};
 use tokio::sync::mpsc;
 
 /// A handle to a topic, used for publishing and subscribing.
@@ -174,5 +176,11 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     #[must_use]
     pub const fn default_ack_propagation(&self) -> TopicAckPropagationPolicy {
         self.ack_propagation_default
+    }
+
+    /// Effective broadcast lag policy configured on this topic.
+    #[must_use]
+    pub fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {
+        self.inner.broadcast_on_lag_policy()
     }
 }

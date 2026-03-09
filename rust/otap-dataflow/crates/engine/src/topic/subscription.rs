@@ -38,8 +38,10 @@ impl<T: Send + Sync + 'static> Subscription<T> {
     /// Receive the next item.
     ///
     /// For broadcast subscribers this may yield a `Lagged { missed }` notification
-    /// when messages were dropped for this subscriber. The next call to `recv()` after
-    /// a `Lagged` will return the oldest still-available message.
+    /// when messages were dropped for this subscriber. With the default
+    /// `drop_oldest` policy, the next call to `recv()` returns the oldest
+    /// still-available message. With `disconnect`, the next call returns
+    /// `Error::SubscriptionClosed`.
     pub async fn recv(&mut self) -> Result<RecvItem<T>, Error> {
         std::future::poll_fn(|cx| self.inner.poll_recv(cx)).await
     }

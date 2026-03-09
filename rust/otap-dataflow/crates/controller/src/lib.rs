@@ -192,14 +192,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         spec: &TopicSpec,
         inferred_mode: InferredTopicMode,
     ) -> TopicOptions {
-        let capacity = spec.policies.queue_capacity.max(1);
+        let balanced_capacity = spec.policies.balanced.queue_capacity.max(1);
+        let broadcast_capacity = spec.policies.broadcast.queue_capacity.max(1);
+        let broadcast_on_lag = spec.policies.broadcast.on_lag;
         match inferred_mode {
             InferredTopicMode::Mixed => TopicOptions::Mixed {
-                balanced_capacity: capacity,
-                broadcast_capacity: capacity,
+                balanced_capacity,
+                broadcast_capacity,
+                on_lag: broadcast_on_lag,
             },
-            InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly { capacity },
-            InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly { capacity },
+            InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly {
+                capacity: balanced_capacity,
+            },
+            InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly {
+                capacity: broadcast_capacity,
+                on_lag: broadcast_on_lag,
+            },
         }
     }
 
@@ -554,7 +562,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                         source: Box::new(e),
                     })?;
                 let handle = handle
-                    .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone())
+                    .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
                     .with_default_ack_propagation(topic_spec.policies.ack_propagation);
                 _ = set.insert(global_topic_name.clone(), handle);
             }
@@ -574,7 +582,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                                 source: Box::new(e),
                             })?;
                     let handle = handle
-                        .with_default_queue_on_full(topic_spec.policies.queue_on_full.clone())
+                        .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
                         .with_default_ack_propagation(topic_spec.policies.ack_propagation);
                     // Group-local declarations override globals with the same local name.
                     _ = set.insert(group_topic_name.clone(), handle);
@@ -2180,22 +2188,34 @@ version: otel_dataflow/v1
 topics:
   global_drop:
     policies:
-      queue_capacity: 8
-      queue_on_full: drop_newest
+      balanced:
+        queue_capacity: 8
+        on_full: drop_newest
+      broadcast:
+        queue_capacity: 8
+        on_lag: disconnect
       ack_propagation: auto
 groups:
   g1:
     topics:
       local_block:
         policies:
-          queue_capacity: 8
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8
+            on_full: block
+          broadcast:
+            queue_capacity: 8
+            on_lag: drop_oldest
           ack_propagation: disabled
       # Same local alias as global to verify group-local override path.
       global_drop:
         policies:
-          queue_capacity: 8
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8
+            on_full: block
+          broadcast:
+            queue_capacity: 8
+            on_lag: drop_oldest
           ack_propagation: disabled
     pipelines:
       p1:
@@ -2235,6 +2255,10 @@ groups:
             local_block.default_ack_propagation(),
             otap_df_config::topic::TopicAckPropagationPolicy::Disabled
         );
+        assert_eq!(
+            local_block.broadcast_on_lag_policy(),
+            otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+        );
 
         // group-local declaration must override global policy for same local name
         let overridden = set
@@ -2248,5 +2272,124 @@ groups:
             overridden.default_ack_propagation(),
             otap_df_config::topic::TopicAckPropagationPolicy::Disabled
         );
+        assert_eq!(
+            overridden.broadcast_on_lag_policy(),
+            otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+        );
+    }
+
+    #[tokio::test]
+    async fn declare_topics_preserves_separate_balanced_and_broadcast_capacities() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  mixed_topic:
+    policies:
+      balanced:
+        queue_capacity: 1
+      broadcast:
+        queue_capacity: 3
+        on_lag: disconnect
+groups:
+  g1:
+    pipelines:
+      balanced_consumer:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: mixed_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+      broadcast_consumer:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: mixed_topic
+              subscription:
+                mode: broadcast
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "mixed_topic");
+
+        let mut balanced = topic
+            .subscribe(
+                otap_df_engine::topic::SubscriptionMode::Balanced {
+                    group: "workers".into(),
+                },
+                otap_df_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("balanced subscription should succeed");
+        let mut broadcast = topic
+            .subscribe(
+                otap_df_engine::topic::SubscriptionMode::Broadcast,
+                otap_df_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("broadcast subscription should succeed");
+
+        assert_eq!(
+            topic
+                .try_publish(Arc::new(()))
+                .expect("publish should succeed"),
+            otap_df_engine::topic::PublishOutcome::Published
+        );
+        assert_eq!(
+            topic
+                .try_publish(Arc::new(()))
+                .expect("publish should still reach broadcast"),
+            otap_df_engine::topic::PublishOutcome::DroppedOnFull
+        );
+        assert_eq!(
+            topic
+                .try_publish(Arc::new(()))
+                .expect("publish should still reach broadcast"),
+            otap_df_engine::topic::PublishOutcome::DroppedOnFull
+        );
+        assert_eq!(
+            topic.broadcast_on_lag_policy(),
+            otap_df_config::topic::TopicBroadcastOnLagPolicy::Disconnect
+        );
+        topic.close();
+
+        let mut balanced_messages = 0usize;
+        while let Ok(item) = balanced.recv().await {
+            match item {
+                otap_df_engine::topic::RecvItem::Message(_) => balanced_messages += 1,
+                otap_df_engine::topic::RecvItem::Lagged { missed } => {
+                    panic!("unexpected lag for balanced subscription: missed={missed}");
+                }
+            }
+        }
+        assert_eq!(balanced_messages, 1);
+
+        let mut broadcast_messages = 0usize;
+        while let Ok(item) = broadcast.recv().await {
+            match item {
+                otap_df_engine::topic::RecvItem::Message(_) => broadcast_messages += 1,
+                otap_df_engine::topic::RecvItem::Lagged { missed } => {
+                    panic!("unexpected lag with broadcast capacity 3: missed={missed}");
+                }
+            }
+        }
+        assert_eq!(broadcast_messages, 3);
     }
 }

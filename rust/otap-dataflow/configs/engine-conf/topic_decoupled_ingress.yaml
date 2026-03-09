@@ -46,8 +46,11 @@ groups:
       ingress:
         description: "Decoupled ingress buffer between OTLP ingest and processing/export"
         policies:
-          queue_capacity: 4096
-          queue_on_full: block
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
 
     pipelines:
       traffic_gen:

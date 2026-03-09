@@ -259,19 +259,33 @@ topics:
   raw_signals:
     description: "raw ingest stream"
     policies:
-      queue_capacity: 1000
-      queue_on_full: drop_newest
+      balanced:
+        queue_capacity: 1000
+        on_full: drop_newest
+      broadcast:
+        queue_capacity: 1000
+        on_lag: drop_oldest
 ```
 
-Supported `queue_on_full` values:
+Supported `balanced.on_full` values:
 
 - `block`
 - `drop_newest`
 
+Supported `broadcast.on_lag` values:
+
+- `drop_oldest`
+- `disconnect`
+
+`balanced.on_full` applies to balanced delivery paths. `broadcast.on_lag`
+applies to broadcast delivery paths.
+
 Topic defaults:
 
-- `policies.queue_capacity = 128`
-- `policies.queue_on_full = block`
+- `policies.balanced.queue_capacity = 128`
+- `policies.balanced.on_full = block`
+- `policies.broadcast.queue_capacity = 128`
+- `policies.broadcast.on_lag = drop_oldest`
 
 `exporter:topic` may locally override full-queue behavior:
 
@@ -287,9 +301,9 @@ nodes:
 Exporter-local `queue_on_full` behavior:
 
 - optional (`block` or `drop_newest`)
-- precedence: exporter `config.queue_on_full` -> topic `policies.queue_on_full`
+- precedence: exporter `config.queue_on_full` -> topic `policies.balanced.on_full`
   -> default `block`
-- `queue_capacity` remains topic-declaration-only (no exporter-local override)
+- queue capacities remain topic-declaration-only (no exporter-local override)
 
 ## Output Ports
 
@@ -378,7 +392,9 @@ Config loading validates:
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
 - Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
-- Non-zero topic queue capacity (`topics.*.policies.queue_capacity`).
+- Non-zero topic queue capacities
+  (`topics.*.policies.balanced.queue_capacity`,
+  `topics.*.policies.broadcast.queue_capacity`).
 - Root schema version compatibility (`version: otel_dataflow/v1`).
 - Observability constraints (`engine.observability.pipeline.policies.resources`
   is rejected).

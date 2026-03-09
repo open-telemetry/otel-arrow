@@ -47,23 +47,35 @@ groups:
       ingress:
         description: "Shared ingress topic between traffic generators and ingress router"
         policies:
-          queue_capacity: 8192
-          queue_on_full: block
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
       tenant_a:
         description: "Tenant A isolated topic"
         policies:
-          queue_capacity: 4096
-          queue_on_full: block
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
       tenant_b:
         description: "Tenant B isolated topic"
         policies:
-          queue_capacity: 4096
-          queue_on_full: block
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
       tenant_c:
         description: "Tenant C isolated topic"
         policies:
-          queue_capacity: 4096
-          queue_on_full: block
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
 
     pipelines:
       traffic_gen_tenant_a:

@@ -30,6 +30,7 @@ use crate::topic::types::{
     TopicOptions,
 };
 use crate::topic::{TopicBroker, TopicSet};
+use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -303,6 +304,7 @@ async fn broadcast_all_subscribers_see_all_messages_in_order() {
             TopicOptions::Mixed {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 1024,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
         )
         .unwrap();
@@ -347,6 +349,7 @@ async fn broadcast_lag_reported_on_slow_subscriber() {
             TopicOptions::Mixed {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 8,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
         )
         .unwrap();
@@ -397,6 +400,7 @@ async fn broadcast_slow_subscriber_does_not_block_fast_subscriber() {
             TopicOptions::Mixed {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 4,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
         )
         .unwrap();
@@ -420,6 +424,37 @@ async fn broadcast_slow_subscriber_does_not_block_fast_subscriber() {
     // If slow_sub blocked the publisher, we'd never get here.
 }
 
+// A lagging broadcast subscriber configured with disconnect receives one final
+// lag notification and is then closed on the next recv call.
+#[tokio::test]
+async fn broadcast_disconnects_slow_subscriber_on_lag() {
+    let broker = TopicBroker::new();
+    let topic = broker
+        .create_topic(
+            "broadcast-disconnect",
+            TopicOptions::BroadcastOnly {
+                capacity: 8,
+                on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    for i in 0..50u64 {
+        topic.publish(Arc::new(i)).await.unwrap();
+    }
+
+    match sub.recv().await {
+        Ok(RecvItem::Lagged { missed }) => assert!(missed > 0, "expected missed count > 0"),
+        other => panic!("expected lag notification before disconnect, got {other:?}"),
+    }
+    assert!(matches!(sub.recv().await, Err(Error::SubscriptionClosed)));
+}
+
 // In Mixed mode, broadcast delivery remains non-blocking even if balanced
 // consumer-group backpressure stalls publish completion.
 #[tokio::test]
@@ -431,6 +466,7 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
             TopicOptions::Mixed {
                 balanced_capacity: 1,
                 broadcast_capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )
@@ -489,6 +525,60 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
     _ = balanced.recv().await.unwrap();
     second_publish.await.unwrap();
     topic.close();
+}
+
+// In Mixed mode, a lagging broadcast subscriber can be disconnected without
+// affecting fast broadcast subscribers or balanced delivery.
+#[tokio::test]
+async fn mixed_disconnects_only_lagging_broadcast_subscriber() {
+    let broker = TopicBroker::new();
+    let topic = broker
+        .create_in_memory_topic(
+            "mixed-broadcast-disconnect",
+            TopicOptions::Mixed {
+                balanced_capacity: 32,
+                broadcast_capacity: 4,
+                on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+            },
+        )
+        .unwrap();
+
+    let mut balanced = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("workers"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut slow_broadcast = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+    let mut fast_broadcast = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    for i in 0..20u64 {
+        topic.publish(Arc::new(i)).await.unwrap();
+        match fast_broadcast.recv().await {
+            Ok(RecvItem::Message(env)) => assert_eq!(*env.payload, i),
+            other => panic!("fast broadcast subscriber should stay current: {other:?}"),
+        }
+    }
+
+    match slow_broadcast.recv().await {
+        Ok(RecvItem::Lagged { missed }) => assert!(missed > 0, "expected lagged slow subscriber"),
+        other => panic!("expected lag notification for slow broadcast subscriber, got {other:?}"),
+    }
+    assert!(matches!(
+        slow_broadcast.recv().await,
+        Err(Error::SubscriptionClosed)
+    ));
+
+    match balanced.recv().await {
+        Ok(RecvItem::Message(env)) => assert_eq!(*env.payload, 0),
+        other => panic!("balanced subscriber should still receive messages: {other:?}"),
+    }
 }
 
 // =========================================================================
@@ -677,6 +767,7 @@ async fn balanced_backpressure_blocks_publisher() {
             TopicOptions::Mixed {
                 balanced_capacity: 2,
                 broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )
@@ -787,6 +878,7 @@ async fn broadcast_multi_threaded_all_receive() {
             TopicOptions::Mixed {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 2048,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )
@@ -1054,6 +1146,7 @@ async fn mixed_rejects_balanced_subscribe_after_close() {
             TopicOptions::Mixed {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )
@@ -1132,7 +1225,10 @@ async fn broadcast_only_basic_delivery() {
     let topic = broker
         .create_topic(
             "bro-basic",
-            TopicOptions::BroadcastOnly { capacity: 1024 },
+            TopicOptions::BroadcastOnly {
+                capacity: 1024,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
             InMemoryBackend,
         )
         .unwrap();
@@ -1172,6 +1268,7 @@ async fn broadcast_only_rejects_balanced() {
             "bro-no-balanced",
             TopicOptions::BroadcastOnly {
                 capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )
@@ -1197,7 +1294,10 @@ async fn broadcast_only_lag_reported() {
     let topic = broker
         .create_topic(
             "bro-lag",
-            TopicOptions::BroadcastOnly { capacity: 8 },
+            TopicOptions::BroadcastOnly {
+                capacity: 8,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
             InMemoryBackend,
         )
         .unwrap();
@@ -1303,7 +1403,10 @@ async fn per_publisher_ack_broadcast_mode() {
     let base = broker
         .create_topic(
             "per-pub-bcast",
-            TopicOptions::BroadcastOnly { capacity: 1024 },
+            TopicOptions::BroadcastOnly {
+                capacity: 1024,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
             InMemoryBackend,
         )
         .unwrap();
@@ -1377,6 +1480,7 @@ async fn try_publish_mixed_keeps_broadcast_non_blocking() {
             TopicOptions::Mixed {
                 balanced_capacity: 1,
                 broadcast_capacity: 8,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
             },
             InMemoryBackend,
         )

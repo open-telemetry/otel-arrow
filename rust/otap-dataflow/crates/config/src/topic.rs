@@ -227,12 +227,12 @@ impl std::fmt::Display for TopicImplSelectionPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TopicPolicies {
-    /// Maximum number of messages retained in-memory for this topic queue.
-    #[serde(default = "default_topic_queue_capacity")]
-    pub queue_capacity: usize,
-    /// Behavior when `queue_capacity` is reached while publishing a new message.
+    /// Policies for balanced delivery paths.
     #[serde(default)]
-    pub queue_on_full: TopicQueueOnFullPolicy,
+    pub balanced: TopicBalancedPolicies,
+    /// Policies for broadcast delivery paths.
+    #[serde(default)]
+    pub broadcast: TopicBroadcastPolicies,
     /// Policy controlling cross-pipeline Ack/Nack propagation over topic hops.
     #[serde(default)]
     pub ack_propagation: TopicAckPropagationPolicy,
@@ -241,8 +241,8 @@ pub struct TopicPolicies {
 impl Default for TopicPolicies {
     fn default() -> Self {
         Self {
-            queue_capacity: default_topic_queue_capacity(),
-            queue_on_full: TopicQueueOnFullPolicy::default(),
+            balanced: TopicBalancedPolicies::default(),
+            broadcast: TopicBroadcastPolicies::default(),
             ack_propagation: TopicAckPropagationPolicy::default(),
         }
     }
@@ -253,16 +253,63 @@ impl TopicPolicies {
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        if self.queue_capacity == 0 {
+        if self.balanced.queue_capacity == 0 {
             errors.push(format!(
-                "{path_prefix}.queue_capacity must be greater than 0"
+                "{path_prefix}.balanced.queue_capacity must be greater than 0"
+            ));
+        }
+        if self.broadcast.queue_capacity == 0 {
+            errors.push(format!(
+                "{path_prefix}.broadcast.queue_capacity must be greater than 0"
             ));
         }
         errors
     }
 }
 
-/// Behavior when queue reaches `queue_capacity`.
+/// Policies for balanced delivery paths.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TopicBalancedPolicies {
+    /// Maximum number of messages retained in-memory for each balanced consumer group queue.
+    #[serde(default = "default_topic_balanced_queue_capacity")]
+    pub queue_capacity: usize,
+    /// Behavior when a balanced queue reaches `queue_capacity`.
+    #[serde(default)]
+    pub on_full: TopicQueueOnFullPolicy,
+}
+
+impl Default for TopicBalancedPolicies {
+    fn default() -> Self {
+        Self {
+            queue_capacity: default_topic_balanced_queue_capacity(),
+            on_full: TopicQueueOnFullPolicy::default(),
+        }
+    }
+}
+
+/// Policies for broadcast delivery paths.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TopicBroadcastPolicies {
+    /// Maximum number of messages retained in-memory in the broadcast ring.
+    #[serde(default = "default_topic_broadcast_queue_capacity")]
+    pub queue_capacity: usize,
+    /// Behavior when a broadcast subscriber falls behind the retained ring window.
+    #[serde(default)]
+    pub on_lag: TopicBroadcastOnLagPolicy,
+}
+
+impl Default for TopicBroadcastPolicies {
+    fn default() -> Self {
+        Self {
+            queue_capacity: default_topic_broadcast_queue_capacity(),
+            on_lag: TopicBroadcastOnLagPolicy::default(),
+        }
+    }
+}
+
+/// Behavior when a balanced queue reaches `queue_capacity`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TopicQueueOnFullPolicy {
@@ -271,6 +318,17 @@ pub enum TopicQueueOnFullPolicy {
     /// Block the publisher until queue space is available.
     #[default]
     Block,
+}
+
+/// Behavior when a broadcast subscriber falls behind the retained ring window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicBroadcastOnLagPolicy {
+    /// Skip dropped messages and continue from the oldest retained message.
+    #[default]
+    DropOldest,
+    /// Disconnect the lagging subscriber after reporting the lag event.
+    Disconnect,
 }
 
 /// Policy controlling whether topic hops can bridge Ack/Nack across pipelines.
@@ -284,7 +342,11 @@ pub enum TopicAckPropagationPolicy {
     Auto,
 }
 
-const fn default_topic_queue_capacity() -> usize {
+const fn default_topic_balanced_queue_capacity() -> usize {
+    128
+}
+
+const fn default_topic_broadcast_queue_capacity() -> usize {
     128
 }
 
@@ -292,7 +354,8 @@ const fn default_topic_queue_capacity() -> usize {
 mod tests {
     use super::{
         SubscriptionGroupName, TopicAckPropagationPolicy, TopicBackendKind,
-        TopicImplSelectionPolicy, TopicName, TopicQueueOnFullPolicy, TopicSpec,
+        TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName, TopicQueueOnFullPolicy,
+        TopicSpec,
     };
     use crate::error::Error;
     use serde::Deserialize;
@@ -303,8 +366,16 @@ mod tests {
         let topic = TopicSpec::default();
         assert_eq!(topic.backend, TopicBackendKind::InMemory);
         assert_eq!(topic.impl_selection, None);
-        assert_eq!(topic.policies.queue_capacity, 128);
-        assert_eq!(topic.policies.queue_on_full, TopicQueueOnFullPolicy::Block);
+        assert_eq!(topic.policies.balanced.queue_capacity, 128);
+        assert_eq!(topic.policies.broadcast.queue_capacity, 128);
+        assert_eq!(
+            topic.policies.broadcast.on_lag,
+            TopicBroadcastOnLagPolicy::DropOldest
+        );
+        assert_eq!(
+            topic.policies.balanced.on_full,
+            TopicQueueOnFullPolicy::Block
+        );
         assert_eq!(
             topic.policies.ack_propagation,
             TopicAckPropagationPolicy::Disabled
@@ -312,45 +383,74 @@ mod tests {
     }
 
     #[test]
-    fn validates_non_zero_queue_capacity() {
+    fn validates_non_zero_topic_queue_capacities() {
         let mut topic = TopicSpec::default();
-        topic.policies.queue_capacity = 0;
+        topic.policies.balanced.queue_capacity = 0;
+        topic.policies.broadcast.queue_capacity = 0;
 
         let errors = topic.validation_errors("topics.raw");
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains(".queue_capacity"));
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains(".balanced.queue_capacity"));
+        assert!(errors[1].contains(".broadcast.queue_capacity"));
     }
 
     #[test]
-    fn deserializes_queue_on_full_policy_values() {
+    fn deserializes_topic_policy_values() {
         let yaml = r#"
 backend: in_memory
 policies:
-  queue_capacity: 1
-  queue_on_full: drop_newest
-"#;
-
-        let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
-        assert_eq!(
-            topic.policies.queue_on_full,
-            TopicQueueOnFullPolicy::DropNewest
-        );
-    }
-
-    #[test]
-    fn deserializes_ack_propagation_policy_values() {
-        let yaml = r#"
-backend: in_memory
-policies:
-  queue_capacity: 1
+  balanced:
+    queue_capacity: 1
+    on_full: drop_newest
+  broadcast:
+    queue_capacity: 2
+    on_lag: disconnect
   ack_propagation: auto
 "#;
 
         let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
+        assert_eq!(topic.policies.balanced.queue_capacity, 1);
+        assert_eq!(topic.policies.broadcast.queue_capacity, 2);
+        assert_eq!(
+            topic.policies.broadcast.on_lag,
+            TopicBroadcastOnLagPolicy::Disconnect
+        );
+        assert_eq!(
+            topic.policies.balanced.on_full,
+            TopicQueueOnFullPolicy::DropNewest
+        );
         assert_eq!(
             topic.policies.ack_propagation,
             TopicAckPropagationPolicy::Auto
         );
+    }
+
+    #[test]
+    fn rejects_legacy_queue_capacity_field() {
+        let yaml = r#"
+backend: in_memory
+policies:
+  queue_capacity: 1
+"#;
+
+        let err = serde_yaml::from_str::<TopicSpec>(yaml).expect_err("legacy field should fail");
+        assert!(err.to_string().contains("queue_capacity"));
+    }
+
+    #[test]
+    fn rejects_flat_balanced_and_broadcast_policy_fields() {
+        let yaml = r#"
+backend: in_memory
+policies:
+  balanced_queue_capacity: 1
+  broadcast_queue_capacity: 2
+  queue_on_full: drop_newest
+"#;
+
+        let err =
+            serde_yaml::from_str::<TopicSpec>(yaml).expect_err("flat policy fields should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("balanced_queue_capacity") || rendered.contains("queue_on_full"));
     }
 
     #[test]
@@ -399,7 +499,10 @@ impl_selection: force_mixed
 topics:
   raw:
     policies:
-      queue_capacity: 1
+      balanced:
+        queue_capacity: 1
+      broadcast:
+        queue_capacity: 1
 "#;
 
         let doc: TopicsDoc = serde_yaml::from_str(yaml).expect("topics should parse");

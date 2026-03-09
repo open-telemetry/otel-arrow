@@ -74,12 +74,17 @@ let mut worker_b = topic.subscribe(
 ### 2. Fan-out analytics (broadcast)
 
 ```rust
-use otap_df_engine::topic::{SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions};
+use otap_df_engine::topic::{
+    SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions,
+};
 
 let broker = TopicBroker::<u64>::new();
 let topic = broker.create_in_memory_topic(
     "audit",
-    TopicOptions::BroadcastOnly { capacity: 4096 },
+    TopicOptions::BroadcastOnly {
+        capacity: 4096,
+        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+    },
 )?;
 
 let mut sink_a = topic.subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())?;
@@ -91,7 +96,9 @@ let mut sink_b = topic.subscribe(SubscriptionMode::Broadcast, SubscriberOptions:
 ### 3. Mixed criticality (balanced + broadcast on one topic)
 
 ```rust
-use otap_df_engine::topic::{SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions};
+use otap_df_engine::topic::{
+    SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions,
+};
 use otap_df_config::SubscriptionGroupName;
 
 let broker = TopicBroker::<u64>::new();
@@ -100,6 +107,7 @@ let topic = broker.create_in_memory_topic(
     TopicOptions::Mixed {
         balanced_capacity: 1024,
         broadcast_capacity: 4096,
+        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
     },
 )?;
 
@@ -156,7 +164,8 @@ let _topic = broker.create_topic("t1", TopicOptions::default(), InMemoryBackend)
   - Different groups receive independently.
 - Broadcast mode (`SubscriptionMode::Broadcast`)
   - Each subscriber receives each message from its subscribe point.
-  - Slow subscribers may receive `RecvItem::Lagged { missed }` and continue from the oldest retained message.
+  - With `TopicBroadcastOnLagPolicy::DropOldest`, slow subscribers may receive `RecvItem::Lagged { missed }` and continue from the oldest retained message.
+  - With `TopicBroadcastOnLagPolicy::Disconnect`, slow subscribers receive a final `RecvItem::Lagged { missed }` and the next `recv()` returns `Error::SubscriptionClosed`.
 - Ack/Nack
   - Subscribers ack/nack by message ID (`Subscription::ack` / `Subscription::nack`).
   - Ack routing is per publisher handle when `with_ack_sender` is used (directly or via `TopicSet::with_ack_sender`).
@@ -178,7 +187,7 @@ let _topic = broker.create_topic("t1", TopicOptions::default(), InMemoryBackend)
 - Current integrated backend is in-memory; no built-in persistent or distributed backend is wired yet.
 - Delivery is bounded by configured capacities:
   - balanced channels are bounded and can backpressure (`publish`) or report drop-on-full (`try_publish`)
-  - broadcast uses a bounded ring buffer and slow subscribers can miss messages (`RecvItem::Lagged`)
+  - broadcast uses a bounded ring buffer and slow subscribers either continue after `RecvItem::Lagged` or disconnect, depending on `TopicBroadcastOnLagPolicy`
 - No replay/history for late subscribers: delivery starts from subscribe time.
 - `SubscriberOptions` is currently empty (no per-subscriber tuning knobs exposed yet).
 

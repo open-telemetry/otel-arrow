@@ -353,7 +353,8 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions, TopicSet,
+        SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions,
+        TopicSet,
     };
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
@@ -408,6 +409,7 @@ mod tests {
                     TopicOptions::Mixed {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
+                        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                     },
                 )
                 .expect("topic should be created");

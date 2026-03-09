@@ -34,7 +34,7 @@
 //!
 //! # FastBroadcastRing
 //!
-//! A power-of-two ring buffer with drop-oldest semantics. Key design choices:
+//! A power-of-two ring buffer with overwrite-oldest semantics. Key design choices:
 //!
 //! - **Per-slot `parking_lot::Mutex`** (not `RwLock`): readers hold the lock
 //!   only for `Arc::clone` (~nanoseconds). `Mutex` has lower uncontended
@@ -87,6 +87,7 @@ use crate::topic::types::{
     message_id,
 };
 use futures_core::Stream;
+use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
@@ -411,13 +412,19 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
             TopicOptions::BalancedOnly { capacity } => {
                 TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
-            TopicOptions::BroadcastOnly { capacity } => {
-                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity))
+            TopicOptions::BroadcastOnly { capacity, on_lag } => {
+                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag))
             }
             TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
-            } => TopicInner::Mixed(MixedTopic::new(name, balanced_capacity, broadcast_capacity)),
+                on_lag,
+            } => TopicInner::Mixed(MixedTopic::new(
+                name,
+                balanced_capacity,
+                broadcast_capacity,
+                on_lag,
+            )),
         }
     }
 
@@ -506,6 +513,14 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
 
     fn register_publisher(&self, sender: mpsc::Sender<AckEvent>) -> u16 {
         self.registry().register(sender)
+    }
+
+    fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {
+        match self {
+            TopicInner::BalancedOnly(_) => TopicBroadcastOnLagPolicy::DropOldest,
+            TopicInner::BroadcastOnly(t) => t.broadcast_on_lag,
+            TopicInner::Mixed(t) => t.broadcast_on_lag,
+        }
     }
 
     fn close(&self) {
@@ -649,16 +664,22 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     name: TopicName,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
+    broadcast_on_lag: TopicBroadcastOnLagPolicy,
     registry: Arc<PublisherRegistry>,
     closed: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
-    fn new(name: TopicName, broadcast_capacity: usize) -> Self {
+    fn new(
+        name: TopicName,
+        broadcast_capacity: usize,
+        broadcast_on_lag: TopicBroadcastOnLagPolicy,
+    ) -> Self {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
+            broadcast_on_lag,
             registry,
             closed: AtomicBool::new(false),
         }
@@ -689,7 +710,8 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
             read_seq: start_seq,
-            pending_lag: None,
+            on_lag: self.broadcast_on_lag,
+            disconnected_on_lag: false,
             spun: false,
             ack_state,
         }
@@ -723,12 +745,18 @@ pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     has_balanced_groups: AtomicBool,
     balanced_capacity: usize,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
+    broadcast_on_lag: TopicBroadcastOnLagPolicy,
     registry: Arc<PublisherRegistry>,
     closed: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> MixedTopic<T> {
-    fn new(name: TopicName, balanced_capacity: usize, broadcast_capacity: usize) -> Self {
+    fn new(
+        name: TopicName,
+        balanced_capacity: usize,
+        broadcast_capacity: usize,
+        broadcast_on_lag: TopicBroadcastOnLagPolicy,
+    ) -> Self {
         let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
@@ -738,6 +766,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             has_balanced_groups: AtomicBool::new(false),
             balanced_capacity: balanced_capacity.max(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
+            broadcast_on_lag,
             registry,
             closed: AtomicBool::new(false),
         }
@@ -863,7 +892,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
             read_seq: start_seq,
-            pending_lag: None,
+            on_lag: self.broadcast_on_lag,
+            disconnected_on_lag: false,
             spun: false,
             ack_state,
         }
@@ -928,16 +958,16 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BalancedSub<T> {
 pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     ring: Arc<FastBroadcastRing<T>>,
     read_seq: u64,
-    pending_lag: Option<u64>,
+    on_lag: TopicBroadcastOnLagPolicy,
+    disconnected_on_lag: bool,
     spun: bool,
     ack_state: AckState,
 }
 
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvItem<T>, Error>> {
-        // Check pending lag first.
-        if let Some(missed) = self.pending_lag.take() {
-            return Poll::Ready(Ok(RecvItem::Lagged { missed }));
+        if self.disconnected_on_lag {
+            return Poll::Ready(Err(SubscriptionClosed));
         }
 
         // Fast path: check without any registration overhead.
@@ -951,9 +981,7 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
                 missed,
                 new_read_seq,
             } => {
-                self.read_seq = new_read_seq;
-                self.spun = false;
-                return Poll::Ready(Ok(RecvItem::Lagged { missed }));
+                return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq)));
             }
             BroadcastReadResult::NotReady => {}
         }
@@ -975,9 +1003,7 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
                             missed,
                             new_read_seq,
                         } => {
-                            self.read_seq = new_read_seq;
-                            self.spun = false;
-                            return Poll::Ready(Ok(RecvItem::Lagged { missed }));
+                            return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq)));
                         }
                         BroadcastReadResult::NotReady => {}
                     }
@@ -997,11 +1023,7 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
             BroadcastReadResult::Lagged {
                 missed,
                 new_read_seq,
-            } => {
-                self.read_seq = new_read_seq;
-                self.spun = false;
-                Poll::Ready(Ok(RecvItem::Lagged { missed }))
-            }
+            } => Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
             BroadcastReadResult::NotReady if self.ring.is_closed() => {
                 Poll::Ready(Err(SubscriptionClosed))
             }
@@ -1015,6 +1037,17 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
 
     fn nack(&self, id: u64, reason: Arc<str>) -> Result<(), Error> {
         self.ack_state.send_nack(id, reason)
+    }
+}
+
+impl<T: Send + Sync + 'static> BroadcastSub<T> {
+    fn handle_lag(&mut self, missed: u64, new_read_seq: u64) -> RecvItem<T> {
+        self.read_seq = new_read_seq;
+        self.spun = false;
+        if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
+            self.disconnected_on_lag = true;
+        }
+        RecvItem::Lagged { missed }
     }
 }
 

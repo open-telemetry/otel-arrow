@@ -10,7 +10,9 @@ use linkme::distributed_slice;
 use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::topic::{SubscriptionGroupName, TopicAckPropagationPolicy};
+use otap_df_config::topic::{
+    SubscriptionGroupName, TopicAckPropagationPolicy, TopicBroadcastOnLagPolicy,
+};
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -55,6 +57,9 @@ pub struct TopicReceiverMetrics {
     /// Total messages missed across lag notifications.
     #[metric(unit = "{item}")]
     pub lagged_messages: Counter<u64>,
+    /// Number of broadcast subscriptions disconnected because of lag.
+    #[metric(unit = "{event}")]
+    pub lag_disconnects: Counter<u64>,
     /// Number of downstream backpressure events (>= 500ms blocked).
     #[metric(unit = "{event}")]
     pub downstream_backpressure_events: Counter<u64>,
@@ -107,6 +112,7 @@ pub struct TopicReceiver {
     config: TopicReceiverConfig,
     subscription: Subscription<OtapPdata>,
     ack_propagation: TopicAckPropagationPolicy,
+    broadcast_on_lag: Option<TopicBroadcastOnLagPolicy>,
     metrics: MetricSet<TopicReceiverMetrics>,
 }
 
@@ -151,6 +157,9 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     ),
                 })?;
             let ack_propagation = topic.default_ack_propagation();
+            let broadcast_on_lag =
+                matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
+                    .then(|| topic.broadcast_on_lag_policy());
             let metrics =
                 pipeline.register_metrics_with_topic::<TopicReceiverMetrics>(topic.name().into());
             Ok(ReceiverWrapper::local(
@@ -158,6 +167,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     config,
                     subscription,
                     ack_propagation,
+                    broadcast_on_lag,
                     metrics,
                 },
                 node,
@@ -193,6 +203,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
             config,
             mut subscription,
             ack_propagation,
+            broadcast_on_lag,
             mut metrics,
         } = *self;
         let subscription_mode = match &config.subscription {
@@ -333,12 +344,22 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             Ok(RecvItem::Lagged { missed }) => {
                                 metrics.lagged_notifications.add(1);
                                 metrics.lagged_messages.add(missed);
-                                otel_warn!(
-                                    "topic_receiver.lagged",
-                                    topic = config.topic.as_ref(),
-                                    missed = missed,
-                                    message = "Topic receiver lagged and skipped messages."
-                                );
+                                if broadcast_on_lag == Some(TopicBroadcastOnLagPolicy::Disconnect) {
+                                    metrics.lag_disconnects.add(1);
+                                    otel_warn!(
+                                        "topic_receiver.lag_disconnect",
+                                        topic = config.topic.as_ref(),
+                                        missed = missed,
+                                        message = "Topic receiver lagged and will disconnect."
+                                    );
+                                } else {
+                                    otel_warn!(
+                                        "topic_receiver.lagged",
+                                        topic = config.topic.as_ref(),
+                                        missed = missed,
+                                        message = "Topic receiver lagged and skipped messages."
+                                    );
+                                }
                                 tokio::task::consume_budget().await;
                             }
                             Err(Error::SubscriptionClosed) => break,
@@ -373,7 +394,9 @@ mod tests {
     use otap_df_engine::node::NodeWithPDataSender;
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-    use otap_df_engine::topic::{AckStatus, TopicBroker, TopicOptions, TopicSet};
+    use otap_df_engine::topic::{
+        AckStatus, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
+    };
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
@@ -439,6 +462,7 @@ mod tests {
                     TopicOptions::Mixed {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
+                        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                     },
                 )
                 .expect("topic should be created");
@@ -527,6 +551,93 @@ mod tests {
 
             let receiver_result = receiver_task.await.expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should stop cleanly");
+        }));
+    }
+
+    #[test]
+    fn broadcast_receiver_stops_when_disconnected_on_lag() {
+        let (rt, local_tasks) = setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async move {
+            let broker = TopicBroker::<OtapPdata>::new();
+            let topic_name =
+                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let handle = broker
+                .create_in_memory_topic(
+                    topic_name.clone(),
+                    TopicOptions::BroadcastOnly {
+                        capacity: 4,
+                        on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+                    },
+                )
+                .expect("topic should be created");
+
+            let receiver_set = TopicSet::new("receiver-set");
+            _ = receiver_set.insert(topic_name.clone(), handle.clone());
+
+            let mut receiver_ctx = create_test_pipeline_context();
+            receiver_ctx.set_topic_set(receiver_set);
+
+            let receiver_node = test_node("topic_receiver");
+            let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
+            receiver_user_cfg.config = json!({
+                "topic": "ingress",
+                "subscription": { "mode": "broadcast" }
+            });
+
+            let mut receiver = (TOPIC_RECEIVER.create)(
+                receiver_ctx,
+                receiver_node.clone(),
+                Arc::new(receiver_user_cfg),
+                &ReceiverConfig::new("topic_receiver"),
+            )
+            .expect("topic receiver should be created");
+
+            let (receiver_output_tx, receiver_output_rx) = create_not_send_channel::<OtapPdata>(1);
+            receiver
+                .set_pdata_sender(
+                    receiver_node.clone(),
+                    "".into(),
+                    PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
+                )
+                .expect("receiver output channel should be wired");
+
+            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            let receiver_task = tokio::task::spawn_local(async move {
+                receiver
+                    .start(
+                        pipeline_ctrl_tx,
+                        metrics_reporter,
+                        otap_df_engine::Interests::empty(),
+                    )
+                    .await
+            });
+
+            handle
+                .publish(Arc::new(create_test_pdata()))
+                .await
+                .expect("initial publish should succeed");
+
+            let _ = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
+                .await
+                .expect("timed out waiting for initial receiver output")
+                .expect("receiver should forward at least one message before lagging");
+
+            for _ in 0..32 {
+                handle
+                    .publish(Arc::new(create_test_pdata()))
+                    .await
+                    .expect("publish should succeed");
+            }
+
+            let receiver_result = tokio::time::timeout(Duration::from_secs(2), receiver_task)
+                .await
+                .expect("receiver should stop after lag disconnect")
+                .expect("receiver task should join");
+            assert!(
+                receiver_result.is_ok(),
+                "receiver should stop cleanly after lag disconnect"
+            );
         }));
     }
 }
