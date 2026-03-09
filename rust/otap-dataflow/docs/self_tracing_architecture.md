@@ -281,12 +281,12 @@ engine:
         telemetry:
           type: receiver:internal_telemetry
           config: {}
-        otlp_exporter:
-          type: exporter:otlp
+        otlp_grpc_exporter:
+          type: exporter:otlp_grpc
           config: {}
       connections:
         - from: telemetry
-          to: otlp_exporter
+          to: otlp_grpc_exporter
 groups:
   default:
     pipelines:

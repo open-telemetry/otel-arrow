@@ -26,8 +26,8 @@ impl<'a> Summaries<'a> {
         &self,
         execution_context: &ExecutionContext<'a, '_, T>,
         summary_data_expression: &'a SummaryDataExpression,
-        mut group_by_values: Vec<(Box<str>, ResolvedValue)>,
-        mut aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
+        group_by_values: Vec<(Box<str>, ResolvedValue)>,
+        aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         let summary_id = Summary::generate_id(&group_by_values);
 
@@ -60,8 +60,8 @@ impl<'a> Summaries<'a> {
 
         let summary = Summary::new(
             summary_data_expression,
-            Vec::from_iter(group_by_values.drain(..).map(|(k, v)| (k, v.into()))),
-            HashMap::from_iter(aggregation_values.drain().map(|(k, v)| (k, v.into()))),
+            Vec::from_iter(group_by_values.into_iter().map(|(k, v)| (k, v.into()))),
+            HashMap::from_iter(aggregation_values.into_iter().map(|(k, v)| (k, v.into()))),
         );
 
         let old = values.insert(summary_id, summary);

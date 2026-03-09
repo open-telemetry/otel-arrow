@@ -7,6 +7,8 @@ The Azure Monitor Exporter sends OpenTelemetry logs to Azure using the
 the format expected by Azure Log Analytics and provides configurable schema
 mapping for custom log tables.
 
+Telemetry reference: [Telemetry.md](Telemetry.md)
+
 ## Build df_engine with Azure Monitor Exporter
 
 From the `otap-dataflow` directory:

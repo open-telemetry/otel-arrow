@@ -12,7 +12,7 @@ nodes:
             include_system_ca_certs_pool: false
 
   exporter:
-    type: "exporter:otlp"
+    type: "exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
 connections:
