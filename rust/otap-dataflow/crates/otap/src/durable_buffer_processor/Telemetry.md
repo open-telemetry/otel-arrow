@@ -30,9 +30,9 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.consumed_log_records` | `{log_record}` | Counter | Number of log records ingested to WAL. For OTLP bytes, counted via a protobuf wire-format scan without full deserialization. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.consumed_metric_points` | `{data_point}` | Counter | Number of metric data points ingested to WAL. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.consumed_spans` | `{span}` | Counter | Number of spans ingested to WAL. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_log_records` | `{log_record}` | Counter | Number of log records ingested to durable storage. For OTLP bytes, counted via a protobuf wire-format scan without full deserialization. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_metric_points` | `{data_point}` | Counter | Number of metric data points ingested to durable storage. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_spans` | `{span}` | Counter | Number of spans ingested to durable storage. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 
 ### Produced Item Counts (per signal type)
 
@@ -54,7 +54,7 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.storage_bytes_used` | `By` | Gauge | Current bytes used by persistent storage (WAL + segments). Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.storage_bytes_used` | `By` | Gauge | Current bytes used by persistent storage (durable storage + segments). Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.storage_bytes_cap` | `By` | Gauge | Configured per-core storage capacity cap. Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.dropped_segments` | `{segment}` | ObserveCounter | Cumulative segments force-dropped due to `DropOldest` retention policy. Non-zero values indicate data loss. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.dropped_bundles` | `{bundle}` | ObserveCounter | Cumulative bundles lost due to force-dropped segments. Non-zero values indicate data loss. | `crates/otap/src/durable_buffer_processor/mod.rs` |
@@ -76,9 +76,9 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.queued_log_records` | `{log_record}` | Gauge | Current log records queued in WAL/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.queued_metric_points` | `{data_point}` | Gauge | Current metric data points queued in WAL/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.queued_spans` | `{span}` | Gauge | Current spans queued in WAL/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_log_records` | `{log_record}` | Gauge | Current log records queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_metric_points` | `{data_point}` | Gauge | Current metric data points queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_spans` | `{span}` | Gauge | Current spans queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 
 ## Logs
 
@@ -98,10 +98,10 @@ All events are emitted from `crates/otap/src/durable_buffer_processor/mod.rs`.
 
 | Event name | Level | Description |
 | --- | --- | --- |
-| `durable_buffer.queued.seeded` | `info` | Queued-item counters (logs/metrics/traces) successfully seeded from existing WAL segments after restart. |
-| `durable_buffer.queued.seed_error` | `warn` | Failed to read bundle metadata from a WAL segment during seed; queued gauges may under-count for that segment. |
+| `durable_buffer.queued.seeded` | `info` | Queued-item counters (logs/metrics/traces) successfully seeded from existing durable storage segments after restart. |
+| `durable_buffer.queued.seed_error` | `warn` | Failed to read bundle metadata from a durable storage segment during seed; queued gauges may under-count for that segment. |
 
-### Ingest (Upstream → WAL)
+### Ingest (Upstream → durable storage)
 
 | Event name | Level | Description |
 | --- | --- | --- |
