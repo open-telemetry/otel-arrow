@@ -32,15 +32,15 @@ engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal_telemetry_receiver:
           type: receiver:internal_telemetry
           config: {}
-        sink:
+        internal_telemetry_sink:
           type: exporter:noop
           config: null
       connections:
-        - from: itr
-          to: sink
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
 
 groups:
   topic_decoupled_ingress:
@@ -63,7 +63,7 @@ groups:
               count: 8
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               data_source: static
@@ -75,15 +75,15 @@ groups:
                 trace_weight: 0
                 log_weight: 30
 
-          exporter:
+          ingress_otlp_exporter:
             type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4527"
               max_in_flight: 6
 
         connections:
-          - from: receiver
-            to: exporter
+          - from: traffic_gen
+            to: ingress_otlp_exporter
 
       ingress_otlp:
         policies:
@@ -93,7 +93,7 @@ groups:
               count: 1
 
         nodes:
-          otlp_recv:
+          ingress_otlp_receiver:
             type: receiver:otlp
             config:
               protocols:
@@ -101,15 +101,15 @@ groups:
                   listening_addr: "127.0.0.1:4527"
                   wait_for_result: true
 
-          to_topic:
+          ingress_exporter:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: otlp_recv
-            to: to_topic
+          - from: ingress_otlp_receiver
+            to: ingress_exporter
 
       processing_export:
         policies:
@@ -119,7 +119,7 @@ groups:
               count: 1
 
         nodes:
-          from_topic:
+          ingress_receiver:
             type: receiver:topic
             config:
               topic: ingress
@@ -127,17 +127,17 @@ groups:
                 mode: balanced
                 group: processing_group
 
-          router:
+          signal_router:
             type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
 
-          retry:
+          logs_retry:
             type: processor:retry
             config:
               multiplier: 1.5
 
-          logs_exporter:
+          backend_otlp_exporter:
             type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4528"
@@ -152,16 +152,16 @@ groups:
             config: null
 
         connections:
-          - from: from_topic
-            to: router
-          - from: router["logs"]
-            to: retry
-          - from: router["metrics"]
+          - from: ingress_receiver
+            to: signal_router
+          - from: signal_router["logs"]
+            to: logs_retry
+          - from: signal_router["metrics"]
             to: metrics_exporter
-          - from: router["traces"]
+          - from: signal_router["traces"]
             to: traces_exporter
-          - from: retry
-            to: logs_exporter
+          - from: logs_retry
+            to: backend_otlp_exporter
 
       backend:
         policies:
@@ -171,7 +171,7 @@ groups:
               count: 1
 
         nodes:
-          otlp_recv:
+          backend_otlp_receiver:
             type: receiver:otlp
             config:
               protocols:
@@ -179,10 +179,10 @@ groups:
                   listening_addr: "127.0.0.1:4528"
                   wait_for_result: true
 
-          sink:
+          backend_sink:
             type: exporter:noop
             config: null
 
         connections:
-          - from: otlp_recv
-            to: sink
+          - from: backend_otlp_receiver
+            to: backend_sink

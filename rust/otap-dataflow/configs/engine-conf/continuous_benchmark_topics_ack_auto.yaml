@@ -39,15 +39,15 @@ engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal_telemetry_receiver:
           type: receiver:internal_telemetry
           config: {}
-        sink:
+        internal_telemetry_sink:
           type: exporter:noop
           config: null
       connections:
-        - from: itr
-          to: sink
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
 
 groups:
   continuous_benchmark_topics_ack_auto:
@@ -97,7 +97,7 @@ groups:
                   end: 16
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               enable_ack_nack: true
@@ -110,15 +110,15 @@ groups:
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 30
-          to_topic:
+          ingress_exporter:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: receiver
-            to: to_topic
+          - from: traffic_gen
+            to: ingress_exporter
 
       traffic_gen2:
         policies:
@@ -130,7 +130,7 @@ groups:
                   end: 35
 
         nodes:
-          receiver:
+          traffic_gen:
             type: receiver:traffic_generator
             config:
               enable_ack_nack: true
@@ -142,15 +142,15 @@ groups:
                 trace_weight: 0
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-          to_topic:
+          ingress_exporter:
             type: exporter:topic
             config:
               topic: ingress
               queue_on_full: block
 
         connections:
-          - from: receiver
-            to: to_topic
+          - from: traffic_gen
+            to: ingress_exporter
 
       # ======================================================================
       # System Under Test pipeline
@@ -165,7 +165,7 @@ groups:
                   end: 1
 
         nodes:
-          topic_recv:
+          ingress_receiver:
             type: receiver:topic
             config:
               topic: ingress
@@ -173,17 +173,17 @@ groups:
                 mode: balanced
                 group: sut_pipeline
 
-          router:
+          signal_router:
             type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
 
-          retry:
+          logs_retry:
             type: processor:retry
             config:
               multiplier: 1.5
 
-          logs_to_topic:
+          backend_logs_exporter:
             type: exporter:topic
             config:
               topic: backend_logs
@@ -193,21 +193,21 @@ groups:
             type: exporter:noop
             config: null
 
-          spans_exporter:
+          traces_exporter:
             type: exporter:noop
             config: null
 
         connections:
-          - from: topic_recv
-            to: router
-          - from: router["logs"]
-            to: retry
-          - from: router["metrics"]
+          - from: ingress_receiver
+            to: signal_router
+          - from: signal_router["logs"]
+            to: logs_retry
+          - from: signal_router["metrics"]
             to: metrics_exporter
-          - from: router["traces"]
-            to: spans_exporter
-          - from: retry
-            to: logs_to_topic
+          - from: signal_router["traces"]
+            to: traces_exporter
+          - from: logs_retry
+            to: backend_logs_exporter
 
       # ======================================================================
       # Backend pipeline
@@ -223,7 +223,7 @@ groups:
                   end: 17
 
         nodes:
-          from_topic:
+          backend_logs_receiver:
             type: receiver:topic
             config:
               topic: backend_logs
@@ -231,10 +231,10 @@ groups:
                 mode: balanced
                 group: backend_workers
 
-          perf_noop:
+          backend_sink:
             type: exporter:noop
             config: null
 
         connections:
-          - from: from_topic
-            to: perf_noop
+          - from: backend_logs_receiver
+            to: backend_sink
