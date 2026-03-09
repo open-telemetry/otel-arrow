@@ -716,12 +716,17 @@ impl InsertTransform {
 /// or updates the existing attribute's value if the key already exists.
 pub struct UpsertTransform {
     pub(super) entries: BTreeMap<String, LiteralValue>,
+    pub(super) target_bytes: Vec<Vec<u8>>,
 }
 
 impl UpsertTransform {
     #[must_use]
-    pub const fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
-        Self { entries }
+    pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
+        let target_bytes = entries.keys().map(|k| k.as_bytes().to_vec()).collect();
+        Self {
+            entries,
+            target_bytes,
+        }
     }
 }
 
@@ -930,46 +935,7 @@ pub fn transform_attributes_impl(
 ) -> Result<(RecordBatch, TransformStats)> {
     transform.validate()?;
 
-    // If we have upsert entries, we implement upsert as delete-then-insert.
-    // Build an effective transform that includes the upsert keys in the delete set,
-    // then we'll insert them unconditionally after the main transform.
     let has_upsert = transform.upsert.is_some();
-
-    // Before merging upsert keys into the delete set, count how many rows in the
-    // original batch match upsert keys. These "upsert-caused deletes" must be
-    // subtracted from deleted_entries later so that stats only reflect explicit deletes.
-    let upsert_caused_deletes: u64 = if has_upsert {
-        let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
-        let upsert = transform.upsert.as_ref().unwrap();
-        count_rows_matching_keys(&key_col, &upsert.entries.keys().collect())
-    } else {
-        0
-    };
-
-    let effective_transform: AttributesTransform;
-    let transform_ref = if has_upsert {
-        let upsert = transform.upsert.as_ref().unwrap();
-
-        // Merge upsert keys into the delete set
-        let mut effective_delete_set = transform
-            .delete
-            .as_ref()
-            .map(|d| d.set.clone())
-            .unwrap_or_default();
-        for key in upsert.entries.keys() {
-            let _ = effective_delete_set.insert(key.clone());
-        }
-
-        effective_transform = AttributesTransform {
-            rename: transform.rename.as_ref().map(|r| RenameTransform::new(r.map.clone())),
-            delete: Some(DeleteTransform::new(effective_delete_set)),
-            insert: transform.insert.as_ref().map(|i| InsertTransform::new(i.entries.clone())),
-            upsert: None, // handled separately below
-        };
-        &effective_transform
-    } else {
-        transform
-    };
 
     let schema = attrs_record_batch.schema();
     let key_column = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
@@ -996,7 +962,7 @@ pub fn transform_attributes_impl(
     // encoding. This is used later to determine if we need to decode because the transformation
     // would break some sequences of encoded IDs.
     let insert_or_upsert_needed =
-        (transform_ref.insert.is_some() || has_upsert) && schema.column_with_name(consts::PARENT_ID).is_some();
+        (transform.insert.is_some() || has_upsert) && schema.column_with_name(consts::PARENT_ID).is_some();
     let (attrs_record_batch_cow, is_transport_optimized) = if insert_or_upsert_needed {
         let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
         (Cow::Owned(rb), false)
@@ -1023,19 +989,19 @@ pub fn transform_attributes_impl(
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
 
-            let keys_transform_result = transform_keys(keys_arr, transform_ref)?;
+            let keys_transform_result = transform_keys(keys_arr, transform)?;
             let stats = TransformStats {
                 renamed_entries: keys_transform_result.replaced_rows as u64,
                 deleted_entries: keys_transform_result.deleted_rows as u64,
                 inserted_entries: 0,
-                upserted_entries: 0,
+                upserted_entries: keys_transform_result.upserted_rows as u64,
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
             // Remove the transport encoding from the ID column if we have to. Some transformations
             // may join segments of logically adjacent type/key/value runs, which can invalidate
             // quasi-delta decoding.
-            let replace_bytes = if let Some(replace) = transform_ref.rename.as_ref() {
+            let replace_bytes = if let Some(replace) = transform.rename.as_ref() {
                 &replace.replacement_bytes
             } else {
                 &vec![]
@@ -1089,7 +1055,7 @@ pub fn transform_attributes_impl(
                             .as_any()
                             .downcast_ref::<DictionaryArray<UInt8Type>>()
                             .expect("can downcast dictionary column to dictionary array"),
-                        transform_ref,
+                        transform,
                         is_transport_optimized,
                         compute_stats,
                     )?;
@@ -1102,7 +1068,7 @@ pub fn transform_attributes_impl(
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
-                            upserted_entries: 0,
+                            upserted_entries: dict_imm_result.upserted_rows as u64,
                         },
                     )
                 }
@@ -1113,7 +1079,7 @@ pub fn transform_attributes_impl(
                             .as_any()
                             .downcast_ref::<DictionaryArray<UInt16Type>>()
                             .expect("can downcast dictionary column to dictionary array"),
-                        transform_ref,
+                        transform,
                         is_transport_optimized,
                         compute_stats,
                     )?;
@@ -1126,7 +1092,7 @@ pub fn transform_attributes_impl(
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
-                            upserted_entries: 0,
+                            upserted_entries: dict_imm_result.upserted_rows as u64,
                         },
                     )
                 }
@@ -1147,7 +1113,7 @@ pub fn transform_attributes_impl(
                 // Remove the transport encoding from the ID column if we have to. Some transformations
                 // may join segments of logically adjacent type/key/value runs, which can invalidate
                 // quasi-delta decoding.
-                let replace_bytes = if let Some(replace) = transform_ref.rename.as_ref() {
+                let replace_bytes = if let Some(replace) = transform.rename.as_ref() {
                     &replace.replacement_bytes
                 } else {
                     &vec![]
@@ -1213,7 +1179,7 @@ pub fn transform_attributes_impl(
     // as unconditional inserts.
 
     // Collect all entries that need to be inserted: regular inserts + upsert entries
-    let insert_entries = transform_ref.insert.as_ref().map(|i| &i.entries);
+    let insert_entries = transform.insert.as_ref().map(|i| &i.entries);
     let upsert_entries = transform.upsert.as_ref().map(|u| &u.entries);
 
     let has_any_inserts = insert_entries.map_or(false, |e| !e.is_empty())
@@ -1248,7 +1214,7 @@ pub fn transform_attributes_impl(
             let mut combined_schema = extended_schema;
 
             // Handle regular inserts (only insert if key doesn't exist)
-            if let Some(insert) = transform_ref.insert.as_ref() {
+            if let Some(insert) = transform.insert.as_ref() {
                 let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
                     DataType::UInt16 => create_inserted_batch::<u16>(
                         &combined_rb,
@@ -1323,9 +1289,6 @@ pub fn transform_attributes_impl(
                         error: e.to_string(),
                     })?;
                     stats.upserted_entries = count as u64;
-                    // Adjust deleted_entries: subtract rows that were deleted as a
-                    // side-effect of upsert (they're part of the upsert, not explicit deletes).
-                    stats.deleted_entries = stats.deleted_entries.saturating_sub(upsert_caused_deletes);
 
                     return Ok((combined_rb, stats));
                 }
@@ -1378,6 +1341,8 @@ struct KeysTransformResult {
     replaced_rows: usize,
     /// Exact number of rows that were deleted due to delete rules (row-level deletions)
     deleted_rows: usize,
+    /// Exact number of rows that were deleted due to upsert rules (row-level upsert deletions)
+    upserted_rows: usize,
 }
 
 /// Transform the attributes key array
@@ -1409,14 +1374,22 @@ fn transform_keys(
         .map(|d| plan_key_deletes(len, values, offsets, d))
         .transpose()?;
 
+    let upsert_plan = transform
+        .upsert
+        .as_ref()
+        .filter(|u| !u.entries.is_empty())
+        .map(|u| plan_key_upserts(len, values, offsets, u))
+        .transpose()?;
+
     // check if we can return early because there are no modifications to be made
     let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
     let total_replacements = replacement_plan
         .as_ref()
         .map(|r| r.total_replacements)
         .unwrap_or(0);
+    let total_upsert_deletions = upsert_plan.as_ref().map(|u| u.total_upsert_deletions).unwrap_or(0);
 
-    if total_deletions == 0 && total_replacements == 0 {
+    if total_deletions == 0 && total_replacements == 0 && total_upsert_deletions == 0 {
         // if no modifications are being made to the array, we can just return the original
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
@@ -1424,19 +1397,21 @@ fn transform_keys(
             transform_ranges: Vec::new(),
             replaced_rows: 0,
             deleted_rows: 0,
+            upserted_rows: 0,
         });
     }
 
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
+    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref(), upsert_plan.as_ref());
 
     // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
         values,
         replacement_plan.as_ref(),
         delete_plan.as_ref(),
+        upsert_plan.as_ref(),
     ));
 
     // keep track pointer to the previous offset that had values replaced
@@ -1479,12 +1454,12 @@ fn transform_keys(
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
 
-    let new_offsets = if all_offsets_same_len && total_deletions == 0 {
+    let new_offsets = if all_offsets_same_len && total_deletions == 0 && total_upsert_deletions == 0 {
         // if the target and replacement happen to be the same length and there were no deletions, we
         // can just reuse the existing offsets
         offsets.clone()
     } else {
-        let num_offsets = (array.len() - total_deletions) + 1;
+        let num_offsets = (array.len() - total_deletions - total_upsert_deletions) + 1;
         let mut new_offsets = MutableBuffer::new(num_offsets * size_of::<i32>());
 
         // for each offset that was not replaced, keep track of how much to adjust it based on how
@@ -1548,6 +1523,16 @@ fn transform_keys(
                     curr_total_offset_adjustment -=
                         (deleted_val_len * transform_range.range.len()) as i32;
                 }
+                KeyTransformRangeType::Upsert => {
+                    // upsert ranges are removed just like deletes, but tracked separately for stats
+                    let upserted_val_len = upsert_plan
+                        .as_ref()
+                        .expect("upsert plan should be initialized")
+                        .target_keys[transform_range.idx]
+                        .len();
+                    curr_total_offset_adjustment -=
+                        (upserted_val_len * transform_range.range.len()) as i32;
+                }
             }
 
             prev_range_index_end = transform_range.end();
@@ -1594,24 +1579,12 @@ fn transform_keys(
     #[allow(unsafe_code)]
     let new_keys = unsafe { StringArray::new_unchecked(new_offsets, new_values, None) };
 
-    let keep_ranges = delete_plan
-        .as_ref()
-        .and_then(|delete_plan| transform_ranges_to_keep_ranges(len, &delete_plan.ranges));
+    let keep_ranges = transform_ranges_to_keep_ranges(len, &transform_ranges);
 
     // Get the list of transform_ranges w/out copying
-    let transform_ranges = if let Cow::Owned(ranges) = transform_ranges {
-        ranges
-    } else {
-        match (replacement_plan, delete_plan) {
-            (Some(replacement), None) => replacement.ranges,
-            (None, Some(delete_plan)) => delete_plan.ranges,
-            _ => {
-                // safety: if these were both None, we'd have returned early above, however if
-                // they were both `Some`, we'd already have combined the ranges into an owned
-                // `Cow` in `merge_transform_ranges` and taken it in the `if` branch above.
-                unreachable!("invalid transform ranges state")
-            }
-        }
+    let transform_ranges = match transform_ranges {
+        Cow::Owned(ranges) => ranges,
+        Cow::Borrowed(slice) => slice.to_vec(),
     };
 
     Ok(KeysTransformResult {
@@ -1620,6 +1593,7 @@ fn transform_keys(
         keep_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
+        upserted_rows: total_upsert_deletions,
     })
 }
 
@@ -1643,6 +1617,8 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     deleted_rows: usize,
     /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
     renamed_rows: usize,
+    /// Exact number of rows removed due to upsert rules
+    upserted_rows: usize,
 }
 
 /// Transforms the keys for the dictionary array.
@@ -1687,7 +1663,7 @@ where
         || dict_values_transform_result
             .transform_ranges
             .iter()
-            .any(|range| range.range_type == KeyTransformRangeType::Delete);
+            .any(|range| range.range_type == KeyTransformRangeType::Delete || range.range_type == KeyTransformRangeType::Upsert);
     let dict_key_transform_ranges = if compute_dict_key_transform_ranges {
         dict_value_transform_ranges_to_key_ranges(
             dict_arr,
@@ -1702,8 +1678,8 @@ where
     // ranges haven't been computed, it's more performant to compute the statistics from the
     // transformed dictionary values than to materialize the ranges of transformed dictionary keys
     // just for statistics computation.
-    let (renamed_rows, deleted_rows) = if !compute_stats {
-        (0, 0)
+    let (renamed_rows, deleted_rows, upserted_rows) = if !compute_stats {
+        (0, 0, 0)
     } else if compute_dict_key_transform_ranges {
         transform_stats_from_transform_ranges(&dict_key_transform_ranges)
     } else {
@@ -1711,7 +1687,7 @@ where
             dict_arr,
             &dict_values_transform_result.transform_ranges,
         );
-        (rename_count, 0)
+        (rename_count, 0, 0)
     };
 
     if dict_values_transform_result.keep_ranges.is_none() {
@@ -1734,6 +1710,7 @@ where
 
             renamed_rows,
             deleted_rows,
+            upserted_rows,
         });
     }
 
@@ -1823,6 +1800,7 @@ where
         transform_ranges: dict_key_transform_ranges,
         deleted_rows,
         renamed_rows,
+        upserted_rows,
     })
 }
 
@@ -1903,18 +1881,20 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     dict_key_transform_ranges
 }
 
-fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange]) -> (usize, usize) {
+fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange]) -> (usize, usize, usize) {
     let mut count_rename = 0;
     let mut count_delete = 0;
+    let mut count_upsert = 0;
 
     for range in transform_ranges {
         match range.range_type {
             KeyTransformRangeType::Delete => count_delete += range.len(),
             KeyTransformRangeType::Replace => count_rename += range.len(),
+            KeyTransformRangeType::Upsert => count_upsert += range.len(),
         }
     }
 
-    (count_rename, count_delete)
+    (count_rename, count_delete, count_upsert)
 }
 
 fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyType>(
@@ -1951,6 +1931,7 @@ fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyT
 enum KeyTransformRangeType {
     Replace,
     Delete,
+    Upsert,
 }
 
 /// Specifies a range of the attribute's "key" colum that had a transformation applied to it.
@@ -1987,49 +1968,35 @@ impl KeyTransformRange {
 fn merge_transform_ranges<'a>(
     replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
+    upsert_plan: Option<&'a KeyUpsertPlan<'_>>,
 ) -> Cow<'a, [KeyTransformRange]> {
-    match (replacement_plan, delete_plan) {
-        (Some(replacement_plan), Some(delete_plan)) => {
-            let mut result =
-                Vec::with_capacity(replacement_plan.ranges.len() + delete_plan.ranges.len());
+    let has_rep = replacement_plan.map_or(false, |p| !p.ranges.is_empty());
+    let has_del = delete_plan.map_or(false, |p| !p.ranges.is_empty());
+    let has_ups = upsert_plan.map_or(false, |p| !p.ranges.is_empty());
 
-            let mut rep_idx = 0;
-            let mut del_idx = 0;
-
-            while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
-                let rep_start = replacement_plan.ranges[rep_idx].start();
-                let del_start = delete_plan.ranges[del_idx].start();
-
-                if rep_start <= del_start {
-                    let rep_range = replacement_plan.ranges[rep_idx].clone();
-                    result.push(rep_range);
-                    rep_idx += 1;
-                } else {
-                    let del_range = delete_plan.ranges[del_idx].clone();
-                    result.push(del_range);
-                    del_idx += 1;
-                }
+    match (has_rep, has_del, has_ups) {
+        (false, false, false) => Cow::Borrowed(&[]),
+        (true, false, false) => Cow::Borrowed(&replacement_plan.unwrap().ranges),
+        (false, true, false) => Cow::Borrowed(&delete_plan.unwrap().ranges),
+        (false, false, true) => Cow::Borrowed(&upsert_plan.unwrap().ranges),
+        _ => {
+            // Multiple plans present: collect and sort by start index
+            let cap = replacement_plan.map_or(0, |p| p.ranges.len())
+                + delete_plan.map_or(0, |p| p.ranges.len())
+                + upsert_plan.map_or(0, |p| p.ranges.len());
+            let mut result = Vec::with_capacity(cap);
+            if let Some(p) = replacement_plan {
+                result.extend(p.ranges.iter().cloned());
             }
-
-            // append any remaining replacements
-            while rep_idx < replacement_plan.ranges.len() {
-                let rep_range = replacement_plan.ranges[rep_idx].clone();
-                result.push(rep_range);
-                rep_idx += 1;
+            if let Some(p) = delete_plan {
+                result.extend(p.ranges.iter().cloned());
             }
-
-            // append any remaining deletions
-            while del_idx < delete_plan.ranges.len() {
-                let del_range = delete_plan.ranges[del_idx].clone();
-                result.push(del_range);
-                del_idx += 1;
+            if let Some(p) = upsert_plan {
+                result.extend(p.ranges.iter().cloned());
             }
-
+            result.sort_by_key(|r| r.start());
             Cow::Owned(result)
         }
-        (Some(replacement_plan), None) => Cow::Borrowed(&replacement_plan.ranges),
-        (None, Some(delete_plan)) => Cow::Borrowed(&delete_plan.ranges),
-        (None, None) => Cow::Borrowed(&[]),
     }
 }
 
@@ -2051,7 +2018,7 @@ fn transform_ranges_to_keep_ranges(
     let mut count_delete_ranges = 0;
     for (start, end) in transform_ranges
         .iter()
-        .filter(|r| r.range_type == KeyTransformRangeType::Delete)
+        .filter(|r| r.range_type == KeyTransformRangeType::Delete || r.range_type == KeyTransformRangeType::Upsert)
         .map(|r| (r.start(), r.end()))
     {
         count_delete_ranges += 1;
@@ -2180,6 +2147,45 @@ fn plan_key_deletes<'a>(
     })
 }
 
+/// Plan for how the source keys array should be modified to handle upsert deletions.
+/// Produces `Upsert` range types so stats can distinguish upsert-caused row removals
+/// from explicit deletes.
+struct KeyUpsertPlan<'a> {
+    /// The bytes of the keys being upserted
+    target_keys: &'a [Vec<u8>],
+    /// Contiguous ranges of matching rows in the original array
+    ranges: Vec<KeyTransformRange>,
+    /// How many values matched per target key
+    counts: Vec<usize>,
+    /// Total number of rows that will be removed for upsert
+    total_upsert_deletions: usize,
+}
+
+/// Plan upsert-caused deletions: find rows matching upsert keys, tagged as `Upsert`.
+fn plan_key_upserts<'a>(
+    array_len: usize,
+    values_buf: &'a Buffer,
+    offsets: &'a OffsetBuffer<i32>,
+    upsert_keys: &'a UpsertTransform,
+) -> Result<KeyUpsertPlan<'a>> {
+    let target_bytes = upsert_keys.target_bytes.as_slice();
+
+    let target_ranges = find_matching_key_ranges(
+        array_len,
+        values_buf,
+        offsets,
+        target_bytes,
+        KeyTransformRangeType::Upsert,
+    )?;
+
+    Ok(KeyUpsertPlan {
+        target_keys: target_bytes,
+        ranges: target_ranges.ranges,
+        counts: target_ranges.counts,
+        total_upsert_deletions: target_ranges.total_matches,
+    })
+}
+
 // The return type from `find_matching_key_ranges`
 struct KeyTransformTargetRanges {
     // contiguous ranges in the values buffer that match the target bytes this is keyed like
@@ -2289,13 +2295,15 @@ fn calculate_new_keys_buffer_len(
     key_arr_values_buffer: &Buffer,
     replacement_plan: Option<&KeyReplacementPlan<'_>>,
     delete_plan: Option<&KeyDeletePlan<'_>>,
+    upsert_plan: Option<&KeyUpsertPlan<'_>>,
 ) -> usize {
     let all_replaced_keys_same_len = replacement_plan
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
     let total_deletions = delete_plan.map(|d| d.total_deletions).unwrap_or(0);
+    let total_upsert_deletions = upsert_plan.map(|u| u.total_upsert_deletions).unwrap_or(0);
 
-    if all_replaced_keys_same_len && total_deletions == 0 {
+    if all_replaced_keys_same_len && total_deletions == 0 && total_upsert_deletions == 0 {
         key_arr_values_buffer.len()
     } else {
         let replacement_len_delta = replacement_plan
@@ -2305,15 +2313,24 @@ fn calculate_new_keys_buffer_len(
                     .sum()
             })
             .unwrap_or(0);
-        let count_deleted_bytes = delete_plan
+        let count_deleted_bytes: usize = delete_plan
             .map(|d| {
                 (0..d.counts.len())
                     .map(|i| d.counts[i] * d.target_keys[i].len())
                     .sum()
             })
             .unwrap_or(0);
+        let count_upsert_deleted_bytes: usize = upsert_plan
+            .map(|u| {
+                (0..u.counts.len())
+                    .map(|i| u.counts[i] * u.target_keys[i].len())
+                    .sum()
+            })
+            .unwrap_or(0);
 
-        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
+        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize
+            - count_deleted_bytes
+            - count_upsert_deleted_bytes
     }
 }
 
@@ -2414,7 +2431,7 @@ fn should_remove_transport_optimized_encoding(
                     }
                 }
             }
-            KeyTransformRangeType::Delete => {
+            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
                 if let Some(prev) = prev_neighbour.as_ref() {
                     if let Some(next) = next_neighbour.as_ref() {
                         let delete_joins = are_neighbours_with_delta_encoded_parent_ids(
@@ -2488,7 +2505,7 @@ fn find_previous_neighbour_post_transform(
                     replacement_idx: Some(range.idx),
                 });
             }
-            KeyTransformRangeType::Delete => {
+            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
                 index = range.start();
                 if index == 0 {
                     return None;
@@ -2550,7 +2567,7 @@ fn find_next_neighbour_post_transform(
                     replacement_idx: Some(range.idx),
                 });
             }
-            KeyTransformRangeType::Delete => {
+            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
                 index = range.end() - 1;
                 if index >= len - 1 {
                     return None;
@@ -6611,61 +6628,6 @@ fn extend_schema_for_inserts(
         })?;
 
     Ok((new_batch, new_schema))
-}
-
-/// Counts the number of rows in a key column whose value is in `target_keys`.
-///
-/// Handles both plain `Utf8` and dictionary-encoded key columns.
-fn count_rows_matching_keys(key_column: &ArrayRef, target_keys: &BTreeSet<&String>) -> u64 {
-    if target_keys.is_empty() {
-        return 0;
-    }
-    match key_column.data_type() {
-        DataType::Utf8 => {
-            let arr = key_column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("can downcast Utf8 to StringArray");
-            (0..arr.len())
-                .filter(|&i| target_keys.contains(&arr.value(i).to_owned()))
-                .count() as u64
-        }
-        DataType::Dictionary(index_type, _) => match index_type.as_ref() {
-            DataType::UInt8 => count_dict_rows_matching::<UInt8Type>(key_column, target_keys),
-            DataType::UInt16 => count_dict_rows_matching::<UInt16Type>(key_column, target_keys),
-            _ => 0,
-        },
-        _ => 0,
-    }
-}
-
-/// Helper for counting matching rows in a dictionary-encoded key column.
-fn count_dict_rows_matching<K: ArrowDictionaryKeyType>(
-    key_column: &ArrayRef,
-    target_keys: &BTreeSet<&String>,
-) -> u64 {
-    let dict = key_column
-        .as_any()
-        .downcast_ref::<DictionaryArray<K>>()
-        .expect("can downcast to DictionaryArray");
-    let values = dict
-        .values()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("dictionary values are strings");
-    // Pre-compute which dictionary indices map to target keys
-    let matching_indices: BTreeSet<usize> = (0..values.len())
-        .filter(|&i| target_keys.contains(&values.value(i).to_owned()))
-        .collect();
-    if matching_indices.is_empty() {
-        return 0;
-    }
-    (0..dict.len())
-        .filter(|&i| {
-            !dict.is_null(i)
-                && matching_indices.contains(&dict.keys().value(i).as_usize())
-        })
-        .count() as u64
 }
 
 /// Get the value type for a parent ID column, handling both primitive and dictionary-encoded arrays.
