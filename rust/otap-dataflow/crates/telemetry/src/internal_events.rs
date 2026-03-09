@@ -237,7 +237,13 @@ mod tests {
         use tracing::Level;
 
         // Verify otel_event! compiles and runs with various runtime levels.
-        for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
+        for level in [
+            Level::TRACE,
+            Level::DEBUG,
+            Level::INFO,
+            Level::WARN,
+            Level::ERROR,
+        ] {
             otel_event!(level, "test.otel_event.fields", key = 42, reason = "test");
         }
     }
@@ -246,7 +252,13 @@ mod tests {
     fn test_otel_event_without_fields() {
         use tracing::Level;
 
-        for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
+        for level in [
+            Level::TRACE,
+            Level::DEBUG,
+            Level::INFO,
+            Level::WARN,
+            Level::ERROR,
+        ] {
             otel_event!(level, "test.otel_event.no_fields");
         }
     }
@@ -254,7 +266,11 @@ mod tests {
     #[test]
     fn test_otel_event_with_const_level() {
         // Verify otel_event! works with compile-time constant levels.
-        otel_event!(tracing::Level::DEBUG, "test.otel_event.const_level", key = 1);
+        otel_event!(
+            tracing::Level::DEBUG,
+            "test.otel_event.const_level",
+            key = 1
+        );
         otel_event!(tracing::Level::INFO, "test.otel_event.const_level");
     }
 }

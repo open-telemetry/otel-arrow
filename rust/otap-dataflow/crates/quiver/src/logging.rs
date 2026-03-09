@@ -266,9 +266,9 @@ macro_rules! otel_event {
 // Make macros available within this crate only (no #[macro_export])
 pub(crate) use otel_debug;
 pub(crate) use otel_error;
-pub(crate) use otel_info;
 #[allow(unused_imports)]
 pub(crate) use otel_event;
+pub(crate) use otel_info;
 pub(crate) use otel_warn;
 
 #[cfg(test)]
