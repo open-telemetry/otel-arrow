@@ -101,7 +101,7 @@ All events are emitted from `crates/otap/src/durable_buffer_processor/mod.rs`.
 | `durable_buffer.queued.seeded` | `info` | Queued-item counters (logs/metrics/traces) successfully seeded from existing durable storage segments after restart. |
 | `durable_buffer.queued.seed_error` | `warn` | Failed to read bundle metadata from a durable storage segment during seed; queued gauges may under-count for that segment. |
 
-### Ingest (Upstream → durable storage)
+### Ingest (Upstream -> durable storage)
 
 | Event name | Level | Description |
 | --- | --- | --- |
