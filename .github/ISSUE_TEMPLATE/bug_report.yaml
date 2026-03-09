@@ -25,7 +25,7 @@ body:
       multiple: true
       options:
         - Rust OTAP dataflow (rust/otap-dataflow/)
-        - Rust Beaubourg (rust/beaubourg/)
+        - Go OTel Arrow Receiver/Exporter (go/)
         - Documentation
         - Other
     validations:
