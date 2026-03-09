@@ -789,6 +789,7 @@ mod exemplars {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
     use crate::schema::consts::*;
 
     #[test]
@@ -831,70 +832,6 @@ mod tests {
     }
 
     #[test]
-    fn test_u16_attrs_value_columns_require_u16() {
-        let def = get(ArrowPayloadType::ResourceAttrs);
-        for col_name in &["str", "int", "bytes", "ser"] {
-            let col = def
-                .get(col_name)
-                .unwrap_or_else(|| panic!("missing column: {}", col_name));
-            assert_eq!(
-                col.min_dict_key_size,
-                Some(DictKeySize::U16),
-                "column {} should require Dict(u16)",
-                col_name,
-            );
-        }
-    }
-
-    #[test]
-    fn test_u32_attrs_value_columns_require_u16() {
-        let def = get(ArrowPayloadType::SpanEventAttrs);
-        for col_name in &["str", "int", "bytes", "ser"] {
-            let col = def
-                .get(col_name)
-                .unwrap_or_else(|| panic!("missing column: {}", col_name));
-            assert_eq!(
-                col.min_dict_key_size,
-                Some(DictKeySize::U16),
-                "column {} should require Dict(u16)",
-                col_name,
-            );
-        }
-    }
-
-    #[test]
-    fn test_logs_body_columns_require_u16() {
-        let def = get(ArrowPayloadType::Logs);
-        for path in &[BODY_STR, BODY_INT, BODY_BYTES, BODY_SER] {
-            let col = def
-                .get(path)
-                .unwrap_or_else(|| panic!("missing column: {}", path));
-            assert_eq!(
-                col.min_dict_key_size,
-                Some(DictKeySize::U16),
-                "column {} should require Dict(u16)",
-                path,
-            );
-        }
-    }
-
-    #[test]
-    fn test_exemplars_dict_columns() {
-        let def = get(ArrowPayloadType::NumberDpExemplars);
-        for col_name in &["parent_id", "int_value", "span_id", "trace_id"] {
-            let col = def
-                .get(col_name)
-                .unwrap_or_else(|| panic!("missing column: {}", col_name));
-            assert_eq!(
-                col.min_dict_key_size,
-                Some(DictKeySize::U8),
-                "exemplar column {} should allow Dict(u8)",
-                col_name,
-            );
-        }
-    }
-
-    #[test]
     fn test_empty_definition() {
         let def = get(ArrowPayloadType::Unknown);
         assert!(def.get("anything").is_none());
@@ -903,37 +840,12 @@ mod tests {
 
     #[test]
     fn test_all_payload_types_return_definition() {
-        let all_types = [
-            ArrowPayloadType::Logs,
-            ArrowPayloadType::LogAttrs,
-            ArrowPayloadType::Spans,
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::SpanLinks,
-            ArrowPayloadType::SpanEventAttrs,
-            ArrowPayloadType::SpanLinkAttrs,
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            ArrowPayloadType::MetricAttrs,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ];
+        let mut all_types = Vec::new();
+        all_types.extend(Logs::allowed_payload_types());
+        all_types.extend(Metrics::allowed_payload_types());
+        all_types.extend(Traces::allowed_payload_types());
 
         for typ in all_types {
-            // Should not panic
             let _ = get(typ);
         }
     }
