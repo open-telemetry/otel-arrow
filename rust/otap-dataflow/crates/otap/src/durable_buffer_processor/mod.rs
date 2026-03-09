@@ -138,7 +138,7 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 /// - Metric set name follows `otap.<role>.<component>` pattern
 /// - Channel metrics already track bundle send/receive counts
 /// - This tracks ACK/NACK status, item counts, storage, and retries
-/// 
+///
 /// Please update the documentation at Telemetry.md when adding new
 /// metrics.
 #[metric_set(name = "otap.processor.durable_buffer")]
