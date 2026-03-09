@@ -421,7 +421,7 @@ properties for the `resource` column's `id` field.
 | body.double                       | Float64               | -                   | Yes      | No       | -                            | -        | Double body (when body.type=4)                    |
 | body.bool                         | Boolean               | -                   | Yes      | No       | -                            | -        | Boolean body (when body.type=2)                   |
 | body.bytes                        | Binary                | Dict(u16)           | Yes      | No       | -                            | -        | Bytes body (when body.type=5)                     |
-| body_ser                          | Binary                | Dict(u16)           | Yes      | No       | -                            | -        | CBOR-encoded complex body (when body.type=6 or 7) |
+| body.ser                          | Binary                | Dict(u16)           | Yes      | No       | -                            | -        | CBOR-encoded complex body (when body.type=6 or 7) |
 | dropped_attributes_count          | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped log attributes                  |
 | flags                             | UInt32                | -                   | Yes      | No       | -                            | -        | Trace flags                                       |
 
@@ -540,8 +540,8 @@ properties for the `resource` column's `id` field.
 | time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
 | sum                  | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
-| bucket_counts        | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Count per bucket                              |
-| explicit_bounds      | Float64               | List(Float64)       | Yes      | No       | -                            | -        | Histogram bucket boundaries                   |
+| bucket_counts        | List(UInt64)          | -                   | Yes      | No       | -                            | -        | Count per bucket                              |
+| explicit_bounds      | List(Float64)         | -                   | Yes      | No       | -                            | -        | Histogram bucket boundaries                   |
 | flags                | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
 | min                  | Float64               | -                   | Yes      | No       | -                            | -        | Minimum value                                 |
 | max                  | Float64               | -                   | Yes      | No       | -                            | -        | Maximum value                                 |
@@ -558,10 +558,12 @@ properties for the `resource` column's `id` field.
 | sum                    | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
 | scale                  | Int32                 | -                   | Yes      | No       | -                            | -        | Exponential histogram scale                   |
 | zero_count             | UInt64                | -                   | Yes      | No       | -                            | -        | Count of zero values                          |
-| positive_offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Positive bucket offset                        |
-| positive_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Positive bucket counts                        |
-| negative_offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Negative bucket offset                        |
-| negative_bucket_counts | UInt64                | List(UInt64)        | Yes      | No       | -                            | -        | Negative bucket counts                        |
+| positive               | Struct                | -                   | Yes      | No       | -                            | -        | Positive data                                 |
+| positive.offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Positive bucket offset                        |
+| positive.bucket_counts | List(UInt64)          | -                   | Yes      | No       | -                            | -        | Positive bucket counts                        |
+| negative               | Struct                | -                   | Yes      | No       | -                            | -        | Negative data                                 |
+| negative.offset        | Int32                 | -                   | Yes      | No       | -                            | -        | Negative bucket offset                        |
+| negative.bucket_counts | List(UInt64)          | -                   | Yes      | No       | -                            | -        | Negative bucket counts                        |
 | flags                  | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
 | min                    | Float64               | -                   | Yes      | No       | -                            | -        | Minimum value                                 |
 | max                    | Float64               | -                   | Yes      | No       | -                            | -        | Maximum value                                 |
