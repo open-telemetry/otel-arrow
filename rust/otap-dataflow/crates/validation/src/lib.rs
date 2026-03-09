@@ -36,6 +36,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    #[ignore = "flaky test, https://github.com/open-telemetry/otel-arrow/issues/2227"]
     fn no_processor() {
         Scenario::new()
             .pipeline(
@@ -169,6 +170,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "flaky test, see https://github.com/open-telemetry/otel-arrow/issues/2227"]
     fn multiple_input_output() {
         Scenario::new()
             .pipeline(
