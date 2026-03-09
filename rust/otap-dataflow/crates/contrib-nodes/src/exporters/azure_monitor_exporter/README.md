@@ -7,6 +7,8 @@ The Azure Monitor Exporter sends OpenTelemetry logs to Azure using the
 the format expected by Azure Log Analytics and provides configurable schema
 mapping for custom log tables.
 
+Telemetry reference: [Telemetry.md](Telemetry.md)
+
 ## Build df_engine with Azure Monitor Exporter
 
 From the `otap-dataflow` directory:
@@ -21,7 +23,7 @@ cargo build --release --features azure-monitor-exporter
 ./target/release/df_engine --help
 ```
 
-You should see `urn:microsoft_azure:monitor:exporter` in the Exporters list.
+You should see `urn:microsoft:exporter:azure_monitor` in the Exporters list.
 
 ## Configuration
 
@@ -33,7 +35,7 @@ configuration:
 ```yaml
 nodes:
   azure-monitor-exporter:
-    type: "urn:microsoft_azure:monitor:exporter"
+    type: "urn:microsoft:exporter:azure_monitor"
     config:
       # API configuration (REQUIRED)
       api:

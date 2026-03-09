@@ -4,8 +4,8 @@ The OTLP Receiver ingests telemetry data via the OpenTelemetry Protocol (OTLP)
 and forwards it into the OTAP dataflow pipeline. It supports both gRPC (HTTP/2)
 and HTTP/1.1 protocols with unified concurrency control.
 
-**Plugin URN (full):** `urn:otel:otlp:receiver`
-**Plugin URN (OTel shortcut):** `otlp:receiver`
+**Plugin URN (full):** `urn:otel:receiver:otlp`
+**Plugin URN (OTel shortcut):** `receiver:otlp`
 
 ## Architecture Overview
 
@@ -82,7 +82,7 @@ The receiver supports three deployment modes with different concurrency strategi
 <!-- markdownlint-disable MD013 -->
 
 | Mode | Configuration | Semaphores Used |
-|------|---------------|-----------------||
+| ------ | --------------- | ---------------- |
 | **gRPC-only** | Only `protocols.grpc` configured | Local gRPC semaphore only |
 | **HTTP-only** | Only `protocols.http` configured | Local HTTP semaphore only |
 | **Both protocols** | Both `protocols.grpc` and `protocols.http` | Global + per-protocol local |
@@ -274,7 +274,7 @@ Result:
 <!-- markdownlint-disable MD013 -->
 
 | Setting | Behavior |
-|---------|----------|
+| --------- | ---------- |
 | `max_concurrent_requests: 0` | Auto-tune to downstream capacity |
 | Explicit value < downstream | Hard cap per protocol |
 | Explicit value > downstream | Global semaphore still enforces downstream limit |
@@ -302,7 +302,7 @@ At least one protocol must be configured.
 ```yaml
 nodes:
   receiver:
-    type: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:receiver:otlp" # or "receiver:otlp"
     config:
       protocols:
         grpc:
@@ -314,7 +314,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    type: "urn:otel:otlp:receiver"
+    type: "urn:otel:receiver:otlp"
     config:
       protocols:
         http:
@@ -326,7 +326,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    type: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:receiver:otlp" # or "receiver:otlp"
     config:
       protocols:
         # ---------------------------------------------------------
@@ -416,7 +416,7 @@ nodes:
 ### OTLP/gRPC
 
 | Aspect | Details |
-|--------|---------|
+| -------- | --------- |
 | Default Port | 4317 |
 | Transport | HTTP/2 via tonic |
 | Endpoints | Standard gRPC service methods |
@@ -427,7 +427,7 @@ nodes:
 ### OTLP/HTTP
 
 | Aspect | Details |
-|--------|---------|
+| -------- | --------- |
 | Default Port | 4318 |
 | Transport | HTTP/1.1 via hyper |
 | Endpoints | `POST /v1/logs`, `/v1/metrics`, `/v1/traces` |
@@ -447,7 +447,7 @@ POST /v1/traces  -> ExportTraceServiceRequest   -> ExportTraceServiceResponse
 #### HTTP Response Codes
 
 | Code | Meaning |
-|------|---------|
+| ------ | --------- |
 | 200 | Success |
 | 400 | Bad Request (body too large, decompression failed) |
 | 404 | Unknown endpoint |

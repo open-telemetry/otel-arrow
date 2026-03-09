@@ -1,0 +1,23 @@
+nodes:
+  receiver1:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+
+  receiver2:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+  exporter1:
+    type: "urn:otel:exporter:otlp_grpc"
+    config:
+      grpc_endpoint: "http://127.0.0.1:4318"
+connections:
+  - from: receiver1
+    to: exporter1
+  - from: receiver2
+    to: exporter1

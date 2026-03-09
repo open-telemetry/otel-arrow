@@ -63,7 +63,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// URN for the OTAP batch processor
-pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
+pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:processor:batch";
 
 /// Default configuration item min-size (OTAP default)
 pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;
@@ -983,7 +983,7 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         ack: AckMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.handle_response(*ack.accepted, ack.calldata, effect, &Ok(()))
+        self.handle_response(*ack.accepted, ack.unwind.route.calldata, effect, &Ok(()))
             .await
     }
 
@@ -993,7 +993,7 @@ impl BatchProcessor {
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
         let res = Err(nack.reason);
-        self.handle_response(*nack.refused, nack.calldata, effect, &res)
+        self.handle_response(*nack.refused, nack.unwind.route.calldata, effect, &res)
             .await
     }
 
@@ -1329,6 +1329,7 @@ mod tests {
     use super::*;
     use crate::pdata::OtapPdata;
     use crate::testing::TestCallData;
+    use crate::testing::{next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
@@ -1738,16 +1739,14 @@ mod tests {
                                 match policy {
                                     AckPolicy::Ack => {
                                         ctx.process(Message::Control(NodeControlMsg::Ack(
-                                            Context::next_ack(AckMsg::new(new_output))
-                                                .expect("has subs")
-                                                .1,
+                                            next_ack(AckMsg::new(new_output)).expect("has subs").1,
                                         )))
                                         .await
                                         .expect("process ack");
                                     }
                                     AckPolicy::Nack(reason) => {
                                         ctx.process(Message::Control(NodeControlMsg::Nack(
-                                            Context::next_nack(NackMsg::new(reason, new_output))
+                                            next_nack(NackMsg::new(reason, new_output))
                                                 .expect("has subs")
                                                 .1,
                                         )))
@@ -1767,15 +1766,23 @@ mod tests {
                                 }
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
                                     looped += 1;
-                                    let calldata: TestCallData =
-                                        ack.calldata.try_into().expect("calldata");
-                                    received_acks.push(calldata);
+                                    if let Some((_node_id, ack)) = next_ack(ack) {
+                                        let calldata: TestCallData =
+                                            ack.unwind.route.calldata.try_into().expect("calldata");
+                                        received_acks.push(calldata);
+                                    }
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
-                                    let calldata: TestCallData =
-                                        nack.calldata.try_into().expect("calldata");
-                                    received_nacks.push(calldata);
+                                    if let Some((_node_id, nack)) = next_nack(nack) {
+                                        let calldata: TestCallData = nack
+                                            .unwind
+                                            .route
+                                            .calldata
+                                            .try_into()
+                                            .expect("calldata");
+                                        received_nacks.push(calldata);
+                                    }
                                 }
                                 Ok(_) => {
                                     panic!("unexpected case");

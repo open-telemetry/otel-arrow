@@ -26,11 +26,11 @@ policies:
 
 nodes:
   receiver1:
-    type: "urn:test:example:receiver"
+    type: "urn:test:receiver:example"
     config: null
   processor1:
-    type: "urn:test:example:processor"
+    type: "urn:test:processor:example"
     config: null
   exporter1:
-    type: "urn:test:example:exporter"
+    type: "urn:test:exporter:example"
     config: null

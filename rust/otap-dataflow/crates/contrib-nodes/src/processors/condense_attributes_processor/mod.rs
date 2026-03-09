@@ -42,7 +42,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 
 /// URN identifier for the Condense Attributes processor
-pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:condense_attributes:processor";
+pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
 
 /// Configuration for the Condense Attributes processor
 ///
@@ -673,7 +673,7 @@ mod condense_tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::TestCallData;
+    use otap_df_otap::testing::{TestCallData, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::{
@@ -1206,7 +1206,8 @@ mod condense_tests {
                 assert!(result.is_err(), "unsupported signal should return error");
 
                 match pipeline_ctrl_rx.recv().await.expect("pipeline msg") {
-                    PipelineControlMsg::DeliverNack { nack, node_id } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         assert_eq!(nack.refused.signal_type(), SignalType::Metrics);
                     }

@@ -6,13 +6,14 @@
 //! and validated.
 
 use crate::ValidationInstructions;
+use crate::error::ValidationError;
+use otap_df_otap::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use std::path::PathBuf;
 
-const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
-const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";
-const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:4316";
-const DEFAULT_CONTROL_ENDPOINT: &str = "http://127.0.0.1:4316";
+const DEFAULT_SUV_PORT: u16 = 4318;
+const DEFAULT_SUV_ENDPOINT_PORT: u16 = 4317;
 const DEFAULT_MAX_SIGNAL_COUNT: usize = 2000;
 const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
@@ -29,15 +30,104 @@ pub enum MessageType {
     Otap,
 }
 
+/// TLS configuration for validation scenarios.
+///
+/// When provided, the traffic-generator exporter connects to the SUV receiver
+/// over TLS (or mTLS) instead of plain-text gRPC.
+///
+/// Construct via [`TlsScenarioConfig::tls_only`] or [`TlsScenarioConfig::mtls`].
+///
+/// **Note:** Requires the `experimental-tls` feature to be enabled on `otap-df-otap`,
+/// otherwise the rendered pipeline config will fail to deserialize.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    pub(crate) ca_cert_path: PathBuf,
+    pub(crate) client_cert_path: Option<PathBuf>,
+    pub(crate) client_key_path: Option<PathBuf>,
+    pub(crate) server_name: String,
+}
+
+impl TlsConfig {
+    /// Create a TLS-only config (no client cert).
+    #[must_use]
+    pub fn tls_only(ca_cert_path: impl Into<PathBuf>) -> Self {
+        Self {
+            ca_cert_path: ca_cert_path.into(),
+            client_cert_path: None,
+            client_key_path: None,
+            server_name: "localhost".to_string(),
+        }
+    }
+
+    /// Create an mTLS config with client certificate and key.
+    #[must_use]
+    pub fn mtls(
+        ca_cert_path: impl Into<PathBuf>,
+        client_cert_path: impl Into<PathBuf>,
+        client_key_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            ca_cert_path: ca_cert_path.into(),
+            client_cert_path: Some(client_cert_path.into()),
+            client_key_path: Some(client_key_path.into()),
+            server_name: "localhost".to_string(),
+        }
+    }
+
+    /// Override the server name used for TLS SNI and certificate verification.
+    ///
+    /// Defaults to `"localhost"`. Set this when the server certificate uses a
+    /// different SAN/CN than `localhost`.
+    #[must_use]
+    pub fn with_server_name(mut self, name: impl Into<String>) -> Self {
+        self.server_name = name.into();
+        self
+    }
+
+    pub(crate) fn ca_cert_str(&self) -> Result<&str, ValidationError> {
+        self.ca_cert_path
+            .to_str()
+            .ok_or_else(|| ValidationError::Config("ca_cert_path is not valid UTF-8".into()))
+    }
+
+    pub(crate) fn client_cert_str(&self) -> Result<&str, ValidationError> {
+        match self.client_cert_path.as_deref() {
+            None => Ok(""),
+            Some(path) => path.to_str().ok_or_else(|| {
+                ValidationError::Config("client_cert_path is not valid UTF-8".into())
+            }),
+        }
+    }
+
+    pub(crate) fn client_key_str(&self) -> Result<&str, ValidationError> {
+        match self.client_key_path.as_deref() {
+            None => Ok(""),
+            Some(path) => path.to_str().ok_or_else(|| {
+                ValidationError::Config("client_key_path is not valid UTF-8".into())
+            }),
+        }
+    }
+
+    pub(crate) fn is_mtls(&self) -> bool {
+        self.client_cert_path.is_some() && self.client_key_path.is_some()
+    }
+}
+
 /// Configuration describing how the traffic generator should emit signals.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Generator {
     /// Type to use for the system-under-validation exporter.
     pub(crate) suv_exporter_type: MessageType,
-    /// Endpoint the system-under-validation exporter should target.
-    pub(crate) suv_endpoint: String,
-    /// Endpoint the control exporter should target.
-    pub(crate) control_endpoint: String,
+    /// Node name in the SUV pipeline to rewrite for exporter endpoint.
+    pub(crate) suv_exporter_node: String,
+    /// Core range start for this generator pipeline.
+    pub(crate) core_start: u16,
+    /// Core range end for this generator pipeline.
+    pub(crate) core_end: u16,
+    /// Port the system-under-validation exporter should target.
+    pub(crate) suv_port: u16,
+    /// Control ports the exporter should target (one per connected capture).
+    pub(crate) control_ports: Vec<u16>,
     /// Maximum number of signals the load generator should emit.
     pub(crate) max_signal_count: usize,
     /// Maximum batch size emitted by the load generator.
@@ -50,6 +140,10 @@ pub struct Generator {
     pub(crate) trace_weight: u32,
     /// Weight for log generation (0-100).
     pub(crate) log_weight: u32,
+    /// static vs semantic messages
+    pub(crate) data_source: DataSource,
+
+    pub(crate) tls: Option<TlsConfig>,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
@@ -57,10 +151,18 @@ pub struct Generator {
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
     pub(crate) suv_receiver_type: MessageType,
-    /// Listening address for the system-under-validation receiver.
-    pub(crate) suv_listening_addr: String,
-    /// Listening address for the control receiver.
-    pub(crate) control_listening_addr: String,
+    /// Node name in the SUV pipeline to rewrite for receiver listen addr.
+    pub(crate) suv_receiver_node: String,
+    /// Core range start for this capture pipeline.
+    pub(crate) core_start: u16,
+    /// Core range end for this capture pipeline.
+    pub(crate) core_end: u16,
+    /// Listening port for the system-under-validation receiver.
+    pub(crate) suv_port: u16,
+    /// Listening ports for control receivers (one per connected generator).
+    pub(crate) control_ports: Vec<u16>,
+    /// Generator labels whose control streams this capture should receive.
+    pub(crate) control_streams: Vec<String>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
 }
@@ -115,15 +217,46 @@ impl Generator {
 
     /// Emit over OTLP gRPC.
     #[must_use]
-    pub fn otlp_grpc(mut self) -> Self {
+    pub fn otlp_grpc(mut self, exporter_node: impl Into<String>) -> Self {
         self.suv_exporter_type = MessageType::Otlp;
+        self.suv_exporter_node = exporter_node.into();
         self
     }
 
     /// Emit over OTAP gRPC.
     #[must_use]
-    pub fn otap_grpc(mut self) -> Self {
+    pub fn otap_grpc(mut self, exporter_node: impl Into<String>) -> Self {
         self.suv_exporter_type = MessageType::Otap;
+        self.suv_exporter_node = exporter_node.into();
+        self
+    }
+
+    /// Set the core range for this generator pipeline.
+    #[must_use]
+    pub fn core_range(mut self, start: u16, end: u16) -> Self {
+        self.core_start = start;
+        self.core_end = end;
+        self
+    }
+
+    /// set the traffic generator to use static as source
+    #[must_use]
+    pub fn static_signals(mut self) -> Self {
+        self.data_source = DataSource::Static;
+        self
+    }
+
+    /// set the traffic generator to use semantic convention as source
+    #[must_use]
+    pub fn semantic_signals(mut self) -> Self {
+        self.data_source = DataSource::SemanticConventions;
+        self
+    }
+
+    /// Enable TLS (or mTLS) between the traffic generator and the SUV receiver.
+    #[must_use]
+    pub fn with_tls(mut self, config: TlsConfig) -> Self {
+        self.tls = Some(config);
         self
     }
 }
@@ -132,14 +265,19 @@ impl Default for Generator {
     fn default() -> Self {
         Self {
             suv_exporter_type: MessageType::Otlp,
-            suv_endpoint: DEFAULT_SUV_ENDPOINT.to_string(),
-            control_endpoint: DEFAULT_CONTROL_ENDPOINT.to_string(),
+            suv_exporter_node: String::new(),
+            core_start: 2,
+            core_end: 2,
+            suv_port: DEFAULT_SUV_ENDPOINT_PORT,
+            control_ports: vec![],
             max_signal_count: DEFAULT_MAX_SIGNAL_COUNT,
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             signals_per_second: DEFAULT_SIGNALS_PER_SECOND,
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
+            data_source: DataSource::Static,
+            tls: None,
         }
     }
 }
@@ -147,15 +285,17 @@ impl Default for Generator {
 impl Capture {
     /// Capture OTLP gRPC traffic.
     #[must_use]
-    pub fn otlp_grpc(mut self) -> Self {
+    pub fn otlp_grpc(mut self, receiver_node: impl Into<String>) -> Self {
         self.suv_receiver_type = MessageType::Otlp;
+        self.suv_receiver_node = receiver_node.into();
         self
     }
 
     /// Capture OTAP gRPC traffic.
     #[must_use]
-    pub fn otap_grpc(mut self) -> Self {
+    pub fn otap_grpc(mut self, receiver_node: impl Into<String>) -> Self {
         self.suv_receiver_type = MessageType::Otap;
+        self.suv_receiver_node = receiver_node.into();
         self
     }
 
@@ -166,9 +306,30 @@ impl Capture {
         self
     }
 
+    /// Set the generator labels whose control streams this capture should
+    /// receive. Each label must correspond to a generator added to the
+    /// [`Scenario`](crate::scenario::Scenario) so that the control path can
+    /// be wired during configuration.
+    #[must_use]
+    pub fn control_streams(mut self, labels: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.control_streams = labels.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set the core range for this capture pipeline.
+    #[must_use]
+    pub fn core_range(mut self, start: u16, end: u16) -> Self {
+        self.core_start = start;
+        self.core_end = end;
+        self
+    }
+
     /// Serialize the configured validations as JSON (for template contexts).
     #[must_use]
     pub fn validations_config(&self) -> String {
+        if self.validate.is_empty() {
+            return "".to_string();
+        }
         serde_yaml::to_string(&self.validate).unwrap_or_else(|_| "".to_string())
     }
 }
@@ -177,9 +338,13 @@ impl Default for Capture {
     fn default() -> Self {
         Self {
             suv_receiver_type: MessageType::Otlp,
-            suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
-            control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
-            validate: vec![ValidationInstructions::Equivalence],
+            suv_receiver_node: String::new(),
+            core_start: 1,
+            core_end: 1,
+            suv_port: DEFAULT_SUV_PORT,
+            control_ports: vec![],
+            control_streams: vec![],
+            validate: vec![],
         }
     }
 }
@@ -192,27 +357,37 @@ mod tests {
     fn generator_defaults_match_expected() {
         let g = Generator::default();
         assert_eq!(g.suv_exporter_type, MessageType::Otlp);
-        assert_eq!(g.suv_endpoint, "http://127.0.0.1:4317");
-        assert_eq!(g.control_endpoint, "http://127.0.0.1:4316");
+        assert_eq!(g.suv_port, DEFAULT_SUV_ENDPOINT_PORT);
+        assert_eq!(g.control_ports, Vec::<u16>::new());
         assert_eq!(g.max_signal_count, 2000);
         assert_eq!(g.max_batch_size, 100);
         assert_eq!(g.signals_per_second, 100);
         assert_eq!(g.metric_weight, 0);
         assert_eq!(g.trace_weight, 0);
         assert_eq!(g.log_weight, 100);
+        assert_eq!(g.data_source, DataSource::Static);
+        assert_eq!(g.core_start, 2);
+        assert_eq!(g.core_end, 2);
     }
 
     #[test]
     fn capture_defaults_match_expected() {
         let c = Capture::default();
         assert_eq!(c.suv_receiver_type, MessageType::Otlp);
-        assert_eq!(c.suv_listening_addr, "127.0.0.1:4318");
-        assert_eq!(c.control_listening_addr, "127.0.0.1:4316");
+        assert_eq!(c.suv_port, DEFAULT_SUV_PORT);
+        assert_eq!(c.control_ports, Vec::<u16>::new());
+        assert_eq!(c.control_streams, Vec::<String>::new());
+        assert_eq!(c.validate, vec![]);
+        assert_eq!(c.core_start, 1);
+        assert_eq!(c.core_end, 1);
     }
 
     #[test]
     fn generator_fixed_count_and_protocols() {
-        let g = Generator::default().fixed_count(42).otap_grpc().otlp_grpc(); // last call wins
+        let g = Generator::default()
+            .fixed_count(42)
+            .otap_grpc("exporter")
+            .otlp_grpc("exporter"); // last call wins
         assert_eq!(g.max_signal_count, 42);
         assert_eq!(g.suv_exporter_type, MessageType::Otlp);
     }
@@ -244,7 +419,7 @@ mod tests {
 
     #[test]
     fn capture_otap_sets_type() {
-        let c = Capture::default().otap_grpc();
+        let c = Capture::default().otap_grpc("receiver");
         assert_eq!(c.suv_receiver_type, MessageType::Otap);
     }
 }

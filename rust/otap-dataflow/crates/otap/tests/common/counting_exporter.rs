@@ -31,7 +31,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// URN for the counting exporter (ACKs and counts items).
-pub const COUNTING_EXPORTER_URN: &str = "urn:otel:counting:exporter";
+pub const COUNTING_EXPORTER_URN: &str = "urn:otel:exporter:counting";
 
 /// Registry of counters keyed by unique test/pipeline ID.
 static COUNTER_REGISTRY: LazyLock<Mutex<HashMap<String, Arc<AtomicU64>>>> =

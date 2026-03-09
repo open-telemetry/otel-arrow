@@ -477,6 +477,7 @@ impl SegmentWriter {
         // Note: The list item field must be nullable to match what ListBuilder produces
         let schema = Arc::new(Schema::new(vec![
             Field::new("bundle_index", DataType::UInt32, false),
+            Field::new("item_count", DataType::UInt64, false),
             Field::new(
                 "slot_refs",
                 DataType::List(Arc::new(Field::new_struct(
@@ -489,6 +490,7 @@ impl SegmentWriter {
         ]));
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
+        let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
 
         // Create the list builder with a struct builder inside
         let struct_builder = StructBuilder::from_fields(
@@ -499,6 +501,7 @@ impl SegmentWriter {
 
         for entry in entries {
             bundle_index_builder.append_value(entry.bundle_index);
+            item_count_builder.append_value(entry.item_count());
 
             // Get the struct builder from the list builder
             let struct_builder = slot_refs_builder.values();
@@ -529,6 +532,7 @@ impl SegmentWriter {
             schema.clone(),
             vec![
                 Arc::new(bundle_index_builder.finish()),
+                Arc::new(item_count_builder.finish()),
                 Arc::new(slot_refs_builder.finish()),
             ],
         )
@@ -926,10 +930,10 @@ mod tests {
 
     #[test]
     fn encode_manifest_produces_valid_ipc() {
-        let mut entry0 = ManifestEntry::new(0);
+        let mut entry0 = ManifestEntry::new(0, 10);
         entry0.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(0));
 
-        let mut entry1 = ManifestEntry::new(1);
+        let mut entry1 = ManifestEntry::new(1, 20);
         entry1.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(1));
         entry1.add_slot(SlotId::new(1), StreamId::new(1), ChunkIndex::new(0));
 

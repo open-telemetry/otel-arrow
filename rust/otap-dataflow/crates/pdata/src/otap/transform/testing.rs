@@ -423,14 +423,21 @@ pub fn extract_relation_fingerprints<S: OtapBatchStore, const N: usize>(
 
 /// Validates that no ID column has overlapping values across batch groups.
 /// Uses `payload_relations` to discover all ID columns that should be unique.
+///
+/// For all columns: checks that unique ID sets don't overlap across batches.
+/// For primary ID columns only: additionally checks that there are no duplicate
+/// IDs within a single batch (primary IDs must be unique per row).
 pub fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
 ) {
     for &payload_type in S::allowed_payload_types() {
         let idx = payload_to_idx(payload_type);
+        let info = payload_relations(payload_type);
+        let primary_id_name = info.primary_id.as_ref().map(|p| p.name);
 
-        for relation in payload_relations(payload_type).relations {
-            let mut seen = HashSet::new();
+        for relation in info.relations {
+            let is_primary = primary_id_name == Some(relation.key_col);
+            let mut seen_across_batches = HashSet::new();
 
             for group in batches.iter() {
                 let Some(batch) = &group[idx] else {
@@ -443,10 +450,23 @@ pub fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
                 };
 
                 let ids = collect_row_ids(col.as_ref());
-                for id in ids {
+                let unique: HashSet<u32> = ids.iter().copied().collect();
+
+                // Primary ID columns must have unique values within each batch.
+                if is_primary {
+                    assert_eq!(
+                        ids.len(),
+                        unique.len(),
+                        "Duplicate IDs within batch for primary column '{}'",
+                        relation.key_col,
+                    );
+                }
+
+                // All ID columns must not overlap across batches.
+                for &id in &unique {
                     assert!(
-                        seen.insert(id),
-                        "Overlapping ID in column '{}'",
+                        seen_across_batches.insert(id),
+                        "Overlapping ID {id} in column '{}' across batches",
                         relation.key_col,
                     );
                 }
@@ -534,7 +554,7 @@ pub fn find_parent_id_size<S: OtapBatchStore>(
 }
 
 /// Utility for pretty printing a bunch of otap batches, nice for debugging
-#[allow(dead_code)]
+#[allow(unused)]
 pub fn pretty_print_otap_batches<const N: usize>(batches: &[[Option<RecordBatch>; N]]) {
     for (idx, b) in batches.iter().enumerate() {
         use arrow::util::pretty;

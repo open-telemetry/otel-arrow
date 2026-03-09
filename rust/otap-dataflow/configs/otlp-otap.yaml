@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -34,7 +34,7 @@ groups:
               #   handshake_timeout: "10s"           # default is 10s
               #   reload_interval: "5m"              # default is 5m
           exporter:
-            type: otap:exporter
+            type: exporter:otap
             config:
               # Downstream OTAP/gRPC collector endpoint.
               # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)

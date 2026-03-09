@@ -45,7 +45,7 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:receiver:syslog_cef";
 
 /// Default maximum time to wait before flushing an Arrow batch.
 const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
@@ -231,10 +231,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         match &self.config.protocol {
             Protocol::Tcp(tcp_config) => {
                 otel_info!(
-                    "receiver.start",
+                    "syslog_cef_receiver.start",
                     protocol = "TCP",
-                    listening_addr = tcp_config.listening_addr.to_string(),
-                    message = "Starting Syslog/CEF receiver"
+                    listening_addr = tcp_config.listening_addr.to_string()
                 );
 
                 let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
@@ -260,7 +259,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 #[cfg(feature = "experimental-tls")]
                 if maybe_tls_acceptor.is_some() {
                     otel_info!(
-                        "receiver.tls_enabled",
+                        "syslog_cef_receiver.tls_enabled",
                         message = "TLS enabled for Syslog/CEF TCP receiver"
                     );
                 }
@@ -298,7 +297,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     if drain_result.is_err() {
                                         otel_warn!(
-                                            "receiver.shutdown.drain_timeout",
+                                            "syslog_cef_receiver.shutdown.drain_timeout",
                                             active_tasks = active_task_count.get(),
                                             message = "Shutdown drain timeout expired with tasks still active"
                                         );
@@ -360,7 +359,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             match accept_tls_connection(socket, &acceptor, timeout).await {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
-                                                        "tls.handshake.success",
+                                                        "syslog_cef_receiver.tls.handshake.success",
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
@@ -368,7 +367,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                                 Err(e) => {
                                                     otel_warn!(
-                                                        "tls.handshake.failed",
+                                                        "syslog_cef_receiver.tls.handshake.failed",
                                                         peer = %peer_addr,
                                                         error = %e,
                                                         message = "TLS handshake failed, closing connection"
@@ -401,14 +400,21 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             if task_shutdown_flag.get() {
                                                 if arrow_records_builder.len() > 0 {
                                                     let items = u64::from(arrow_records_builder.len());
-                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                    let res = effect_handler.try_send_message_with_source_node(
-                                                        OtapPdata::new_todo_context(arrow_records.into())
-                                                    );
-                                                    let mut m = metrics.borrow_mut();
-                                                    match &res {
-                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                    match arrow_records_builder.build() {
+                                                        Ok(arrow_records) => {
+                                                            let res = effect_handler.try_send_message_with_source_node(
+                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                            );
+                                                            let mut m = metrics.borrow_mut();
+                                                            match &res {
+                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                            metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                        }
                                                     }
                                                 }
                                                 metrics.borrow_mut().tcp_connections_active.dec();
@@ -452,14 +458,21 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
                                                                     }
                                                                 }
                                                             }
@@ -507,20 +520,28 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
 
                                                                 // Build the Arrow records to send them
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        // Reset the builder for the next batch
+                                                                        arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                // Reset the builder for the next batch
-                                                                arrow_records_builder = ArrowRecordsBuilder::new();
+                                                                        // Reset the timer since we already built an arrow record batch due to size constraint
+                                                                        interval.reset();
 
-                                                                // Reset the timer since we already built an arrow record batch due to size constraint
-                                                                interval.reset();
-
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                                                        interval.reset();
                                                                     }
                                                                 }
                                                             }
@@ -529,14 +550,21 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
                                                                     }
                                                                 }
                                                             }
@@ -554,17 +582,24 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     if arrow_records_builder.len() > 0 {
                                                         // Build the Arrow records and send them
                                                         let items = u64::from(arrow_records_builder.len());
-                                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                        match arrow_records_builder.build() {
+                                                            Ok(arrow_records) => {
+                                                                // Reset the builder for the next batch
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        // Reset the builder for the next batch
-                                                        arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                        {
-                                                            let mut m = metrics.borrow_mut();
-                                                            match &res {
-                                                                Ok(_) => m.received_logs_forwarded.add(items),
-                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                {
+                                                                    let mut m = metrics.borrow_mut();
+                                                                    match &res {
+                                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
                                                             }
                                                         }
                                                     }
@@ -590,10 +625,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
             Protocol::Udp(udp_config) => {
                 otel_info!(
-                    "receiver.start",
+                    "syslog_cef_receiver.start",
                     protocol = "UDP",
-                    listening_addr = udp_config.listening_addr.to_string(),
-                    message = "Starting Syslog/CEF receiver"
+                    listening_addr = udp_config.listening_addr.to_string()
                 );
 
                 let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
@@ -619,14 +653,21 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // Flush any remaining records before shutdown
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
-                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                        let res = effect_handler.try_send_message_with_source_node(
-                                            OtapPdata::new_todo_context(arrow_records.into())
-                                        );
-                                        let mut m = self.metrics.borrow_mut();
-                                        match &res {
-                                            Ok(_) => m.received_logs_forwarded.add(items),
-                                            Err(_) => m.received_logs_forward_failed.add(items),
+                                        match arrow_records_builder.build() {
+                                            Ok(arrow_records) => {
+                                                let res = effect_handler.try_send_message_with_source_node(
+                                                    OtapPdata::new_todo_context(arrow_records.into())
+                                                );
+                                                let mut m = self.metrics.borrow_mut();
+                                                match &res {
+                                                    Ok(_) => m.received_logs_forwarded.add(items),
+                                                    Err(_) => m.received_logs_forward_failed.add(items),
+                                                }
+                                            }
+                                            Err(e) => {
+                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                            }
                                         }
                                     }
 
@@ -669,28 +710,36 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     if arrow_records_builder.len() >= max_batch_size {
                                         // Build the Arrow records to send them
                                         let items = u64::from(arrow_records_builder.len());
-                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                        match arrow_records_builder.build() {
+                                            Ok(arrow_records) => {
+                                                // Reset the builder for the next batch
+                                                arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        // Reset the builder for the next batch
-                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                                // Reset the timer since we already built an arrow record batch due to size constraint
+                                                interval.reset();
 
-                                        // Reset the timer since we already built an arrow record batch due to size constraint
-                                        interval.reset();
-
-                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                        {
-                                            let mut m = self.metrics.borrow_mut();
-                                            match &res {
-                                                Ok(_) => m.received_logs_forwarded.add(items),
-                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                {
+                                                    let mut m = self.metrics.borrow_mut();
+                                                    match &res {
+                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                    }
+                                                }
+                                                // Do not propagate downstream send errors; keep running
+                                                // so that telemetry can still be collected (tests expect refused
+                                                // to be counted and reported). We already incremented
+                                                // `received_logs_forward_failed` above.
+                                                if res.is_err() {
+                                                    // swallow error
+                                                }
                                             }
-                                        }
-                                        // Do not propagate downstream send errors; keep running
-                                        // so that telemetry can still be collected (tests expect refused
-                                        // to be counted and reported). We already incremented
-                                        // `received_logs_forward_failed` above.
-                                        if res.is_err() {
-                                            // swallow error
+                                            Err(e) => {
+                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                arrow_records_builder = ArrowRecordsBuilder::new();
+                                                interval.reset();
+                                            }
                                         }
                                     }
                                 }
@@ -711,23 +760,30 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             if arrow_records_builder.len() > 0 {
                                 // Build the Arrow records and send them
                                 let items = u64::from(arrow_records_builder.len());
-                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                match arrow_records_builder.build() {
+                                    Ok(arrow_records) => {
+                                        // Reset the builder for the next batch
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                // Reset the builder for the next batch
-                                arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                {
-                                    let mut m = self.metrics.borrow_mut();
-                                    match &res {
-                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                        {
+                                            let mut m = self.metrics.borrow_mut();
+                                            match &res {
+                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                            }
+                                        }
+                                        // Do not propagate downstream send errors; keep running
+                                        // so that telemetry can still be collected and reported.
+                                        if res.is_err() {
+                                            // swallow error (already counted above)
+                                        }
                                     }
-                                }
-                                // Do not propagate downstream send errors; keep running
-                                // so that telemetry can still be collected and reported.
-                                if res.is_err() {
-                                    // swallow error (already counted above)
+                                    Err(e) => {
+                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                        self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                    }
                                 }
                             }
                         },

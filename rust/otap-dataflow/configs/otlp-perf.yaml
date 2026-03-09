@@ -13,13 +13,13 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4318"
           perf:
-            type: perf:exporter
+            type: exporter:perf
             config:
               frequency: 1000
               cpu_usage: false

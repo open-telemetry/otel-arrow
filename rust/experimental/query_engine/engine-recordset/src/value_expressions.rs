@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{cell::RefMut, ops::Deref, vec::Drain};
+use std::{cell::RefMut, ops::Deref};
 
 use data_engine_expressions::*;
 
@@ -18,7 +18,7 @@ where
     match mutable_value_expression {
         MutableValueExpression::Source(s) => {
             let value = if let Some(record) = execution_context.get_record() {
-                let mut selectors = capture_selector_values_for_mutable_write(
+                let selectors = capture_selector_values_for_mutable_write(
                     execution_context,
                     mutable_value_expression,
                     s.get_value_accessor().get_selectors(),
@@ -28,7 +28,7 @@ where
                     execution_context,
                     mutable_value_expression,
                     record.borrow_mut(),
-                    selectors.drain(..),
+                    selectors.into_iter(),
                 )
             } else {
                 None
@@ -43,7 +43,7 @@ where
             Ok(value)
         }
         MutableValueExpression::Variable(v) => {
-            let mut selectors = capture_selector_values_for_mutable_write(
+            let selectors = capture_selector_values_for_mutable_write(
                 execution_context,
                 mutable_value_expression,
                 v.get_value_accessor().get_selectors(),
@@ -97,7 +97,7 @@ where
                 },
             );
 
-            let mut selectors = selectors.drain(..);
+            let mut selectors = selectors.into_iter();
 
             let value = select_from_as_value_mut(
                 execution_context,
@@ -116,7 +116,7 @@ where
             Ok(value)
         }
         MutableValueExpression::Argument(a) => {
-            let mut selectors = capture_selector_values_for_mutable_write(
+            let selectors = capture_selector_values_for_mutable_write(
                 execution_context,
                 mutable_value_expression,
                 a.get_value_accessor().get_selectors(),
@@ -128,7 +128,7 @@ where
                 .get_argument_mut(a.get_argument_id())?;
 
             let value = if !selectors.is_empty() {
-                let mut selectors = selectors.drain(..);
+                let mut selectors = selectors.into_iter();
 
                 value.value.and_then(|v| match v {
                     ResolvedValueMut::Map(root) => {
@@ -251,7 +251,7 @@ fn select_from_borrowed_root_map<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     root_expression: &'a dyn Expression,
     root: RefMut<'b, dyn MapValueMut + 'static>,
-    mut selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
+    mut selectors: std::vec::IntoIter<(&'a ScalarExpression, ResolvedValue<'c>)>,
 ) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
@@ -277,7 +277,7 @@ fn select_from_map_value_mut<'a, 'b, 'c, TRecord: Record>(
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn MapValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
-    mut remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
+    mut remaining_selectors: std::vec::IntoIter<(&'a ScalarExpression, ResolvedValue<'c>)>,
 ) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
@@ -324,7 +324,7 @@ fn select_from_array_value_mut<'a, 'b, 'c, TRecord: Record>(
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn ArrayValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
-    mut remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
+    mut remaining_selectors: std::vec::IntoIter<(&'a ScalarExpression, ResolvedValue<'c>)>,
 ) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
@@ -374,7 +374,7 @@ fn select_from_as_value_mut<'a, 'b, 'c, TRecord: Record>(
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn AsStaticValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
-    remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
+    remaining_selectors: std::vec::IntoIter<(&'a ScalarExpression, ResolvedValue<'c>)>,
 ) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,

@@ -274,7 +274,7 @@ struct RecordIndex<'a> {
 type FieldIndex<'a> = BTreeMap<&'a str, FieldInfo<'a>>;
 
 #[derive(Debug)]
-struct FieldInfo<'a> {
+pub struct FieldInfo<'a> {
     // The value type of the column, note that this must be some primitive or
     // struct type, it will never be a dictionary. In the case of a struct, it
     // is not necessarily the final struct type as we need to do more processing
@@ -295,6 +295,21 @@ struct FieldInfo<'a> {
     largest_value_count: usize,
     // The values arrays for the type, some of these may come from dictionary array values.
     values: Vec<ArrayRef>,
+}
+
+impl<'a> FieldInfo<'a> {
+    pub fn new_from_array(array: &'a ArrayRef) -> Self {
+        Self {
+            value_type: array.data_type(),
+            nullable: array.nulls().is_some(),
+            smallest_key_type: None,
+            struct_index: None,
+            total_element_count: array.len(),
+            total_value_count: array.len() - array.null_count(),
+            largest_value_count: array.len(),
+            values: vec![Arc::clone(array)],
+        }
+    }
 }
 
 /// Create an index of fields while checking which type corresponds to each, that the
@@ -558,7 +573,8 @@ fn select_dictionary_type<'a>(info: &FieldInfo<'a>) -> Result<DataType> {
     }
 }
 
-enum Cardinality {
+/// Estimate of the cardinality of a field
+pub enum Cardinality {
     WithinU8,
     WithinU16,
     GreaterThanU16,
@@ -574,7 +590,9 @@ impl Cardinality {
     }
 }
 
-fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
+/// Estimate the cardinality of a set of arrays
+#[must_use]
+pub fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
     // Small types
     match info.value_type.primitive_width() {
         Some(1) => return estimate_cardinality_small_type::<u8>(info),

@@ -1144,21 +1144,21 @@ a naive per-core cap. Preliminary goals:
 ```yaml
 nodes:
   otlp_receiver:
-    type: "urn:otel:otlp:receiver"
+    type: "urn:otel:receiver:otlp"
     config:
       listening_addr: "127.0.0.1:4317"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   otap_receiver:
-    type: "urn:otel:otap:receiver"
+    type: "urn:otel:receiver:otap"
     config:
       listening_addr: "127.0.0.1:4318"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   durable_buffer:
-    type: "urn:otel:durable_buffer:processor"
+    type: "urn:otel:processor:durable_buffer"
     config:
       # Platform-appropriate persistent storage location
       path: /var/lib/otap/buffer
@@ -1178,14 +1178,14 @@ nodes:
         size_cap_policy: drop_oldest
 
   otap_exporter:
-    type: "urn:otel:otap:exporter"
+    type: "urn:otel:exporter:otap"
     config:
       grpc_endpoint: "http://{{backend_hostname}}:1235"
       compression_method: zstd
       arrow:
         payload_compression: none
-  otlp_exporter:
-    type: "urn:otel:otlp:exporter"
+  otlp_grpc_exporter:
+    type: "urn:otel:exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # Optional: timeout for RPC requests
@@ -1199,7 +1199,7 @@ connections:
   - from: durable_buffer
     to: otap_exporter
   - from: durable_buffer
-    to: otlp_exporter
+    to: otlp_grpc_exporter
 ```
 
 ### Example: Dual Exporters with Completion Tracking
@@ -1212,7 +1212,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 
 1. Incoming batches append to the WAL and accumulate in the in-memory open
   segment until finalize triggers; then the data is written as `seg-120.arrow`.
-1. Quiver enqueues a notification for `parquet_exporter` and `otlp_exporter`.
+1. Quiver enqueues a notification for `parquet_exporter` and `otlp_grpc_exporter`.
 1. Each exporter drains the segment's three bundles in order and, after
   finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
   to Quiver. The consumer-side cursor only advances to the next bundle once the
@@ -1226,7 +1226,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
 
-  quiver.sub.otlp_exporter:
+  quiver.sub.otlp_grpc_exporter:
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
   ```

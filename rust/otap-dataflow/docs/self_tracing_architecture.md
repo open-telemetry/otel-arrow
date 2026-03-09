@@ -279,14 +279,14 @@ engine:
     pipeline:
       nodes:
         telemetry:
-          type: internal_telemetry:receiver
+          type: receiver:internal_telemetry
           config: {}
-        otlp_exporter:
-          type: otlp:exporter
+        otlp_grpc_exporter:
+          type: exporter:otlp_grpc
           config: {}
       connections:
         - from: telemetry
-          to: otlp_exporter
+          to: otlp_grpc_exporter
 groups:
   default:
     pipelines:

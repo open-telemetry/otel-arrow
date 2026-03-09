@@ -51,7 +51,7 @@ mod predicate;
 mod sampling;
 
 /// The URN for the debug processor
-pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
+pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 
 /// processor that outputs all data received to stdout
 pub struct DebugProcessor {
@@ -248,7 +248,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        match DebugCallData::try_from(ackmsg.calldata.clone()) {
+                        match DebugCallData::try_from(ackmsg.unwind.route.calldata.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -261,7 +261,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "ACK received with unrecognized calldata (len={}): {e}\n",
-                                        ackmsg.calldata.len()
+                                        ackmsg.unwind.route.calldata.len()
                                     ))
                                     .await?;
                             }
@@ -270,7 +270,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        match DebugCallData::try_from(nackmsg.calldata.clone()) {
+                        match DebugCallData::try_from(nackmsg.unwind.route.calldata.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -283,7 +283,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "NACK received with unrecognized calldata (len={}): {e}\n",
-                                        nackmsg.calldata.len()
+                                        nackmsg.unwind.route.calldata.len()
                                     ))
                                     .await?;
                             }
@@ -543,6 +543,7 @@ mod tests {
     use crate::debug_processor::sampling::SamplingConfig;
     use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use crate::pdata::OtapPdata;
+    use crate::testing::{next_ack, next_nack};
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1439,12 +1440,14 @@ mod tests {
                         .expect("Processor failed on ACK");
 
                     match pipeline_ctrl_rx.try_recv() {
-                        Ok(PipelineControlMsg::DeliverAck { node_id, ack }) => {
+                        Ok(PipelineControlMsg::DeliverAck { ack }) => {
+                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = ack.calldata.try_into().unwrap();
+                            let received_calldata: TestCallData =
+                                ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "ACK should contain subscriber's calldata"
@@ -1490,12 +1493,15 @@ mod tests {
                         .expect("Processor failed on NACK");
 
                     match pipeline_ctrl_rx.try_recv() {
-                        Ok(PipelineControlMsg::DeliverNack { node_id, nack }) => {
+                        Ok(PipelineControlMsg::DeliverNack { nack }) => {
+                            let (node_id, nack) =
+                                next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
                                 "NACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = nack.calldata.try_into().unwrap();
+                            let received_calldata: TestCallData =
+                                nack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "NACK should contain subscriber's calldata"
