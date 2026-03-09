@@ -1,10 +1,11 @@
 version: otel_dataflow/v1
 
 # Mixed criticality scenario:
-# - ingress pipeline: OTLP -> shared topic
-# - primary o11y pipeline: balanced consumer group from topic
-# - security analytics pipeline: broadcast consumer from same topic
-# - anomaly detection pipeline: broadcast consumer from same topic
+# - traffic generator sends OTLP/gRPC into an ingress pipeline
+# - ingress pipeline terminates OTLP and republishes into a shared topic
+# - primary o11y pipeline consumes that topic in balanced mode and forwards to its backend
+# - security analytics and anomaly detection consume the same topic in broadcast mode
+# Goal: keep the primary path under strict backpressure while best-effort analytics consumers can lag independently.
 
 policies:
   channel_capacity:
@@ -45,13 +46,14 @@ groups:
   topic_mixed_criticality:
     topics:
       ingress:
-        description: "Shared ingress topic consumed by critical and best-effort pipelines"
+        description: "Shared ingress topic: balanced for the primary path, broadcast for best-effort analytics"
         policies:
           balanced:
             queue_capacity: 8192
             on_full: block
           broadcast:
             queue_capacity: 8192
+            on_lag: drop_oldest
 
     pipelines:
       traffic_gen:
@@ -75,7 +77,7 @@ groups:
                 log_weight: 30
 
           exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4547"
               max_in_flight: 6
@@ -132,7 +134,7 @@ groups:
               multiplier: 1.5
 
           exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4548"
               max_in_flight: 6

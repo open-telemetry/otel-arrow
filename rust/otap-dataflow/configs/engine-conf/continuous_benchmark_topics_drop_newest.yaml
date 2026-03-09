@@ -1,9 +1,12 @@
 version: otel_dataflow/v1
 
-# Topic-based variant of continuous_benchmark.yaml using drop_newest on full queues.
+# Topic-based variant of continuous_benchmark.yaml exercising `drop_newest`
+# on balanced topic queues and topic-exporter publishes.
 # This configuration keeps the same high-level benchmark shape (traffic
 # generators -> SUT -> backend) but replaces OTLP/gRPC inter-pipeline transport
 # with in-memory topics for direct performance comparison.
+# All active topic paths in this benchmark are balanced; broadcast lag policy
+# is not part of the scenario.
 #
 # Runtime CLI overrides:
 # - --num-cores / --core-id-range override top-level

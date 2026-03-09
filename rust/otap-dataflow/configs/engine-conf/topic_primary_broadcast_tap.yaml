@@ -2,10 +2,10 @@ version: otel_dataflow/v1
 
 # Primary + tap-oriented mixed criticality scenario:
 # - traffic generator publishes to a shared ingress topic
-# - primary o11y pipeline consumes ingress in balanced mode and sends to backend topic
-# - tap pipeline consumes ingress in broadcast mode and forwards to a dedicated analytics topic
-# - two independent analytics pipelines consume the tap topic in broadcast mode
-# - analytics tap topic is configured with drop_newest to isolate the primary path under pressure
+# - primary o11y pipeline consumes ingress in balanced mode and forwards to a backend topic
+# - tap pipeline consumes ingress in broadcast mode and republishes to a dedicated analytics topic
+# - two analytics pipelines consume that analytics topic in broadcast mode
+# Goal: keep the primary path strict and isolated while the tap path stays best-effort through broadcast delivery and lag handling.
 
 policies:
   channel_capacity:
@@ -46,13 +46,14 @@ groups:
   topic_primary_broadcast_tap:
     topics:
       ingress_main:
-        description: "Shared ingress topic consumed by primary and tap pipelines"
+        description: "Shared ingress topic: balanced for primary delivery, broadcast for the tap pipeline"
         policies:
           balanced:
             queue_capacity: 8192
             on_full: block
           broadcast:
             queue_capacity: 8192
+            on_lag: drop_oldest
 
       backend_logs:
         description: "Primary path logs forwarded to backend sink"
@@ -64,13 +65,14 @@ groups:
             queue_capacity: 8192
 
       analytics_tap:
-        description: "Best-effort tap fanout topic for analytics pipelines"
+        description: "Best-effort broadcast fanout topic for analytics pipelines"
         policies:
           balanced:
             queue_capacity: 2048
-            on_full: drop_newest
+            on_full: block
           broadcast:
             queue_capacity: 2048
+            on_lag: drop_oldest
 
     pipelines:
       traffic_gen:
@@ -155,7 +157,6 @@ groups:
             type: exporter:topic
             config:
               topic: analytics_tap
-              queue_on_full: drop_newest
 
         connections:
           - from: ingress_main
