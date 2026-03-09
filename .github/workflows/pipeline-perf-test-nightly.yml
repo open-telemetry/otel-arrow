@@ -127,6 +127,11 @@ jobs:
           sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Run batch processor performance test log suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
+
       - name: Upload syslog results for processing
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -164,6 +169,18 @@ jobs:
 
       - name: Upload saturation results for processing
         if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: saturation-nightly-results
+          path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+
+      - name: Upload batch processor results for processing
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: batch-processor-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_batch_processor/gh-actions-benchmark/*.json
+
+      - name: Upload saturation results for processing
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: saturation-nightly-results
@@ -235,11 +252,27 @@ jobs:
           merge-multiple: true
           path: saturation_results
 
+<<<<<<< HEAD
       - name: Download scaling efficiency metrics
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: scaling-efficiency-nightly-results
           path: scaling_efficiency_results
+=======
+          - name: Download batch processor artifacts
+            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+            with:
+              pattern: batch-processor-nightly-results*
+              merge-multiple: true
+              path: batch_processor_results
+
+          - name: Download saturation artifacts
+            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+            with:
+              pattern: saturation-nightly-results*
+              merge-multiple: true
+              path: saturation_results
+>>>>>>> d12f763b (c)
 
       - name: Consolidate syslog benchmark data
         run: |
@@ -265,6 +298,7 @@ jobs:
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
 
+<<<<<<< HEAD
       - name: Update benchmark data
         uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
         with:
@@ -276,6 +310,15 @@ jobs:
           benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
           auto-push: true
           save-data-file: true
+=======
+          - name: Consolidate batch processor benchmark data
+            run: |
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh batch_processor_results batch_processor_output.json
+
+          - name: Consolidate saturation benchmark data
+            run: |
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
+>>>>>>> d12f763b (c)
 
       - name: Update standard load batch size benchmark data
         uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
@@ -349,7 +392,38 @@ jobs:
           auto-push: true
           save-data-file: true
 
+<<<<<<< HEAD
       - name: Add benchmark link to job summary
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+=======
+          - name: Update batch processor benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: batch_processor_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/batch-processor"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update scaling efficiency data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customBiggerIsBetter"
+              output-file-path: scaling_efficiency_results/scaling-efficiency.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/scaling-efficiency"
+              auto-push: true
+              save-data-file: true
+
+          - name: Add benchmark link to job summary
+            run: |
+              echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+>>>>>>> d12f763b (c)

@@ -67,9 +67,9 @@ steps:
                 # ----- Receiver traffic config -----
                 max_batch_size: {{max_batch_size | default(1000)}}
                 signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
-                # metric_weight: 0
-                # trace_weight: 0
-                # log_weight: 100
+                metric_weight: {{metric_weight | default(0)}}
+                trace_weight: {{trace_weight | default(0)}}
+                log_weight: {{log_weight | default(100)}}
                 # registry_path: "https://github.com/open-telemetry/semantic-conventions.git[model]"
                 # ----- Exporter config -----
                 # loadgen_exporter_type: otap        # Options: otap, otlp, or custom/invalid
@@ -184,7 +184,7 @@ steps:
           - print_container_logs: {}
           - sql_report:
               name: Integration Report - Logs
-              report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
+              report_config_file: {{report_config | default('./test_suites/integration/configs/integration_report_logs.yaml')}}
               output:
                 - format:
                     template: {}
