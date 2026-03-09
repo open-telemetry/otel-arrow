@@ -128,7 +128,7 @@ tests:
         observation_interval: 60
 
   # OTAP -> OTAP tests with varying batch sizes
-  # NOTE: OTAP tests temporarily disabled — all batch sizes experience drain deadline
+  # NOTE: OTAP tests temporarily disabled -- all batch sizes experience drain deadline
   # exceeded on shutdown at 100k logs/sec. BATCH10/100 are completely non-viable (<1%
   # throughput), and BATCH512-8192 race the 60s timeout. Re-enable once the engine's
   # drain behavior is improved for OTAP workloads.
