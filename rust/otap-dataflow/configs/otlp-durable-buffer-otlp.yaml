@@ -50,7 +50,7 @@ groups:
               otlp_handling: pass_through
 
           exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
 
