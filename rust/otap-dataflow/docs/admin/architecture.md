@@ -27,9 +27,10 @@ Request flow:
 2. Browser loads static assets from `/static/*`.
 3. UI polls `/telemetry/metrics` (or `/metrics` alias) with:
    - `format=json`
-   - `reset=true`
+   - `reset=false`
    - optional `keep_all_zeroes=true|false`
-4. Client logic derives rates/summaries and updates cards, charts, and topology.
+4. Client logic derives deltas/rates/summaries and updates cards, charts, and
+   topology.
 
 When calling endpoints directly outside browser-relative paths, use:
 

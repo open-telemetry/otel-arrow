@@ -73,12 +73,13 @@
   // Query params tune metrics query behavior.
   const urlParams = new URLSearchParams(window.location.search);
 
-  // Metrics endpoint strategy: reset snapshots each poll, and keep-all-zeroes is configurable.
+  // Metrics endpoint strategy: read cumulative snapshots (no server-side reset),
+  // compute deltas client-side, and keep-all-zeroes is configurable.
   const keepAllZeroesParam = urlParams.get("keep_all_zeroes");
   const keepAllZeroes =
     keepAllZeroesParam == null ? true : keepAllZeroesParam === "true";
   const METRICS_URL_CANDIDATES = buildMetricsCandidates({
-    query: `format=json&reset=true&keep_all_zeroes=${keepAllZeroes ? "true" : "false"}`,
+    query: `format=json&reset=false&keep_all_zeroes=${keepAllZeroes ? "true" : "false"}`,
   });
   const HOLD_LAST_ENGINE_VALUES = true;
   const SKIP_ENGINE_ALL_ZERO_SNAPSHOTS = true;
@@ -363,6 +364,7 @@
     activeFetchController: null,
     latestFetchRequestId: 0,
     latestAppliedFetchRequestId: 0,
+    clientDeltaPrevBySeries: new Map(),
   };
   let statusSnapshot = null;
   let pipelineOptionLabelByKey = new Map();
