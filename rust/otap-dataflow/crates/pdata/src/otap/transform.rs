@@ -1252,19 +1252,20 @@ pub fn transform_attributes_impl(
                 }
             }
 
-            // Handle upserts (always insert since we've already deleted matching keys)
+            // Handle upserts: since matching keys were already deleted from the batch
+            // via KeyTransformRangeType::Upsert, we can reuse create_inserted_batch —
+            // its existing-key check will find no conflicts.
             if let Some(upsert) = transform.upsert.as_ref() {
-                // For upsert, we treat all entries as unconditional inserts.
-                // Create an InsertTransform from upsert entries and use create_upserted_batch
-                // which does not check for existing keys.
                 let upsert_as_insert = InsertTransform::new(upsert.entries.clone());
                 let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
-                    DataType::UInt16 => create_upserted_batch::<u16>(
+                    DataType::UInt16 => create_inserted_batch::<u16>(
+                        &combined_rb,
                         original_parent_ids,
                         &upsert_as_insert,
                         combined_schema.as_ref(),
                     )?,
-                    DataType::UInt32 => create_upserted_batch::<u32>(
+                    DataType::UInt32 => create_inserted_batch::<u32>(
+                        &combined_rb,
                         original_parent_ids,
                         &upsert_as_insert,
                         combined_schema.as_ref(),
@@ -7049,167 +7050,6 @@ where
             Arc::new(builder.finish())
         } else {
             // Fill with nulls
-            arrow::array::new_null_array(field.data_type(), total_rows)
-        };
-        columns.push(col);
-    }
-
-    Ok((
-        RecordBatch::try_new(Arc::new(schema.clone()), columns).expect("schema check"),
-        total_rows,
-    ))
-}
-
-/// Create a batch of upserted attributes.
-/// Unlike `create_inserted_batch`, this function does NOT check for existing keys - it
-/// unconditionally creates rows for all (parent, key, value) combinations. This is used
-/// after the upsert keys have already been deleted from the batch, so we know there are
-/// no existing entries to conflict with.
-///
-/// This function is generic over `T: ParentId` to handle different parent ID types (u16, u32)
-/// as well as dictionary-encoded parent IDs.
-fn create_upserted_batch<T>(
-    parent_ids: &ArrayRef,
-    insert: &InsertTransform,
-    schema: &arrow::datatypes::Schema,
-) -> Result<(RecordBatch, usize)>
-where
-    T: ParentId,
-    <T as ParentId>::ArrayType: ArrowPrimitiveType,
-    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
-        Ord + std::hash::Hash + Copy + Default,
-{
-    let parent_ids_accessor =
-        MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(parent_ids)?;
-
-    // Get unique parents
-    let mut unique_parents = BTreeSet::new();
-    for i in 0..parent_ids_accessor.len() {
-        if let Some(parent) = parent_ids_accessor.value_at(i) {
-            let _ = unique_parents.insert(parent);
-        }
-    }
-
-    if unique_parents.is_empty() {
-        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
-    }
-
-    // Unconditionally create rows for all (parent, key, value) combinations
-    let mut to_insert: Vec<(
-        <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
-        &str,
-        &LiteralValue,
-    )> = Vec::new();
-    for &parent in &unique_parents {
-        for (key, val) in insert.entries.iter() {
-            to_insert.push((parent, key.as_str(), val));
-        }
-    }
-
-    let total_rows = to_insert.len();
-    if total_rows == 0 {
-        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
-    }
-
-    // Build Parent ID column
-    let mut new_parent_ids = PrimitiveBuilder::<T::ArrayType>::with_capacity(total_rows);
-    for (parent, _, _) in &to_insert {
-        new_parent_ids.append_value(*parent);
-    }
-    let new_parent_ids = Arc::new(new_parent_ids.finish()) as ArrayRef;
-
-    // Build Attribute Type column
-    let mut new_types = PrimitiveBuilder::<UInt8Type>::with_capacity(total_rows);
-    for (_, _, val) in &to_insert {
-        let type_val = match val {
-            LiteralValue::Str(_) => AttributeValueType::Str,
-            LiteralValue::Int(_) => AttributeValueType::Int,
-            LiteralValue::Double(_) => AttributeValueType::Double,
-            LiteralValue::Bool(_) => AttributeValueType::Bool,
-        };
-        new_types.append_value(type_val as u8);
-    }
-    let new_types = Arc::new(new_types.finish()) as ArrayRef;
-
-    // Build Key column
-    let key_col_idx =
-        schema
-            .index_of(consts::ATTRIBUTE_KEY)
-            .map_err(|_| Error::ColumnNotFound {
-                name: consts::ATTRIBUTE_KEY.into(),
-            })?;
-    let key_type = schema.field(key_col_idx).data_type();
-    let key_options = array_options_for_type(key_type);
-
-    let mut key_builder = StringArrayBuilder::new(key_options);
-    for (_, key, _) in &to_insert {
-        key_builder.append_str(key);
-    }
-    let new_keys = key_builder
-        .finish()
-        .expect("key builder should produce array since optional=false");
-
-    // Build columns matching schema order
-    let mut columns = Vec::with_capacity(schema.fields().len());
-
-    for field in schema.fields() {
-        let name = field.name();
-        let col: ArrayRef = if name == consts::PARENT_ID {
-            new_parent_ids.clone()
-        } else if name == consts::ATTRIBUTE_TYPE {
-            new_types.clone()
-        } else if name == consts::ATTRIBUTE_KEY {
-            new_keys.clone()
-        } else if name == consts::ATTRIBUTE_STR {
-            let options = array_options_for_type(field.data_type());
-            let mut builder = StringArrayBuilder::new(options);
-            for (_, _, val) in &to_insert {
-                if let LiteralValue::Str(s) = val {
-                    builder.append_str(s);
-                } else {
-                    builder.append_null();
-                }
-            }
-            builder
-                .finish()
-                .expect("str builder should produce array since optional=false")
-        } else if name == consts::ATTRIBUTE_INT {
-            let options = array_options_for_type(field.data_type());
-            let mut builder = Int64ArrayBuilder::new(options);
-            for (_, _, val) in &to_insert {
-                if let LiteralValue::Int(v) = val {
-                    builder.append_value(v);
-                } else {
-                    builder.append_null();
-                }
-            }
-            builder
-                .finish()
-                .expect("int builder should produce array since optional=false")
-        } else if name == consts::ATTRIBUTE_DOUBLE {
-            let options = array_options_for_type(field.data_type());
-            let mut builder = Float64ArrayBuilder::new(options);
-            for (_, _, val) in &to_insert {
-                if let LiteralValue::Double(v) = val {
-                    builder.append_value(v);
-                } else {
-                    builder.append_null();
-                }
-            }
-            builder
-                .finish()
-                .expect("double builder should produce array since optional=false")
-        } else if name == consts::ATTRIBUTE_BOOL {
-            let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
-            for (_, _, val) in &to_insert {
-                if let LiteralValue::Bool(v) = val {
-                    builder.append_value(*v);
-                } else {
-                    builder.append_null();
-                }
-            }
-            Arc::new(builder.finish())
-        } else {
             arrow::array::new_null_array(field.data_type(), total_rows)
         };
         columns.push(col);
