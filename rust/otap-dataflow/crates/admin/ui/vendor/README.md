@@ -1,6 +1,7 @@
 # Vendored Frontend Dependencies
 
-This directory contains third-party browser dependencies required by the embedded admin UI.
+This directory contains third-party browser dependencies required by the
+embedded admin UI.
 
 - `tailwindcss.cdn.js`
   - Source: `https://cdn.tailwindcss.com`

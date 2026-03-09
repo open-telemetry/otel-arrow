@@ -242,13 +242,16 @@ Recommended UI-only CI job:
    - `rust/otap-dataflow/scripts/run-ui-js-tests.sh`
 2. Run only:
    - `./rust/otap-dataflow/scripts/run-ui-js-tests.sh`
-3. Mark this job as its own required PR status check (independent from Rust checks).
+3. Mark this job as its own required PR status check
+   (independent from Rust checks).
 
 Practical CI notes:
 
 - Pin a Node.js version in CI to avoid drift.
-- Keep the JS tests browserless and deterministic (no network, no timers by default).
-- Keep this job independent from `rust-required-status-check` so UI failures are isolated.
+- Keep the JS tests browserless and deterministic
+  (no network, no timers by default).
+- Keep this job independent from `rust-required-status-check` so UI failures
+  are isolated.
 
 ## Current limits
 
