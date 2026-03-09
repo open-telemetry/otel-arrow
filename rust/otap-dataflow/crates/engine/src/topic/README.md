@@ -41,6 +41,36 @@ Publisher/Subscriber Node
     -> backend implementation (in-memory today)
 ```
 
+## YAML Mapping
+
+Runtime YAML declares topics under `topics.<name>` or `groups.<group>.topics.<name>`:
+
+```yaml
+topics:
+  ingress:
+    backend: in_memory
+    impl_selection: auto
+    policies:
+      balanced:
+        queue_capacity: 1024
+        on_full: block
+      broadcast:
+        queue_capacity: 4096
+        on_lag: drop_oldest
+      ack_propagation: disabled
+```
+
+Mapping from YAML to runtime behavior:
+
+- `receiver:topic` with `subscription.mode: balanced` uses the balanced delivery path.
+- `receiver:topic` with `subscription.mode: broadcast` uses the broadcast delivery path.
+- The controller infers `TopicOptions::BalancedOnly`, `BroadcastOnly`, or `Mixed` from actual topic usage.
+- `impl_selection: force_mixed` disables that optimization and always selects `TopicOptions::Mixed`.
+- `balanced.queue_capacity` and `balanced.on_full` govern balanced consumer-group queues.
+- `broadcast.queue_capacity` and `broadcast.on_lag` govern the broadcast ring and slow-subscriber behavior.
+- `policies.ack_propagation` controls whether topic hops can bridge Ack/Nack across pipelines.
+- `exporter:topic.config.queue_on_full` is a per-publisher override for balanced full-queue behavior; it does not override broadcast lag policy.
+
 ## Example Use Cases
 
 ### 1. Work distribution (balanced)

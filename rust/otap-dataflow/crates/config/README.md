@@ -123,7 +123,37 @@ Topics can be declared in two scopes:
 - top-level: `topics.<name>`
 - group-level: `groups.<group>.topics.<name>` (visible only in that group)
 
-Current topic policy support:
+General topic capabilities:
+
+- decouple pipelines through named in-memory communication points
+- support balanced worker-pool delivery via subscription groups
+- support broadcast fan-out / tap pipelines
+- support mixed balanced + broadcast consumers on one topic
+
+Current topic declaration shape:
+
+```yaml
+topics:
+  raw_signals:
+    description: "raw ingest stream"
+    backend: in_memory
+    impl_selection: auto
+    policies:
+      balanced:
+        queue_capacity: 1000
+        on_full: drop_newest
+      broadcast:
+        queue_capacity: 4096
+        on_lag: drop_oldest
+      ack_propagation: auto
+```
+
+- `backend`:
+  - `in_memory` (default, currently implemented)
+  - `quiver` (accepted by config, not implemented by the runtime yet)
+- `impl_selection`:
+  - `auto`
+  - `force_mixed`
 
 - `policies.balanced.queue_capacity` (default: `128`, must be > 0)
 - `policies.balanced.on_full`:
@@ -133,9 +163,13 @@ Current topic policy support:
 - `policies.broadcast.on_lag`:
   - `drop_oldest` (default)
   - `disconnect`
+- `policies.ack_propagation`:
+  - `disabled` (default)
+  - `auto`
 
 `policies.balanced.on_full` applies to balanced delivery paths.
 `policies.broadcast.on_lag` applies to broadcast delivery paths.
+`policies.ack_propagation` applies to the topic hop as a whole.
 
 Topic declaration precedence (for a pipeline in a given group):
 
@@ -147,6 +181,7 @@ Topic declaration precedence (for a pipeline in a given group):
 - effective precedence:
   `topic:exporter.config.queue_on_full` -> `topic.policies.balanced.on_full` -> `block`
 - queue capacities remain topic-scope only
+- broadcast lag handling remains topic-scope only via `policies.broadcast.on_lag`
 
 ## Engine Observability Pipeline
 

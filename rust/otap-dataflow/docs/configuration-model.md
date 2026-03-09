@@ -148,10 +148,21 @@ Important behavior:
 
 `engine` is the home for engine-wide settings:
 
+- `topics`
 - `http_admin`
 - `telemetry`
 - `observed_state`
 - `observability`
+
+### Engine Topic Settings
+
+Engine-wide topic runtime defaults are declared at `engine.topics`.
+
+- `engine.topics.impl_selection`:
+  - `auto` (default): infer the most efficient runtime variant from topology
+  - `force_mixed`: disable topology-based optimization and always use the mixed implementation
+
+Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
 ### Observability Pipeline
 
@@ -252,12 +263,21 @@ Topics are declared in two places:
 - global scope: `topics.<name>`
 - group scope: `groups.<group>.topics.<name>`
 
-Current topic policy support:
+General topic capabilities:
+
+- Inter-pipeline decoupling between ingest, transform, and egress stages.
+- Balanced worker-pool processing with one logical stream per subscription group.
+- Broadcast fan-out / tap pipelines where multiple downstream consumers observe the same stream.
+- Mixed topologies where one topic serves both balanced and broadcast consumers.
+
+Current topic declaration shape:
 
 ```yaml
 topics:
   raw_signals:
     description: "raw ingest stream"
+    backend: in_memory
+    impl_selection: auto
     policies:
       balanced:
         queue_capacity: 1000
@@ -265,7 +285,18 @@ topics:
       broadcast:
         queue_capacity: 1000
         on_lag: drop_oldest
+      ack_propagation: auto
 ```
+
+Supported `backend` values:
+
+- `in_memory` (default, currently implemented)
+- `quiver` (accepted by config, not implemented by the runtime yet)
+
+Supported `impl_selection` values:
+
+- `auto`
+- `force_mixed`
 
 Supported `balanced.on_full` values:
 
@@ -277,15 +308,25 @@ Supported `broadcast.on_lag` values:
 - `drop_oldest`
 - `disconnect`
 
+Supported `ack_propagation` values:
+
+- `disabled`
+- `auto`
+
 `balanced.on_full` applies to balanced delivery paths. `broadcast.on_lag`
 applies to broadcast delivery paths.
+`ack_propagation` applies to the topic hop as a whole and controls whether
+Ack/Nack can be bridged across pipelines.
 
 Topic defaults:
 
+- `backend = in_memory`
+- `impl_selection = engine.topics.impl_selection` (whose default is `auto`)
 - `policies.balanced.queue_capacity = 128`
 - `policies.balanced.on_full = block`
 - `policies.broadcast.queue_capacity = 128`
 - `policies.broadcast.on_lag = drop_oldest`
+- `policies.ack_propagation = disabled`
 
 `exporter:topic` may locally override full-queue behavior:
 
@@ -304,6 +345,7 @@ Exporter-local `queue_on_full` behavior:
 - precedence: exporter `config.queue_on_full` -> topic `policies.balanced.on_full`
   -> default `block`
 - queue capacities remain topic-declaration-only (no exporter-local override)
+- broadcast lag handling remains topic-declaration-only via `policies.broadcast.on_lag`
 
 ## Output Ports
 
