@@ -8,7 +8,6 @@
 //!
 //! See docs/otap-spec.md sections 5.1-5.4 for the full specification.
 
-use super::consts::*;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 // ---------------------------------------------------------------------------
@@ -108,41 +107,41 @@ pub fn get_definition(typ: ArrowPayloadType) -> &'static PayloadDefinition {
         ArrowPayloadType::Unknown => &EMPTY_DEFINITION,
 
         // Logs
-        ArrowPayloadType::Logs => &LOGS_DEFINITION,
-        ArrowPayloadType::LogAttrs => &U16_ATTRS_DEFINITION,
+        ArrowPayloadType::Logs => &logs::DEFINITION,
+        ArrowPayloadType::LogAttrs => &attributes_16::DEFINITION,
 
         // Traces
-        ArrowPayloadType::Spans => &SPANS_DEFINITION,
-        ArrowPayloadType::SpanAttrs => &U16_ATTRS_DEFINITION,
-        ArrowPayloadType::SpanEvents => &SPAN_EVENTS_DEFINITION,
-        ArrowPayloadType::SpanLinks => &SPAN_LINKS_DEFINITION,
-        ArrowPayloadType::SpanEventAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::SpanLinkAttrs => &U32_ATTRS_DEFINITION,
+        ArrowPayloadType::Spans => &spans::DEFINITION,
+        ArrowPayloadType::SpanAttrs => &attributes_16::DEFINITION,
+        ArrowPayloadType::SpanEvents => &span_events::DEFINITION,
+        ArrowPayloadType::SpanLinks => &span_links::DEFINITION,
+        ArrowPayloadType::SpanEventAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::SpanLinkAttrs => &attributes_32::DEFINITION,
 
         // Metrics
-        ArrowPayloadType::UnivariateMetrics => &UNIVARIATE_METRICS_DEFINITION,
+        ArrowPayloadType::UnivariateMetrics => &univariate_metrics::DEFINITION,
         ArrowPayloadType::MultivariateMetrics => &EMPTY_DEFINITION,
-        ArrowPayloadType::NumberDataPoints => &NUMBER_DATA_POINTS_DEFINITION,
-        ArrowPayloadType::SummaryDataPoints => &SUMMARY_DATA_POINTS_DEFINITION,
-        ArrowPayloadType::HistogramDataPoints => &HISTOGRAM_DATA_POINTS_DEFINITION,
-        ArrowPayloadType::ExpHistogramDataPoints => &EXP_HISTOGRAM_DATA_POINTS_DEFINITION,
-        ArrowPayloadType::NumberDpExemplars => &EXEMPLARS_DEFINITION,
-        ArrowPayloadType::HistogramDpExemplars => &EXEMPLARS_DEFINITION,
-        ArrowPayloadType::ExpHistogramDpExemplars => &EXEMPLARS_DEFINITION,
+        ArrowPayloadType::NumberDataPoints => &number_data_points::DEFINITION,
+        ArrowPayloadType::SummaryDataPoints => &summary_data_points::DEFINITION,
+        ArrowPayloadType::HistogramDataPoints => &histogram_data_points::DEFINITION,
+        ArrowPayloadType::ExpHistogramDataPoints => &exp_histogram_data_points::DEFINITION,
+        ArrowPayloadType::NumberDpExemplars => &exemplars::DEFINITION,
+        ArrowPayloadType::HistogramDpExemplars => &exemplars::DEFINITION,
+        ArrowPayloadType::ExpHistogramDpExemplars => &exemplars::DEFINITION,
 
         // Metric attributes
-        ArrowPayloadType::MetricAttrs => &U16_ATTRS_DEFINITION,
-        ArrowPayloadType::NumberDpAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::SummaryDpAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::HistogramDpAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::ExpHistogramDpAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::NumberDpExemplarAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::HistogramDpExemplarAttrs => &U32_ATTRS_DEFINITION,
-        ArrowPayloadType::ExpHistogramDpExemplarAttrs => &U32_ATTRS_DEFINITION,
+        ArrowPayloadType::MetricAttrs => &attributes_16::DEFINITION,
+        ArrowPayloadType::NumberDpAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::SummaryDpAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::HistogramDpAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::ExpHistogramDpAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::NumberDpExemplarAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::HistogramDpExemplarAttrs => &attributes_32::DEFINITION,
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => &attributes_32::DEFINITION,
 
         // Common
-        ArrowPayloadType::ResourceAttrs => &U16_ATTRS_DEFINITION,
-        ArrowPayloadType::ScopeAttrs => &U16_ATTRS_DEFINITION,
+        ArrowPayloadType::ResourceAttrs => &attributes_16::DEFINITION,
+        ArrowPayloadType::ScopeAttrs => &attributes_16::DEFINITION,
     }
 }
 
@@ -164,9 +163,6 @@ const fn dict(native_type: NativeType, min: MinDictKeySize) -> ColumnDef {
     }
 }
 
-const U8: MinDictKeySize = MinDictKeySize::U8;
-const U16: MinDictKeySize = MinDictKeySize::U16;
-
 // ---------------------------------------------------------------------------
 // Empty definition
 // ---------------------------------------------------------------------------
@@ -182,36 +178,42 @@ static EMPTY_DEFINITION: PayloadDefinition = PayloadDefinition {
 // Spec: 5.4.2
 // ---------------------------------------------------------------------------
 
-fn u16_attrs_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static KEY: ColumnDef = dict(NativeType::Utf8, U8);
-    static TYPE: ColumnDef = native(NativeType::UInt8);
-    static STR: ColumnDef = dict(NativeType::Utf8, U16);
-    static INT: ColumnDef = dict(NativeType::Int64, U16);
-    static DOUBLE: ColumnDef = native(NativeType::Float64);
-    static BOOL: ColumnDef = native(NativeType::Boolean);
-    static BYTES: ColumnDef = dict(NativeType::Binary, U16);
-    static SER: ColumnDef = dict(NativeType::Binary, U16);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        ATTRIBUTE_KEY => Some(&KEY),
-        ATTRIBUTE_TYPE => Some(&TYPE),
-        // Optional
-        ATTRIBUTE_STR => Some(&STR),
-        ATTRIBUTE_INT => Some(&INT),
-        ATTRIBUTE_DOUBLE => Some(&DOUBLE),
-        ATTRIBUTE_BOOL => Some(&BOOL),
-        ATTRIBUTE_BYTES => Some(&BYTES),
-        ATTRIBUTE_SER => Some(&SER),
-        _ => None,
-    }
-}
+mod attributes_16 {
+    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use crate::schema::consts::*;
 
-static U16_ATTRS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: u16_attrs_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static TYPE_DEF: ColumnDef = native(NativeType::UInt8);
+    static STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
+    static INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
+    static BOOL_DEF: ColumnDef = native(NativeType::Boolean);
+    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            ATTRIBUTE_KEY => Some(&KEY_DEF),
+            ATTRIBUTE_TYPE => Some(&TYPE_DEF),
+            // Optional
+            ATTRIBUTE_STR => Some(&STR_DEF),
+            ATTRIBUTE_INT => Some(&INT_DEF),
+            ATTRIBUTE_DOUBLE => Some(&DOUBLE_DEF),
+            ATTRIBUTE_BOOL => Some(&BOOL_DEF),
+            ATTRIBUTE_BYTES => Some(&BYTES_DEF),
+            ATTRIBUTE_SER => Some(&SER_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // U32 Attributes (SPAN_EVENT_ATTRS, SPAN_LINK_ATTRS, all DP attrs,
@@ -219,512 +221,598 @@ static U16_ATTRS_DEFINITION: PayloadDefinition = PayloadDefinition {
 // Spec: 5.4.1
 // ---------------------------------------------------------------------------
 
-fn u32_attrs_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = dict(NativeType::UInt32, U8);
-    static KEY: ColumnDef = dict(NativeType::Utf8, U8);
-    static TYPE: ColumnDef = native(NativeType::UInt8);
-    static STR: ColumnDef = dict(NativeType::Utf8, U16);
-    static INT: ColumnDef = dict(NativeType::Int64, U16);
-    static DOUBLE: ColumnDef = native(NativeType::Float64);
-    static BOOL: ColumnDef = native(NativeType::Boolean);
-    static BYTES: ColumnDef = dict(NativeType::Binary, U16);
-    static SER: ColumnDef = dict(NativeType::Binary, U16);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        ATTRIBUTE_KEY => Some(&KEY),
-        ATTRIBUTE_TYPE => Some(&TYPE),
-        // Optional
-        ATTRIBUTE_STR => Some(&STR),
-        ATTRIBUTE_INT => Some(&INT),
-        ATTRIBUTE_DOUBLE => Some(&DOUBLE),
-        ATTRIBUTE_BOOL => Some(&BOOL),
-        ATTRIBUTE_BYTES => Some(&BYTES),
-        ATTRIBUTE_SER => Some(&SER),
-        _ => None,
-    }
-}
+mod attributes_32 {
+    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use crate::schema::consts::*;
 
-static U32_ATTRS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: u32_attrs_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, MinDictKeySize::U8);
+    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static TYPE_DEF: ColumnDef = native(NativeType::UInt8);
+    static STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
+    static INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
+    static BOOL_DEF: ColumnDef = native(NativeType::Boolean);
+    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            ATTRIBUTE_KEY => Some(&KEY_DEF),
+            ATTRIBUTE_TYPE => Some(&TYPE_DEF),
+            // Optional
+            ATTRIBUTE_STR => Some(&STR_DEF),
+            ATTRIBUTE_INT => Some(&INT_DEF),
+            ATTRIBUTE_DOUBLE => Some(&DOUBLE_DEF),
+            ATTRIBUTE_BOOL => Some(&BOOL_DEF),
+            ATTRIBUTE_BYTES => Some(&BYTES_DEF),
+            ATTRIBUTE_SER => Some(&SER_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // LOGS (ROOT) - Spec: 5.1.1
 // ---------------------------------------------------------------------------
 
-fn logs_get(name: &str) -> Option<&'static ColumnDef> {
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static OBSERVED: ColumnDef = native(NativeType::TimestampNs);
-    static BODY_COL: ColumnDef = native(NativeType::Struct);
-    static LOG_ID: ColumnDef = native(NativeType::UInt16);
-    static SEV_NUM: ColumnDef = dict(NativeType::Int32, U8);
-    static SEV_TEXT: ColumnDef = dict(NativeType::Utf8, U8);
-    static DROP_ATTR: ColumnDef = native(NativeType::UInt32);
-    static EVNAME: ColumnDef = dict(NativeType::Utf8, U8);
-    static LOG_FLAGS: ColumnDef = native(NativeType::UInt32);
-    static TID: ColumnDef = dict(NativeType::FixedSizeBinary(16), U8);
-    static SID: ColumnDef = dict(NativeType::FixedSizeBinary(8), U8);
-    static SURL: ColumnDef = dict(NativeType::Utf8, U8);
-    static RES: ColumnDef = native(NativeType::Struct);
-    static SC: ColumnDef = native(NativeType::Struct);
-    match name {
-        // Required
-        TIME_UNIX_NANO => Some(&TIME),
-        OBSERVED_TIME_UNIX_NANO => Some(&OBSERVED),
-        BODY => Some(&BODY_COL),
-        // Optional
-        ID => Some(&LOG_ID),
-        SEVERITY_NUMBER => Some(&SEV_NUM),
-        SEVERITY_TEXT => Some(&SEV_TEXT),
-        DROPPED_ATTRIBUTES_COUNT => Some(&DROP_ATTR),
-        EVENT_NAME => Some(&EVNAME),
-        FLAGS => Some(&LOG_FLAGS),
-        TRACE_ID => Some(&TID),
-        SPAN_ID => Some(&SID),
-        SCHEMA_URL => Some(&SURL),
-        RESOURCE => Some(&RES),
-        SCOPE => Some(&SC),
-        _ => None,
-    }
-}
+mod logs {
+    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use crate::schema::consts::*;
 
-fn logs_get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
-    static BODY_TYPE: ColumnDef = native(NativeType::UInt8);
-    static BODY_STR: ColumnDef = dict(NativeType::Utf8, U16);
-    static BODY_INT: ColumnDef = dict(NativeType::Int64, U16);
-    static BODY_DOUBLE: ColumnDef = native(NativeType::Float64);
-    static BODY_BOOL: ColumnDef = native(NativeType::Boolean);
-    static BODY_BYTES: ColumnDef = dict(NativeType::Binary, U16);
-    static BODY_SER: ColumnDef = dict(NativeType::Binary, U16);
-    static RES_ID: ColumnDef = native(NativeType::UInt16);
-    static RES_DROP: ColumnDef = native(NativeType::UInt32);
-    static RES_SURL: ColumnDef = dict(NativeType::Utf8, U8);
-    static SC_ID: ColumnDef = native(NativeType::UInt16);
-    static SC_DROP: ColumnDef = native(NativeType::UInt32);
-    static SC_NAME: ColumnDef = dict(NativeType::Utf8, U8);
-    static SC_VER: ColumnDef = dict(NativeType::Utf8, U8);
-    match (parent, child) {
-        // Required (body.type, body.str are required sub-fields of body)
-        (BODY, ATTRIBUTE_TYPE) => Some(&BODY_TYPE),
-        (BODY, ATTRIBUTE_STR) => Some(&BODY_STR),
-        // Optional body sub-fields
-        (BODY, ATTRIBUTE_INT) => Some(&BODY_INT),
-        (BODY, ATTRIBUTE_DOUBLE) => Some(&BODY_DOUBLE),
-        (BODY, ATTRIBUTE_BOOL) => Some(&BODY_BOOL),
-        (BODY, ATTRIBUTE_BYTES) => Some(&BODY_BYTES),
-        (BODY, ATTRIBUTE_SER) => Some(&BODY_SER),
-        // Resource sub-fields
-        (RESOURCE, ID) => Some(&RES_ID),
-        (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RES_DROP),
-        (RESOURCE, SCHEMA_URL) => Some(&RES_SURL),
-        // Scope sub-fields
-        (SCOPE, ID) => Some(&SC_ID),
-        (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SC_DROP),
-        (SCOPE, NAME) => Some(&SC_NAME),
-        (SCOPE, VERSION) => Some(&SC_VER),
-        _ => None,
-    }
-}
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static OBSERVED_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static BODY_DEF: ColumnDef = native(NativeType::Struct);
+    static ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static SEVERITY_NUMBER_DEF: ColumnDef = dict(NativeType::Int32, MinDictKeySize::U8);
+    static SEVERITY_TEXT_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static EVENT_NAME_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
+    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), MinDictKeySize::U8);
+    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), MinDictKeySize::U8);
+    static SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static RESOURCE_DEF: ColumnDef = native(NativeType::Struct);
+    static SCOPE_DEF: ColumnDef = native(NativeType::Struct);
 
-static LOGS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: logs_get,
-    get_nested_fn: logs_get_nested,
-};
+    // Nested: body sub-fields
+    static BODY_TYPE_DEF: ColumnDef = native(NativeType::UInt8);
+    static BODY_STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
+    static BODY_INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static BODY_DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
+    static BODY_BOOL_DEF: ColumnDef = native(NativeType::Boolean);
+    static BODY_BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static BODY_SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+
+    // Nested: resource sub-fields
+    static RESOURCE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+
+    // Nested: scope sub-fields
+    static SCOPE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static SCOPE_NAME_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static SCOPE_VERSION_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            OBSERVED_TIME_UNIX_NANO => Some(&OBSERVED_TIME_UNIX_NANO_DEF),
+            BODY => Some(&BODY_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            SEVERITY_NUMBER => Some(&SEVERITY_NUMBER_DEF),
+            SEVERITY_TEXT => Some(&SEVERITY_TEXT_DEF),
+            DROPPED_ATTRIBUTES_COUNT => Some(&DROPPED_ATTRIBUTES_COUNT_DEF),
+            EVENT_NAME => Some(&EVENT_NAME_DEF),
+            FLAGS => Some(&FLAGS_DEF),
+            TRACE_ID => Some(&TRACE_ID_DEF),
+            SPAN_ID => Some(&SPAN_ID_DEF),
+            SCHEMA_URL => Some(&SCHEMA_URL_DEF),
+            RESOURCE => Some(&RESOURCE_DEF),
+            SCOPE => Some(&SCOPE_DEF),
+            _ => None,
+        }
+    }
+
+    fn get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
+        match (parent, child) {
+            // Required (body.type, body.str are required sub-fields of body)
+            (BODY, ATTRIBUTE_TYPE) => Some(&BODY_TYPE_DEF),
+            (BODY, ATTRIBUTE_STR) => Some(&BODY_STR_DEF),
+            // Optional body sub-fields
+            (BODY, ATTRIBUTE_INT) => Some(&BODY_INT_DEF),
+            (BODY, ATTRIBUTE_DOUBLE) => Some(&BODY_DOUBLE_DEF),
+            (BODY, ATTRIBUTE_BOOL) => Some(&BODY_BOOL_DEF),
+            (BODY, ATTRIBUTE_BYTES) => Some(&BODY_BYTES_DEF),
+            (BODY, ATTRIBUTE_SER) => Some(&BODY_SER_DEF),
+            // Resource sub-fields
+            (RESOURCE, ID) => Some(&RESOURCE_ID_DEF),
+            (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (RESOURCE, SCHEMA_URL) => Some(&RESOURCE_SCHEMA_URL_DEF),
+            // Scope sub-fields
+            (SCOPE, ID) => Some(&SCOPE_ID_DEF),
+            (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (SCOPE, NAME) => Some(&SCOPE_NAME_DEF),
+            (SCOPE, VERSION) => Some(&SCOPE_VERSION_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: get_nested,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // SPANS (ROOT) - Spec: 5.2.1
 // ---------------------------------------------------------------------------
 
-fn spans_get(name: &str) -> Option<&'static ColumnDef> {
-    static START: ColumnDef = native(NativeType::TimestampNs);
-    static DUR: ColumnDef = native(NativeType::DurationNs);
-    static TID: ColumnDef = native(NativeType::FixedSizeBinary(16));
-    static SID: ColumnDef = native(NativeType::FixedSizeBinary(8));
-    static N: ColumnDef = native(NativeType::Utf8);
-    static SPAN_ID_COL: ColumnDef = native(NativeType::UInt16);
-    static K: ColumnDef = native(NativeType::Int32);
-    static PSID: ColumnDef = native(NativeType::FixedSizeBinary(8));
-    static DROP_ATTR: ColumnDef = native(NativeType::UInt32);
-    static DROP_EVT: ColumnDef = native(NativeType::UInt32);
-    static DROP_LNK: ColumnDef = native(NativeType::UInt32);
-    static SURL: ColumnDef = native(NativeType::Utf8);
-    static TS: ColumnDef = native(NativeType::Utf8);
-    static RES: ColumnDef = native(NativeType::Struct);
-    static SC: ColumnDef = native(NativeType::Struct);
-    static STAT: ColumnDef = native(NativeType::Struct);
-    match name {
-        // Required
-        START_TIME_UNIX_NANO => Some(&START),
-        DURATION_TIME_UNIX_NANO => Some(&DUR),
-        TRACE_ID => Some(&TID),
-        SPAN_ID => Some(&SID),
-        NAME => Some(&N),
-        // Optional
-        ID => Some(&SPAN_ID_COL),
-        KIND => Some(&K),
-        PARENT_SPAN_ID => Some(&PSID),
-        DROPPED_ATTRIBUTES_COUNT => Some(&DROP_ATTR),
-        DROPPED_EVENTS_COUNT => Some(&DROP_EVT),
-        DROPPED_LINKS_COUNT => Some(&DROP_LNK),
-        SCHEMA_URL => Some(&SURL),
-        TRACE_STATE => Some(&TS),
-        RESOURCE => Some(&RES),
-        SCOPE => Some(&SC),
-        STATUS => Some(&STAT),
-        _ => None,
-    }
-}
+mod spans {
+    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use crate::schema::consts::*;
 
-fn spans_get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
-    static RES_ID: ColumnDef = native(NativeType::UInt16);
-    static RES_DROP: ColumnDef = native(NativeType::UInt32);
-    static RES_SURL: ColumnDef = dict(NativeType::Utf8, U8);
-    static SC_ID: ColumnDef = native(NativeType::UInt16);
-    static SC_DROP: ColumnDef = native(NativeType::UInt32);
-    static SC_NAME: ColumnDef = native(NativeType::Utf8);
-    static SC_VER: ColumnDef = native(NativeType::Utf8);
-    static STAT_CODE: ColumnDef = dict(NativeType::Int32, U8);
-    static STAT_MSG: ColumnDef = dict(NativeType::Utf8, U8);
-    match (parent, child) {
-        // Resource sub-fields
-        (RESOURCE, ID) => Some(&RES_ID),
-        (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RES_DROP),
-        (RESOURCE, SCHEMA_URL) => Some(&RES_SURL),
-        // Scope sub-fields
-        (SCOPE, ID) => Some(&SC_ID),
-        (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SC_DROP),
-        (SCOPE, NAME) => Some(&SC_NAME),
-        (SCOPE, VERSION) => Some(&SC_VER),
-        // Status sub-fields
-        (STATUS, STATUS_CODE) => Some(&STAT_CODE),
-        (STATUS, STATUS_MESSAGE) => Some(&STAT_MSG),
-        _ => None,
-    }
-}
+    static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static DURATION_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::DurationNs);
+    static TRACE_ID_DEF: ColumnDef = native(NativeType::FixedSizeBinary(16));
+    static SPAN_ID_DEF: ColumnDef = native(NativeType::FixedSizeBinary(8));
+    static NAME_DEF: ColumnDef = native(NativeType::Utf8);
+    static ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static KIND_DEF: ColumnDef = native(NativeType::Int32);
+    static PARENT_SPAN_ID_DEF: ColumnDef = native(NativeType::FixedSizeBinary(8));
+    static DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static DROPPED_EVENTS_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static DROPPED_LINKS_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static SCHEMA_URL_DEF: ColumnDef = native(NativeType::Utf8);
+    static TRACE_STATE_DEF: ColumnDef = native(NativeType::Utf8);
+    static RESOURCE_DEF: ColumnDef = native(NativeType::Struct);
+    static SCOPE_DEF: ColumnDef = native(NativeType::Struct);
+    static STATUS_DEF: ColumnDef = native(NativeType::Struct);
 
-static SPANS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: spans_get,
-    get_nested_fn: spans_get_nested,
-};
+    // Nested: resource sub-fields
+    static RESOURCE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+
+    // Nested: scope sub-fields
+    static SCOPE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static SCOPE_NAME_DEF: ColumnDef = native(NativeType::Utf8);
+    static SCOPE_VERSION_DEF: ColumnDef = native(NativeType::Utf8);
+
+    // Nested: status sub-fields
+    static STATUS_CODE_DEF: ColumnDef = dict(NativeType::Int32, MinDictKeySize::U8);
+    static STATUS_MESSAGE_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            START_TIME_UNIX_NANO => Some(&START_TIME_UNIX_NANO_DEF),
+            DURATION_TIME_UNIX_NANO => Some(&DURATION_TIME_UNIX_NANO_DEF),
+            TRACE_ID => Some(&TRACE_ID_DEF),
+            SPAN_ID => Some(&SPAN_ID_DEF),
+            NAME => Some(&NAME_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            KIND => Some(&KIND_DEF),
+            PARENT_SPAN_ID => Some(&PARENT_SPAN_ID_DEF),
+            DROPPED_ATTRIBUTES_COUNT => Some(&DROPPED_ATTRIBUTES_COUNT_DEF),
+            DROPPED_EVENTS_COUNT => Some(&DROPPED_EVENTS_COUNT_DEF),
+            DROPPED_LINKS_COUNT => Some(&DROPPED_LINKS_COUNT_DEF),
+            SCHEMA_URL => Some(&SCHEMA_URL_DEF),
+            TRACE_STATE => Some(&TRACE_STATE_DEF),
+            RESOURCE => Some(&RESOURCE_DEF),
+            SCOPE => Some(&SCOPE_DEF),
+            STATUS => Some(&STATUS_DEF),
+            _ => None,
+        }
+    }
+
+    fn get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
+        match (parent, child) {
+            // Resource sub-fields
+            (RESOURCE, ID) => Some(&RESOURCE_ID_DEF),
+            (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (RESOURCE, SCHEMA_URL) => Some(&RESOURCE_SCHEMA_URL_DEF),
+            // Scope sub-fields
+            (SCOPE, ID) => Some(&SCOPE_ID_DEF),
+            (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (SCOPE, NAME) => Some(&SCOPE_NAME_DEF),
+            (SCOPE, VERSION) => Some(&SCOPE_VERSION_DEF),
+            // Status sub-fields
+            (STATUS, STATUS_CODE) => Some(&STATUS_CODE_DEF),
+            (STATUS, STATUS_MESSAGE) => Some(&STATUS_MESSAGE_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: get_nested,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // SPAN_EVENTS - Spec: 5.2.2
 // ---------------------------------------------------------------------------
 
-fn span_events_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static N: ColumnDef = native(NativeType::Utf8);
-    static EVT_ID: ColumnDef = native(NativeType::UInt32);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static DROP_ATTR: ColumnDef = native(NativeType::UInt32);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        NAME => Some(&N),
-        // Optional
-        ID => Some(&EVT_ID),
-        TIME_UNIX_NANO => Some(&TIME),
-        DROPPED_ATTRIBUTES_COUNT => Some(&DROP_ATTR),
-        _ => None,
-    }
-}
+mod span_events {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-static SPAN_EVENTS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: span_events_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static NAME_DEF: ColumnDef = native(NativeType::Utf8);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            NAME => Some(&NAME_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            DROPPED_ATTRIBUTES_COUNT => Some(&DROPPED_ATTRIBUTES_COUNT_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // SPAN_LINKS - Spec: 5.2.3
 // ---------------------------------------------------------------------------
 
-fn span_links_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static LNK_ID: ColumnDef = native(NativeType::UInt32);
-    static SID: ColumnDef = native(NativeType::FixedSizeBinary(8));
-    static TID: ColumnDef = native(NativeType::FixedSizeBinary(16));
-    static TS: ColumnDef = native(NativeType::Utf8);
-    static DROP_ATTR: ColumnDef = native(NativeType::UInt32);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        // Optional
-        ID => Some(&LNK_ID),
-        SPAN_ID => Some(&SID),
-        TRACE_ID => Some(&TID),
-        TRACE_STATE => Some(&TS),
-        DROPPED_ATTRIBUTES_COUNT => Some(&DROP_ATTR),
-        _ => None,
-    }
-}
+mod span_links {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-static SPAN_LINKS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: span_links_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static SPAN_ID_DEF: ColumnDef = native(NativeType::FixedSizeBinary(8));
+    static TRACE_ID_DEF: ColumnDef = native(NativeType::FixedSizeBinary(16));
+    static TRACE_STATE_DEF: ColumnDef = native(NativeType::Utf8);
+    static DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            SPAN_ID => Some(&SPAN_ID_DEF),
+            TRACE_ID => Some(&TRACE_ID_DEF),
+            TRACE_STATE => Some(&TRACE_STATE_DEF),
+            DROPPED_ATTRIBUTES_COUNT => Some(&DROPPED_ATTRIBUTES_COUNT_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // UNIVARIATE_METRICS (ROOT) - Spec: 5.3.1
 // ---------------------------------------------------------------------------
 
-fn univariate_metrics_get(name: &str) -> Option<&'static ColumnDef> {
-    static MET_ID: ColumnDef = native(NativeType::UInt16);
-    static MT: ColumnDef = native(NativeType::UInt8);
-    static N: ColumnDef = native(NativeType::Utf8);
-    static AGG: ColumnDef = native(NativeType::Int32);
-    static DESC: ColumnDef = native(NativeType::Utf8);
-    static MONO: ColumnDef = native(NativeType::Boolean);
-    static U: ColumnDef = native(NativeType::Utf8);
-    static SURL: ColumnDef = native(NativeType::Utf8);
-    static RES: ColumnDef = native(NativeType::Struct);
-    static SC: ColumnDef = native(NativeType::Struct);
-    match name {
-        // Required
-        ID => Some(&MET_ID),
-        METRIC_TYPE => Some(&MT),
-        NAME => Some(&N),
-        // Optional
-        AGGREGATION_TEMPORALITY => Some(&AGG),
-        DESCRIPTION => Some(&DESC),
-        IS_MONOTONIC => Some(&MONO),
-        UNIT => Some(&U),
-        SCHEMA_URL => Some(&SURL),
-        RESOURCE => Some(&RES),
-        SCOPE => Some(&SC),
-        _ => None,
-    }
-}
+mod univariate_metrics {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-fn univariate_metrics_get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
-    static RES_ID: ColumnDef = native(NativeType::UInt16);
-    static RES_DROP: ColumnDef = native(NativeType::UInt32);
-    static RES_SURL: ColumnDef = native(NativeType::Utf8);
-    static SC_ID: ColumnDef = native(NativeType::UInt16);
-    static SC_DROP: ColumnDef = native(NativeType::UInt32);
-    static SC_NAME: ColumnDef = native(NativeType::Utf8);
-    static SC_VER: ColumnDef = native(NativeType::Utf8);
-    match (parent, child) {
-        // Resource sub-fields
-        (RESOURCE, ID) => Some(&RES_ID),
-        (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RES_DROP),
-        (RESOURCE, SCHEMA_URL) => Some(&RES_SURL),
-        // Scope sub-fields
-        (SCOPE, ID) => Some(&SC_ID),
-        (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SC_DROP),
-        (SCOPE, NAME) => Some(&SC_NAME),
-        (SCOPE, VERSION) => Some(&SC_VER),
-        _ => None,
-    }
-}
+    static ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static METRIC_TYPE_DEF: ColumnDef = native(NativeType::UInt8);
+    static NAME_DEF: ColumnDef = native(NativeType::Utf8);
+    static AGGREGATION_TEMPORALITY_DEF: ColumnDef = native(NativeType::Int32);
+    static DESCRIPTION_DEF: ColumnDef = native(NativeType::Utf8);
+    static IS_MONOTONIC_DEF: ColumnDef = native(NativeType::Boolean);
+    static UNIT_DEF: ColumnDef = native(NativeType::Utf8);
+    static SCHEMA_URL_DEF: ColumnDef = native(NativeType::Utf8);
+    static RESOURCE_DEF: ColumnDef = native(NativeType::Struct);
+    static SCOPE_DEF: ColumnDef = native(NativeType::Struct);
 
-static UNIVARIATE_METRICS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: univariate_metrics_get,
-    get_nested_fn: univariate_metrics_get_nested,
-};
+    // Nested: resource sub-fields
+    static RESOURCE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = native(NativeType::Utf8);
+
+    // Nested: scope sub-fields
+    static SCOPE_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
+    static SCOPE_NAME_DEF: ColumnDef = native(NativeType::Utf8);
+    static SCOPE_VERSION_DEF: ColumnDef = native(NativeType::Utf8);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            ID => Some(&ID_DEF),
+            METRIC_TYPE => Some(&METRIC_TYPE_DEF),
+            NAME => Some(&NAME_DEF),
+            // Optional
+            AGGREGATION_TEMPORALITY => Some(&AGGREGATION_TEMPORALITY_DEF),
+            DESCRIPTION => Some(&DESCRIPTION_DEF),
+            IS_MONOTONIC => Some(&IS_MONOTONIC_DEF),
+            UNIT => Some(&UNIT_DEF),
+            SCHEMA_URL => Some(&SCHEMA_URL_DEF),
+            RESOURCE => Some(&RESOURCE_DEF),
+            SCOPE => Some(&SCOPE_DEF),
+            _ => None,
+        }
+    }
+
+    fn get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
+        match (parent, child) {
+            // Resource sub-fields
+            (RESOURCE, ID) => Some(&RESOURCE_ID_DEF),
+            (RESOURCE, DROPPED_ATTRIBUTES_COUNT) => Some(&RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (RESOURCE, SCHEMA_URL) => Some(&RESOURCE_SCHEMA_URL_DEF),
+            // Scope sub-fields
+            (SCOPE, ID) => Some(&SCOPE_ID_DEF),
+            (SCOPE, DROPPED_ATTRIBUTES_COUNT) => Some(&SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF),
+            (SCOPE, NAME) => Some(&SCOPE_NAME_DEF),
+            (SCOPE, VERSION) => Some(&SCOPE_VERSION_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: get_nested,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // NUMBER_DATA_POINTS - Spec: 5.3.2
 // ---------------------------------------------------------------------------
 
-fn number_data_points_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static START: ColumnDef = native(NativeType::TimestampNs);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static IV: ColumnDef = native(NativeType::Int64);
-    static DV: ColumnDef = native(NativeType::Float64);
-    static DP_ID: ColumnDef = native(NativeType::UInt32);
-    static DP_FLAGS: ColumnDef = native(NativeType::UInt32);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        START_TIME_UNIX_NANO => Some(&START),
-        TIME_UNIX_NANO => Some(&TIME),
-        INT_VALUE => Some(&IV),
-        DOUBLE_VALUE => Some(&DV),
-        // Optional
-        ID => Some(&DP_ID),
-        FLAGS => Some(&DP_FLAGS),
-        _ => None,
-    }
-}
+mod number_data_points {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-static NUMBER_DATA_POINTS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: number_data_points_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static INT_VALUE_DEF: ColumnDef = native(NativeType::Int64);
+    static DOUBLE_VALUE_DEF: ColumnDef = native(NativeType::Float64);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            START_TIME_UNIX_NANO => Some(&START_TIME_UNIX_NANO_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            INT_VALUE => Some(&INT_VALUE_DEF),
+            DOUBLE_VALUE => Some(&DOUBLE_VALUE_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            FLAGS => Some(&FLAGS_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // SUMMARY_DATA_POINTS - Spec: 5.3.3
 // ---------------------------------------------------------------------------
 
-fn summary_data_points_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static DP_ID: ColumnDef = native(NativeType::UInt32);
-    static CNT: ColumnDef = native(NativeType::UInt64);
-    static S: ColumnDef = native(NativeType::Float64);
-    static START: ColumnDef = native(NativeType::TimestampNs);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static DP_FLAGS: ColumnDef = native(NativeType::UInt32);
-    static QUANT: ColumnDef = native(NativeType::ListStruct);
-    static VAL: ColumnDef = native(NativeType::ListFloat64);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        // Optional
-        ID => Some(&DP_ID),
-        SUMMARY_COUNT => Some(&CNT),
-        SUMMARY_SUM => Some(&S),
-        START_TIME_UNIX_NANO => Some(&START),
-        TIME_UNIX_NANO => Some(&TIME),
-        FLAGS => Some(&DP_FLAGS),
-        SUMMARY_QUANTILE_VALUES => Some(&QUANT),
-        METRIC_VALUE => Some(&VAL),
-        _ => None,
-    }
-}
+mod summary_data_points {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-fn summary_data_points_get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
-    static QQ: ColumnDef = native(NativeType::Float64);
-    static QV: ColumnDef = native(NativeType::Float64);
-    match (parent, child) {
-        (SUMMARY_QUANTILE, SUMMARY_QUANTILE) => Some(&QQ),
-        (SUMMARY_QUANTILE, SUMMARY_VALUE) => Some(&QV),
-        _ => None,
-    }
-}
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static COUNT_DEF: ColumnDef = native(NativeType::UInt64);
+    static SUM_DEF: ColumnDef = native(NativeType::Float64);
+    static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
+    static QUANTILE_DEF: ColumnDef = native(NativeType::ListStruct);
+    static VALUE_DEF: ColumnDef = native(NativeType::ListFloat64);
 
-static SUMMARY_DATA_POINTS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: summary_data_points_get,
-    get_nested_fn: summary_data_points_get_nested,
-};
+    // Nested: quantile sub-fields
+    static QUANTILE_QUANTILE_DEF: ColumnDef = native(NativeType::Float64);
+    static QUANTILE_VALUE_DEF: ColumnDef = native(NativeType::Float64);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            SUMMARY_COUNT => Some(&COUNT_DEF),
+            SUMMARY_SUM => Some(&SUM_DEF),
+            START_TIME_UNIX_NANO => Some(&START_TIME_UNIX_NANO_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            FLAGS => Some(&FLAGS_DEF),
+            SUMMARY_QUANTILE_VALUES => Some(&QUANTILE_DEF),
+            METRIC_VALUE => Some(&VALUE_DEF),
+            _ => None,
+        }
+    }
+
+    fn get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
+        match (parent, child) {
+            (SUMMARY_QUANTILE, SUMMARY_QUANTILE) => Some(&QUANTILE_QUANTILE_DEF),
+            (SUMMARY_QUANTILE, SUMMARY_VALUE) => Some(&QUANTILE_VALUE_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: get_nested,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // HISTOGRAM_DATA_POINTS - Spec: 5.3.4
 // ---------------------------------------------------------------------------
 
-fn histogram_data_points_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static DP_ID: ColumnDef = native(NativeType::UInt32);
-    static CNT: ColumnDef = native(NativeType::UInt64);
-    static S: ColumnDef = native(NativeType::Float64);
-    static MN: ColumnDef = native(NativeType::Float64);
-    static MX: ColumnDef = native(NativeType::Float64);
-    static BC: ColumnDef = native(NativeType::ListUInt64);
-    static EB: ColumnDef = native(NativeType::ListFloat64);
-    static START: ColumnDef = native(NativeType::TimestampNs);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static DP_FLAGS: ColumnDef = native(NativeType::UInt32);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        // Optional
-        ID => Some(&DP_ID),
-        HISTOGRAM_COUNT => Some(&CNT),
-        HISTOGRAM_SUM => Some(&S),
-        HISTOGRAM_MIN => Some(&MN),
-        HISTOGRAM_MAX => Some(&MX),
-        HISTOGRAM_BUCKET_COUNTS => Some(&BC),
-        HISTOGRAM_EXPLICIT_BOUNDS => Some(&EB),
-        START_TIME_UNIX_NANO => Some(&START),
-        TIME_UNIX_NANO => Some(&TIME),
-        FLAGS => Some(&DP_FLAGS),
-        _ => None,
-    }
-}
+mod histogram_data_points {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-static HISTOGRAM_DATA_POINTS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: histogram_data_points_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static COUNT_DEF: ColumnDef = native(NativeType::UInt64);
+    static SUM_DEF: ColumnDef = native(NativeType::Float64);
+    static MIN_DEF: ColumnDef = native(NativeType::Float64);
+    static MAX_DEF: ColumnDef = native(NativeType::Float64);
+    static BUCKET_COUNTS_DEF: ColumnDef = native(NativeType::ListUInt64);
+    static EXPLICIT_BOUNDS_DEF: ColumnDef = native(NativeType::ListFloat64);
+    static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            HISTOGRAM_COUNT => Some(&COUNT_DEF),
+            HISTOGRAM_SUM => Some(&SUM_DEF),
+            HISTOGRAM_MIN => Some(&MIN_DEF),
+            HISTOGRAM_MAX => Some(&MAX_DEF),
+            HISTOGRAM_BUCKET_COUNTS => Some(&BUCKET_COUNTS_DEF),
+            HISTOGRAM_EXPLICIT_BOUNDS => Some(&EXPLICIT_BOUNDS_DEF),
+            START_TIME_UNIX_NANO => Some(&START_TIME_UNIX_NANO_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            FLAGS => Some(&FLAGS_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // EXP_HISTOGRAM_DATA_POINTS - Spec: 5.3.5
 // ---------------------------------------------------------------------------
 
-fn exp_histogram_data_points_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = native(NativeType::UInt16);
-    static DP_ID: ColumnDef = native(NativeType::UInt32);
-    static CNT: ColumnDef = native(NativeType::UInt64);
-    static S: ColumnDef = native(NativeType::Float64);
-    static MN: ColumnDef = native(NativeType::Float64);
-    static MX: ColumnDef = native(NativeType::Float64);
-    static SC: ColumnDef = native(NativeType::Int32);
-    static ZC: ColumnDef = native(NativeType::UInt64);
-    static POS: ColumnDef = native(NativeType::Struct);
-    static NEG: ColumnDef = native(NativeType::Struct);
-    static START: ColumnDef = native(NativeType::TimestampNs);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static DP_FLAGS: ColumnDef = native(NativeType::UInt32);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        // Optional
-        ID => Some(&DP_ID),
-        HISTOGRAM_COUNT => Some(&CNT),
-        HISTOGRAM_SUM => Some(&S),
-        HISTOGRAM_MIN => Some(&MN),
-        HISTOGRAM_MAX => Some(&MX),
-        EXP_HISTOGRAM_SCALE => Some(&SC),
-        EXP_HISTOGRAM_ZERO_COUNT => Some(&ZC),
-        EXP_HISTOGRAM_POSITIVE => Some(&POS),
-        EXP_HISTOGRAM_NEGATIVE => Some(&NEG),
-        START_TIME_UNIX_NANO => Some(&START),
-        TIME_UNIX_NANO => Some(&TIME),
-        FLAGS => Some(&DP_FLAGS),
-        _ => None,
-    }
-}
+mod exp_histogram_data_points {
+    use super::{ColumnDef, NativeType, PayloadDefinition, native};
+    use crate::schema::consts::*;
 
-fn exp_histogram_data_points_get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
-    static BC: ColumnDef = native(NativeType::ListUInt64);
-    static OFF: ColumnDef = native(NativeType::Int32);
-    match (parent, child) {
-        (EXP_HISTOGRAM_POSITIVE, EXP_HISTOGRAM_BUCKET_COUNTS) => Some(&BC),
-        (EXP_HISTOGRAM_POSITIVE, EXP_HISTOGRAM_OFFSET) => Some(&OFF),
-        (EXP_HISTOGRAM_NEGATIVE, EXP_HISTOGRAM_BUCKET_COUNTS) => Some(&BC),
-        (EXP_HISTOGRAM_NEGATIVE, EXP_HISTOGRAM_OFFSET) => Some(&OFF),
-        _ => None,
-    }
-}
+    static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static COUNT_DEF: ColumnDef = native(NativeType::UInt64);
+    static SUM_DEF: ColumnDef = native(NativeType::Float64);
+    static MIN_DEF: ColumnDef = native(NativeType::Float64);
+    static MAX_DEF: ColumnDef = native(NativeType::Float64);
+    static SCALE_DEF: ColumnDef = native(NativeType::Int32);
+    static ZERO_COUNT_DEF: ColumnDef = native(NativeType::UInt64);
+    static POSITIVE_DEF: ColumnDef = native(NativeType::Struct);
+    static NEGATIVE_DEF: ColumnDef = native(NativeType::Struct);
+    static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
 
-static EXP_HISTOGRAM_DATA_POINTS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: exp_histogram_data_points_get,
-    get_nested_fn: exp_histogram_data_points_get_nested,
-};
+    // Nested: positive/negative sub-fields
+    static BUCKET_COUNTS_DEF: ColumnDef = native(NativeType::ListUInt64);
+    static OFFSET_DEF: ColumnDef = native(NativeType::Int32);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            HISTOGRAM_COUNT => Some(&COUNT_DEF),
+            HISTOGRAM_SUM => Some(&SUM_DEF),
+            HISTOGRAM_MIN => Some(&MIN_DEF),
+            HISTOGRAM_MAX => Some(&MAX_DEF),
+            EXP_HISTOGRAM_SCALE => Some(&SCALE_DEF),
+            EXP_HISTOGRAM_ZERO_COUNT => Some(&ZERO_COUNT_DEF),
+            EXP_HISTOGRAM_POSITIVE => Some(&POSITIVE_DEF),
+            EXP_HISTOGRAM_NEGATIVE => Some(&NEGATIVE_DEF),
+            START_TIME_UNIX_NANO => Some(&START_TIME_UNIX_NANO_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            FLAGS => Some(&FLAGS_DEF),
+            _ => None,
+        }
+    }
+
+    fn get_nested(parent: &str, child: &str) -> Option<&'static ColumnDef> {
+        match (parent, child) {
+            (EXP_HISTOGRAM_POSITIVE, EXP_HISTOGRAM_BUCKET_COUNTS) => Some(&BUCKET_COUNTS_DEF),
+            (EXP_HISTOGRAM_POSITIVE, EXP_HISTOGRAM_OFFSET) => Some(&OFFSET_DEF),
+            (EXP_HISTOGRAM_NEGATIVE, EXP_HISTOGRAM_BUCKET_COUNTS) => Some(&BUCKET_COUNTS_DEF),
+            (EXP_HISTOGRAM_NEGATIVE, EXP_HISTOGRAM_OFFSET) => Some(&OFFSET_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: get_nested,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // EXEMPLARS (NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS,
 //            EXP_HISTOGRAM_DP_EXEMPLARS) - Spec: 5.3.6
 // ---------------------------------------------------------------------------
 
-fn exemplars_get(name: &str) -> Option<&'static ColumnDef> {
-    static PID: ColumnDef = dict(NativeType::UInt32, U8);
-    static EX_ID: ColumnDef = native(NativeType::UInt32);
-    static DV: ColumnDef = native(NativeType::Float64);
-    static IV: ColumnDef = dict(NativeType::Int64, U8);
-    static SID: ColumnDef = dict(NativeType::FixedSizeBinary(8), U8);
-    static TIME: ColumnDef = native(NativeType::TimestampNs);
-    static TID: ColumnDef = dict(NativeType::FixedSizeBinary(16), U8);
-    match name {
-        // Required
-        PARENT_ID => Some(&PID),
-        // Optional
-        ID => Some(&EX_ID),
-        DOUBLE_VALUE => Some(&DV),
-        INT_VALUE => Some(&IV),
-        SPAN_ID => Some(&SID),
-        TIME_UNIX_NANO => Some(&TIME),
-        TRACE_ID => Some(&TID),
-        _ => None,
-    }
-}
+mod exemplars {
+    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use crate::schema::consts::*;
 
-static EXEMPLARS_DEFINITION: PayloadDefinition = PayloadDefinition {
-    get_fn: exemplars_get,
-    get_nested_fn: |_, _| None,
-};
+    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, MinDictKeySize::U8);
+    static ID_DEF: ColumnDef = native(NativeType::UInt32);
+    static DOUBLE_VALUE_DEF: ColumnDef = native(NativeType::Float64);
+    static INT_VALUE_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U8);
+    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), MinDictKeySize::U8);
+    static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
+    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), MinDictKeySize::U8);
+
+    fn get(name: &str) -> Option<&'static ColumnDef> {
+        match name {
+            // Required
+            PARENT_ID => Some(&PARENT_ID_DEF),
+            // Optional
+            ID => Some(&ID_DEF),
+            DOUBLE_VALUE => Some(&DOUBLE_VALUE_DEF),
+            INT_VALUE => Some(&INT_VALUE_DEF),
+            SPAN_ID => Some(&SPAN_ID_DEF),
+            TIME_UNIX_NANO => Some(&TIME_UNIX_NANO_DEF),
+            TRACE_ID => Some(&TRACE_ID_DEF),
+            _ => None,
+        }
+    }
+
+    pub(super) static DEFINITION: PayloadDefinition = PayloadDefinition {
+        get_fn: get,
+        get_nested_fn: |_, _| None,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
