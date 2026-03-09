@@ -13,48 +13,82 @@ use crate::parser::{Rule, invalid_child_rule_error};
 /// Trait for building pipelines.
 ///
 /// This abstracts away the details of how expressions are added to a pipeline, so the same parser
-/// utility functions can be used targetting different pipeline builder. In pratice, this is useful
+/// utility functions can be used targeting different pipeline builder. In practice, this is useful
 /// when building nested pipelines for some expressions which nest pipeline stages, such as if/else
 pub(crate) trait PipelineBuilder {
     fn push_data_expression(&mut self, data_expression: DataExpression);
 
     /// push a function definition, returns the function ID
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize;
+
+    fn get_max_func_id(&self) -> usize;
 }
 
 // TODO - should probably add a wrapper around this that keeps track of the function IDs
 // TODO - need to somehow merge the function Ids from the child back into this ...
 
-impl PipelineBuilder for ParserState {
+pub struct RootPipelineBuilder<'a> {
+    parser_state: &'a mut ParserState,
+    max_func_id: usize,
+}
+
+impl<'a> RootPipelineBuilder<'a> {
+    pub fn new(parser_state: &'a mut ParserState) -> Self {
+        Self {
+            parser_state,
+            max_func_id: 0,
+        }
+    }
+}
+
+impl PipelineBuilder for RootPipelineBuilder<'_> {
     fn push_data_expression(&mut self, data_expression: DataExpression) {
-        self.push_expression(data_expression);
+        self.parser_state.push_expression(data_expression);
     }
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
-        self.push_function(name, definition, Vec::new(), HashMap::new());
-        self.get_function_id(name)
+        self.parser_state
+            .push_function(name, definition, Vec::new(), HashMap::new());
+        let func_id = self
+            .parser_state
+            .get_function_id(name)
             .expect("should have function with name")
-            .get_id()
+            .get_id();
+        self.max_func_id = self.max_func_id.max(func_id);
+
+        func_id
+    }
+
+    fn get_max_func_id(&self) -> usize {
+        self.max_func_id
     }
 }
 
 /// simple [`PipelineBuilder`] implementation for collecting nested data expressions and
 /// function definitions
 pub(crate) struct InnerPipelineBuilder {
+    /// The functions that will be appended to this inner pipeline will need to be appended
+    /// to the parent pipeline builder eventually. The expressions inside the inner pipeline
+    /// will reference functions by ID, but the ID must be the global ID. This value is used
+    /// to offset the local IDs to the global function ID.
+    func_id_offset: usize,
+
     data_exprs: Vec<DataExpression>,
     functions: Vec<(String, PipelineFunction)>,
 }
 
 impl InnerPipelineBuilder {
-    pub fn new() -> Self {
-        Self::new_with_capacities(None, None)
+    pub fn new(func_id_offset: usize) -> Self {
+        Self::new_with_capacities(func_id_offset, None, None)
     }
 
     pub fn new_with_capacities(
+        func_id_offset: usize,
         data_expr_capacity: Option<usize>,
         functions_capacity: Option<usize>,
     ) -> Self {
         Self {
+            func_id_offset,
             data_exprs: Vec::with_capacity(data_expr_capacity.unwrap_or_default()),
             functions: Vec::with_capacity(functions_capacity.unwrap_or_default()),
         }
@@ -62,6 +96,10 @@ impl InnerPipelineBuilder {
 
     pub fn into_data_exprs(self) -> Vec<DataExpression> {
         self.data_exprs
+    }
+
+    pub fn into_parts(self) -> (Vec<DataExpression>, Vec<(String, PipelineFunction)>) {
+        (self.data_exprs, self.functions)
     }
 }
 
@@ -72,8 +110,11 @@ impl PipelineBuilder for InnerPipelineBuilder {
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
         self.functions.push((name.to_string(), definition));
-        // TODO this isn't correct
-        self.functions.len() - 1
+        self.func_id_offset + self.functions.len() - 1
+    }
+
+    fn get_max_func_id(&self) -> usize {
+        self.functions.len() + self.func_id_offset
     }
 }
 
@@ -86,7 +127,9 @@ pub(crate) fn parse_pipeline(
             Rule::source => {
                 // ignore for now
             }
-            Rule::pipeline_stage => parse_pipeline_stage(rule, state)?,
+            Rule::pipeline_stage => {
+                parse_pipeline_stage(rule, &mut RootPipelineBuilder::new(state))?
+            }
             invalid_rule => {
                 let query_location = to_query_location(&rule);
                 return Err(invalid_child_rule_error(

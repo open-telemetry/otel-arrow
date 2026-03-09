@@ -222,7 +222,7 @@ pub(crate) fn parse_if_else_operator_call(
     let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
-    let mut next_branch = InnerPipelineBuilder::new();
+    let mut next_branch = InnerPipelineBuilder::new(pipeline_builder.get_max_func_id());
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -257,8 +257,11 @@ pub(crate) fn parse_if_else_operator_call(
                 }
 
                 // take the data expressions for the branch and reset next_branch
-                let curr_branch = next_branch;
-                next_branch = InnerPipelineBuilder::new();
+                let (curr_branch_data_exprs, curr_branch_funcs) = next_branch.into_parts();
+                for (func_name, func_def) in curr_branch_funcs {
+                    _ = pipeline_builder.push_function_definition(&func_name, func_def);
+                }
+                next_branch = InnerPipelineBuilder::new(pipeline_builder.get_max_func_id());
 
                 let query_location = QueryLocation::new(
                     branch_location_start,
@@ -288,7 +291,7 @@ pub(crate) fn parse_if_else_operator_call(
                     conditional_expr.with_branch(ConditionalDataExpressionBranch::new(
                         query_location,
                         condition,
-                        curr_branch.into_data_exprs(),
+                        curr_branch_data_exprs,
                     ));
             }
 
@@ -306,15 +309,21 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 let inner_rules = branch_rules.into_inner();
-                let mut else_branch_exprs =
-                    InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
+                let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacities(
+                    pipeline_builder.get_max_func_id(),
+                    Some(inner_rules.len()),
+                    None,
+                );
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
 
-                conditional_expr =
-                    conditional_expr.with_default_branch(else_branch_exprs.into_data_exprs());
+                let (else_branch_data_exprs, else_branch_funcs) = else_branch_exprs.into_parts();
+                for (func_name, func_def) in else_branch_funcs {
+                    _ = pipeline_builder.push_function_definition(&func_name, func_def);
+                }
+                conditional_expr = conditional_expr.with_default_branch(else_branch_data_exprs);
             }
             _ => {
                 return Err(ParserError::SyntaxError(
@@ -389,12 +398,18 @@ pub(crate) fn parse_apply_operator_call(
     };
 
     // parse the child stages of the nested pipeline
-    let mut inner_pipeline =
-        InnerPipelineBuilder::new_with_capacities(Some(inner_rules.len()), None);
+    let mut inner_pipeline = InnerPipelineBuilder::new_with_capacities(
+        pipeline_builder.get_max_func_id(),
+        Some(inner_rules.len()),
+        None,
+    );
     for inner_rule in inner_rules {
         parse_pipeline_stage(inner_rule, &mut inner_pipeline)?;
     }
-    let inner_data_exprs = inner_pipeline.into_data_exprs();
+    let (inner_data_exprs, inner_data_funcs) = inner_pipeline.into_parts();
+    for (func_name, func_def) in inner_data_funcs {
+        _ = pipeline_builder.push_function_definition(&func_name, func_def);
+    }
 
     // convert child stages to pipeline functions
     let mut function_exprs = Vec::with_capacity(inner_data_exprs.len());
@@ -457,6 +472,7 @@ mod tests {
 
     use crate::parser::operator::parse_operator_call;
     use crate::parser::pest::OplPestParser;
+    use crate::parser::pipeline::RootPipelineBuilder;
     use crate::parser::{OplParser, Rule};
 
     #[test]
@@ -466,7 +482,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -489,7 +505,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -523,7 +539,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 2);
@@ -761,7 +777,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -817,7 +833,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -898,7 +914,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
 
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
@@ -941,7 +957,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
 
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
