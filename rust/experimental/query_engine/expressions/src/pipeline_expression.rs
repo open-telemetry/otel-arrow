@@ -103,18 +103,49 @@ impl PipelineExpression {
             }
         }
 
-        let scope = PipelineResolutionScope {
-            constants: &self.constants,
-            functions: &Vec::new(), // TODO not sure if this is right ...
-        };
-        for func in &mut self.functions {
-            if let PipelineFunctionImplementation::Expressions(func_exprs) =
-                &mut func.implementation
+        for i in 0..self.functions.len() {
+            // There's a challenge here where `PipelineResolutionScope` needs to shared-borrow the
+            // functions, but we need to mutably borrow the expressions inside the function body so
+            // that they can be folded. The trick here is that we take the expressions from the
+            // body temporarily.
+            //
+            // TODO The main limitation of this approach is that we are not able to optimize an
+            // expression inside a recursive function call by inspecting the body. This will be
+            // left as a challenge for future maintainers.
+
+            // if the function is defined as a list of expressions, temporarily take the
+            // expressions so we can fold them, while still borrowing immutably the other functions
+            let mut tmp_func_exprs = {
+                let func = &mut self.functions[i];
+                if let PipelineFunctionImplementation::Expressions(func_exprs) =
+                    &mut func.implementation
+                {
+                    std::mem::take(func_exprs)
+                } else {
+                    Vec::new()
+                }
+            };
+
+            // fold the function expressions..
             {
-                for e in func_exprs {
+                let scope = PipelineResolutionScope {
+                    constants: &self.constants,
+                    functions: &self.functions,
+                };
+                for e in &mut tmp_func_exprs {
                     if let Err(e) = e.try_fold(&scope) {
                         errors.push(e);
                     }
+                }
+            }
+
+            // replace the function expressions from where they were taken above.
+            {
+                let func = &mut self.functions[i];
+                if let PipelineFunctionImplementation::Expressions(func_exprs) =
+                    &mut func.implementation
+                {
+                    *func_exprs = tmp_func_exprs;
                 }
             }
         }
@@ -598,6 +629,213 @@ mod tests {
         expected.push_expression(DataExpression::Discard(DiscardDataExpression::new(
             QueryLocation::new_fake(),
         )));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_folds_function_implementation_expressions() {
+        let actual = PipelineExpressionBuilder::new("")
+            .with_functions(vec![PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![],
+                None,
+                vec![PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        // This logical expression should be folded into a static `false`
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                            )),
+                            false,
+                        )),
+                    ),
+                )],
+            )])
+            .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        None,
+                        0,
+                        Vec::new(),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "a",
+                            )),
+                        )]),
+                    )),
+                ),
+            ))])
+            .build()
+            .unwrap();
+
+        let expected = PipelineExpressionBuilder::new("")
+            .with_functions(vec![PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![],
+                None,
+                vec![PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        // folded logical expr:
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                    ),
+                )],
+            )])
+            .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        None,
+                        0,
+                        Vec::new(),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "a",
+                            )),
+                        )]),
+                    )),
+                ),
+            ))])
+            .build()
+            .unwrap();
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_folds_function_implementation_expressions_that_invoke_other_functions() {
+        let actual = PipelineExpressionBuilder::new("")
+            .with_functions(vec![
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![],
+                    None,
+                    vec![PipelineFunctionExpression::Return(
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                        )),
+                    )],
+                ),
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![],
+                    None,
+                    vec![PipelineFunctionExpression::Discard(
+                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                            // This logical expression should be folded into a static `false`
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::InvokeFunction(
+                                    InvokeFunctionScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        None,
+                                        0,
+                                        Vec::new(),
+                                    ),
+                                ),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                                )),
+                                false,
+                            )),
+                        ),
+                    )],
+                ),
+            ])
+            .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        None,
+                        1,
+                        Vec::new(),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "c",
+                            )),
+                        )]),
+                    )),
+                ),
+            ))])
+            .build()
+            .unwrap();
+
+        let expected = PipelineExpressionBuilder::new("")
+            .with_functions(vec![
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![],
+                    None,
+                    vec![PipelineFunctionExpression::Return(
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                        )),
+                    )],
+                ),
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![],
+                    None,
+                    vec![PipelineFunctionExpression::Discard(
+                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                            // folded logical expr:
+                            LogicalExpression::Scalar(ScalarExpression::Static(
+                                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    false,
+                                )),
+                            )),
+                        ),
+                    )],
+                ),
+            ])
+            .with_expressions(vec![DataExpression::Transform(TransformExpression::Set(
+                SetTransformExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        None,
+                        1,
+                        Vec::new(),
+                    )),
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "c",
+                            )),
+                        )]),
+                    )),
+                ),
+            ))])
+            .build()
+            .unwrap();
 
         assert_eq!(expected, actual);
     }
