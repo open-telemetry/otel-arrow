@@ -934,6 +934,18 @@ pub fn transform_attributes_impl(
     // Build an effective transform that includes the upsert keys in the delete set,
     // then we'll insert them unconditionally after the main transform.
     let has_upsert = transform.upsert.is_some();
+
+    // Before merging upsert keys into the delete set, count how many rows in the
+    // original batch match upsert keys. These "upsert-caused deletes" must be
+    // subtracted from deleted_entries later so that stats only reflect explicit deletes.
+    let upsert_caused_deletes: u64 = if has_upsert {
+        let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+        let upsert = transform.upsert.as_ref().unwrap();
+        count_rows_matching_keys(&key_col, &upsert.entries.keys().collect())
+    } else {
+        0
+    };
+
     let effective_transform: AttributesTransform;
     let transform_ref = if has_upsert {
         let upsert = transform.upsert.as_ref().unwrap();
@@ -1311,21 +1323,9 @@ pub fn transform_attributes_impl(
                         error: e.to_string(),
                     })?;
                     stats.upserted_entries = count as u64;
-                    // Adjust deleted_entries: rows deleted due to upsert are not
-                    // counted as deletes, they're part of the upsert operation.
-                    if let Some(upsert) = transform.upsert.as_ref() {
-                        let upsert_deleted = stats.deleted_entries.min(
-                            upsert.entries.len() as u64
-                                * original_parent_ids.len() as u64,
-                        );
-                        // We can't precisely know how many were deleted due to upsert vs
-                        // explicit delete without more tracking. Use a conservative approach:
-                        // subtract the actual upsert insert count from deleted (since each
-                        // upsert that updated an existing key would have caused one delete).
-                        // The upserted_entries count itself tells us how many were inserted,
-                        // and we can figure out updates from context.
-                        let _ = upsert_deleted; // ignore for now
-                    }
+                    // Adjust deleted_entries: subtract rows that were deleted as a
+                    // side-effect of upsert (they're part of the upsert, not explicit deletes).
+                    stats.deleted_entries = stats.deleted_entries.saturating_sub(upsert_caused_deletes);
 
                     return Ok((combined_rb, stats));
                 }
@@ -6611,6 +6611,61 @@ fn extend_schema_for_inserts(
         })?;
 
     Ok((new_batch, new_schema))
+}
+
+/// Counts the number of rows in a key column whose value is in `target_keys`.
+///
+/// Handles both plain `Utf8` and dictionary-encoded key columns.
+fn count_rows_matching_keys(key_column: &ArrayRef, target_keys: &BTreeSet<&String>) -> u64 {
+    if target_keys.is_empty() {
+        return 0;
+    }
+    match key_column.data_type() {
+        DataType::Utf8 => {
+            let arr = key_column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("can downcast Utf8 to StringArray");
+            (0..arr.len())
+                .filter(|&i| target_keys.contains(&arr.value(i).to_owned()))
+                .count() as u64
+        }
+        DataType::Dictionary(index_type, _) => match index_type.as_ref() {
+            DataType::UInt8 => count_dict_rows_matching::<UInt8Type>(key_column, target_keys),
+            DataType::UInt16 => count_dict_rows_matching::<UInt16Type>(key_column, target_keys),
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// Helper for counting matching rows in a dictionary-encoded key column.
+fn count_dict_rows_matching<K: ArrowDictionaryKeyType>(
+    key_column: &ArrayRef,
+    target_keys: &BTreeSet<&String>,
+) -> u64 {
+    let dict = key_column
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .expect("can downcast to DictionaryArray");
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("dictionary values are strings");
+    // Pre-compute which dictionary indices map to target keys
+    let matching_indices: BTreeSet<usize> = (0..values.len())
+        .filter(|&i| target_keys.contains(&values.value(i).to_owned()))
+        .collect();
+    if matching_indices.is_empty() {
+        return 0;
+    }
+    (0..dict.len())
+        .filter(|&i| {
+            !dict.is_null(i)
+                && matching_indices.contains(&dict.keys().value(i).as_usize())
+        })
+        .count() as u64
 }
 
 /// Get the value type for a parent ID column, handling both primitive and dictionary-encoded arrays.
