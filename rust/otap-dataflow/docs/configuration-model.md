@@ -46,7 +46,7 @@ groups:
             type: processor:batch
             config: {}
           otlp/export:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
         connections:
@@ -341,7 +341,7 @@ groups:
             config: {}
 
           logs_exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
 

@@ -294,7 +294,7 @@ pub(crate) fn parse_project_rename_expression(
     }
 
     if expressions.len() == 1 {
-        let (location, source, destination) = expressions.drain(..).next().unwrap();
+        let (location, source, destination) = expressions.into_iter().next().unwrap();
 
         Ok(TransformExpression::Move(MoveTransformExpression::new(
             location,
@@ -304,7 +304,7 @@ pub(crate) fn parse_project_rename_expression(
     } else {
         let mut keys = Vec::with_capacity(expressions.len());
 
-        for (_, source, destination) in expressions.drain(..) {
+        for (_, source, destination) in expressions.into_iter() {
             keys.push(MapKeyRenameSelector::new(
                 source.get_value_accessor().clone(),
                 destination.get_value_accessor().clone(),
@@ -875,7 +875,7 @@ fn push_map_transformation_expression(
                 )),
                 reduction
                     .keys
-                    .drain(..)
+                    .into_iter()
                     .map(|k| ScalarExpression::Static(StaticScalarExpression::String(k)))
                     .collect(),
             );
