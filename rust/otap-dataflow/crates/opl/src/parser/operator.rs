@@ -222,7 +222,7 @@ pub(crate) fn parse_if_else_operator_call(
     let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
-    let mut next_branch = InnerPipelineBuilder::new(pipeline_builder.get_max_func_id());
+    let mut next_branch = InnerPipelineBuilder::new(pipeline_builder.child_func_id_offset());
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -261,7 +261,7 @@ pub(crate) fn parse_if_else_operator_call(
                 for (func_name, func_def) in curr_branch_funcs {
                     _ = pipeline_builder.push_function_definition(&func_name, func_def);
                 }
-                next_branch = InnerPipelineBuilder::new(pipeline_builder.get_max_func_id());
+                next_branch = InnerPipelineBuilder::new(pipeline_builder.child_func_id_offset());
 
                 let query_location = QueryLocation::new(
                     branch_location_start,
@@ -310,7 +310,7 @@ pub(crate) fn parse_if_else_operator_call(
 
                 let inner_rules = branch_rules.into_inner();
                 let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacities(
-                    pipeline_builder.get_max_func_id(),
+                    pipeline_builder.child_func_id_offset(),
                     Some(inner_rules.len()),
                     None,
                 );
@@ -399,7 +399,7 @@ pub(crate) fn parse_apply_operator_call(
 
     // parse the child stages of the nested pipeline
     let mut inner_pipeline = InnerPipelineBuilder::new_with_capacities(
-        pipeline_builder.get_max_func_id(),
+        pipeline_builder.child_func_id_offset(),
         Some(inner_rules.len()),
         None,
     );
@@ -1045,5 +1045,151 @@ mod tests {
             ],
         );
         assert_eq!(&functions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_apply_operator_call_in_nested_pipeline() {
+        let query = r#"if (severity_text == "ERROR") {
+            apply attributes { where key == "y" }
+        } else {
+            apply attributes { where key == "x" }
+        }"#;
+
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "severity_text",
+                                )),
+                            )]),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                        )),
+                        true,
+                    )),
+                    vec![DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                None,
+                                0,
+                                Vec::new(),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attributes",
+                                    )),
+                                )]),
+                            )),
+                        ),
+                    ))],
+                ))
+                .with_default_branch(vec![DataExpression::Transform(TransformExpression::Set(
+                    SetTransformExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            None,
+                            1,
+                            Vec::new(),
+                        )),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
+                        )),
+                    ),
+                ))]),
+        );
+        assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 2);
+
+        let expected0 = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            Vec::new(),
+            None,
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "key",
+                                    )),
+                                )]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                            )),
+                            true,
+                        )),
+                    )),
+                ),
+            )],
+        );
+        assert_eq!(&functions[0], &expected0);
+
+        let expected1 = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            Vec::new(),
+            None,
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "key",
+                                    )),
+                                )]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                            )),
+                            true,
+                        )),
+                    )),
+                ),
+            )],
+        );
+        assert_eq!(&functions[1], &expected1);
     }
 }

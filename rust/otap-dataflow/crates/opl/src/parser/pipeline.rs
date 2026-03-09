@@ -21,7 +21,11 @@ pub(crate) trait PipelineBuilder {
     /// push a function definition, returns the function ID
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize;
 
-    fn get_max_func_id(&self) -> usize;
+    fn get_max_func_id(&self) -> Option<usize>;
+
+    fn child_func_id_offset(&self) -> usize {
+        self.get_max_func_id().map(|i| i + 1).unwrap_or_default()
+    }
 }
 
 // TODO - should probably add a wrapper around this that keeps track of the function IDs
@@ -29,14 +33,14 @@ pub(crate) trait PipelineBuilder {
 
 pub struct RootPipelineBuilder<'a> {
     parser_state: &'a mut ParserState,
-    max_func_id: usize,
+    max_func_id: Option<usize>,
 }
 
 impl<'a> RootPipelineBuilder<'a> {
     pub fn new(parser_state: &'a mut ParserState) -> Self {
         Self {
             parser_state,
-            max_func_id: 0,
+            max_func_id: None,
         }
     }
 }
@@ -54,12 +58,12 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
             .get_function_id(name)
             .expect("should have function with name")
             .get_id();
-        self.max_func_id = self.max_func_id.max(func_id);
+        self.max_func_id = Some(self.max_func_id.unwrap_or(0).max(func_id));
 
         func_id
     }
 
-    fn get_max_func_id(&self) -> usize {
+    fn get_max_func_id(&self) -> Option<usize> {
         self.max_func_id
     }
 }
@@ -94,10 +98,6 @@ impl InnerPipelineBuilder {
         }
     }
 
-    pub fn into_data_exprs(self) -> Vec<DataExpression> {
-        self.data_exprs
-    }
-
     pub fn into_parts(self) -> (Vec<DataExpression>, Vec<(String, PipelineFunction)>) {
         (self.data_exprs, self.functions)
     }
@@ -113,8 +113,12 @@ impl PipelineBuilder for InnerPipelineBuilder {
         self.func_id_offset + self.functions.len() - 1
     }
 
-    fn get_max_func_id(&self) -> usize {
-        self.functions.len() + self.func_id_offset
+    fn get_max_func_id(&self) -> Option<usize> {
+        if !self.functions.is_empty() || self.func_id_offset > 0 {
+            Some(self.functions.len() + self.func_id_offset - 1)
+        } else {
+            None
+        }
     }
 }
 
