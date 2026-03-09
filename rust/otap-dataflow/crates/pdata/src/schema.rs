@@ -11,7 +11,6 @@ use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
 pub mod consts;
-#[allow(missing_docs)]
 pub mod payload_definitions;
 
 /// Trace IDs are 16 binary bytes.
