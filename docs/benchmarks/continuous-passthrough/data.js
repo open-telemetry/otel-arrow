@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773065095225,
+  "lastUpdate": 1773067571962,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "466fa0268c689767413b158469cb93852522eeed",
-          "message": "fix: address review feedback for Geneva exporter (#1995)\n\n### Description:\n\n  Follow-up from #1653 review comments from @utpilla:\n\n- Remove redundant `exports_failed` metric (already tracked per-signal\nin `pdata_metrics`)\n- Use `upload_batches_concurrent` return value for log count instead of\n`batches.len()`\n- Rename \"OTLP fallback\" → \"OTLP path\" (it's the direct path, not a\nfallback)\n   - Use array instead of `vec!` for fixed-size `TerminalState` metrics",
-          "timestamp": "2026-02-09T12:50:20Z",
-          "tree_id": "cc3c38fbcb5cfb0668ab314a9b03a4ec456e2235",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/466fa0268c689767413b158469cb93852522eeed"
-        },
-        "date": 1770649469106,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.1501171588897705,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 95.93882639706372,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.33371760291496,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 45.80286458333333,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 47.23828125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 523855.83927518857,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 535119.3541931461,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002584,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11628142.575590603,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11568891.005478537,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10999220.588612886,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "sanupanda141@gmail.com",
+            "name": "Gyan Ranjan",
+            "username": "gyanranjanpanda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f7c9729c41c71e268e14f9dead5b700b1ea7e90",
+          "message": "Rename otlp_exporter to otlp_grpc_exporter (#2208)\n\n## Summary\n\nRenames the gRPC-based OTLP exporter module and URN to distinguish it\nfrom the newly-added HTTP-based exporter (#2070).\n\n**URN change:** `urn:otel:otlp:exporter` → `urn:otel:otlp_grpc:exporter`\n**Module rename:** `otlp_exporter.rs` → `otlp_grpc_exporter.rs`\n\nFixes #2107\n\n## Changes\n\n### Rust Source (3 files)\n- **Renamed** `otlp_exporter.rs` → `otlp_grpc_exporter.rs` and updated\nURN constant value\n- **Updated** `lib.rs` module declaration: `pub mod otlp_exporter` →\n`pub mod otlp_grpc_exporter`\n- **Updated** `urn.rs` test case URN reference\n\n### Config Files (8 files)\nAll in `rust/otap-dataflow/configs/` — replaced `plugin_urn` from\n`urn:otel:otlp:exporter` → `urn:otel:otlp_grpc:exporter`\n\n### Perf Test Templates (9 files)\nAll in\n`tools/pipeline_perf_test/test_suites/integration/templates/configs/` —\nsame URN replacement\n\n### Documentation (3 files)\n- `crates/quiver/ARCHITECTURE.md` — updated node names + URN in config\nexamples\n- `docs/self_tracing_architecture.md` — updated node names in config\nexample\n- `docs/telemetry/metrics-guide.md` — updated metric set name\n\n## What Was NOT Changed (by design)\n- **Test function names** (e.g. `otlp_exporter_connects_with_mtls`) —\ndescribe behavior, not module path\n- **Test file names** (`otlp_exporter_tls.rs`,\n`otlp_exporter_proxy_tls.rs`) — no module imports depend on them\n- **Telemetry crate** (`otlp_exporter_provider`,\n`configure_grpc_otlp_exporter`) — separate OTel SDK, not the pipeline\nexporter\n- **Constant/struct names** (`OTLP_EXPORTER_URN`, `OTLPExporter`) — kept\nper issue scope\n\n## Verification\n- ✅ `cargo build --workspace` — passed\n- ✅ `cargo test --workspace` — all tests passed, zero failures\n- ✅ `grep -r \"urn:otel:otlp:exporter\"` — zero matches remain\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-03-09T13:33:37Z",
+          "tree_id": "0c8f5e23852f2c09e83996ac64994c8a8acf934a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7f7c9729c41c71e268e14f9dead5b700b1ea7e90"
+        },
+        "date": 1773067571455,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.897714376449585,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.34789283071858,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.11195312417694,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 54.098307291666664,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 57.1171875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 475229.4567476639,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 479495.660104646,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.006516,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11108175.41944172,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11047247.081650414,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
