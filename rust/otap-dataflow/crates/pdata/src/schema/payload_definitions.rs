@@ -14,10 +14,6 @@
 
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 /// Native Arrow types from the OTAP spec.
 ///
 /// This is a const-constructible alternative to `arrow::datatypes::DataType`
@@ -51,7 +47,7 @@ pub enum NativeType {
 
 /// Minimum dictionary key size constraint from the OTAP spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MinDictKeySize {
+pub enum DictKeySize {
     U8,
     U16,
 }
@@ -63,7 +59,7 @@ pub struct ColumnDef {
     pub native_type: NativeType,
     /// Minimum dictionary key size if dictionary encoding is allowed.
     /// None if the column does not support dictionary encoding.
-    pub min_dict_key_size: Option<MinDictKeySize>,
+    pub min_dict_key_size: Option<DictKeySize>,
 }
 
 /// Schema definition for a payload type.
@@ -148,7 +144,7 @@ const fn native(native_type: NativeType) -> ColumnDef {
     }
 }
 
-const fn dict(native_type: NativeType, min: MinDictKeySize) -> ColumnDef {
+const fn dict(native_type: NativeType, min: DictKeySize) -> ColumnDef {
     ColumnDef {
         native_type,
         min_dict_key_size: Some(min),
@@ -161,18 +157,18 @@ static EMPTY_DEFINITION: PayloadDefinition = PayloadDefinition {
 };
 
 mod attributes_16 {
-    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use super::{ColumnDef, DictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
 
     static PARENT_ID_DEF: ColumnDef = native(NativeType::UInt16);
-    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
     static TYPE_DEF: ColumnDef = native(NativeType::UInt8);
-    static STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
-    static INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static STR_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U16);
+    static INT_DEF: ColumnDef = dict(NativeType::Int64, DictKeySize::U16);
     static DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
     static BOOL_DEF: ColumnDef = native(NativeType::Boolean);
-    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
-    static SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
+    static SER_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
 
     fn get(name: &str) -> Option<&'static ColumnDef> {
         match name {
@@ -198,18 +194,18 @@ mod attributes_16 {
 }
 
 mod attributes_32 {
-    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use super::{ColumnDef, DictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
 
-    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, MinDictKeySize::U8);
-    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, DictKeySize::U8);
+    static KEY_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
     static TYPE_DEF: ColumnDef = native(NativeType::UInt8);
-    static STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
-    static INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static STR_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U16);
+    static INT_DEF: ColumnDef = dict(NativeType::Int64, DictKeySize::U16);
     static DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
     static BOOL_DEF: ColumnDef = native(NativeType::Boolean);
-    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
-    static SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static BYTES_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
+    static SER_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
 
     fn get(name: &str) -> Option<&'static ColumnDef> {
         match name {
@@ -235,43 +231,43 @@ mod attributes_32 {
 }
 
 mod logs {
-    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use super::{ColumnDef, DictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
 
     static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
     static OBSERVED_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
     static BODY_DEF: ColumnDef = native(NativeType::Struct);
     static ID_DEF: ColumnDef = native(NativeType::UInt16);
-    static SEVERITY_NUMBER_DEF: ColumnDef = dict(NativeType::Int32, MinDictKeySize::U8);
-    static SEVERITY_TEXT_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static SEVERITY_NUMBER_DEF: ColumnDef = dict(NativeType::Int32, DictKeySize::U8);
+    static SEVERITY_TEXT_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
     static DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
-    static EVENT_NAME_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static EVENT_NAME_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
     static FLAGS_DEF: ColumnDef = native(NativeType::UInt32);
-    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), MinDictKeySize::U8);
-    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), MinDictKeySize::U8);
-    static SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), DictKeySize::U8);
+    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), DictKeySize::U8);
+    static SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
     static RESOURCE_DEF: ColumnDef = native(NativeType::Struct);
     static SCOPE_DEF: ColumnDef = native(NativeType::Struct);
 
     // Nested: body sub-fields
     static BODY_TYPE_DEF: ColumnDef = native(NativeType::UInt8);
-    static BODY_STR_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U16);
-    static BODY_INT_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U16);
+    static BODY_STR_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U16);
+    static BODY_INT_DEF: ColumnDef = dict(NativeType::Int64, DictKeySize::U16);
     static BODY_DOUBLE_DEF: ColumnDef = native(NativeType::Float64);
     static BODY_BOOL_DEF: ColumnDef = native(NativeType::Boolean);
-    static BODY_BYTES_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
-    static BODY_SER_DEF: ColumnDef = dict(NativeType::Binary, MinDictKeySize::U16);
+    static BODY_BYTES_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
+    static BODY_SER_DEF: ColumnDef = dict(NativeType::Binary, DictKeySize::U16);
 
     // Nested: resource sub-fields
     static RESOURCE_ID_DEF: ColumnDef = native(NativeType::UInt16);
     static RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
-    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
 
     // Nested: scope sub-fields
     static SCOPE_ID_DEF: ColumnDef = native(NativeType::UInt16);
     static SCOPE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
-    static SCOPE_NAME_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
-    static SCOPE_VERSION_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static SCOPE_NAME_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
+    static SCOPE_VERSION_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
 
     fn get(name: &str) -> Option<&'static ColumnDef> {
         match name {
@@ -341,7 +337,7 @@ mod logs {
 }
 
 mod spans {
-    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use super::{ColumnDef, DictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
 
     static START_TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
@@ -364,7 +360,7 @@ mod spans {
     // Nested: resource sub-fields
     static RESOURCE_ID_DEF: ColumnDef = native(NativeType::UInt16);
     static RESOURCE_DROPPED_ATTRIBUTES_COUNT_DEF: ColumnDef = native(NativeType::UInt32);
-    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static RESOURCE_SCHEMA_URL_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
 
     // Nested: scope sub-fields
     static SCOPE_ID_DEF: ColumnDef = native(NativeType::UInt16);
@@ -373,8 +369,8 @@ mod spans {
     static SCOPE_VERSION_DEF: ColumnDef = native(NativeType::Utf8);
 
     // Nested: status sub-fields
-    static STATUS_CODE_DEF: ColumnDef = dict(NativeType::Int32, MinDictKeySize::U8);
-    static STATUS_MESSAGE_DEF: ColumnDef = dict(NativeType::Utf8, MinDictKeySize::U8);
+    static STATUS_CODE_DEF: ColumnDef = dict(NativeType::Int32, DictKeySize::U8);
+    static STATUS_MESSAGE_DEF: ColumnDef = dict(NativeType::Utf8, DictKeySize::U8);
 
     fn get(name: &str) -> Option<&'static ColumnDef> {
         match name {
@@ -758,16 +754,16 @@ mod exp_histogram_data_points {
 }
 
 mod exemplars {
-    use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
+    use super::{ColumnDef, DictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
 
-    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, MinDictKeySize::U8);
+    static PARENT_ID_DEF: ColumnDef = dict(NativeType::UInt32, DictKeySize::U8);
     static ID_DEF: ColumnDef = native(NativeType::UInt32);
     static DOUBLE_VALUE_DEF: ColumnDef = native(NativeType::Float64);
-    static INT_VALUE_DEF: ColumnDef = dict(NativeType::Int64, MinDictKeySize::U8);
-    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), MinDictKeySize::U8);
+    static INT_VALUE_DEF: ColumnDef = dict(NativeType::Int64, DictKeySize::U8);
+    static SPAN_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(8), DictKeySize::U8);
     static TIME_UNIX_NANO_DEF: ColumnDef = native(NativeType::TimestampNs);
-    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), MinDictKeySize::U8);
+    static TRACE_ID_DEF: ColumnDef = dict(NativeType::FixedSizeBinary(16), DictKeySize::U8);
 
     fn get(name: &str) -> Option<&'static ColumnDef> {
         match name {
@@ -801,11 +797,11 @@ mod tests {
 
         let str_col = def.get("str").unwrap();
         assert_eq!(str_col.native_type, NativeType::Utf8);
-        assert_eq!(str_col.min_dict_key_size, Some(MinDictKeySize::U16));
+        assert_eq!(str_col.min_dict_key_size, Some(DictKeySize::U16));
 
         let key_col = def.get("key").unwrap();
         assert_eq!(key_col.native_type, NativeType::Utf8);
-        assert_eq!(key_col.min_dict_key_size, Some(MinDictKeySize::U8));
+        assert_eq!(key_col.min_dict_key_size, Some(DictKeySize::U8));
 
         let type_col = def.get("type").unwrap();
         assert_eq!(type_col.native_type, NativeType::UInt8);
@@ -820,15 +816,15 @@ mod tests {
 
         let body_str = def.get_nested("body", "str").unwrap();
         assert_eq!(body_str.native_type, NativeType::Utf8);
-        assert_eq!(body_str.min_dict_key_size, Some(MinDictKeySize::U16));
+        assert_eq!(body_str.min_dict_key_size, Some(DictKeySize::U16));
 
         let body_int = def.get_nested("body", "int").unwrap();
         assert_eq!(body_int.native_type, NativeType::Int64);
-        assert_eq!(body_int.min_dict_key_size, Some(MinDictKeySize::U16));
+        assert_eq!(body_int.min_dict_key_size, Some(DictKeySize::U16));
 
         let resource_schema = def.get_nested("resource", "schema_url").unwrap();
         assert_eq!(resource_schema.native_type, NativeType::Utf8);
-        assert_eq!(resource_schema.min_dict_key_size, Some(MinDictKeySize::U8));
+        assert_eq!(resource_schema.min_dict_key_size, Some(DictKeySize::U8));
 
         assert!(def.get_nested("body", "nonexistent").is_none());
         assert!(def.get_nested("nonexistent", "str").is_none());
@@ -843,7 +839,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing column: {}", col_name));
             assert_eq!(
                 col.min_dict_key_size,
-                Some(MinDictKeySize::U16),
+                Some(DictKeySize::U16),
                 "column {} should require Dict(u16)",
                 col_name,
             );
@@ -859,7 +855,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing column: {}", col_name));
             assert_eq!(
                 col.min_dict_key_size,
-                Some(MinDictKeySize::U16),
+                Some(DictKeySize::U16),
                 "column {} should require Dict(u16)",
                 col_name,
             );
@@ -875,7 +871,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing column: {}", path));
             assert_eq!(
                 col.min_dict_key_size,
-                Some(MinDictKeySize::U16),
+                Some(DictKeySize::U16),
                 "column {} should require Dict(u16)",
                 path,
             );
@@ -891,7 +887,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing column: {}", col_name));
             assert_eq!(
                 col.min_dict_key_size,
-                Some(MinDictKeySize::U8),
+                Some(DictKeySize::U8),
                 "exemplar column {} should allow Dict(u8)",
                 col_name,
             );
@@ -980,11 +976,11 @@ mod tests {
 
         let status_code = def.get_nested("status", "code").unwrap();
         assert_eq!(status_code.native_type, NativeType::Int32);
-        assert_eq!(status_code.min_dict_key_size, Some(MinDictKeySize::U8));
+        assert_eq!(status_code.min_dict_key_size, Some(DictKeySize::U8));
 
         let status_msg = def.get_nested("status", "status_message").unwrap();
         assert_eq!(status_msg.native_type, NativeType::Utf8);
-        assert_eq!(status_msg.min_dict_key_size, Some(MinDictKeySize::U8));
+        assert_eq!(status_msg.min_dict_key_size, Some(DictKeySize::U8));
 
         let scope_name = def.get_nested("scope", "name").unwrap();
         assert_eq!(scope_name.native_type, NativeType::Utf8);
@@ -1031,23 +1027,19 @@ mod tests {
 
         let cases = [
             (BODY_TYPE, NativeType::UInt8, None),
-            (BODY_STR, NativeType::Utf8, Some(MinDictKeySize::U16)),
-            (BODY_INT, NativeType::Int64, Some(MinDictKeySize::U16)),
+            (BODY_STR, NativeType::Utf8, Some(DictKeySize::U16)),
+            (BODY_INT, NativeType::Int64, Some(DictKeySize::U16)),
             (BODY_DOUBLE, NativeType::Float64, None),
             (BODY_BOOL, NativeType::Boolean, None),
-            (BODY_BYTES, NativeType::Binary, Some(MinDictKeySize::U16)),
-            (BODY_SER, NativeType::Binary, Some(MinDictKeySize::U16)),
+            (BODY_BYTES, NativeType::Binary, Some(DictKeySize::U16)),
+            (BODY_SER, NativeType::Binary, Some(DictKeySize::U16)),
             (RESOURCE_ID, NativeType::UInt16, None),
             (RESOURCE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
-            (
-                RESOURCE_SCHEMA_URL,
-                NativeType::Utf8,
-                Some(MinDictKeySize::U8),
-            ),
+            (RESOURCE_SCHEMA_URL, NativeType::Utf8, Some(DictKeySize::U8)),
             (SCOPE_ID, NativeType::UInt16, None),
             (SCOPE_DROPPED_ATTRIBUTES_COUNT, NativeType::UInt32, None),
-            (SCOPE_NAME, NativeType::Utf8, Some(MinDictKeySize::U8)),
-            (SCOPE_VERSION, NativeType::Utf8, Some(MinDictKeySize::U8)),
+            (SCOPE_NAME, NativeType::Utf8, Some(DictKeySize::U8)),
+            (SCOPE_VERSION, NativeType::Utf8, Some(DictKeySize::U8)),
         ];
         for (path, expected_type, expected_dict) in cases {
             let col = def
@@ -1068,18 +1060,14 @@ mod tests {
 
         let cases = [
             (RESOURCE_ID, NativeType::UInt16, None),
-            (
-                RESOURCE_SCHEMA_URL,
-                NativeType::Utf8,
-                Some(MinDictKeySize::U8),
-            ),
+            (RESOURCE_SCHEMA_URL, NativeType::Utf8, Some(DictKeySize::U8)),
             (SCOPE_NAME, NativeType::Utf8, None),
             (SCOPE_VERSION, NativeType::Utf8, None),
-            (STATUS_DOT_CODE, NativeType::Int32, Some(MinDictKeySize::U8)),
+            (STATUS_DOT_CODE, NativeType::Int32, Some(DictKeySize::U8)),
             (
                 STATUS_DOT_STATUS_MESSAGE,
                 NativeType::Utf8,
-                Some(MinDictKeySize::U8),
+                Some(DictKeySize::U8),
             ),
         ];
         for (path, expected_type, expected_dict) in cases {

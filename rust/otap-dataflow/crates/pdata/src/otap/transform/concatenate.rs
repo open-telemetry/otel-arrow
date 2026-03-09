@@ -21,7 +21,7 @@ use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
 use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
 use crate::schema::consts::{ID, PARENT_ID};
-use crate::schema::payload_definitions::{self, ColumnDef, MinDictKeySize, PayloadDefinition};
+use crate::schema::payload_definitions::{self, ColumnDef, DictKeySize, PayloadDefinition};
 
 /// These are one less than the maximum cardinality of the key type. We should be
 /// able to go up to 256/65536 without overflow, but there is a bug in arrow-rs
@@ -619,7 +619,7 @@ fn select_dictionary_type<'a>(
 
     // Enforce the minimum key size from the spec if present
     let final_key = match (&cardinality_key, min_key_size) {
-        (DataType::UInt8, Some(MinDictKeySize::U16)) => DataType::UInt16,
+        (DataType::UInt8, Some(DictKeySize::U16)) => DataType::UInt16,
         _ => cardinality_key,
     };
 
@@ -868,7 +868,7 @@ fn select_all_mut<const N: usize>(
 mod schema_tests {
     use super::*;
     use crate::record_batch;
-    use crate::schema::payload_definitions::{ColumnDef, MinDictKeySize, NativeType};
+    use crate::schema::payload_definitions::{ColumnDef, DictKeySize, NativeType};
     use arrow::array::{Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array};
     use rand::RngExt;
     use std::sync::Arc;
@@ -879,7 +879,7 @@ mod schema_tests {
     fn test_data_get(name: &str) -> Option<&'static ColumnDef> {
         static DATA: ColumnDef = ColumnDef {
             native_type: NativeType::Utf8,
-            min_dict_key_size: Some(MinDictKeySize::U8),
+            min_dict_key_size: Some(DictKeySize::U8),
         };
         match name {
             "data" => Some(&DATA),
