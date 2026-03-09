@@ -8727,4 +8727,119 @@ mod upsert_tests {
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
     }
+
+    /// Regression test for stats accounting when upsert + delete coexist.
+    ///
+    /// ```text
+    /// Input:
+    ///   key | val | parent_id
+    ///   "a" | "1" | 0
+    ///   "b" | "1" | 0
+    ///   "a" | "1" | 1
+    ///   "c" | "1" | 2
+    ///
+    /// Transform: { delete: "b", upsert: { "a": "2" } }
+    ///
+    /// Expected output:
+    ///   key | val | parent_id
+    ///   "a" | "2" | 0
+    ///   "a" | "2" | 1
+    ///   "c" | "1" | 2
+    ///   "a" | "2" | 2   <-- upsert inserts for parent 2 which didn't have "a"
+    ///
+    /// Expected stats: { deleted_entries: 1, upserted_entries: 3 }
+    ///   - Only "b" was truly deleted (1 row)
+    ///   - "a" was upserted for all 3 parents (3 rows)
+    /// ```
+    ///
+    /// The current implementation merges upsert keys into the delete set before
+    /// the transform runs, so `deleted_entries` erroneously includes rows deleted
+    /// as a side-effect of upsert. This test documents the expected behavior so
+    /// the bug becomes visible.
+    #[test]
+    fn test_upsert_with_delete_stats_accounting() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // 3 parents:
+        //   parent 0: has "a" and "b"
+        //   parent 1: has "a"
+        //   parent 2: has "c"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "a", "c"])),
+                Arc::new(StringArray::from_iter_values(vec!["1", "1", "1", "1"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                "b".into(),
+            ]))),
+            insert: None,
+            upsert: Some(UpsertTransform::new(BTreeMap::from([(
+                "a".into(),
+                LiteralValue::Str("2".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Verify data correctness: should have 4 rows
+        // parent 0: "a"="2" (upserted)
+        // parent 1: "a"="2" (upserted)
+        // parent 2: "c"="1" (kept) + "a"="2" (upserted/inserted)
+        assert_eq!(result.num_rows(), 4);
+
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        // "b" should be gone
+        let key_values: Vec<&str> = (0..keys.len()).map(|i| keys.value(i)).collect();
+        assert!(!key_values.contains(&"b"), "key 'b' should have been deleted");
+
+        // All "a" values should be "2"
+        for i in 0..keys.len() {
+            if keys.value(i) == "a" {
+                assert_eq!(vals.value(i), "2", "upserted 'a' should have value '2'");
+            }
+        }
+
+        // Stats: only "b" was a real delete, "a" deletions are part of upsert
+        assert_eq!(
+            stats.deleted_entries, 1,
+            "only 'b' should count as deleted, not 'a' rows removed for upsert; \
+             got deleted_entries={}, expected 1",
+            stats.deleted_entries
+        );
+        assert_eq!(
+            stats.upserted_entries, 3,
+            "upsert should count all 3 parents; got upserted_entries={}, expected 3",
+            stats.upserted_entries
+        );
+    }
 }
