@@ -1,6 +1,6 @@
 
 {% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
-{% set suv_exporter_plugin_urn = "urn:otel:exporter:otlp" -%}
+{% set suv_exporter_plugin_urn = "urn:otel:exporter:otlp_grpc" -%}
 {% if suv_exporter_type == "otap" -%}
   {% set suv_exporter_plugin_urn = "urn:otel:exporter:otap" -%}
 {% endif -%}
@@ -67,7 +67,7 @@
 {% endif %}
 {% for control_port in control_ports %}
     control_exporter{{ loop.index }}:
-      type: "urn:otel:exporter:otlp"
+      type: "urn:otel:exporter:otlp_grpc"
       config:
         grpc_endpoint: http://127.0.0.1:{{ control_port }}
 {% endfor %}

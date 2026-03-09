@@ -13,13 +13,16 @@ pub struct LogsConfig {
     /// The log level for internal engine logs.
     ///
     /// Accepts either a simple level keyword (`off`, `debug`, `info`, `warn`, `error`)
-    /// or a full [`tracing_subscriber::EnvFilter`] directive string for fine-grained
+    /// or a full [`RUST_LOG`-style directive string][env-filter] for fine-grained
     /// control (e.g., `"info,typespec_client_core=warn,azure_core=off"`).
     ///
-    /// The value is passed directly to `EnvFilter`. When not specified, the default
-    /// is `"info,h2=off,hyper=off"` which silences known noisy HTTP dependencies.
+    /// The value is passed directly to [`tracing_subscriber::EnvFilter`]. When not
+    /// specified, the default is `"info,h2=off,hyper=off"` which silences known
+    /// noisy HTTP dependencies.
     ///
     /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
+    ///
+    /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[serde(default)]
     pub level: LogLevel,
 
@@ -31,10 +34,14 @@ pub struct LogsConfig {
 /// Log level for dataflow engine logs.
 ///
 /// Accepts either a simple level keyword (`off`, `debug`, `info`, `warn`, `error`)
-/// or a full [`tracing_subscriber::EnvFilter`] directive string for fine-grained
+/// or a full [`RUST_LOG`-style directive string][env-filter] for fine-grained
 /// control (e.g., `"info,typespec_client_core=warn,azure_core=off"`).
 ///
+/// See the [`EnvFilter` directives documentation][env-filter] for the full syntax.
+///
 /// Defaults to `"info,h2=off,hyper=off"`.
+///
+/// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(transparent)]
 pub struct LogLevel(String);
