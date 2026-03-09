@@ -14,25 +14,23 @@ fn bench_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("payload_lookup");
 
     // Small definition: U16_ATTRS (9 columns)
-    let small_def = payload_definitions::get_definition(ArrowPayloadType::LogAttrs);
+    let small_def = payload_definitions::get(ArrowPayloadType::LogAttrs);
     // Large definition: LOGS (15 top-level + 14 nested columns)
-    let large_def = payload_definitions::get_definition(ArrowPayloadType::Logs);
+    let large_def = payload_definitions::get(ArrowPayloadType::Logs);
 
     // Columns to look up (hit cases)
     let small_hit_names = ["str", "key", "bytes", "type", "parent_id"];
-    let large_hit_names = [
-        "severity_text",
-        "trace_id",
-        "schema_url",
-        "flags",
-        "body",
-    ];
+    let large_hit_names = ["severity_text", "trace_id", "schema_url", "flags", "body"];
 
     // Miss cases
     let miss_names = ["nonexistent", "foo", "zzzzz"];
 
     // Nested lookups (LOGS body.str, resource.schema_url)
-    let nested_cases = [("body", "str"), ("resource", "schema_url"), ("scope", "name")];
+    let nested_cases = [
+        ("body", "str"),
+        ("resource", "schema_url"),
+        ("scope", "name"),
+    ];
 
     // --- Hit benchmarks ---
 

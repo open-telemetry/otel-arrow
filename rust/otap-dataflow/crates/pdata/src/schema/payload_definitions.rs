@@ -6,7 +6,11 @@
 //! Each payload type has a definition that describes the columns it contains,
 //! their native Arrow types, and dictionary encoding constraints.
 //!
-//! See docs/otap-spec.md sections 5.1-5.4 for the full specification.
+//! In the future we can extend these definitions to also include:
+//!
+//! - Inluce which columns are optional or not
+//! - Add iterators over all the columns and their definitions per payload
+//! - Be automatically generated from some common spec definition
 
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -102,7 +106,7 @@ impl PayloadDefinition {
 
 /// Get the payload definition for a given payload type.
 #[must_use]
-pub fn get_definition(typ: ArrowPayloadType) -> &'static PayloadDefinition {
+pub fn get(typ: ArrowPayloadType) -> &'static PayloadDefinition {
     match typ {
         ArrowPayloadType::Unknown => &EMPTY_DEFINITION,
 
@@ -145,10 +149,6 @@ pub fn get_definition(typ: ArrowPayloadType) -> &'static PayloadDefinition {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 const fn native(native_type: NativeType) -> ColumnDef {
     ColumnDef {
         native_type,
@@ -163,20 +163,10 @@ const fn dict(native_type: NativeType, min: MinDictKeySize) -> ColumnDef {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Empty definition
-// ---------------------------------------------------------------------------
-
 static EMPTY_DEFINITION: PayloadDefinition = PayloadDefinition {
     get_fn: |_| None,
     get_nested_fn: |_, _| None,
 };
-
-// ---------------------------------------------------------------------------
-// U16 Attributes (RESOURCE_ATTRS, SCOPE_ATTRS, LOG_ATTRS, METRIC_ATTRS,
-//                 SPAN_ATTRS)
-// Spec: 5.4.2
-// ---------------------------------------------------------------------------
 
 mod attributes_16 {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
@@ -215,12 +205,6 @@ mod attributes_16 {
     };
 }
 
-// ---------------------------------------------------------------------------
-// U32 Attributes (SPAN_EVENT_ATTRS, SPAN_LINK_ATTRS, all DP attrs,
-//                 all exemplar attrs)
-// Spec: 5.4.1
-// ---------------------------------------------------------------------------
-
 mod attributes_32 {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
@@ -257,10 +241,6 @@ mod attributes_32 {
         get_nested_fn: |_, _| None,
     };
 }
-
-// ---------------------------------------------------------------------------
-// LOGS (ROOT) - Spec: 5.1.1
-// ---------------------------------------------------------------------------
 
 mod logs {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
@@ -353,10 +333,6 @@ mod logs {
     };
 }
 
-// ---------------------------------------------------------------------------
-// SPANS (ROOT) - Spec: 5.2.1
-// ---------------------------------------------------------------------------
-
 mod spans {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
@@ -441,10 +417,6 @@ mod spans {
     };
 }
 
-// ---------------------------------------------------------------------------
-// SPAN_EVENTS - Spec: 5.2.2
-// ---------------------------------------------------------------------------
-
 mod span_events {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
@@ -473,10 +445,6 @@ mod span_events {
         get_nested_fn: |_, _| None,
     };
 }
-
-// ---------------------------------------------------------------------------
-// SPAN_LINKS - Spec: 5.2.3
-// ---------------------------------------------------------------------------
 
 mod span_links {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
@@ -508,10 +476,6 @@ mod span_links {
         get_nested_fn: |_, _| None,
     };
 }
-
-// ---------------------------------------------------------------------------
-// UNIVARIATE_METRICS (ROOT) - Spec: 5.3.1
-// ---------------------------------------------------------------------------
 
 mod univariate_metrics {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
@@ -578,10 +542,6 @@ mod univariate_metrics {
     };
 }
 
-// ---------------------------------------------------------------------------
-// NUMBER_DATA_POINTS - Spec: 5.3.2
-// ---------------------------------------------------------------------------
-
 mod number_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
@@ -614,10 +574,6 @@ mod number_data_points {
         get_nested_fn: |_, _| None,
     };
 }
-
-// ---------------------------------------------------------------------------
-// SUMMARY_DATA_POINTS - Spec: 5.3.3
-// ---------------------------------------------------------------------------
 
 mod summary_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
@@ -668,10 +624,6 @@ mod summary_data_points {
     };
 }
 
-// ---------------------------------------------------------------------------
-// HISTOGRAM_DATA_POINTS - Spec: 5.3.4
-// ---------------------------------------------------------------------------
-
 mod histogram_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
     use crate::schema::consts::*;
@@ -712,10 +664,6 @@ mod histogram_data_points {
         get_nested_fn: |_, _| None,
     };
 }
-
-// ---------------------------------------------------------------------------
-// EXP_HISTOGRAM_DATA_POINTS - Spec: 5.3.5
-// ---------------------------------------------------------------------------
 
 mod exp_histogram_data_points {
     use super::{ColumnDef, NativeType, PayloadDefinition, native};
@@ -776,11 +724,6 @@ mod exp_histogram_data_points {
     };
 }
 
-// ---------------------------------------------------------------------------
-// EXEMPLARS (NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS,
-//            EXP_HISTOGRAM_DP_EXEMPLARS) - Spec: 5.3.6
-// ---------------------------------------------------------------------------
-
 mod exemplars {
     use super::{ColumnDef, MinDictKeySize, NativeType, PayloadDefinition, dict, native};
     use crate::schema::consts::*;
@@ -814,17 +757,13 @@ mod exemplars {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_get_top_level_column() {
-        let def = get_definition(ArrowPayloadType::LogAttrs);
+        let def = get(ArrowPayloadType::LogAttrs);
 
         let str_col = def.get("str").unwrap();
         assert_eq!(str_col.native_type, NativeType::Utf8);
@@ -843,7 +782,7 @@ mod tests {
 
     #[test]
     fn test_get_nested_column() {
-        let def = get_definition(ArrowPayloadType::Logs);
+        let def = get(ArrowPayloadType::Logs);
 
         let body_str = def.get_nested("body", "str").unwrap();
         assert_eq!(body_str.native_type, NativeType::Utf8);
@@ -863,7 +802,7 @@ mod tests {
 
     #[test]
     fn test_u16_attrs_value_columns_require_u16() {
-        let def = get_definition(ArrowPayloadType::ResourceAttrs);
+        let def = get(ArrowPayloadType::ResourceAttrs);
         for col_name in &["str", "int", "bytes", "ser"] {
             let col = def
                 .get(col_name)
@@ -879,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_u32_attrs_value_columns_require_u16() {
-        let def = get_definition(ArrowPayloadType::SpanEventAttrs);
+        let def = get(ArrowPayloadType::SpanEventAttrs);
         for col_name in &["str", "int", "bytes", "ser"] {
             let col = def
                 .get(col_name)
@@ -895,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_logs_body_columns_require_u16() {
-        let def = get_definition(ArrowPayloadType::Logs);
+        let def = get(ArrowPayloadType::Logs);
         for col_path in &["body.str", "body.int", "body.bytes", "body.ser"] {
             let parts: Vec<&str> = col_path.split('.').collect();
             let col = def
@@ -912,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_exemplars_dict_columns() {
-        let def = get_definition(ArrowPayloadType::NumberDpExemplars);
+        let def = get(ArrowPayloadType::NumberDpExemplars);
         for col_name in &["parent_id", "int_value", "span_id", "trace_id"] {
             let col = def
                 .get(col_name)
@@ -928,7 +867,7 @@ mod tests {
 
     #[test]
     fn test_empty_definition() {
-        let def = get_definition(ArrowPayloadType::Unknown);
+        let def = get(ArrowPayloadType::Unknown);
         assert!(def.get("anything").is_none());
         assert!(def.get_nested("any", "thing").is_none());
     }
@@ -966,7 +905,7 @@ mod tests {
 
         for typ in all_types {
             // Should not panic
-            let _ = get_definition(typ);
+            let _ = get(typ);
         }
     }
 
@@ -988,7 +927,7 @@ mod tests {
         ];
 
         for typ in all_types {
-            let def = get_definition(typ);
+            let def = get(typ);
             assert!(
                 def.get("nonexistent_column_xyz").is_none(),
                 "{:?} should return None for unknown column",
@@ -1004,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_spans_nested_columns() {
-        let def = get_definition(ArrowPayloadType::Spans);
+        let def = get(ArrowPayloadType::Spans);
 
         let status_code = def.get_nested("status", "code").unwrap();
         assert_eq!(status_code.native_type, NativeType::Int32);
@@ -1021,7 +960,7 @@ mod tests {
 
     #[test]
     fn test_exp_histogram_nested_columns() {
-        let def = get_definition(ArrowPayloadType::ExpHistogramDataPoints);
+        let def = get(ArrowPayloadType::ExpHistogramDataPoints);
 
         // Top-level structs
         let pos = def.get("positive").unwrap();
@@ -1044,7 +983,7 @@ mod tests {
 
     #[test]
     fn test_summary_nested_columns() {
-        let def = get_definition(ArrowPayloadType::SummaryDataPoints);
+        let def = get(ArrowPayloadType::SummaryDataPoints);
 
         let qq = def.get_nested("quantile", "quantile").unwrap();
         assert_eq!(qq.native_type, NativeType::Float64);

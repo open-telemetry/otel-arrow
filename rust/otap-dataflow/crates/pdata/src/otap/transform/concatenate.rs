@@ -107,7 +107,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
 ) -> Result<[Option<RecordBatch>; N]> {
     concatenate_with_def(items, |i| {
         let payload_type = S::payload_type_at_idx(i);
-        payload_definitions::get_definition(payload_type)
+        payload_definitions::get(payload_type)
     })
 }
 
@@ -1445,7 +1445,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_u16_attrs_str_column_enforces_u16_key() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
         );
 
@@ -1470,7 +1470,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_u16_attrs_int_column_enforces_u16_key() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::ResourceAttrs,
         );
 
@@ -1496,7 +1496,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_u32_attrs_str_column_enforces_u16_key() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::SpanEventAttrs,
         );
 
@@ -1522,7 +1522,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_logs_body_str_enforces_u16_key() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
         );
 
@@ -1559,7 +1559,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_logs_body_ser_enforces_u16_key() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
         );
 
@@ -1596,7 +1596,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_attrs_key_column_allows_u8() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
         );
 
@@ -1622,7 +1622,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_logs_severity_text_allows_u8() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
         );
 
@@ -1648,7 +1648,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_u16_attrs_all_value_columns_enforce_u16() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::ScopeAttrs,
         );
 
@@ -1736,7 +1736,7 @@ mod spec_enforcement_tests {
 
     #[test]
     fn test_non_dict_column_strips_dictionary() {
-        let def = payload_definitions::get_definition(
+        let def = payload_definitions::get(
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
         );
 
