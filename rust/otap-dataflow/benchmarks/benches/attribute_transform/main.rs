@@ -18,8 +18,8 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use otap_df_pdata::otap::transform::{
-    AttributesTransform, DeleteTransform, LiteralValue, RenameTransform,
-    UpsertTransform, transform_attributes, transform_attributes_with_stats,
+    AttributesTransform, DeleteTransform, LiteralValue, RenameTransform, UpsertTransform,
+    transform_attributes, transform_attributes_with_stats,
 };
 use otap_df_pdata::schema::{FieldExt, consts};
 

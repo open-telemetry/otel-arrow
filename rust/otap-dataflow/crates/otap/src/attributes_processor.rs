@@ -1753,8 +1753,9 @@ mod tests {
                     .unwrap()
                     .attributes;
                 assert!(
-                    res_attrs.iter().any(|kv| kv.key == "a"
-                        && kv.value == Some(AnyValue::new_string("updated")))
+                    res_attrs.iter().any(
+                        |kv| kv.key == "a" && kv.value == Some(AnyValue::new_string("updated"))
+                    )
                 );
 
                 // Scope "a" should still be "sv" (unchanged)
@@ -1764,8 +1765,9 @@ mod tests {
                     .unwrap()
                     .attributes;
                 assert!(
-                    scope_attrs.iter().any(|kv| kv.key == "a"
-                        && kv.value == Some(AnyValue::new_string("sv")))
+                    scope_attrs
+                        .iter()
+                        .any(|kv| kv.key == "a" && kv.value == Some(AnyValue::new_string("sv")))
                 );
 
                 // Log "a" should still be "lv" (unchanged)

@@ -961,8 +961,8 @@ pub fn transform_attributes_impl(
     // At the same time, set flag to check if the batch already has the transport optimized
     // encoding. This is used later to determine if we need to decode because the transformation
     // would break some sequences of encoded IDs.
-    let insert_or_upsert_needed =
-        (transform.insert.is_some() || has_upsert) && schema.column_with_name(consts::PARENT_ID).is_some();
+    let insert_or_upsert_needed = (transform.insert.is_some() || has_upsert)
+        && schema.column_with_name(consts::PARENT_ID).is_some();
     let (attrs_record_batch_cow, is_transport_optimized) = if insert_or_upsert_needed {
         let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
         (Cow::Owned(rb), false)
@@ -1387,7 +1387,10 @@ fn transform_keys(
         .as_ref()
         .map(|r| r.total_replacements)
         .unwrap_or(0);
-    let total_upsert_deletions = upsert_plan.as_ref().map(|u| u.total_upsert_deletions).unwrap_or(0);
+    let total_upsert_deletions = upsert_plan
+        .as_ref()
+        .map(|u| u.total_upsert_deletions)
+        .unwrap_or(0);
 
     if total_deletions == 0 && total_replacements == 0 && total_upsert_deletions == 0 {
         // if no modifications are being made to the array, we can just return the original
@@ -1404,7 +1407,11 @@ fn transform_keys(
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref(), upsert_plan.as_ref());
+    let transform_ranges = merge_transform_ranges(
+        replacement_plan.as_ref(),
+        delete_plan.as_ref(),
+        upsert_plan.as_ref(),
+    );
 
     // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
@@ -1454,7 +1461,8 @@ fn transform_keys(
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
 
-    let new_offsets = if all_offsets_same_len && total_deletions == 0 && total_upsert_deletions == 0 {
+    let new_offsets = if all_offsets_same_len && total_deletions == 0 && total_upsert_deletions == 0
+    {
         // if the target and replacement happen to be the same length and there were no deletions, we
         // can just reuse the existing offsets
         offsets.clone()
@@ -1663,7 +1671,10 @@ where
         || dict_values_transform_result
             .transform_ranges
             .iter()
-            .any(|range| range.range_type == KeyTransformRangeType::Delete || range.range_type == KeyTransformRangeType::Upsert);
+            .any(|range| {
+                range.range_type == KeyTransformRangeType::Delete
+                    || range.range_type == KeyTransformRangeType::Upsert
+            });
     let dict_key_transform_ranges = if compute_dict_key_transform_ranges {
         dict_value_transform_ranges_to_key_ranges(
             dict_arr,
@@ -1881,7 +1892,9 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     dict_key_transform_ranges
 }
 
-fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange]) -> (usize, usize, usize) {
+fn transform_stats_from_transform_ranges(
+    transform_ranges: &[KeyTransformRange],
+) -> (usize, usize, usize) {
     let mut count_rename = 0;
     let mut count_delete = 0;
     let mut count_upsert = 0;
@@ -2018,7 +2031,10 @@ fn transform_ranges_to_keep_ranges(
     let mut count_delete_ranges = 0;
     for (start, end) in transform_ranges
         .iter()
-        .filter(|r| r.range_type == KeyTransformRangeType::Delete || r.range_type == KeyTransformRangeType::Upsert)
+        .filter(|r| {
+            r.range_type == KeyTransformRangeType::Delete
+                || r.range_type == KeyTransformRangeType::Upsert
+        })
         .map(|r| (r.start(), r.end()))
     {
         count_delete_ranges += 1;
@@ -8804,9 +8820,7 @@ mod upsert_tests {
 
         let tx = AttributesTransform {
             rename: None,
-            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
-                "b".into(),
-            ]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
             insert: None,
             upsert: Some(UpsertTransform::new(BTreeMap::from([(
                 "a".into(),
@@ -8837,7 +8851,10 @@ mod upsert_tests {
 
         // "b" should be gone
         let key_values: Vec<&str> = (0..keys.len()).map(|i| keys.value(i)).collect();
-        assert!(!key_values.contains(&"b"), "key 'b' should have been deleted");
+        assert!(
+            !key_values.contains(&"b"),
+            "key 'b' should have been deleted"
+        );
 
         // All "a" values should be "2"
         for i in 0..keys.len() {
