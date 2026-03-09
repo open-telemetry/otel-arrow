@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::otap::payload_definitions::{self, ColumnDef, MinDictKeySize, PayloadDefinition};
 use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
 use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
 use crate::schema::consts::{ID, PARENT_ID};
+use crate::schema::payload_definitions::{self, ColumnDef, MinDictKeySize, PayloadDefinition};
 
 /// These are one less than the maximum cardinality of the key type. We should be
 /// able to go up to 256/65536 without overflow, but there is a bug in arrow-rs
@@ -867,8 +867,8 @@ fn select_all_mut<const N: usize>(
 #[cfg(test)]
 mod schema_tests {
     use super::*;
-    use crate::otap::payload_definitions::{ColumnDef, MinDictKeySize, NativeType};
     use crate::record_batch;
+    use crate::schema::payload_definitions::{ColumnDef, MinDictKeySize, NativeType};
     use arrow::array::{Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array};
     use rand::RngExt;
     use std::sync::Arc;
@@ -876,14 +876,20 @@ mod schema_tests {
     /// A test-only payload definition that has a single "data" column allowing
     /// Dict(u8). Used by the generic cardinality tests which don't test spec
     /// enforcement behavior.
+    fn test_data_get(name: &str) -> Option<&'static ColumnDef> {
+        static DATA: ColumnDef = ColumnDef {
+            native_type: NativeType::Utf8,
+            min_dict_key_size: Some(MinDictKeySize::U8),
+        };
+        match name {
+            "data" => Some(&DATA),
+            _ => None,
+        }
+    }
+
     static TEST_DATA_DEF: PayloadDefinition = PayloadDefinition {
-        columns: &[(
-            "data",
-            ColumnDef {
-                native_type: NativeType::Utf8,
-                min_dict_key_size: Some(MinDictKeySize::U8),
-            },
-        )],
+        get_fn: test_data_get,
+        get_nested_fn: |_, _| None,
     };
 
     #[test]
@@ -1115,8 +1121,8 @@ mod schema_tests {
             types.push(DataType::Int16);
             types.push(DataType::Float16);
         }
-        //
-        // // 4+ byte types
+
+        // 4+ byte types
         types.push(DataType::UInt32);
         types.push(DataType::UInt64);
         types.push(DataType::Int32);
@@ -1360,7 +1366,7 @@ mod schema_tests {
 #[cfg(test)]
 mod spec_enforcement_tests {
     use super::*;
-    use crate::otap::payload_definitions;
+    use crate::schema::payload_definitions;
     use arrow::array::{
         Array, ArrayRef, DictionaryArray, Int64Array, RecordBatch, StringArray, StructArray,
         UInt8Array,
@@ -1390,8 +1396,9 @@ mod spec_enforcement_tests {
     fn create_low_cardinality_u8_int64_batch(col_name: &str, n_values: usize) -> RecordBatch {
         assert!(n_values <= 255);
         let keys = UInt8Array::from((0..n_values).map(|i| i as u8).collect::<Vec<_>>());
-        let values: Arc<dyn Array> =
-            Arc::new(Int64Array::from((0..n_values).map(|i| i as i64).collect::<Vec<_>>()));
+        let values: Arc<dyn Array> = Arc::new(Int64Array::from(
+            (0..n_values).map(|i| i as i64).collect::<Vec<_>>(),
+        ));
         let dict_array = DictionaryArray::<UInt8Type>::try_new(keys, values).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new(
             col_name,
@@ -1539,12 +1546,15 @@ mod spec_enforcement_tests {
                 str_field.data_type()
             );
         } else {
-            panic!("Expected body to be a struct, got {:?}", body_field.data_type());
+            panic!(
+                "Expected body to be a struct, got {:?}",
+                body_field.data_type()
+            );
         }
     }
 
     // -----------------------------------------------------------------------
-    // LOGS root: body_ser top-level column must be Dict(u16)
+    // LOGS: body.ser nested column must be Dict(u16)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1553,54 +1563,31 @@ mod spec_enforcement_tests {
             crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
         );
 
-        // body_ser is a top-level column (Dict(u8, Binary) with low cardinality)
-        let n_values = 10;
-        let keys = UInt8Array::from((0..n_values).map(|i| i as u8).collect::<Vec<_>>());
-        let values: Arc<dyn Array> = Arc::new(arrow::array::BinaryArray::from(
-            (0..n_values)
-                .map(|i| format!("ser_{}", i).into_bytes())
-                .collect::<Vec<Vec<u8>>>()
-                .iter()
-                .map(|v| v.as_slice())
-                .collect::<Vec<&[u8]>>(),
-        ));
-        let dict_array = DictionaryArray::<UInt8Type>::try_new(keys, values).unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "body_ser",
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Binary)),
-            false,
-        )]));
-        let batch1 = RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap();
-
-        let n_values2 = 5;
-        let keys2 = UInt8Array::from((0..n_values2).map(|i| i as u8).collect::<Vec<_>>());
-        let values2: Arc<dyn Array> = Arc::new(arrow::array::BinaryArray::from(
-            (0..n_values2)
-                .map(|i| format!("ser2_{}", i).into_bytes())
-                .collect::<Vec<Vec<u8>>>()
-                .iter()
-                .map(|v| v.as_slice())
-                .collect::<Vec<&[u8]>>(),
-        ));
-        let dict_array2 = DictionaryArray::<UInt8Type>::try_new(keys2, values2).unwrap();
-        let schema2 = Arc::new(Schema::new(vec![Field::new(
-            "body_ser",
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Binary)),
-            false,
-        )]));
-        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(dict_array2)]).unwrap();
+        let batch1 = create_struct_with_u8_dict_batch("body", "ser", 10);
+        let batch2 = create_struct_with_u8_dict_batch("body", "ser", 5);
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index, def).unwrap();
 
-        let field = schema.field_with_name("body_ser").unwrap();
-        assert_eq!(
-            field.data_type(),
-            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
-            "LOGS body_ser must use Dict(u16) key, got {:?}",
-            field.data_type()
-        );
+        let body_field = schema.field_with_name("body").unwrap();
+        if let DataType::Struct(fields) = body_field.data_type() {
+            let ser_field = fields
+                .iter()
+                .find(|f| f.name() == "ser")
+                .expect("ser field should exist in body struct");
+            assert_eq!(
+                ser_field.data_type(),
+                &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                "LOGS body.ser must use Dict(u16) key, got {:?}",
+                ser_field.data_type()
+            );
+        } else {
+            panic!(
+                "Expected body to be a struct, got {:?}",
+                body_field.data_type()
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1680,9 +1667,9 @@ mod spec_enforcement_tests {
                 DataType::Utf8 => Arc::new(StringArray::from(
                     (0..n).map(|i| format!("v_{}", i)).collect::<Vec<_>>(),
                 )),
-                DataType::Int64 => {
-                    Arc::new(Int64Array::from((0..n).map(|i| i as i64).collect::<Vec<_>>()))
-                }
+                DataType::Int64 => Arc::new(Int64Array::from(
+                    (0..n).map(|i| i as i64).collect::<Vec<_>>(),
+                )),
                 DataType::Binary => Arc::new(arrow::array::BinaryArray::from(
                     (0..n)
                         .map(|i| format!("b_{}", i).into_bytes())

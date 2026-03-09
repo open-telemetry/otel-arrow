@@ -26,8 +26,6 @@ pub mod batching_tests;
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;
-#[allow(missing_docs)]
-pub mod payload_definitions;
 pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
