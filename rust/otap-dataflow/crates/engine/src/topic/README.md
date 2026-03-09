@@ -71,6 +71,24 @@ Mapping from YAML to runtime behavior:
 - `policies.ack_propagation` controls whether topic hops can bridge Ack/Nack across pipelines.
 - `exporter:topic.config.queue_on_full` is a per-publisher override for balanced full-queue behavior; it does not override broadcast lag policy.
 
+## Backend Capability Contract
+
+Current minimal behavior:
+
+- The controller validates topic declarations before broker creation.
+- Unsupported backend, mode, or policy combinations fail fast at startup with explicit errors.
+- Capability checks are startup-only; publish/recv hot paths are unchanged.
+
+Recommended full engine-level contract for a future second backend:
+
+1. Each backend should declare a `TopicBackendCapabilities` contract in the engine topic layer.
+2. Capabilities should cover backend availability plus support for selected runtime mode (`BalancedOnly`, `BroadcastOnly`, `Mixed`) and policy families such as `broadcast.on_lag` and `ack_propagation`.
+3. Topic creation should validate the selected backend + mode + policies against that contract before instantiating backend state.
+4. Failures should use explicit errors such as `UnsupportedTopicBackend`, `UnsupportedTopicMode`, and `UnsupportedTopicPolicy` rather than generic internal errors.
+5. Capability validation should remain on the topic creation path only; it should not add work to publish or receive hot paths.
+
+That fuller contract is not implemented in the engine layer yet. Today the controller owns the startup validation, while the broker/backend API stays unchanged and infallible for the built-in in-memory backend.
+
 ## Example Use Cases
 
 ### 1. Work distribution (balanced)

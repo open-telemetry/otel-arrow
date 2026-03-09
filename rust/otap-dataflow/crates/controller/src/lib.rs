@@ -51,7 +51,10 @@ use otap_df_config::engine::{
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
-use otap_df_config::topic::{TopicBackendKind, TopicImplSelectionPolicy, TopicSpec};
+use otap_df_config::topic::{
+    TopicAckPropagationPolicy, TopicBackendKind, TopicBroadcastOnLagPolicy,
+    TopicImplSelectionPolicy, TopicSpec,
+};
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
     TopicName, pipeline::PipelineConfig,
@@ -125,6 +128,55 @@ impl InferredTopicMode {
             Self::BalancedOnly => "balanced_only",
             Self::BroadcastOnly => "broadcast_only",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TopicBackendCapabilities {
+    supports_balanced_only: bool,
+    supports_broadcast_only: bool,
+    supports_mixed: bool,
+    supports_broadcast_on_lag_drop_oldest: bool,
+    supports_broadcast_on_lag_disconnect: bool,
+    supports_ack_propagation_disabled: bool,
+    supports_ack_propagation_auto: bool,
+}
+
+impl TopicBackendCapabilities {
+    const fn supports_mode(self, mode: InferredTopicMode) -> bool {
+        match mode {
+            InferredTopicMode::BalancedOnly => self.supports_balanced_only,
+            InferredTopicMode::BroadcastOnly => self.supports_broadcast_only,
+            InferredTopicMode::Mixed => self.supports_mixed,
+        }
+    }
+
+    const fn supports_broadcast_on_lag(self, policy: TopicBroadcastOnLagPolicy) -> bool {
+        match policy {
+            TopicBroadcastOnLagPolicy::DropOldest => self.supports_broadcast_on_lag_drop_oldest,
+            TopicBroadcastOnLagPolicy::Disconnect => self.supports_broadcast_on_lag_disconnect,
+        }
+    }
+
+    const fn supports_ack_propagation(self, policy: TopicAckPropagationPolicy) -> bool {
+        match policy {
+            TopicAckPropagationPolicy::Disabled => self.supports_ack_propagation_disabled,
+            TopicAckPropagationPolicy::Auto => self.supports_ack_propagation_auto,
+        }
+    }
+}
+
+const fn broadcast_on_lag_policy_value(policy: TopicBroadcastOnLagPolicy) -> &'static str {
+    match policy {
+        TopicBroadcastOnLagPolicy::DropOldest => "drop_oldest",
+        TopicBroadcastOnLagPolicy::Disconnect => "disconnect",
+    }
+}
+
+const fn ack_propagation_policy_value(policy: TopicAckPropagationPolicy) -> &'static str {
+    match policy {
+        TopicAckPropagationPolicy::Disabled => "disabled",
+        TopicAckPropagationPolicy::Auto => "auto",
     }
 }
 
@@ -444,12 +496,88 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    fn topic_backend_capabilities(backend: TopicBackendKind) -> Option<TopicBackendCapabilities> {
+        match backend {
+            TopicBackendKind::InMemory => Some(TopicBackendCapabilities {
+                supports_balanced_only: true,
+                supports_broadcast_only: true,
+                supports_mixed: true,
+                supports_broadcast_on_lag_drop_oldest: true,
+                supports_broadcast_on_lag_disconnect: true,
+                supports_ack_propagation_disabled: true,
+                supports_ack_propagation_auto: true,
+            }),
+            TopicBackendKind::Quiver => None,
+        }
+    }
+
+    fn validate_topic_runtime_support_with_capabilities(
+        topic: &TopicName,
+        backend: TopicBackendKind,
+        policies: &otap_df_config::topic::TopicPolicies,
+        selected_mode: InferredTopicMode,
+        capabilities: TopicBackendCapabilities,
+    ) -> Result<(), Error> {
+        if !capabilities.supports_mode(selected_mode) {
+            return Err(Error::UnsupportedTopicMode {
+                topic: topic.clone(),
+                backend,
+                mode: selected_mode.as_str().to_owned(),
+            });
+        }
+
+        if matches!(
+            selected_mode,
+            InferredTopicMode::BroadcastOnly | InferredTopicMode::Mixed
+        ) && !capabilities.supports_broadcast_on_lag(policies.broadcast.on_lag)
+        {
+            return Err(Error::UnsupportedTopicPolicy {
+                topic: topic.clone(),
+                backend,
+                policy: "broadcast.on_lag",
+                value: broadcast_on_lag_policy_value(policies.broadcast.on_lag).to_owned(),
+            });
+        }
+
+        if !capabilities.supports_ack_propagation(policies.ack_propagation) {
+            return Err(Error::UnsupportedTopicPolicy {
+                topic: topic.clone(),
+                backend,
+                policy: "ack_propagation",
+                value: ack_propagation_policy_value(policies.ack_propagation).to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn validate_topic_runtime_support(
+        topic: &TopicName,
+        spec: &TopicSpec,
+        selected_mode: InferredTopicMode,
+    ) -> Result<(), Error> {
+        let Some(capabilities) = Self::topic_backend_capabilities(spec.backend) else {
+            return Err(Error::UnsupportedTopicBackend {
+                topic: topic.clone(),
+                backend: spec.backend,
+            });
+        };
+        Self::validate_topic_runtime_support_with_capabilities(
+            topic,
+            spec.backend,
+            &spec.policies,
+            selected_mode,
+            capabilities,
+        )
+    }
+
     fn declare_topic(
         broker: &TopicBroker<PData>,
         name: TopicName,
         spec: &TopicSpec,
         inferred_mode: InferredTopicMode,
     ) -> Result<(), Error> {
+        Self::validate_topic_runtime_support(&name, spec, inferred_mode)?;
         let opts = Self::map_topic_spec_to_options(spec, inferred_mode);
         match spec.backend {
             TopicBackendKind::InMemory => {
@@ -460,14 +588,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     })?;
                 Ok(())
             }
-            backend => Err(Error::PipelineRuntimeError {
-                source: Box::new(EngineError::InternalError {
-                    message: format!(
-                        "topic backend `{backend}` for topic `{}` is not implemented yet",
-                        name.as_ref()
-                    ),
-                }),
-            }),
+            TopicBackendKind::Quiver => unreachable!("unsupported backend must be rejected above"),
         }
     }
 
@@ -1382,6 +1503,7 @@ mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
+    use otap_df_config::topic::{TopicAckPropagationPolicy, TopicBroadcastOnLagPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -1815,13 +1937,128 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         match Controller::<()>::declare_topics(&config) {
-            Err(Error::PipelineRuntimeError { source }) => {
-                let msg = source.to_string();
-                assert!(msg.contains("backend `quiver`"));
-                assert!(msg.contains("not implemented yet"));
+            Err(Error::UnsupportedTopicBackend { topic, backend }) => {
+                assert_eq!(topic.as_ref(), "global::global_quiver");
+                assert_eq!(backend, TopicBackendKind::Quiver);
             }
             Ok(_) => panic!("quiver backend should be rejected"),
             Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_topic_runtime_support_rejects_unsupported_mode_for_backend_capabilities() {
+        let topic = TopicName::parse("test_topic").expect("topic name should parse");
+        let capabilities = TopicBackendCapabilities {
+            supports_balanced_only: true,
+            supports_broadcast_only: false,
+            supports_mixed: false,
+            supports_broadcast_on_lag_drop_oldest: true,
+            supports_broadcast_on_lag_disconnect: false,
+            supports_ack_propagation_disabled: true,
+            supports_ack_propagation_auto: true,
+        };
+
+        let err = Controller::<()>::validate_topic_runtime_support_with_capabilities(
+            &topic,
+            TopicBackendKind::InMemory,
+            &TopicSpec::default().policies,
+            InferredTopicMode::BroadcastOnly,
+            capabilities,
+        )
+        .expect_err("broadcast_only should be rejected");
+
+        match err {
+            Error::UnsupportedTopicMode {
+                topic,
+                backend,
+                mode,
+            } => {
+                assert_eq!(topic.as_ref(), "test_topic");
+                assert_eq!(backend, TopicBackendKind::InMemory);
+                assert_eq!(mode, "broadcast_only");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_topic_runtime_support_rejects_unsupported_broadcast_lag_policy() {
+        let topic = TopicName::parse("test_topic").expect("topic name should parse");
+        let capabilities = TopicBackendCapabilities {
+            supports_balanced_only: true,
+            supports_broadcast_only: true,
+            supports_mixed: true,
+            supports_broadcast_on_lag_drop_oldest: true,
+            supports_broadcast_on_lag_disconnect: false,
+            supports_ack_propagation_disabled: true,
+            supports_ack_propagation_auto: true,
+        };
+        let mut spec = TopicSpec::default();
+        spec.policies.broadcast.on_lag = TopicBroadcastOnLagPolicy::Disconnect;
+
+        let err = Controller::<()>::validate_topic_runtime_support_with_capabilities(
+            &topic,
+            TopicBackendKind::InMemory,
+            &spec.policies,
+            InferredTopicMode::BroadcastOnly,
+            capabilities,
+        )
+        .expect_err("disconnect lag policy should be rejected");
+
+        match err {
+            Error::UnsupportedTopicPolicy {
+                topic,
+                backend,
+                policy,
+                value,
+            } => {
+                assert_eq!(topic.as_ref(), "test_topic");
+                assert_eq!(backend, TopicBackendKind::InMemory);
+                assert_eq!(policy, "broadcast.on_lag");
+                assert_eq!(value, "disconnect");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_topic_runtime_support_rejects_unsupported_ack_propagation_policy() {
+        let topic = TopicName::parse("test_topic").expect("topic name should parse");
+        let capabilities = TopicBackendCapabilities {
+            supports_balanced_only: true,
+            supports_broadcast_only: true,
+            supports_mixed: true,
+            supports_broadcast_on_lag_drop_oldest: true,
+            supports_broadcast_on_lag_disconnect: true,
+            supports_ack_propagation_disabled: true,
+            supports_ack_propagation_auto: false,
+        };
+        let mut spec = TopicSpec::default();
+        spec.policies.ack_propagation = TopicAckPropagationPolicy::Auto;
+
+        let err = Controller::<()>::validate_topic_runtime_support_with_capabilities(
+            &topic,
+            TopicBackendKind::InMemory,
+            &spec.policies,
+            InferredTopicMode::BalancedOnly,
+            capabilities,
+        )
+        .expect_err("ack auto should be rejected");
+
+        match err {
+            Error::UnsupportedTopicPolicy {
+                topic,
+                backend,
+                policy,
+                value,
+            } => {
+                assert_eq!(topic.as_ref(), "test_topic");
+                assert_eq!(backend, TopicBackendKind::InMemory);
+                assert_eq!(policy, "ack_propagation");
+                assert_eq!(value, "auto");
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 

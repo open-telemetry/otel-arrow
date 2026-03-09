@@ -293,6 +293,9 @@ Supported `backend` values:
 - `in_memory` (default, currently implemented)
 - `quiver` (accepted by config, not implemented by the runtime yet)
 
+Unsupported backend or policy combinations are rejected during startup topic
+declaration with explicit errors.
+
 Supported `impl_selection` values:
 
 - `auto`

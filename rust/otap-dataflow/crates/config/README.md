@@ -155,6 +155,9 @@ topics:
   - `auto`
   - `force_mixed`
 
+Unsupported backend or policy combinations are rejected during startup topic
+declaration with explicit errors.
+
 - `policies.balanced.queue_capacity` (default: `128`, must be > 0)
 - `policies.balanced.on_full`:
   - `block` (default)
