@@ -1568,14 +1568,29 @@ impl InvokeFunctionScalarExpression {
             let mut return_statement = None;
             let mut return_count = 0;
 
+            // discard expression may cause the function to return Null if the predicate does not
+            // pass, so we consider when folding that if there is a discard expression then we
+            // cannot determine the function return type statically.
+            //
+            // TODO - in the future we may consider folding the discard logical expr and if it can
+            // be statically determined to return true/false, then we'll consider this during fold
+            let mut discard_count = 0;
+
             for e in expressions {
-                if let PipelineFunctionExpression::Return(r) = e {
-                    return_count += 1;
-                    return_statement = Some(r);
+                match e {
+                    PipelineFunctionExpression::Return(r) => {
+                        return_count += 1;
+                        return_statement = Some(r);
+                    }
+                    PipelineFunctionExpression::Discard(d) => {
+                        discard_count += 1;
+                    }
+                    _ => {}
                 }
             }
 
             if return_count == 1
+                && discard_count == 0
                 && let ScalarExpression::Static(s) = return_statement.unwrap()
             {
                 return Ok(Some(if s.foldable() {
