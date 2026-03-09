@@ -412,13 +412,12 @@ where
                     for e in expressions {
                         match e {
                             PipelineFunctionExpression::Discard(d) => {
-                                // TODO need add test for this ....
                                 if let Some(predicate) = d.get_predicate() {
                                     if !execute_logical_expression(
                                         &func_execution_context,
                                         predicate,
                                     )? {
-                                        // value discarded
+                                        // value discarded - return Null
                                         return_value = None;
                                         break;
                                     }

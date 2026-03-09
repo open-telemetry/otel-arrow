@@ -1582,7 +1582,7 @@ impl InvokeFunctionScalarExpression {
                         return_count += 1;
                         return_statement = Some(r);
                     }
-                    PipelineFunctionExpression::Discard(d) => {
+                    PipelineFunctionExpression::Discard(_d) => {
                         discard_count += 1;
                     }
                     _ => {}
@@ -3501,6 +3501,55 @@ mod tests {
                     ValueAccessor::new(),
                 )),
             )],
+            None,
+        );
+
+        // Note: If a discard expr is present return value won't be folded
+        run_test_success(
+            PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    PipelineFunctionParameterType::Scalar(None),
+                )],
+                None,
+                vec![
+                    PipelineFunctionExpression::Discard(
+                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Some(ValueType::String),
+                                    0,
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                )),
+                                true,
+                            )),
+                        ),
+                    ),
+                    PipelineFunctionExpression::Return(ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hello world",
+                        )),
+                    )),
+                ],
+            ),
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "x",
+                        )),
+                    )]),
+                ),
+            ))],
             None,
         );
 
