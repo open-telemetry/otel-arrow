@@ -95,7 +95,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
           exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
 
@@ -125,7 +125,7 @@ groups:
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4337"
 
@@ -172,7 +172,7 @@ groups:
               multiplier: 1.5
 
           logs_exporter:
-            type: exporter:otlp
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4328"
               max_in_flight: 6

@@ -1,0 +1,93 @@
+name: Task
+description: Track internal work items for OTel-Arrow
+type: Task
+labels: ["triage:deciding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for implementation tasks, refactors, CI/build follow-ups, release/process work, or other maintainer-oriented work items.
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Pre-filing checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component(s)
+      description: Which component(s) does this task relate to?
+      multiple: true
+      options:
+        - Rust OTAP dataflow (rust/otap-dataflow/)
+        - Go OTel Arrow Receiver/Exporter (go/)
+        - Documentation
+        - CI / Build
+        - Release / Process
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What work needs to be done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+      description: Why is this task needed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Outline the expected scope of work.
+      placeholder: |
+        - Update ...
+        - Add or remove ...
+        - Validate ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: How will we know this task is complete?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies or Blockers
+      description: Related issues, PRs, design docs, or blockers.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, references, or screenshots.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        **Tip:** Keep tasks scoped and actionable so they are easier to review and pick up.
