@@ -108,7 +108,7 @@ All events are emitted from `crates/otap/src/durable_buffer_processor/mod.rs`.
 | `durable_buffer.ingest.backpressure` | `warn` | Storage soft cap exceeded; the upstream bundle is NACKed. Rate-limited to at most once per `WARN_RATE_LIMIT` interval. |
 | `durable_buffer.ingest.failed` | `error` | Non-backpressure ingest error; the upstream bundle is NACKed. |
 | `durable_buffer.otlp.adapter_failed` | `error` | `OtlpBytesAdapter` creation failed in `PassThrough` mode; the upstream bundle is NACKed with the original bytes. |
-| `durable_buffer.otlp.conversion_failed` | `error` | OTLP→Arrow conversion failed in `ConvertToArrow` mode; the upstream bundle is NACKed with the original bytes. |
+| `durable_buffer.otlp.conversion_failed` | `error` | OTLP->Arrow conversion failed in `ConvertToArrow` mode; the upstream bundle is NACKed with the original bytes. |
 
 ### Flush and Maintenance
 
