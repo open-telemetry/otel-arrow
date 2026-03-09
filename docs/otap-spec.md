@@ -416,12 +416,12 @@ properties for the `resource` column's `id` field.
 | event_name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Event name                                        |
 | body                              | Struct                | -                   | Yes      | Yes      | -                            | -        | Log body                                          |
 | body.type                         | UInt8                 | -                   | No       | Yes      | -                            | -        | Body value type (same encoding as attribute type) |
-| body.str                          | Utf8                  | Dict(u8), Dict(u16) | No       | Yes      | -                            | -        | String body (may be empty)                        |
-| body.int                          | Int64                 | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Integer body (when body.type=3)                   |
+| body.str                          | Utf8                  | Dict(u16)           | No       | Yes      | -                            | -        | String body (may be empty)                        |
+| body.int                          | Int64                 | Dict(u16)           | Yes      | No       | -                            | -        | Integer body (when body.type=3)                   |
 | body.double                       | Float64               | -                   | Yes      | No       | -                            | -        | Double body (when body.type=4)                    |
 | body.bool                         | Boolean               | -                   | Yes      | No       | -                            | -        | Boolean body (when body.type=2)                   |
-| body.bytes                        | Binary                | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Bytes body (when body.type=5)                     |
-| body_ser                          | Binary                | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | CBOR-encoded complex body (when body.type=6 or 7) |
+| body.bytes                        | Binary                | Dict(u16)           | Yes      | No       | -                            | -        | Bytes body (when body.type=5)                     |
+| body_ser                          | Binary                | Dict(u16)           | Yes      | No       | -                            | -        | CBOR-encoded complex body (when body.type=6 or 7) |
 | dropped_attributes_count          | UInt32                | -                   | Yes      | No       | -                            | -        | Number of dropped log attributes                  |
 | flags                             | UInt32                | -                   | Yes      | No       | -                            | -        | Trace flags                                       |
 
