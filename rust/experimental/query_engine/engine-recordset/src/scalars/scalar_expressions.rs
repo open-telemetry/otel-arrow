@@ -411,8 +411,18 @@ where
 
                     for e in expressions {
                         match e {
-                            PipelineFunctionExpression::Discard(_d) => {
-                                todo!("Albert TODO")
+                            PipelineFunctionExpression::Discard(d) => {
+                                // TODO need add test for this ....
+                                if let Some(predicate) = d.get_predicate() {
+                                    if !execute_logical_expression(
+                                        &func_execution_context,
+                                        predicate,
+                                    )? {
+                                        // value discarded
+                                        return_value = None;
+                                        break;
+                                    }
+                                }
                             }
                             PipelineFunctionExpression::Transform(t) => {
                                 execute_transform_expression(&func_execution_context, t)?
@@ -3011,6 +3021,116 @@ mod tests {
                 ],
             ),
             "value1",
+        );
+    }
+
+    #[test]
+    fn test_execute_invoke_function_with_discard_expression() {
+        fn run_test(invoke_func_expr: InvokeFunctionScalarExpression, expected: OwnedValue) {
+            // pipeline with one single function:
+            // func(arg: string) {
+            //   where arg == "a" | true
+            // }
+            let pipeline = PipelineExpressionBuilder::new("")
+                .with_functions(vec![PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                    )],
+                    Some(ValueType::Boolean),
+                    vec![
+                        // discards the value if it's not equal to "a"
+                        PipelineFunctionExpression::Discard(
+                            DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        Some(ValueType::String),
+                                        0,
+                                        ValueAccessor::new(),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                    )),
+                                    true,
+                                )),
+                            ),
+                        ),
+                        // returns true
+                        PipelineFunctionExpression::Return(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                true,
+                            )),
+                        )),
+                    ],
+                )])
+                .build()
+                .unwrap();
+
+            let mut test = TestExecutionContext::new()
+                .with_record(
+                    TestRecord::new()
+                        .with_key_value(
+                            "x".into(),
+                            OwnedValue::String(StringValueStorage::new("a".into())),
+                        )
+                        .with_key_value(
+                            "y".into(),
+                            OwnedValue::String(StringValueStorage::new("b".into())),
+                        ),
+                )
+                .with_pipeline(pipeline.clone());
+
+            let execution_context = test.create_execution_context();
+
+            // assert returns real return result when the discard predicate passes
+            let expression = ScalarExpression::InvokeFunction(invoke_func_expr);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected.to_value(), actual.to_value());
+        }
+
+        run_test(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Boolean),
+                0,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "x",
+                            )),
+                        )]),
+                    ),
+                ))],
+            ),
+            OwnedValue::Boolean(BooleanValueStorage::new(true)),
+        );
+
+        run_test(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Boolean),
+                0,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "y",
+                            )),
+                        )]),
+                    ),
+                ))],
+            ),
+            OwnedValue::Null,
         );
     }
 }
