@@ -14,6 +14,8 @@ def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1)
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
             continue
+        if os.sep + 'target' + os.sep in os.path.normpath(filename):
+            continue
         with open(filename, 'rb') as file:
             content = file.read()
             error = []
