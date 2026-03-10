@@ -9,8 +9,6 @@ directories).
 
 ## Markdown rules
 
-- Use only ASCII characters in Markdown files. No smart quotes, em-dashes, or
-  Unicode symbols.
 - After editing Markdown files, run markdownlint on the changed files (requires
   Node.js/npx to be installed):
 
@@ -26,8 +24,7 @@ After modifying any Markdown, YAML, or Python file, run:
 python3 tools/sanitycheck.py
 ```
 
-This checks for non-ASCII characters, trailing whitespace, consistent line
-endings (LF only), and correct indentation. Fix any errors before committing.
+Fix any errors before committing.
 
 ## After every Rust code change
 
