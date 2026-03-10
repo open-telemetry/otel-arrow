@@ -15,6 +15,7 @@ datafusion = { workspace = true }
 futures-core = { workspace = true }
 parking_lot = { workspace = true }
 roaring = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 
@@ -33,6 +34,10 @@ otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
 [[bench]]
 name = "filter"
+harness = false
+
+[[bench]]
+name = "assign_attributes"
 harness = false
 
 [lints]

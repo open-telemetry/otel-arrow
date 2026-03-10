@@ -331,7 +331,16 @@ pub fn logs_with_varying_attributes_and_properties(batch_size: usize) -> LogsDat
                         _ => "arrow::array",
                     }),
                 ),
+                KeyValue::new(
+                    "code.function.name",
+                    AnyValue::new_string(match i % 3 {
+                        0 => "main",
+                        1 => "try_recv",
+                        _ => "concat",
+                    }),
+                ),
                 KeyValue::new("code.line.number", AnyValue::new_int((i % 5) as i64)),
+                KeyValue::new("code.column.number", AnyValue::new_int(40i64)),
             ];
 
             // cycle through severity numbers

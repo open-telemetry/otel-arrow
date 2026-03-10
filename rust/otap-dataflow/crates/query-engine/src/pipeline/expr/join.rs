@@ -450,10 +450,10 @@ impl JoinExec for RootToAttributesJoin {
 
 /// Joins root attributes (e.g. log.attributes, span.attributes, or metric.attributes) to the root
 /// record batch on root.id == attributes.parent_id
-struct RootAttrsToRootJoin {}
+pub(crate) struct RootAttrsToRootJoin {}
 
 impl RootAttrsToRootJoin {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {}
     }
 }

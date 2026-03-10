@@ -749,6 +749,21 @@ impl PhysicalExprEvalResult {
 
         result
     }
+
+    pub fn new_with_parent_ids(
+        values: ColumnarValue,
+        data_scope: Rc<DataScope>,
+        parent_ids: ArrayRef,
+    ) -> Self {
+        Self {
+            values,
+            data_scope,
+            ids: None,
+            parent_ids: Some(parent_ids),
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
 }
 
 #[cfg(test)]
