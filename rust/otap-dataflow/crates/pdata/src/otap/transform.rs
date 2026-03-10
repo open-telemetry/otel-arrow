@@ -1182,8 +1182,8 @@ pub fn transform_attributes_impl(
     let insert_entries = transform.insert.as_ref().map(|i| &i.entries);
     let upsert_entries = transform.upsert.as_ref().map(|u| &u.entries);
 
-    let has_any_inserts = insert_entries.map_or(false, |e| !e.is_empty())
-        || upsert_entries.map_or(false, |e| !e.is_empty());
+    let has_any_inserts = insert_entries.is_some_and(|e| !e.is_empty())
+        || upsert_entries.is_some_and(|e| !e.is_empty());
 
     if has_any_inserts {
         if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
@@ -1984,15 +1984,15 @@ fn merge_transform_ranges<'a>(
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
     upsert_plan: Option<&'a KeyUpsertPlan<'_>>,
 ) -> Cow<'a, [KeyTransformRange]> {
-    let has_rep = replacement_plan.map_or(false, |p| !p.ranges.is_empty());
-    let has_del = delete_plan.map_or(false, |p| !p.ranges.is_empty());
-    let has_ups = upsert_plan.map_or(false, |p| !p.ranges.is_empty());
+    let has_rep = replacement_plan.is_some_and(|p| !p.ranges.is_empty());
+    let has_del = delete_plan.is_some_and(|p| !p.ranges.is_empty());
+    let has_ups = upsert_plan.is_some_and(|p| !p.ranges.is_empty());
 
     match (has_rep, has_del, has_ups) {
         (false, false, false) => Cow::Borrowed(&[]),
-        (true, false, false) => Cow::Borrowed(&replacement_plan.unwrap().ranges),
-        (false, true, false) => Cow::Borrowed(&delete_plan.unwrap().ranges),
-        (false, false, true) => Cow::Borrowed(&upsert_plan.unwrap().ranges),
+        (true, false, false) => Cow::Borrowed(&replacement_plan.expect("checked").ranges),
+        (false, true, false) => Cow::Borrowed(&delete_plan.expect("checked").ranges),
+        (false, false, true) => Cow::Borrowed(&upsert_plan.expect("checked").ranges),
         _ => {
             // Multiple plans present: collect and sort by start index
             let cap = replacement_plan.map_or(0, |p| p.ranges.len())
