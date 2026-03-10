@@ -215,6 +215,7 @@ impl LogsIngestionClient {
                         base_delay.mul_f64(jitter_factor)
                     };
 
+                    // TODO: Revisit whether DEBUG or INFO is the right level for retry attempts.
                     otel_debug!("azure_monitor_exporter.export.retrying", attempt = attempt, delay_ms = delay.as_millis() as u64, error = ?e);
 
                     tokio::time::sleep(delay).await;
