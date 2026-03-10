@@ -113,6 +113,41 @@ pub mod object_store;
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
 
+/// Install the rustls crypto provider selected by the active feature flag.
+///
+/// Safe to call multiple times — subsequent calls are no-ops.
+/// Panics if no crypto feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`) is enabled.
+#[cfg(feature = "experimental-tls")]
+pub fn install_crypto_provider() {
+    let _ = try_install_crypto_provider();
+}
+
+/// Try to install the rustls crypto provider selected by the active feature flag.
+///
+/// Returns `Ok(())` on success or if already installed, `Err` on failure.
+#[cfg(feature = "experimental-tls")]
+pub fn try_install_crypto_provider() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "crypto-ring")]
+    {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|e| format!("Failed to install ring crypto provider: {e:?}"))?;
+    }
+    #[cfg(feature = "crypto-aws-lc")]
+    {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .map_err(|e| format!("Failed to install aws-lc-rs crypto provider: {e:?}"))?;
+    }
+    #[cfg(feature = "crypto-openssl")]
+    {
+        rustls_openssl::default_provider()
+            .install_default()
+            .map_err(|e| format!("Failed to install OpenSSL crypto provider: {e:?}"))?;
+    }
+    Ok(())
+}
+
 /// Console exporter similar using built-in OTLP-bytes formatting.
 pub mod console_exporter;
 

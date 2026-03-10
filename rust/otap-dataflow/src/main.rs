@@ -253,10 +253,19 @@ fn validate_engine_components(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize rustls crypto provider (required for rustls 0.23+)
-    // We use ring as the default provider
-    #[cfg(feature = "experimental-tls")]
+    // Initialize rustls crypto provider based on the selected backend.
+    #[cfg(feature = "crypto-ring")]
     rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+
+    #[cfg(feature = "crypto-aws-lc")]
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+
+    #[cfg(feature = "crypto-openssl")]
+    rustls_openssl::default_provider()
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 

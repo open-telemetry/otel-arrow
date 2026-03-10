@@ -40,6 +40,7 @@ serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+rustls-openssl = { workspace = true, optional = true }
 sysinfo.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
@@ -140,9 +141,10 @@ quote = "1.0"
 rand = "0.10.0"
 rcgen = "0.14"
 roaring = "0.11.2"
-rustls = { version = "0.23.22", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.22", default-features = false, features = ["std", "tls12"] }
+rustls-openssl = { version = "0.3.0", default-features = false, features = ["tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
 schemars = { version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
@@ -215,7 +217,10 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 # Experimental features
-experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
+experimental-tls = ["crypto-ring"]
+crypto-ring = ["otap-df-otap/crypto-ring", "dep:rustls", "rustls/ring"]
+crypto-aws-lc = ["otap-df-otap/crypto-aws-lc", "dep:rustls", "rustls/aws_lc_rs"]
+crypto-openssl = ["otap-df-otap/crypto-openssl", "dep:rustls", "dep:rustls-openssl"]
 
 # Contrib exporters (opt-in) - now in contrib-nodes
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]

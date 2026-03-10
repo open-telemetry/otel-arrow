@@ -68,7 +68,7 @@ weaver_semconv.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["http2", "rustls", "stream"] }
+reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
@@ -84,6 +84,7 @@ url = { workspace = true }
 azure_identity = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 rustls-native-certs = { workspace = true, optional = true }
+rustls-openssl = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
@@ -97,7 +98,10 @@ byte-unit.workspace = true
 
 [features]
 test-utils = []
-experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
+experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:arc-swap", "dep:notify"]
+crypto-ring = ["experimental-tls", "rustls/ring", "tokio-rustls/ring", "tonic/tls-ring"]
+crypto-aws-lc = ["experimental-tls", "rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs", "tonic/tls-aws-lc"]
+crypto-openssl = ["experimental-tls", "dep:rustls-openssl"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 aws = ["object_store/aws", "object_store/cloud"]
 
