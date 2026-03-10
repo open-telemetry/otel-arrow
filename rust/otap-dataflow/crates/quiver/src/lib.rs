@@ -138,8 +138,8 @@ pub use error::{QuiverError, Result};
 pub use segment::SegmentError;
 pub use segment_store::{ScanResult, SegmentReadMode, SegmentStore};
 pub use subscriber::{
-    BundleHandle, BundleIndex, BundleRef, RegistryCallback, RegistryConfig, SegmentProvider,
-    SubscriberError, SubscriberId, SubscriberRegistry,
+    BundleHandle, BundleIndex, BundleRef, RegistryCallback, RegistryConfig, SegmentProgress,
+    SegmentProvider, SubscriberError, SubscriberId, SubscriberRegistry,
 };
 // Re-export CancellationToken for convenient use by consumers.
 // This is the standard tokio-util type used for cooperative cancellation.
