@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
@@ -204,7 +204,6 @@ impl LogsIngestionClient {
                         base_delay + jitter
                     } else {
                         if attempt >= MAX_RETRIES {
-                            otel_warn!("azure_monitor_exporter.export.retries_exhausted", attempts = attempt, error = ?e);
                             return Err(Error::ExportFailed {
                                 attempts: attempt,
                                 last_error: Box::new(e),
