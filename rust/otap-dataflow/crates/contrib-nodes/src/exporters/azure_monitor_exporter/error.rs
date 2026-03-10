@@ -88,7 +88,7 @@ pub enum Error {
 
     // ==================== Export Errors ====================
     /// Export failed after retries.
-    #[error("Export failed after {attempts} attempts")]
+    #[error("Export failed after {attempts} attempts: {last_error}")]
     ExportFailed {
         /// Number of attempts made.
         attempts: u32,
