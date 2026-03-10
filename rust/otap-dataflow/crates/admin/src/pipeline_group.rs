@@ -104,35 +104,21 @@ async fn shutdown_all_pipelines(
         timeout_secs = params.timeout_secs
     );
 
-    // Take the senders out of the shared state so we can drop them after sending
-    // shutdown messages. Dropping the senders allows the pipeline ctrl channels to
-    // close, which unblocks PipelineCtrlMsgManager exit and pipeline thread joins.
-    let senders = state
-        .ctrl_msg_senders
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
-
-    let errors: Vec<_> = match &senders {
-        Some(senders) => senders
-            .iter()
-            .filter_map(|sender| {
-                let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
-                sender
-                    .try_send_shutdown(
-                        deadline,
-                        "Shutdown requested via the `/pipeline-groups/shutdown` endpoint."
-                            .to_owned(),
-                    )
-                    .err()
-            })
-            .map(|e| e.to_string())
-            .collect(),
-        None => vec!["Shutdown already in progress".to_owned()],
-    };
-
-    // Drop the senders now that shutdown messages have been sent.
-    drop(senders);
+    // Send shutdown message to all pipelines
+    let errors: Vec<_> = (*state.ctrl_msg_senders.lock().await)
+        .drain(..)
+        .filter_map(|sender| {
+            // Use the timeout from params for the shutdown deadline
+            let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
+            sender
+                .try_send_shutdown(
+                    deadline,
+                    "Shutdown requested via the `/pipeline-groups/shutdown` endpoint.".to_owned(),
+                )
+                .err()
+        })
+        .map(|e| e.to_string())
+        .collect();
 
     // If there were errors sending shutdown messages, return immediately
     if !errors.is_empty() {
