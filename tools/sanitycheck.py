@@ -10,18 +10,13 @@ CRLF = b'\r\n'
 LF = b'\n'
 
 # Only check git-tracked files so local build artifacts, venvs, perf results,
-# etc. are skipped automatically.  Single subprocess call, cached for all checks.
-_tracked_files = None
-
-def _is_tracked(filepath):
-    global _tracked_files
-    if _tracked_files is None:
-        result = subprocess.run(
-            ['git', 'ls-files'],
-            capture_output=True, text=True, check=True
-        )
-        _tracked_files = set(os.path.normpath(f) for f in result.stdout.splitlines())
-    return os.path.normpath(filepath) in _tracked_files
+# etc. are skipped automatically.
+_tracked_files = set(
+    os.path.normpath(f)
+    for f in subprocess.run(
+        ['git', 'ls-files'], capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+)
 
 def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1):
     error_count = 0
@@ -29,7 +24,7 @@ def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1)
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
             continue
-        if not _is_tracked(filename):
+        if os.path.normpath(filename) not in _tracked_files:
             continue
         with open(filename, 'rb') as file:
             content = file.read()
