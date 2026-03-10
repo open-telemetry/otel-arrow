@@ -321,15 +321,12 @@ impl PipelineStage for AssignPipelineStage {
         // TODO - if need to project this and don't have it, should be empty batch I think ...
         let values_column = values_column.unwrap().clone();
 
-        let mut fields = attrs_record_batch.schema().fields.to_vec();
-        fields.push(Arc::new(Field::new(
+        let mut fields = vec![Arc::new(Field::new(
             VALUE_COLUMN_NAME,
             values_column.data_type().clone(),
             true,
-        )));
-
-        let mut columns = attrs_record_batch.columns().to_vec();
-        columns.push(values_column);
+        ))];
+        let mut columns = vec![values_column];
 
         if self.source.projection_opts.downcast_dicts {
             Projection::try_downcast_dicts(&mut fields, &mut columns)?
@@ -353,8 +350,11 @@ impl PipelineStage for AssignPipelineStage {
 
         let (field_name, supports_dict, attr_type) = match result_type {
             DataType::Utf8 => (consts::ATTRIBUTE_STR, true, AttributeValueType::Str),
+            DataType::Int64 => (consts::ATTRIBUTE_INT, true, AttributeValueType::Int),
+            DataType::Float64 => (consts::ATTRIBUTE_DOUBLE, false, AttributeValueType::Double),
+            DataType::Boolean => (consts::ATTRIBUTE_BOOL, false, AttributeValueType::Bool),
             _ => {
-                todo!()
+                todo!("support more result types when assigning back to value column")
             }
         };
 
