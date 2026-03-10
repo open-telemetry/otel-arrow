@@ -326,6 +326,14 @@ applies to broadcast delivery paths.
 `ack_propagation` applies to the topic hop as a whole and controls whether
 Ack/Nack can be bridged across pipelines.
 
+Current limitation: in broadcast mode, `ack_propagation: auto` does not
+aggregate acknowledgements across all subscribers. The first broadcast
+subscriber Ack/Nack resolves the upstream message, so upstream completion does
+not mean all broadcast subscribers processed the message. This matters
+especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
+a message that another subscriber still Acks upstream. Future enhancements are
+tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+
 Topic defaults:
 
 - `backend = in_memory`

@@ -1,10 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Topic internals -- the performance-critical core of the crate.
-//!
-//! This is the largest module. It contains several cooperating internal types,
-//! all `pub(crate)`. Nothing here is directly exposed to users.
+//! Topic internals, nothing here is directly exposed to users.
 //!
 //! # TopicInner -- Enum Dispatch
 //!

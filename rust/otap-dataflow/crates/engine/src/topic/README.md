@@ -88,6 +88,14 @@ Mapping from YAML to runtime behavior:
   for balanced full-queue behavior; it does not override broadcast lag
   policy.
 
+Current limitation: in broadcast mode, `ack_propagation: auto` does not
+aggregate acknowledgements across all subscribers. The first broadcast
+subscriber Ack/Nack resolves the upstream message, so upstream completion does
+not mean all broadcast subscribers processed the message. This matters
+especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
+a message that another subscriber still Acks upstream. Future enhancements are
+tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+
 ## Backend Capability Contract
 
 Current minimal behavior:

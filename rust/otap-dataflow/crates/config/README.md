@@ -176,6 +176,14 @@ declaration with explicit errors.
 `policies.broadcast.on_lag` applies to broadcast delivery paths.
 `policies.ack_propagation` applies to the topic hop as a whole.
 
+Current limitation: in broadcast mode, `ack_propagation: auto` does not
+aggregate acknowledgements across all subscribers. The first broadcast
+subscriber Ack/Nack resolves the upstream message, so upstream completion does
+not mean all broadcast subscribers processed the message. This matters
+especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
+a message that another subscriber still Acks upstream. Future enhancements are
+tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+
 Topic declaration precedence (for a pipeline in a given group):
 
 - `groups.<group>.topics.<name>` -> `topics.<name>`
