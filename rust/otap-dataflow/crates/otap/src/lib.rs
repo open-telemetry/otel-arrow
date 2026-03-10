@@ -18,8 +18,8 @@ pub mod otap_receiver;
 /// produce for the pipeline OTAP PData
 pub mod otlp_receiver;
 
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
+/// Implementation of OTLP gRPC exporter that implements the exporter trait
+pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
@@ -53,6 +53,9 @@ pub mod noop_exporter;
 
 /// Fan-out processor to clone data to multiple downstream outputs.
 pub mod fanout_processor;
+
+/// Delay processor that introduces artificial latency before forwarding data.
+pub mod delay_processor;
 
 /// An error-exporter returns a static error.
 pub mod error_exporter;

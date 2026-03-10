@@ -22,11 +22,30 @@ pub struct Policies {
     #[serde(default)]
     pub telemetry: TelemetryPolicy,
     /// Resources policy controlling runtime core allocation.
-    #[serde(default)]
-    pub resources: ResourcesPolicy,
+    ///
+    /// When absent, the parent scope's resources policy or the built-in default
+    /// (`core_allocation: all_cores`) applies.  Serde leaves this `None` when
+    /// the key is omitted from the YAML/JSON, so a `policies:` block that only
+    /// sets (e.g.) `channel_capacity` does **not** implicitly pin `core_allocation`
+    /// to `AllCores` and shadow a `--num-cores` / `--core-id-range` CLI flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcesPolicy>,
 }
 
 impl Policies {
+    /// Returns the effective resources policy.
+    ///
+    /// When `resources` is `None` (not explicitly configured), the built-in
+    /// default [`ResourcesPolicy`] is returned as an owned value.  When it is
+    /// `Some`, a reference to the stored value is returned.
+    #[must_use]
+    pub fn effective_resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
+        self.resources
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
+    }
+
     /// Returns validation errors for this policy set.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
@@ -51,6 +70,25 @@ impl Policies {
     }
 }
 
+/// Engine-wide metric level controlling per-channel and per-node
+/// instrumentation overhead.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricLevel {
+    /// No instrumentation.
+    #[default]
+    None,
+    /// Channel transport metrics (send/recv counts, capacity).
+    Basic,
+    /// Adds per-node produced/consumed outcome metrics
+    /// (success, failure, refused).
+    Normal,
+    /// Adds pipeline latency measurement (entry timestamps).
+    Detailed,
+}
+
 /// Runtime telemetry policy declarations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -61,9 +99,9 @@ pub struct TelemetryPolicy {
     /// Enable capture of Tokio runtime internal metrics.
     #[serde(default = "default_true")]
     pub tokio_metrics: bool,
-    /// Enable capture of channel-level metrics.
-    #[serde(default = "default_true")]
-    pub channel_metrics: bool,
+    /// Channel and component metric detail level.
+    #[serde(default = "default_metric_level_basic")]
+    pub channel_metrics: MetricLevel,
 }
 
 impl Default for TelemetryPolicy {
@@ -71,9 +109,13 @@ impl Default for TelemetryPolicy {
         Self {
             pipeline_metrics: true,
             tokio_metrics: true,
-            channel_metrics: true,
+            channel_metrics: MetricLevel::Basic,
         }
     }
+}
+
+const fn default_metric_level_basic() -> MetricLevel {
+    MetricLevel::Basic
 }
 
 const fn default_true() -> bool {
@@ -215,9 +257,12 @@ mod tests {
         assert_eq!(policies.channel_capacity.pdata, 128);
         assert!(policies.telemetry.pipeline_metrics);
         assert!(policies.telemetry.tokio_metrics);
-        assert!(policies.telemetry.channel_metrics);
         assert_eq!(
-            policies.resources.core_allocation,
+            policies.telemetry.channel_metrics,
+            super::MetricLevel::Basic
+        );
+        assert_eq!(
+            policies.effective_resources().core_allocation,
             super::CoreAllocation::AllCores
         );
     }
@@ -273,5 +318,51 @@ mod tests {
             .to_string(),
             "0-3,8-11,16"
         );
+    }
+
+    #[test]
+    fn metric_level_ordering() {
+        use super::MetricLevel;
+        assert!(MetricLevel::None < MetricLevel::Basic);
+        assert!(MetricLevel::Basic < MetricLevel::Normal);
+        assert!(MetricLevel::Normal < MetricLevel::Detailed);
+        assert!(MetricLevel::Detailed >= MetricLevel::Basic);
+    }
+
+    #[test]
+    fn metric_level_serde_roundtrip() {
+        use super::MetricLevel;
+        for (level, expected_str) in [
+            (MetricLevel::None, "\"none\""),
+            (MetricLevel::Basic, "\"basic\""),
+            (MetricLevel::Normal, "\"normal\""),
+            (MetricLevel::Detailed, "\"detailed\""),
+        ] {
+            let json = serde_json::to_string(&level).expect("serialize");
+            assert_eq!(json, expected_str);
+            let back: MetricLevel = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, level);
+        }
+    }
+
+    #[test]
+    fn telemetry_policy_with_channel_metrics_level() {
+        let yaml = r#"
+            pipeline_metrics: true
+            tokio_metrics: false
+            channel_metrics: detailed
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(policy.channel_metrics, super::MetricLevel::Detailed);
+        assert!(!policy.tokio_metrics);
+    }
+
+    #[test]
+    fn telemetry_policy_defaults_channel_metrics_to_basic() {
+        let yaml = r#"
+            pipeline_metrics: true
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(policy.channel_metrics, super::MetricLevel::Basic);
     }
 }

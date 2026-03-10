@@ -201,9 +201,73 @@ macro_rules! otel_debug {
     };
 }
 
+/// Macro for logging messages at a runtime-selectable severity level.
+///
+/// Accepts a [`tracing::Level`] value as its first argument so that the severity
+/// can be determined at runtime (e.g., from a variable or computed expression),
+/// without requiring a separate call site for each level.
+///
+/// # Arguments
+/// - First argument (required): A [`tracing::Level`] value.
+/// - Second argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs and/or a `message = "..."` attribute.
+///
+/// # Example
+/// ```ignore
+/// let level = tracing::Level::WARN;
+/// otel_event!(level, "quiver.wal.replay", status = "stopped_incomplete");
+///
+/// otel_event!(tracing::Level::INFO, "quiver.segment.drop", segment = 5, reason = "expired");
+/// ```
+#[allow(unused_macro_rules)]
+// otel_event! may not be used yet in production code within this crate; suppress the lint.
+#[allow(unused_macros)]
+macro_rules! otel_event {
+    ($level:expr, $name:expr, $($fields:tt)+) => {
+        match $level {
+            tracing::Level::TRACE => {
+                tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            tracing::Level::DEBUG => {
+                tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            tracing::Level::INFO => {
+                tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            tracing::Level::WARN => {
+                tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            tracing::Level::ERROR => {
+                tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+        }
+    };
+    ($level:expr, $name:expr) => {
+        match $level {
+            tracing::Level::TRACE => {
+                tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            tracing::Level::DEBUG => {
+                tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            tracing::Level::INFO => {
+                tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            tracing::Level::WARN => {
+                tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            tracing::Level::ERROR => {
+                tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+        }
+    };
+}
+
 // Make macros available within this crate only (no #[macro_export])
 pub(crate) use otel_debug;
 pub(crate) use otel_error;
+#[allow(unused_imports)]
+pub(crate) use otel_event;
 pub(crate) use otel_info;
 pub(crate) use otel_warn;
 

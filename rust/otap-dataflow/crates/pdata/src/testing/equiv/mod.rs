@@ -53,6 +53,12 @@ fn otap_to_otlp_traces(msg: &OtlpProtoMessage) -> TracesData {
 /// Asserts that two OTLP protocol message slices contain equivalent data.
 /// Requires the inputs to have a single signal type.
 pub fn assert_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) {
+    assert!(
+        !left.is_empty() && !right.is_empty(),
+        "both sides must be non-empty (left={}, right={})",
+        left.len(),
+        right.len()
+    );
     let signal_type = left.first().expect("at least one input").signal_type();
 
     match signal_type {
@@ -73,7 +79,13 @@ pub fn assert_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) 
 
 /// Validate that two OTLP protocol message slices contain equivalent data.
 /// Requires the inputs to have a single signal type.
+///
+/// Returns `true` when both sides are empty (trivially equivalent) and
+/// `false` when exactly one side is empty.
 pub fn validate_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return left.is_empty() && right.is_empty();
+    }
     let signal_type = left.first().expect("at least one input").signal_type();
 
     match signal_type {

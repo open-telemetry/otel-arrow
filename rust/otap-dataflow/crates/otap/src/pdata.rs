@@ -16,11 +16,11 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
-    control::{AckMsg, CallData, NackMsg},
 };
 use otap_df_pdata::OtapPayload;
 
@@ -47,59 +47,47 @@ impl Context {
         calldata: CallData,
         node_id: usize,
     ) {
-        if let Some(last) = self.stack.last_mut() {
-            // Inherit the preceding frame's RETURN_DATA bit
-            interests |= last.interests & Interests::RETURN_DATA;
-
-            // We should never subscribe twice.
-            debug_assert_ne!(node_id, last.node_id);
+        if let Some(top) = self.stack.last_mut() {
+            if top.node_id == node_id {
+                // Same node → merge interests, replace user data.
+                // Engine fields (time_ns) are preserved.
+                top.interests |= interests;
+                top.route.calldata = calldata;
+                return;
+            }
+            // Different node → inherit RETURN_DATA from predecessor.
+            interests |= top.interests & Interests::RETURN_DATA;
         }
+        let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_birth()
+        } else {
+            0
+        };
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata,
+            route: RouteData {
+                calldata,
+                entry_time_ns,
+                output_port_index: 0,
+            },
         });
     }
 
-    /// Consume frames to locate the most recent subscriber with ACKS.
-    /// This is a "transfer function" used in the engine for route_ack.
-    #[must_use]
-    pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
-        ack.accepted
-            .context
-            .next_with_interest(Interests::ACKS)
-            .map(|frame| {
-                if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                    let _drop = ack.accepted.take_payload();
-                }
-                ack.calldata = frame.calldata;
-                (frame.node_id, ack)
-            })
-    }
-
-    /// Consume frames to locate the most recent subscriber with NACKS.
-    /// This is a "transfer function" used in the engine for route_nack.
-    #[must_use]
-    pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
-        nack.refused
-            .context
-            .next_with_interest(Interests::NACKS)
-            .map(|frame| {
-                if (frame.interests & Interests::RETURN_DATA).is_empty() {
-                    let _drop = nack.refused.take_payload();
-                }
-                nack.calldata = frame.calldata;
-                (frame.node_id, nack)
-            })
-    }
-
-    fn next_with_interest(&mut self, int: Interests) -> Option<Frame> {
+    /// Drain the context stack to find the first subscriber frame
+    /// with the given interest bit.
+    pub fn drain_to_next_subscriber(&mut self, int: Interests) -> Option<Frame> {
         while let Some(frame) = self.stack.pop() {
             if frame.interests.contains(int) {
                 return Some(frame);
             }
         }
         None
+    }
+
+    /// Pop the top frame from the context stack.
+    pub fn pop_frame(&mut self) -> Option<Frame> {
+        self.stack.pop()
     }
 
     /// Determine whether the context is requesting payload returned.
@@ -118,14 +106,52 @@ impl Context {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<CallData> {
-        self.stack.last().map(|f| f.calldata.clone())
+    pub fn source_route(&self) -> Option<RouteData> {
+        self.stack.last().map(|f| f.route.clone())
     }
 
-    /// Are there any subscribers with actual interests (ACKS or NACKS)?
+    /// Are there any subscribers with actual interests (ACKS or
+    /// NACKS)?
+    ///
+    /// TODO: This could be O(1) by propagating a new interest bit.
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
-        self.stack.iter().any(|f| !f.interests.is_empty())
+        self.stack
+            .iter()
+            .any(|f| f.interests.intersects(Interests::ACKS_OR_NACKS))
+    }
+
+    /// Returns true if the context stack has any frames at all.
+    /// Used to decide whether an ack/nack should be sent to the controller.
+    ///
+    /// TODO: The assumption here is that any stack with frames should be
+    /// sent to the pipeline controller, though there are a odd cases where
+    /// it is not required (e.g., only SOURCE_TAGGING). This could also be
+    /// tightened by differentiating whether an Ack or Nack is impending.
+    #[must_use]
+    pub fn has_context_frames(&self) -> bool {
+        !self.stack.is_empty()
+    }
+
+    /// Returns true if there are frames with pipeline timing interests
+    /// at or before the first subscriber for `subscriber_interest` (ACKS
+    /// or NACKS), scanning from the top of the stack (the unwind order).
+    ///
+    /// Used at the ack/nack origin (notify_ack/notify_nack) to decide
+    /// whether to capture a return-path timestamp before routing.
+    ///
+    /// TODO: This could be O(1) by propagating a new interest bit.
+    #[must_use]
+    fn has_timing(&self, subscriber_interest: Interests) -> bool {
+        for frame in self.stack.iter().rev() {
+            if frame.interests.intersects(Interests::ENTRY_TIMESTAMP) {
+                return true;
+            }
+            if frame.interests.intersects(subscriber_interest) {
+                return false;
+            }
+        }
+        false
     }
 
     /// Set the source node for this context.
@@ -142,7 +168,99 @@ impl Context {
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata: CallData::default(),
+            route: RouteData::default(),
+        });
+    }
+
+    /// Stamp the top frame's receive time (test-only).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn stamp_top_time(&mut self, time_ns: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.route.entry_time_ns = time_ns;
+        }
+    }
+
+    /// Ensure a source frame for `node_id` and merge `interests` into it.
+    ///
+    /// If the top frame already belongs to `node_id`, the given interests
+    /// are merged without touching user calldata.  Otherwise a new frame
+    /// is pushed, inheriting `RETURN_DATA` from the predecessor.
+    ///
+    /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
+    /// entry timestamp is captured automatically.
+    fn update_send_context(&mut self, node_id: usize, interests: Interests) {
+        if let Some(top) = self.stack.last_mut() {
+            if top.node_id == node_id {
+                top.interests |= interests;
+                if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
+                    && top.route.entry_time_ns == 0
+                {
+                    // Note: This update is only for receivers which need
+                    // to capture timestamp here in case they did not use
+                    // subscribe_to. If they called called subscribe_to,
+                    // this will be skipped by a non-zero timestamp.
+                    top.route.entry_time_ns = nanos_since_birth();
+                }
+                return;
+            }
+        }
+        // Different node (or empty stack) → push new frame.
+        let mut frame_interests = interests;
+        if let Some(last) = self.stack.last() {
+            frame_interests |= last.interests & Interests::RETURN_DATA;
+        }
+        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        self.stack.push(Frame {
+            interests: frame_interests,
+            node_id,
+            route: RouteData {
+                calldata: CallData::new(),
+                entry_time_ns: time_ns,
+                ..Default::default()
+            },
+        });
+    }
+
+    /// Stamp the top frame's output port index.
+    /// Called at send time so each clone sent through a different port
+    /// carries the correct producer output port index on the return path.
+    pub(crate) fn stamp_output_port_index(&mut self, index: u16) {
+        if let Some(top) = self.stack.last_mut() {
+            top.route.output_port_index = index;
+        }
+    }
+
+    /// Push an entry frame for a queue-consumer node (processor/exporter).
+    /// The frame inherits RETURN_DATA from the predecessor.
+    pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
+        // No frame needed when the engine has no consumer metrics interest.
+        if !node_interests.intersects(Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP) {
+            return;
+        }
+        let mut interests = Interests::empty();
+        if let Some(last) = self.stack.last() {
+            interests = last.interests & Interests::RETURN_DATA;
+        }
+        // Propagate consumer-metrics and entry-timestamp bits from the node.
+        interests |= node_interests & (Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        // Timestamp: only when ENTRY_TIMESTAMP is requested.
+        let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        self.stack.push(Frame {
+            interests,
+            node_id,
+            route: RouteData {
+                calldata: CallData::new(),
+                entry_time_ns: time_ns,
+                ..Default::default()
+            },
         });
     }
 
@@ -150,6 +268,13 @@ impl Context {
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
         self.stack.last().map(|f| f.node_id)
+    }
+
+    /// Returns a reference to the top frame on the context stack.
+    /// Used by consumer metrics to read the current node's entry frame.
+    #[must_use]
+    pub fn peek_top(&self) -> Option<&Frame> {
+        self.stack.last()
     }
 
     /// Returns a reference to the context stack frames (test-only).
@@ -160,15 +285,26 @@ impl Context {
     }
 }
 
-/// Per-node interests, context, and identity.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Frame {
-    /// Declares the set of interests this node has (Acks, Nacks, ...)
-    pub interests: Interests,
-    /// The caller's data returns via AckMsg.context or Ack.context.
-    pub calldata: CallData,
-    /// The caller's node_id for routing.
-    pub node_id: usize,
+// Frame is defined in otap_df_engine::control (imported above).
+
+impl otap_df_engine::Unwindable for OtapPdata {
+    fn has_frames(&self) -> bool {
+        self.context.has_context_frames()
+    }
+
+    fn pop_frame(&mut self) -> Option<Frame> {
+        self.context.pop_frame()
+    }
+
+    fn drop_payload(&mut self) {
+        let _ = self.take_payload();
+    }
+}
+
+impl otap_df_engine::StampOutputPort for OtapPdata {
+    fn stamp_output_port_index(&mut self, index: u16) {
+        self.context.stamp_output_port_index(index);
+    }
 }
 
 /// Context + container for telemetry data
@@ -254,6 +390,11 @@ impl OtapPdata {
         (self.context, self.payload)
     }
 
+    /// Returns a mutable reference to the context.
+    pub fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
     #[must_use]
@@ -282,6 +423,26 @@ impl OtapPdata {
         self.context.has_subscribers()
     }
 
+    /// Stamp the top context frame with a receive timestamp.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_stamp_top_time(&mut self, time_ns: u64) {
+        self.context.stamp_top_time(time_ns);
+    }
+
+    /// Returns true if the context stack has any frames at all.
+    /// Used by notify_ack/notify_nack to decide whether to send to the controller.
+    #[must_use]
+    pub fn has_context_frames(&self) -> bool {
+        self.context.has_context_frames()
+    }
+
+    /// Returns true if the context stack has frames with pipeline timing
+    /// interests before the first subscriber for `subscriber_interest`.
+    #[must_use]
+    fn has_timing(&self, subscriber_interest: Interests) -> bool {
+        self.context.has_timing(subscriber_interest)
+    }
+
     /// Return the source's calldata. Note that after a subscribe_to()
     /// has been called, the current node becomes the source.
     ///
@@ -292,8 +453,8 @@ impl OtapPdata {
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
     #[must_use]
-    pub fn source_calldata(&self) -> Option<CallData> {
-        self.context.source_calldata()
+    pub fn source_route(&self) -> Option<RouteData> {
+        self.context.source_route()
     }
 
     /// Update the source node. See also subscribe_to() which supports
@@ -301,6 +462,24 @@ impl OtapPdata {
     pub fn add_source_node(mut self, node_id: usize) -> Self {
         self.context.set_source_node(node_id);
         self
+    }
+
+    /// Prepare the context for a message-source send.
+    ///
+    /// When `node_interests` includes `SOURCE_TAGGING`, `PRODUCER_METRICS`,
+    /// or `ENTRY_TIMESTAMP`, a source frame is ensured for `node_id` and
+    /// the relevant interests are merged into it.
+    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
+        let trigger = node_interests
+            & (Interests::SOURCE_TAGGING
+                | Interests::PRODUCER_METRICS
+                | Interests::ENTRY_TIMESTAMP);
+        if !trigger.is_empty() {
+            self.context.update_send_context(
+                node_id,
+                node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
+            );
+        }
     }
 
     /// return the source node field
@@ -312,343 +491,158 @@ impl OtapPdata {
 
 /* -------- Producer effect handler extensions (shared, local) -------- */
 
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        data.context
-            .subscribe_to(int, ctx, self.processor_id().index)
-    }
+/// Implements `ProducerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
+/// `$id_method` is `processor_id` or `receiver_id`.
+macro_rules! impl_producer_ext {
+    ($handler:ty, $id_method:ident) => {
+        #[async_trait(?Send)]
+        impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
+            fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+                let engine_int = self.node_interests()
+                    & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP);
+                data.context
+                    .subscribe_to(int | engine_int, ctx, self.$id_method().index);
+            }
+        }
+    };
 }
 
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        data.context
-            .subscribe_to(int, ctx, self.receiver_id().index)
-    }
-}
-
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        data.context
-            .subscribe_to(int, ctx, self.processor_id().index)
-    }
-}
-
-#[async_trait(?Send)]
-impl ProducerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
-{
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-        data.context
-            .subscribe_to(int, ctx, self.receiver_id().index)
-    }
-}
+impl_producer_ext!(
+    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_producer_ext!(
+    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
+impl_producer_ext!(
+    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_producer_ext!(
+    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
-    }
+// All metric recording (consumer and producer) is handled by the pipeline
+// controller during context unwinding. route_ack/route_nack skip sending
+// when the context stack is empty (nothing to unwind).
 
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
-    }
+/// Implements `ConsumerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
+macro_rules! impl_consumer_ext {
+    ($handler:ty) => {
+        #[async_trait(?Send)]
+        impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
+            async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+                if ack.accepted.has_timing(Interests::ACKS) {
+                    ack.unwind.return_time_ns = nanos_since_birth();
+                }
+                self.route_ack(ack).await
+            }
+
+            async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+                if nack.refused.has_timing(Interests::NACKS) {
+                    nack.unwind.return_time_ns = nanos_since_birth();
+                }
+                self.route_nack(nack).await
+            }
+        }
+    };
 }
 
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
-    }
-
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
-    }
-}
-
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
-    }
-
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
-    }
-}
-
-#[async_trait(?Send)]
-impl ConsumerEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
-{
-    async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_ack(ack, Context::next_ack).await
-    }
-
-    async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-        self.route_nack(nack, Context::next_nack).await
-    }
-}
+impl_consumer_ext!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
-#[async_trait(?Send)]
-impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.send_message(data).await
-    }
+/// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
+///
+/// Parameters:
+///   $async_attr   – `async_trait(?Send)` for local or `async_trait` for shared
+///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
+///   $handler      – fully-qualified EffectHandler type
+///   $id_method    – `processor_id` or `receiver_id`
+macro_rules! impl_message_source_ext {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident) => {
+        #[$async_attr]
+        impl $trait_name<OtapPdata> for $handler {
+            async fn send_message_with_source_node(
+                &self,
+                mut data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>> {
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                self.router.send_default_stamped(data).await
+            }
 
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.try_send_message(data)
-    }
+            fn try_send_message_with_source_node(
+                &self,
+                mut data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>> {
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                self.router.try_send_default_stamped(data)
+            }
 
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.send_message_to(port, data).await
-    }
+            async fn send_message_with_source_node_to<P>(
+                &self,
+                port: P,
+                mut data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>>
+            where
+                P: Into<PortName> + Send + 'static,
+            {
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                self.router.send_to_stamped(port, data).await
+            }
 
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.try_send_message_to(port, data)
-    }
+            fn try_send_message_with_source_node_to<P>(
+                &self,
+                port: P,
+                mut data: OtapPdata,
+            ) -> Result<(), TypedError<OtapPdata>>
+            where
+                P: Into<PortName> + Send + 'static,
+            {
+                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                self.router.try_send_to_stamped(port, data)
+            }
+        }
+    };
 }
 
-#[async_trait(?Send)]
-impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.send_message(data).await
-    }
+impl_message_source_ext!(
+    async_trait(?Send),
+    MessageSourceLocalEffectHandlerExtension,
+    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_message_source_ext!(
+    async_trait(?Send),
+    MessageSourceLocalEffectHandlerExtension,
+    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
+impl_message_source_ext!(
+    async_trait,
+    MessageSourceSharedEffectHandlerExtension,
+    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    processor_id
+);
+impl_message_source_ext!(
+    async_trait,
+    MessageSourceSharedEffectHandlerExtension,
+    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    receiver_id
+);
 
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.try_send_message(data)
-    }
+/* -------- ReceivedAtNode implementation -------- */
 
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.send_message_to(port, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.try_send_message_to(port, data)
-    }
-}
-
-#[async_trait]
-impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.send_message(data).await
-    }
-
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.try_send_message(data)
-    }
-
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.send_message_to(port, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.processor_id().index)
-        } else {
-            data
-        };
-        self.try_send_message_to(port, data)
-    }
-}
-
-#[async_trait]
-impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
-    for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
-{
-    async fn send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.send_message(data).await
-    }
-
-    fn try_send_message_with_source_node(
-        &self,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>> {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.try_send_message(data)
-    }
-
-    async fn send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.send_message_to(port, data).await
-    }
-
-    fn try_send_message_with_source_node_to<P>(
-        &self,
-        port: P,
-        data: OtapPdata,
-    ) -> Result<(), TypedError<OtapPdata>>
-    where
-        P: Into<PortName> + Send + 'static,
-    {
-        let data = if self.source_tagging().enabled() {
-            data.add_source_node(self.receiver_id().index)
-        } else {
-            data
-        };
-        self.try_send_message_to(port, data)
+impl otap_df_engine::ReceivedAtNode for OtapPdata {
+    fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
+        self.context.push_entry_frame(node_id, node_interests);
     }
 }
 
@@ -656,7 +650,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
 mod test {
     use super::*;
 
-    use crate::testing::{TestCallData, create_test_pdata};
+    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::effect_handler::SourceTagging;
@@ -1200,12 +1194,12 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
 
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1231,12 +1225,12 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
 
         let (node_id, ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1257,12 +1251,12 @@ mod test {
         assert!(!pdata.context.may_return_payload());
 
         let nack = NackMsg::new("test error".to_string(), pdata);
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1288,12 +1282,12 @@ mod test {
 
         let nack = NackMsg::new("test error", pdata);
 
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1320,14 +1314,14 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_some());
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 4);
 
         // Skipped node 3 (Nack) because call to next_ack()
 
-        let result = Context::next_ack(ack_msg);
+        let result = next_ack(ack_msg);
         assert!(result.is_some());
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 2);
@@ -1339,11 +1333,11 @@ mod test {
         let nack = NackMsg::new("nope nope", *ack_msg.accepted);
 
         // Node 1 last, is a Nack.
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
     }
 
@@ -1353,7 +1347,7 @@ mod test {
 
         let ack = AckMsg::new(pdata);
 
-        let result = Context::next_ack(ack);
+        let result = next_ack(ack);
         assert!(result.is_none());
     }
 
@@ -1363,7 +1357,7 @@ mod test {
 
         let nack = NackMsg::new("hey now", pdata);
 
-        let result = Context::next_nack(nack);
+        let result = next_nack(nack);
         assert!(result.is_none());
     }
 
@@ -1407,9 +1401,9 @@ mod test {
 
         // next_ack skips the empty-interests frame and finds node 100.
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find subscriber");
+        let (node_id, ack_msg) = next_ack(ack).expect("should find subscriber");
         assert_eq!(node_id, 100);
-        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
     }
 
@@ -1452,7 +1446,7 @@ mod test {
 
         // Ack path: next_ack finds node 3 first
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find node 3");
+        let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
         // The payload must be preserved — node 1 needs it for retry.
@@ -1464,12 +1458,176 @@ mod test {
         assert!(!ack_msg.accepted.is_empty());
 
         // Continue to node 1
-        let (node_id, ack_msg) = Context::next_ack(ack_msg).expect("should find node 1");
+        let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
-        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
 
         // Payload still intact for the retry processor
         assert_eq!(ack_msg.accepted.num_items(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // W13 — Interests gating tests for push_entry_frame / subscribe_to
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn push_entry_frame_no_interests_no_frame() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::empty());
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 0, "Empty interests should not push a frame");
+    }
+
+    #[test]
+    fn push_entry_frame_pipeline_metrics_auto_subscribes() {
+        // CONSUMER_METRICS sets CONSUMER_METRICS in the entry frame (not ACKS_OR_NACKS).
+        // The controller handles metrics-only frames during context unwinding.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(
+            frames[0].interests.contains(Interests::CONSUMER_METRICS),
+            "CONSUMER_METRICS should be set in entry frame"
+        );
+        assert!(
+            !frames[0].interests.contains(Interests::ACKS),
+            "CONSUMER_METRICS should NOT auto-subscribe ACKS"
+        );
+        assert!(
+            !frames[0].interests.contains(Interests::NACKS),
+            "CONSUMER_METRICS should NOT auto-subscribe NACKS"
+        );
+        assert_eq!(
+            frames[0].route.entry_time_ns, 0,
+            "CONSUMER_METRICS alone should not stamp time"
+        );
+    }
+
+    #[test]
+    fn push_entry_frame_pipeline_metrics_no_timestamp() {
+        // CONSUMER_METRICS without ENTRY_TIMESTAMP should not capture a timestamp.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
+        assert_eq!(
+            frames[0].route.entry_time_ns, 0,
+            "Entry frame without ENTRY_TIMESTAMP should not stamp time"
+        );
+    }
+
+    #[test]
+    fn push_entry_frame_entry_timestamp_stamps_time() {
+        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps a non-zero timestamp.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(
+            frames[0].route.entry_time_ns > 0,
+            "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
+        );
+    }
+
+    #[test]
+    fn push_entry_frame_inherits_return_data() {
+        let mut ctx = Context::default();
+        // Source subscribes with RETURN_DATA.
+        ctx.subscribe_to(Interests::ACKS | Interests::RETURN_DATA, CallData::new(), 0);
+        // Entry frame with CONSUMER_METRICS inherits RETURN_DATA from predecessor.
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 2);
+        assert!(
+            frames[1].interests.contains(Interests::RETURN_DATA),
+            "entry frame should inherit RETURN_DATA"
+        );
+        assert!(
+            frames[1].interests.contains(Interests::CONSUMER_METRICS),
+            "entry frame should have CONSUMER_METRICS"
+        );
+        assert!(
+            !frames[1].interests.contains(Interests::ACKS),
+            "entry frame should NOT have ACKS (metrics-only, no auto-subscribe)"
+        );
+    }
+
+    #[test]
+    fn subscribe_to_merges_into_entry_frame() {
+        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        let original_time = ctx.frames()[0].route.entry_time_ns;
+        assert!(original_time > 0);
+
+        // Component subscribes on the same node — should merge, preserving time_ns.
+        let user = TestCallData::default();
+        ctx.subscribe_to(
+            Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+            user.into(),
+            1,
+        );
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1, "same-node subscribe should merge");
+        assert!(frames[0].interests.contains(Interests::ACKS));
+        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert!(frames[0].interests.contains(Interests::RETURN_DATA));
+        assert_eq!(
+            frames[0].route.entry_time_ns, original_time,
+            "merge must preserve engine entry_time_ns"
+        );
+    }
+
+    #[test]
+    fn processor_subscribe_stamps_time() {
+        // For processors without ENTRY_TIMESTAMP, time can still be stamped manually.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        assert_eq!(ctx.frames()[0].route.entry_time_ns, 0, "initially no time");
+
+        // Simulate processor subscribe_to stamping time.
+        ctx.stamp_top_time(nanos_since_birth());
+        assert!(
+            ctx.frames()[0].route.entry_time_ns > 0,
+            "after stamp_top_time, should have non-zero time"
+        );
+    }
+
+    #[test]
+    fn no_frame_ack_not_routable() {
+        let (test_data, mut pdata) = create_test();
+        // Receiver subscribes at node 0.
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
+        // No frame pushed at None level (empty interests).
+        pdata.context.push_entry_frame(1, Interests::empty());
+
+        // Ack from downstream: next_ack should skip node 1 (no frame)
+        // and land on node 0.
+        let ack = AckMsg::new(pdata);
+        let (node_id, _) = next_ack(ack).expect("should find node 0");
+        assert_eq!(node_id, 0, "No frame means ack routes past to node 0");
+    }
+
+    #[test]
+    fn pipeline_metrics_ack_routable() {
+        // CONSUMER_METRICS does NOT auto-subscribe ACKS, so next_ack skips
+        // the metrics-only entry frame and routes to the real subscriber.
+        let (test_data, mut pdata) = create_test();
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
+        pdata
+            .context
+            .push_entry_frame(1, Interests::CONSUMER_METRICS);
+
+        let ack = AckMsg::new(pdata);
+        let (node_id, _) = next_ack(ack).expect("should find node 0");
+        assert_eq!(
+            node_id, 0,
+            "CONSUMER_METRICS entry frame is skipped; ack routes to subscriber at node 0"
+        );
     }
 }
