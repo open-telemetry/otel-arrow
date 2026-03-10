@@ -94,40 +94,19 @@ impl RecordsetKqlProcessor {
                         .get_query_location()
                         .get_line_and_column_numbers();
                     let message = diagnostic.get_message();
-                    match diagnostic.get_diagnostic_level() {
-                        RecordSetEngineDiagnosticLevel::Verbose => {
-                            otap_df_telemetry::otel_debug!(
-                                "recordset_kql_processor.query_output",
-                                query_line_number,
-                                query_column_number,
-                                message
-                            );
-                        }
-                        RecordSetEngineDiagnosticLevel::Info => {
-                            otap_df_telemetry::otel_info!(
-                                "recordset_kql_processor.query_output",
-                                query_line_number,
-                                query_column_number,
-                                message
-                            );
-                        }
-                        RecordSetEngineDiagnosticLevel::Warn => {
-                            otap_df_telemetry::otel_warn!(
-                                "recordset_kql_processor.query_output",
-                                query_line_number,
-                                query_column_number,
-                                message
-                            );
-                        }
-                        RecordSetEngineDiagnosticLevel::Error => {
-                            otap_df_telemetry::otel_error!(
-                                "recordset_kql_processor.query_output",
-                                query_line_number,
-                                query_column_number,
-                                message
-                            );
-                        }
-                    }
+                    let level = match diagnostic.get_diagnostic_level() {
+                        RecordSetEngineDiagnosticLevel::Verbose => otap_df_telemetry::Level::DEBUG,
+                        RecordSetEngineDiagnosticLevel::Info => otap_df_telemetry::Level::INFO,
+                        RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
+                        RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
+                    };
+                    otap_df_telemetry::otel_event!(
+                        level,
+                        "recordset_kql_processor.query_output",
+                        query_line_number,
+                        query_column_number,
+                        message
+                    );
                 }
             }))
     }
