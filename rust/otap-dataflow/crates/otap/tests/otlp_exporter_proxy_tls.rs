@@ -153,7 +153,7 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
 }
 
 async fn start_tls_connect_proxy(target_hits: Arc<AtomicUsize>) -> (SocketAddr, String) {
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = otap_df_otap::crypto::install_crypto_provider() {
         otel_debug!("provider.installation.failed", error = ?err, "rustls default provider installation failed in test");
     }
 
@@ -289,7 +289,7 @@ async fn start_tls_logs_server() -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<()>,
 ) {
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = otap_df_otap::crypto::install_crypto_provider() {
         // It's fine if the provider is already installed (e.g. by another test)
         otel_debug!("provider.installation.failed", error = ?err, "rustls default provider installation failed in test");
     }
