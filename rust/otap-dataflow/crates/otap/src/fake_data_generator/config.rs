@@ -5,6 +5,9 @@
 //!
 
 use serde::{Deserialize, Serialize};
+use serde::de::Deserializer;
+
+use std::collections::HashMap;
 
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
@@ -80,6 +83,24 @@ pub struct Config {
     /// This is useful for end-to-end Ack/Nack measurements across topic hops.
     #[serde(default = "default_enable_ack_nack")]
     enable_ack_nack: bool,
+
+    /// Additional resource attributes to merge into generated signals.
+    /// When multiple entries are provided, the generator round-robins through
+    /// them per batch, producing mixed-tenant traffic on a single connection.
+    ///
+    /// ```yaml
+    /// resource_attributes:
+    ///   - {"tenant.id": "prod", "service.namespace": "frontend"}
+    ///   - {"tenant.id": "ppe", "service.namespace": "backend"}
+    /// ```
+    ///
+    /// A single map is also accepted for convenience:
+    /// ```yaml
+    /// resource_attributes:
+    ///   "tenant.id": "prod"
+    /// ```
+    #[serde(default, deserialize_with = "deserialize_resource_attributes")]
+    resource_attributes: Vec<HashMap<String, String>>,
 }
 
 /// Configuration to describe the traffic being sent
@@ -110,6 +131,7 @@ impl Config {
             data_source: DataSource::default(),
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
+            resource_attributes: Vec::new(),
         }
     }
 
@@ -193,6 +215,12 @@ impl Config {
                 Ok(Some(resolved_registry))
             }
         }
+    }
+
+    /// Get the resource attribute sets for round-robin rotation.
+    #[must_use]
+    pub fn resource_attributes(&self) -> &[HashMap<String, String>] {
+        &self.resource_attributes
     }
 }
 
@@ -307,6 +335,32 @@ fn default_registry_path() -> VirtualDirectoryPath {
 
 const fn default_enable_ack_nack() -> bool {
     false
+}
+
+/// Accepts either a single map or a list of maps for `resource_attributes`.
+fn deserialize_resource_attributes<'de, D>(
+    deserializer: D,
+) -> Result<Vec<HashMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(HashMap<String, String>),
+        Many(Vec<HashMap<String, String>>),
+    }
+
+    match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(map) => {
+            if map.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![map])
+            }
+        }
+        OneOrMany::Many(list) => Ok(list),
+    }
 }
 
 #[cfg(test)]

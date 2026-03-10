@@ -13,6 +13,7 @@ use bytes::BytesMut;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
+use std::collections::HashMap;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -109,43 +110,63 @@ impl FakeGeneratorReceiver {
 enum SignalGenerator {
     /// Uses semantic conventions registry via weaver
     SemanticConventions(ResolvedRegistry),
-    /// Uses static hardcoded signals
-    Static,
+    /// Uses static hardcoded signals with per-batch resource attribute rotation.
+    Static(Vec<HashMap<String, String>>),
 }
 
 impl SignalGenerator {
+    /// Get the resource attributes for the given batch index, rotating through
+    /// configured attribute sets. Returns `None` when no extras are configured.
+    fn attrs_for_batch(&self, batch_index: u64) -> Option<&HashMap<String, String>> {
+        match self {
+            SignalGenerator::Static(sets) if !sets.is_empty() => {
+                Some(&sets[batch_index as usize % sets.len()])
+            }
+            _ => None,
+        }
+    }
+
     /// Generate OTLP traces
-    fn generate_traces(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_traces(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Traces(semconv_signal::semconv_otlp_traces(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Traces(static_signal::static_otlp_traces(count))
+            SignalGenerator::Static(_) => {
+                OtlpProtoMessage::Traces(static_signal::static_otlp_traces(
+                    count,
+                    self.attrs_for_batch(batch_index),
+                ))
             }
         }
     }
 
     /// Generate OTLP metrics
-    fn generate_metrics(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_metrics(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics(count))
+            SignalGenerator::Static(_) => {
+                OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics(
+                    count,
+                    self.attrs_for_batch(batch_index),
+                ))
             }
         }
     }
 
     /// Generate OTLP logs
-    fn generate_logs(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_logs(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Logs(static_signal::static_otlp_logs(count))
+            SignalGenerator::Static(_) => {
+                OtlpProtoMessage::Logs(static_signal::static_otlp_logs(
+                    count,
+                    self.attrs_for_batch(batch_index),
+                ))
             }
         }
     }
@@ -183,7 +204,7 @@ impl BatchCache {
         // Pre-generate single metrics batch
         let metrics_batch_size = metric_count.min(batch_size);
         let metrics = if metric_count > 0 {
-            Some(generator.generate_metrics(metrics_batch_size).try_into()?)
+            Some(generator.generate_metrics(metrics_batch_size, 0).try_into()?)
         } else {
             None
         };
@@ -191,7 +212,7 @@ impl BatchCache {
         // Pre-generate single traces batch
         let traces_batch_size = trace_count.min(batch_size);
         let traces = if trace_count > 0 {
-            Some(generator.generate_traces(traces_batch_size).try_into()?)
+            Some(generator.generate_traces(traces_batch_size, 0).try_into()?)
         } else {
             None
         };
@@ -199,7 +220,7 @@ impl BatchCache {
         // Pre-generate single logs batch
         let logs_batch_size = log_count.min(batch_size);
         let logs = if log_count > 0 {
-            let pdata: OtapPdata = generator.generate_logs(logs_batch_size).try_into()?;
+            let pdata: OtapPdata = generator.generate_logs(logs_batch_size, 0).try_into()?;
             let (_, payload) = pdata.clone().into_parts();
             let size = payload.num_bytes().unwrap_or(0);
             otel_info!(
@@ -252,7 +273,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     .expect("SemanticConventions data source should return Some registry");
                 SignalGenerator::SemanticConventions(registry)
             }
-            DataSource::Static => SignalGenerator::Static,
+            DataSource::Static => SignalGenerator::Static(self.config.resource_attributes().to_vec()),
         };
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -543,7 +564,7 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(max_batch_size).try_into()?,
+                    generator.generate_metrics(max_batch_size, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -561,7 +582,7 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(remaining_count).try_into()?,
+                    generator.generate_metrics(remaining_count, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -576,7 +597,7 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder)
+                    .generate_metrics(metric_count_remainder, *signal_count)
                     .try_into()?,
                 enable_ack_nack,
             )
@@ -589,7 +610,7 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(max_batch_size).try_into()?,
+                    generator.generate_traces(max_batch_size, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -606,7 +627,7 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(remaining_count).try_into()?,
+                    generator.generate_traces(remaining_count, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -619,7 +640,7 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder)
+                    .generate_traces(trace_count_remainder, *signal_count)
                     .try_into()?,
                 enable_ack_nack,
             )
@@ -632,7 +653,7 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(max_batch_size).try_into()?,
+                    generator.generate_logs(max_batch_size, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -649,7 +670,7 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(remaining_count).try_into()?,
+                    generator.generate_logs(remaining_count, *signal_count).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
@@ -661,7 +682,7 @@ async fn generate_signal_fresh(
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder).try_into()?,
+                generator.generate_logs(log_count_remainder, *signal_count).try_into()?,
                 enable_ack_nack,
             )
             .await?;
@@ -674,7 +695,7 @@ async fn generate_signal_fresh(
         for _ in 0..metric_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_metrics(max_batch_size).try_into()?,
+                generator.generate_metrics(max_batch_size, *signal_count).try_into()?,
                 enable_ack_nack,
             )
             .await?;
@@ -683,7 +704,7 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder)
+                    .generate_metrics(metric_count_remainder, *signal_count)
                     .try_into()?,
                 enable_ack_nack,
             )
@@ -694,7 +715,7 @@ async fn generate_signal_fresh(
         for _ in 0..trace_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_traces(max_batch_size).try_into()?,
+                generator.generate_traces(max_batch_size, *signal_count).try_into()?,
                 enable_ack_nack,
             )
             .await?;
@@ -703,7 +724,7 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder)
+                    .generate_traces(trace_count_remainder, *signal_count)
                     .try_into()?,
                 enable_ack_nack,
             )
@@ -714,7 +735,7 @@ async fn generate_signal_fresh(
         for _ in 0..log_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(max_batch_size).try_into()?,
+                generator.generate_logs(max_batch_size, *signal_count).try_into()?,
                 enable_ack_nack,
             )
             .await?;
@@ -722,7 +743,7 @@ async fn generate_signal_fresh(
         if log_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder).try_into()?,
+                generator.generate_logs(log_count_remainder, *signal_count).try_into()?,
                 enable_ack_nack,
             )
             .await?;
