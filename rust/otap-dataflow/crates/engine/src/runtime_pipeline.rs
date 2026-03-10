@@ -15,7 +15,6 @@ use crate::control::{
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::extension::ExtensionWrapper;
-use crate::extension::registry::ExtensionRegistry;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{NodeMetricHandles, PipelineCtrlMsgManager};
 use crate::terminal_state::TerminalState;
@@ -95,8 +94,6 @@ pub struct RuntimePipeline<PData: Debug> {
     exporters: Vec<ExporterWrapper<PData>>,
     /// Extension runtime nodes (PData-free).
     extensions: Vec<ExtensionWrapper>,
-    /// Extension registry for passing to receivers and exporters at start.
-    extension_registry: ExtensionRegistry,
 
     /// A precomputed map of all node IDs to their node definitions for efficient access.
     /// Indexed by NodeIndex
@@ -135,7 +132,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
         extensions: Vec<ExtensionWrapper>,
-        extension_registry: ExtensionRegistry,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -145,7 +141,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             processors,
             exporters,
             extensions,
-            extension_registry,
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
@@ -189,7 +184,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             processors,
             exporters,
             extensions,
-            extension_registry,
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
@@ -266,13 +260,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
-            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = exporter
                     .start(
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
-                        extension_registry,
                         node_interests,
                     )
                     .await
@@ -352,13 +344,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
-            let extension_registry = extension_registry.clone();
             let fut = async move {
                 let result = receiver
                     .start(
                         pipeline_ctrl_msg_tx,
                         effect_metrics_reporter,
-                        extension_registry,
                         node_interests,
                     )
                     .await

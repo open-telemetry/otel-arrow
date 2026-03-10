@@ -4,18 +4,18 @@
 //! Token provider extension trait.
 //!
 //! This module also contains the sealed-trait impls that register
-//! `dyn BearerTokenProvider` as a valid [`ExtensionTrait`](super::registry::ExtensionTrait).
+//! `dyn BearerTokenProvider` as a valid [`ExtensionCapability`](super::registry::ExtensionCapability).
 
 use async_trait::async_trait;
 use std::borrow::Cow;
 
-// ── Sealed ExtensionTrait registration ──────────────────────────────────────
+// ── Sealed ExtensionCapability registration ──────────────────────────────────────
 //
 // Every extension trait file must add these two impls so the type can be
-// stored in the ExtensionRegistry.  Copy this block when adding a new
+// stored in the CapabilityRegistry.  Copy this block when adding a new
 // extension trait.
 impl super::registry::private::Sealed for dyn BearerTokenProvider {}
-impl super::registry::ExtensionTrait for dyn BearerTokenProvider {}
+impl super::registry::ExtensionCapability for dyn BearerTokenProvider {}
 
 /// Represents a secret value that should not be exposed in logs or debug output.
 ///

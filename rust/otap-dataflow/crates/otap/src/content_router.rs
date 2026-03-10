@@ -630,6 +630,7 @@ pub fn create_content_router(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
         .map_err(|e| ConfigError::InvalidUserConfig {
@@ -654,20 +655,24 @@ pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
     name: CONTENT_ROUTER_URN,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<ContentRouterConfig>,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig| {
-        let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse ContentRouter configuration: {e}"),
-            })?;
-        router_config.validate(&node_config.outputs)?;
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            let router_config: ContentRouterConfig =
+                serde_json::from_value(node_config.config.clone()).map_err(|e| {
+                    ConfigError::InvalidUserConfig {
+                        error: format!("Failed to parse ContentRouter configuration: {e}"),
+                    }
+                })?;
+            router_config.validate(&node_config.outputs)?;
 
-        let router = ContentRouter::with_pipeline_ctx(pipeline, router_config);
+            let router = ContentRouter::with_pipeline_ctx(pipeline, router_config);
 
-        Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
-    },
+            Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
+        },
 };
 
 #[cfg(test)]
@@ -1006,6 +1011,7 @@ mod tests {
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         );
         assert!(result.is_ok());
     }
@@ -1025,6 +1031,7 @@ mod tests {
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         );
         assert!(result.is_err());
     }
@@ -1039,6 +1046,7 @@ mod tests {
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         );
         assert!(result.is_err());
     }

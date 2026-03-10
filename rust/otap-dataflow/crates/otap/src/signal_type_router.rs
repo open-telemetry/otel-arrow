@@ -234,6 +234,7 @@ pub fn create_signal_type_router(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     // Deserialize the (currently empty) router configuration
     let router_config: SignalTypeRouterConfig = serde_json::from_value(node_config.config.clone())
@@ -260,23 +261,25 @@ pub fn create_signal_type_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig| {
-        // Deserialize the (currently empty) router configuration
-        let router_config: SignalTypeRouterConfig =
-            serde_json::from_value(node_config.config.clone()).map_err(|e| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
-                }
-            })?;
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            // Deserialize the (currently empty) router configuration
+            let router_config: SignalTypeRouterConfig =
+                serde_json::from_value(node_config.config.clone()).map_err(|e| {
+                    ConfigError::InvalidUserConfig {
+                        error: format!("Failed to parse SignalTypeRouter configuration: {e}"),
+                    }
+                })?;
 
-        // Create the router with metrics registered via PipelineContext
-        let router = SignalTypeRouter::with_pipeline_ctx(pipeline, router_config);
+            // Create the router with metrics registered via PipelineContext
+            let router = SignalTypeRouter::with_pipeline_ctx(pipeline, router_config);
 
-        Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
-    },
+            Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<SignalTypeRouterConfig>,
 };
@@ -304,6 +307,7 @@ mod tests {
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         );
         assert!(result.is_ok());
     }
@@ -319,6 +323,7 @@ mod tests {
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         );
         assert!(result.is_err());
     }

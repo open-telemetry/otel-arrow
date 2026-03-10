@@ -63,23 +63,25 @@ struct CountingExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static COUNTING_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: COUNTING_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        // Look up counter by ID from node config
-        let counter_id = node_config
-            .config
-            .get("counter_id")
-            .and_then(|v| v.as_str());
-        let counter = counter_id.and_then(get_counter);
-        Ok(ExporterWrapper::local(
-            CountingExporter { counter },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            // Look up counter by ID from node config
+            let counter_id = node_config
+                .config
+                .get("counter_id")
+                .and_then(|v| v.as_str());
+            let counter = counter_id.and_then(get_counter);
+            Ok(ExporterWrapper::local(
+                CountingExporter { counter },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |_| Ok(()),
 };
@@ -90,7 +92,6 @@ impl Exporter<OtapPdata> for CountingExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {

@@ -15,7 +15,6 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
-use crate::extension::registry::ExtensionRegistry;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -272,7 +271,6 @@ impl<PData> ExporterWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
@@ -304,9 +302,7 @@ impl<PData> ExporterWrapper<PData> {
                     node_id.index,
                     node_interests,
                 );
-                exporter
-                    .start(message_channel, effect_handler, extension_registry)
-                    .await
+                exporter.start(message_channel, effect_handler).await
             }
             (
                 ExporterWrapper::Shared {
@@ -336,9 +332,7 @@ impl<PData> ExporterWrapper<PData> {
                     node_id.index,
                     node_interests,
                 );
-                exporter
-                    .start(message_channel, effect_handler, extension_registry)
-                    .await
+                exporter.start(message_channel, effect_handler).await
             }
         }
     }
@@ -416,7 +410,6 @@ mod tests {
     use crate::control::{AckMsg, NodeControlMsg};
     use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
-    use crate::extension::registry::ExtensionRegistry;
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
     use crate::message;
@@ -457,7 +450,6 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
             loop {
@@ -495,7 +487,6 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
             loop {

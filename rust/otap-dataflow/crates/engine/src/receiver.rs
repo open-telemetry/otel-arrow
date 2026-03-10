@@ -16,7 +16,6 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
-use crate::extension::registry::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -304,7 +303,6 @@ impl<PData> ReceiverWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
@@ -341,9 +339,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_node_interests(node_interests);
-                receiver
-                    .start(ctrl_msg_chan, effect_handler, extension_registry)
-                    .await
+                receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
                 ReceiverWrapper::Shared {
@@ -378,9 +374,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_node_interests(node_interests);
-                receiver
-                    .start(ctrl_msg_chan, effect_handler, extension_registry)
-                    .await
+                receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }
     }
@@ -475,7 +469,6 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use super::ReceiverWrapper;
-    use crate::extension::registry::ExtensionRegistry;
     use crate::local::receiver as local;
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -522,7 +515,6 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -602,7 +594,6 @@ mod tests {
             self: Box<Self>,
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-            _extension_registry: ExtensionRegistry,
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

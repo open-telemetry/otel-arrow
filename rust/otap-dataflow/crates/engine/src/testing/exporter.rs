@@ -15,7 +15,7 @@ use crate::control::{
 };
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
-use crate::extension::registry::ExtensionRegistry;
+use crate::extension::registry::CapabilityRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataReceiver;
@@ -264,7 +264,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 .start(
                     pipeline_ctrl_msg_tx,
                     metrics_reporter_start,
-                    ExtensionRegistry::new(),
                     Interests::empty(),
                 )
                 .await
@@ -380,5 +379,11 @@ pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
     node_config.config = config;
     let exporter_config = ExporterConfig::new("test_exporter");
 
-    (factory.create)(pipeline_ctx, node, Arc::new(node_config), &exporter_config)
+    (factory.create)(
+        pipeline_ctx,
+        node,
+        Arc::new(node_config),
+        &exporter_config,
+        &CapabilityRegistry::new(),
+    )
 }

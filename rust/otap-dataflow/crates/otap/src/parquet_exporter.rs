@@ -75,17 +75,19 @@ pub struct ParquetExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        Ok(ExporterWrapper::local(
-            ParquetExporter::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            Ok(ExporterWrapper::local(
+                ParquetExporter::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<config::Config>,
 };
@@ -153,7 +155,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store =
@@ -922,12 +923,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1077,12 +1073,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1230,12 +1221,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1478,12 +1464,7 @@ mod test {
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }

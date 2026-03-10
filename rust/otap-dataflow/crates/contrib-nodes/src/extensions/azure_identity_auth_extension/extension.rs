@@ -241,12 +241,12 @@ impl BearerTokenProvider for AzureIdentityAuthExtension {
 
 #[async_trait(?Send)]
 impl Extension for AzureIdentityAuthExtension {
-    otap_df_engine::extension_traits!(BearerTokenProvider);
+    otap_df_engine::extension_capabilities!(BearerTokenProvider);
 
     async fn start(
         self: Box<Self>,
         mut ctrl_chan: ControlChannel,
-        effect_handler: EffectHandler,
+        _: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
             "azure_identity_auth.start",

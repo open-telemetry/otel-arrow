@@ -41,18 +41,20 @@ struct FanoutProcessor {
 /// Distributed-slice factory that registers the fanout processor with the engine.
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: FANOUT_PROCESSOR_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             processor_config: &ProcessorConfig| {
-        let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
-        Ok(ProcessorWrapper::local(
-            FanoutProcessor { metrics },
-            node,
-            node_config,
-            processor_config,
-        ))
-    },
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         processor_config: &ProcessorConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+            Ok(ProcessorWrapper::local(
+                FanoutProcessor { metrics },
+                node,
+                node_config,
+                processor_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract {
         output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
     },

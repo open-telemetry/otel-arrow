@@ -29,17 +29,19 @@ pub struct NoopExporter;
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        Ok(ExporterWrapper::local(
-            NoopExporter {},
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            Ok(ExporterWrapper::local(
+                NoopExporter {},
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::no_config,
 };
@@ -50,7 +52,6 @@ impl Exporter<OtapPdata> for NoopExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {

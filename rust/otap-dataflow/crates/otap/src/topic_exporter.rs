@@ -53,18 +53,20 @@ pub struct TopicExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: TOPIC_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        let config = TopicExporter::parse_config(&node_config.config)?;
-        Ok(ExporterWrapper::local(
-            TopicExporter { config },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            let config = TopicExporter::parse_config(&node_config.config)?;
+            Ok(ExporterWrapper::local(
+                TopicExporter { config },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
 };
@@ -84,7 +86,6 @@ impl Exporter<OtapPdata> for TopicExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {

@@ -43,6 +43,7 @@ const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
     config: Config,
+    auth: Box<dyn BearerTokenProvider>,
     transformer: Transformer,
     gzip_batcher: GzipBatcher,
     state: AzureMonitorExporterState,
@@ -55,7 +56,11 @@ pub struct AzureMonitorExporter {
 
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, Error> {
+    pub fn new(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+        auth: Box<dyn BearerTokenProvider>,
+    ) -> Result<Self, Error> {
         // Validate configuration
         config
             .validate()
@@ -78,6 +83,7 @@ impl AzureMonitorExporter {
 
         Ok(Self {
             config,
+            auth,
             transformer,
             gzip_batcher,
             state: AzureMonitorExporterState::new(),
@@ -436,7 +442,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
             "azure_monitor_exporter.start",
@@ -448,15 +453,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        // Look up the auth extension from the registry
-        let auth = extension_registry
-            .get::<dyn BearerTokenProvider>(&self.config.auth)
-            .map_err(|e| {
-                let error = Error::AuthHandlerCreation(Box::new(e));
-                EngineError::InternalError {
-                    message: error.to_string(),
-                }
-            })?;
+        // Subscribe to token refresh events from the auth extension (resolved at factory time)
+        let mut token_rx = self.auth.subscribe_token_refresh();
 
         self.client_pool
             .initialize(&self.config.api)
@@ -467,9 +465,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     message: error.to_string(),
                 }
             })?;
-
-        // Subscribe to token refresh events from the auth extension
-        let mut token_rx = auth.subscribe_token_refresh();
 
         // Wait for the initial token — blocks until the auth extension provides one
         otel_info!("azure_monitor_exporter.auth.waiting_for_initial_token");
@@ -610,12 +605,42 @@ mod tests {
     use bytes::Bytes;
     use http::StatusCode;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
+    use otap_df_engine::extension::bearer_token_provider::BearerToken;
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+
+    /// A no-op BearerTokenProvider for unit tests that don't exercise auth.
+    struct MockTokenProvider {
+        token_tx: tokio::sync::watch::Sender<Option<BearerToken>>,
+    }
+
+    impl MockTokenProvider {
+        fn new() -> Self {
+            let (token_tx, _) = tokio::sync::watch::channel(None);
+            Self { token_tx }
+        }
+    }
+
+    #[async_trait]
+    impl BearerTokenProvider for MockTokenProvider {
+        async fn get_token(
+            &self,
+        ) -> Result<BearerToken, otap_df_engine::extension::registry::Error> {
+            Err("mock: no token available".into())
+        }
+
+        fn subscribe_token_refresh(&self) -> tokio::sync::watch::Receiver<Option<BearerToken>> {
+            self.token_tx.subscribe()
+        }
+    }
+
+    fn create_mock_auth() -> Box<dyn BearerTokenProvider> {
+        Box::new(MockTokenProvider::new())
+    }
 
     fn create_test_pipeline_ctx() -> PipelineContext {
         let registry = TelemetryRegistryHandle::new();
@@ -643,14 +668,15 @@ mod tests {
     fn test_new_validates_config() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let _ = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let _ = AzureMonitorExporter::new(pipeline_ctx, config, create_mock_auth()).unwrap();
     }
 
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, create_mock_auth()).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {
@@ -696,7 +722,8 @@ mod tests {
     async fn test_handle_export_failure() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, create_mock_auth()).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {

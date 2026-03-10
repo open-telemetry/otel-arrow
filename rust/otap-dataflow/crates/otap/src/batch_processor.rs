@@ -1034,6 +1034,7 @@ pub fn create_otap_batch_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
     let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
@@ -1317,8 +1318,9 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
         create: |pipeline_ctx: otap_df_engine::context::PipelineContext,
                  node: NodeId,
                  node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
+                 proc_cfg: &ProcessorConfig,
+                _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg, _capability_registry)
         },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
@@ -1393,9 +1395,14 @@ mod tests {
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;
         let proc_config = ProcessorConfig::new("batch");
-        let proc =
-            create_otap_batch_processor(pipeline_ctx, node, Arc::new(node_config), &proc_config)
-                .expect("create processor");
+        let proc = create_otap_batch_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            &proc_config,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
+        )
+        .expect("create processor");
 
         let phase = rt.set_processor(proc);
 
@@ -1481,8 +1488,14 @@ mod tests {
         // Create processor via factory and ensure the provided NodeUserConfig is preserved
         let proc_cfg = ProcessorConfig::new("batch");
         let node = test_node(proc_cfg.name.clone());
-        let wrapper = create_otap_batch_processor(pipeline_ctx, node, nuc.clone(), &proc_cfg)
-            .expect("factory should succeed");
+        let wrapper = create_otap_batch_processor(
+            pipeline_ctx,
+            node,
+            nuc.clone(),
+            &proc_cfg,
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
+        )
+        .expect("factory should succeed");
 
         let uc = wrapper.user_config();
         assert!(uc.outputs.iter().any(|port| port.as_ref() == "main_output"));

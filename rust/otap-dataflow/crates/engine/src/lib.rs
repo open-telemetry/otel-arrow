@@ -16,6 +16,7 @@ use crate::{
     error::{Error, TypedError},
     exporter::ExporterWrapper,
     extension::ExtensionWrapper,
+    extension::registry::CapabilityRegistry,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -94,6 +95,7 @@ pub struct ReceiverFactory<PData> {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -133,6 +135,7 @@ pub struct ProcessorFactory<PData> {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -172,6 +175,7 @@ pub struct ExporterFactory<PData> {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -580,10 +584,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         telemetry_policy: TelemetryPolicy,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
-        let mut receivers = Vec::new();
-        let mut processors = Vec::new();
-        let mut exporters = Vec::new();
-        let mut extensions = Vec::new();
         let mut build_state = BuildState::new();
 
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -687,9 +687,50 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         pipeline_ctx.set_node_names(node_names);
 
-        // Second pass: create runtime nodes.  Node IDs were pre-assigned above,
+        // Second pass: create extension runtime nodes FIRST so the capability
+        // registry is available when data-path nodes are created.
+        let mut extensions = Vec::new();
+        for (name, node_config) in config.extension_iter() {
+            let node_id = node_ids.get(name).expect("allocated in first pass").clone();
+            let base_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.r#type.clone(),
+                otap_df_config::node::NodeKind::Extension,
+                node_config.identity_attributes(),
+            );
+            let wrapper = self.build_node_wrapper(
+                &mut build_state,
+                &base_ctx,
+                NodeType::Extension,
+                node_id.clone(),
+                channel_metrics_enabled,
+                || {
+                    self.create_extension(
+                        &base_ctx,
+                        node_id.clone(),
+                        node_config.clone(),
+                        channel_capacity_policy.control.node,
+                    )
+                },
+            )?;
+            extensions.push(wrapper);
+        }
+
+        // Build capability registry from extension trait registrations.
+        let mut extension_registry = CapabilityRegistry::new();
+        for ext in &extensions {
+            let name = ext.node_id().name.as_ref().to_string();
+            ext.register_traits(&mut extension_registry, &name);
+        }
+
+        // Third pass: create data-path runtime nodes. Node IDs were pre-assigned above,
         // so we look them up from `node_ids` instead of calling `next_node_id`.
+        // The capability_registry is passed to each factory so components can resolve
+        // capabilities at construction time.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
+        let mut receivers = Vec::new();
+        let mut processors = Vec::new();
+        let mut exporters = Vec::new();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
@@ -724,6 +765,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                &extension_registry,
                             )
                         },
                     )?;
@@ -743,6 +785,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                &extension_registry,
                             )
                         },
                     )?;
@@ -762,6 +805,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                &extension_registry,
                             )
                         },
                     )?;
@@ -778,40 +822,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
-        // Create extension runtime nodes from the dedicated `extensions` section.
-        for (name, node_config) in config.extension_iter() {
-            let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx = pipeline_ctx.with_node_context(
-                name.clone(),
-                node_config.r#type.clone(),
-                otap_df_config::node::NodeKind::Extension,
-                node_config.identity_attributes(),
-            );
-            let wrapper = self.build_node_wrapper(
-                &mut build_state,
-                &base_ctx,
-                NodeType::Extension,
-                node_id.clone(),
-                channel_metrics_enabled,
-                || {
-                    self.create_extension(
-                        &base_ctx,
-                        node_id.clone(),
-                        node_config.clone(),
-                        channel_capacity_policy.control.node,
-                    )
-                },
-            )?;
-            extensions.push(wrapper);
-        }
-
-        // Build extension registry from trait registrations.
-        let mut extension_registry = extension::registry::ExtensionRegistry::new();
-        for ext in &extensions {
-            let name = ext.node_id().name.as_ref().to_string();
-            ext.register_traits(&mut extension_registry, &name);
-        }
-
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
@@ -824,7 +834,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             processors,
             exporters,
             extensions,
-            extension_registry,
             nodes,
             telemetry_policy,
         );
@@ -1445,6 +1454,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1484,6 +1494,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config,
             &runtime_config,
+            capability_registry,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -1506,6 +1517,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ProcessorWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1545,6 +1557,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config.clone(),
             &processor_config,
+            capability_registry,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -1567,6 +1580,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        capability_registry: &CapabilityRegistry,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1606,6 +1620,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config,
             &exporter_config,
+            capability_registry,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 

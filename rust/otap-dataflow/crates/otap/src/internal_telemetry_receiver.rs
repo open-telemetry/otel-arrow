@@ -52,27 +52,29 @@ pub struct InternalTelemetryReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: INTERNAL_TELEMETRY_RECEIVER_URN,
-    create: |mut pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
-        // Get internal telemetry settings from the pipeline context
-        let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
+    create:
+        |mut pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            // Get internal telemetry settings from the pipeline context
+            let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: "InternalTelemetryReceiver requires internal telemetry settings in pipeline context".to_owned(),
             }
         })?;
 
-        Ok(ReceiverWrapper::local(
-            InternalTelemetryReceiver::new_with_telemetry(
-                InternalTelemetryReceiver::parse_config(&node_config.config)?,
-                internal_telemetry,
-            ),
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
+            Ok(ReceiverWrapper::local(
+                InternalTelemetryReceiver::new_with_telemetry(
+                    InternalTelemetryReceiver::parse_config(&node_config.config)?,
+                    internal_telemetry,
+                ),
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
@@ -106,7 +108,6 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         let internal = self.internal_telemetry.clone();
         let logs_receiver = internal.logs_receiver;

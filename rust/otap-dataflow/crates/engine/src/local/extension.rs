@@ -5,7 +5,7 @@
 //!
 //! An extension is a long-lived component that runs alongside the pipeline and
 //! exposes functionality (e.g., authentication, service discovery) to other
-//! components through the [`ExtensionRegistry`](crate::extension::registry::ExtensionRegistry).
+//! components through the [`CapabilityRegistry`](crate::extension::registry::CapabilityRegistry).
 //!
 //! Unlike receivers, processors, and exporters, extensions:
 //! - Do NOT process pipeline data (PData)
@@ -25,7 +25,7 @@
 
 use crate::control::ExtensionControlMsg;
 use crate::error::Error;
-use crate::extension::registry::TraitRegistration;
+use crate::extension::registry::CapabilityRegistration;
 use crate::local::message::LocalReceiver;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
@@ -37,7 +37,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 ///
 /// Extensions are long-lived components that run alongside the pipeline and
 /// expose functionality (e.g., authentication, service discovery) to other
-/// components through the [`ExtensionRegistry`](crate::extension::registry::ExtensionRegistry).
+/// components through the [`CapabilityRegistry`](crate::extension::registry::CapabilityRegistry).
 ///
 /// Unlike receivers, processors, and exporters, extensions are NOT generic over
 /// PData — they never process pipeline data.
@@ -105,14 +105,14 @@ pub trait Extension {
     /// implementation returns an empty vec — suitable for pure background-task
     /// extensions that do not expose any traits.
     ///
-    /// Inside the override, use the [`extension_traits!`](crate::extension_traits!) macro:
+    /// Inside the override, use the [`extension_capabilities!`](crate::extension_capabilities!) macro:
     ///
     /// ```ignore
-    /// fn extension_traits(&self) -> Vec<TraitRegistration> {
-    ///     extension_traits!(self => BearerTokenProvider)
+    /// fn extension_capabilities(&self) -> Vec<CapabilityRegistration> {
+    ///     extension_capabilities!(self => BearerTokenProvider)
     /// }
     /// ```
-    fn extension_traits(&self) -> Vec<TraitRegistration> {
+    fn extension_capabilities(&self) -> Vec<CapabilityRegistration> {
         Vec::new()
     }
 }

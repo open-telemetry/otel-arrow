@@ -22,7 +22,7 @@ Before extensions, cross-cutting concerns like authentication
 were embedded directly inside individual exporters. This led to:
 
 - **Duplication** -- every exporter needing auth carried its own
-  credential management, token refresh loop, and retry logic.
+  credential management and token refresh loop.
 - **Tight coupling** -- credential-specific dependencies (e.g.,
   `azure_identity`) leaked into exporter crates even when unused.
 - **No sharing** -- multiple exporters targeting the same tenant
@@ -32,8 +32,9 @@ Extensions solve this by extracting shared capabilities into
 named, independently-running components. An extension can
 optionally expose well-defined traits through a type-safe
 registry for data-path nodes to look up by name, or it can
-simply run as a pure background task (e.g., periodic cleanup,
-health reporting) without publishing any traits at all. Either
+simply run as a pure background task (e.g., certificate
+rotation, service discovery refresh) without publishing
+any capabilities at all. Either
 way: no direct dependencies between nodes, no duplicated logic,
 no wasted resources.
 
@@ -48,12 +49,12 @@ no wasted resources.
 |  | (auth)      |  | (background)|             |
 |  | Arc<State>  |  +-------------+             |
 |  +------+------+                              |
-|         | extension_traits!() macro           |
+|         | extension_capabilities!() macro     |
 |         | clones self per trait, producing    |
-|         | Vec<TraitRegistration>              |
+|         | Vec<CapabilityRegistration>         |
 |         v                                     |
 |  +----------------------+                     |
-|  |  ExtensionRegistry   |  (built once)       |
+|  |  CapabilityRegistry   |  (built once)      |
 |  |  stores cloned trait |                     |
 |  |  objects by name     |                     |
 |  +--+---------------+---+                     |
@@ -68,7 +69,8 @@ no wasted resources.
 |                                               |
 |  get() returns a cloned Box<dyn Trait>;       |
 |  all clones share state via Arc inside the    |
-|  extension -- the registry itself is stateless|
+|  extension -- the registry itself holds       |
+|  type-erased cloneable trait objects          |
 +-----------------------------------------------+
 ```
 
@@ -79,7 +81,9 @@ no wasted resources.
    capabilities are available at initialization. At shutdown,
    extensions terminate only after all data-path nodes have
    drained -- ensuring capabilities like auth tokens remain
-   available during final flushes.
+   available during final flushes. Extension instances are
+   scoped to a single pipeline -- they are not shared across
+   pipelines.
 
 2. **PData-free.** Extensions are completely decoupled from
    the pipeline data type (`PData`). They receive their own
@@ -101,22 +105,23 @@ no wasted resources.
    spawned on multi-threaded runtimes. `ExtensionWrapper`
    abstracts over both variants.
 
-5. **Registry-based lookup.** Receivers and exporters receive
-   an `ExtensionRegistry` at `start()` and look up extensions
-   by name and trait. Processors don't currently receive the
-   registry, but adding it is trivial -- the same
-   `extension_registry.clone()` pattern applies directly.
-   If you have a use case for this, please comment.
+5. **Registry-based lookup.** The `CapabilityRegistry` is
+   passed to receiver, processor, and exporter factories
+   at construction time -- not at `start()`. This means
+   capabilities are resolved during pipeline build, catching
+   missing extensions early. The API and naming are
+   node-agnostic -- all node types receive the registry
+   through the same factory parameter.
 
-6. **Optional trait publishing.** Extensions that expose
-   capabilities override `extension_traits()` to register
-   trait implementations in the registry. Extensions that are
+6. **Optional capability publishing.** Extensions that expose
+   capabilities override `extension_capabilities()` to register
+   capability implementations in the registry. Extensions that are
    pure background tasks simply use the default (empty)
    implementation and never appear in the registry.
 
 ## Core Types
 
-### Extension Trait
+### Extension Lifecycle Trait
 
 The lifecycle contract every extension implements. Two
 variants exist -- local and shared -- mirroring the pattern
@@ -133,8 +138,8 @@ pub trait Extension {
         effect_handler: EffectHandler,
     ) -> Result<TerminalState, Error>;
 
-    fn extension_traits(&self)
-        -> Vec<TraitRegistration>
+    fn extension_capabilities(&self)
+        -> Vec<CapabilityRegistration>
     {
         Vec::new()
     }
@@ -152,8 +157,8 @@ pub trait Extension: Send {
         effect_handler: EffectHandler,
     ) -> Result<TerminalState, Error>;
 
-    fn extension_traits(&self)
-        -> Vec<TraitRegistration>
+    fn extension_capabilities(&self)
+        -> Vec<CapabilityRegistration>
     {
         Vec::new()
     }
@@ -176,12 +181,12 @@ Key points:
   reporting. Extensions manage their own timers directly
   (e.g., `tokio::time`) rather than through the engine's
   timer infrastructure.
-- **`extension_traits()`** defaults to empty. Extensions
-  that publish traits override it (typically via the
-  `extension_traits!` macro) to return a
-  `Vec<TraitRegistration>`. During pipeline build, the
+- **`extension_capabilities()`** defaults to empty. Extensions
+  that publish capabilities override it (typically via the
+  `extension_capabilities!` macro) to return a
+  `Vec<CapabilityRegistration>`. During pipeline build, the
   engine calls this method on each extension and inserts
-  the returned registrations into the `ExtensionRegistry`
+  the returned registrations into the `CapabilityRegistry`
   under the extension's configured name. Pure background
   tasks leave the default and never appear in the
   registry.
@@ -218,9 +223,9 @@ Responsibilities:
 - **Construction** -- `ExtensionWrapper::local()` and
   `::shared()` create the control channel and box the
   extension.
-- **Trait registration** -- `register_traits()` calls
-  the extension's `extension_traits()` and inserts the
-  results into the `ExtensionRegistry` under the
+- **Trait registration** -- `register_capabilities()` calls
+  the extension's `extension_capabilities()` and inserts the
+  results into the `CapabilityRegistry` under the
   extension's name.
 - **Control sender** -- `extension_control_sender()`
   produces an `ExtensionControlSender` that the engine
@@ -273,12 +278,12 @@ blocking graceful shutdown (see Key Design Decision #3).
 channel and is stored by the engine's
 `PipelineCtrlMsgManager` for shutdown orchestration.
 
-### ExtensionRegistry and TraitRegistration
+### CapabilityRegistry and CapabilityRegistration
 
 Defined in `engine/src/extension/registry.rs`.
 
-**`TraitRegistration`** is a self-contained record produced
-by the `extension_traits!` macro. Each registration carries:
+**`CapabilityRegistration`** is a self-contained record produced
+by the `extension_capabilities!` macro. Each registration carries:
 
 - A cloned copy of the concrete extension value
   (type-erased via `Box<dyn CloneAnySend>`)
@@ -287,13 +292,13 @@ by the `extension_traits!` macro. Each registration carries:
   `Box<dyn Trait>`
 - The `TypeId` of `Box<dyn Trait>` for lookup
 
-**`ExtensionRegistry`** stores these registrations and
+**`CapabilityRegistry`** stores these registrations and
 serves lookups. It is `Clone + Send + Default`.
 
 ```rust
 // Keyed by (extension_name, TypeId::of::<Box<dyn Trait>>())
 #[derive(Default, Clone)]
-pub struct ExtensionRegistry {
+pub struct CapabilityRegistry {
     handles: HashMap<(String, TypeId), RegistryEntry>,
 }
 ```
@@ -308,27 +313,28 @@ let provider: Box<dyn BearerTokenProvider> = registry
 
 How it works end-to-end:
 
-1. The `extension_traits!` macro clones the extension
+1. The `extension_capabilities!` macro clones the extension
    instance once per trait, pairs each clone with a
    monomorphised `coerce` fn, and returns
-   `Vec<TraitRegistration>`.
+   `Vec<CapabilityRegistration>`.
 2. During pipeline build, the engine calls
-   `ExtensionWrapper::register_traits()`, which calls
-   `extension_traits()` on the extension and inserts the
+   `ExtensionWrapper::register_capabilities()`, which calls
+   `extension_capabilities()` on the extension and inserts the
    registrations into the registry under the extension's
    configured name.
-3. The registry is cloned once per receiver/exporter and
-   passed to their `start()` method.
+3. The registry is passed to each receiver/exporter/processor
+   factory as the last parameter of `create()`. Components
+   resolve their capabilities at construction time.
 4. `get::<dyn Trait>(name)` looks up the entry by
    `(name, TypeId::of::<Box<dyn Trait>>())`, invokes the
    stored `coerce` fn to produce a fresh
    `Box<dyn Trait>`, and returns it.
 
-A single extension can implement multiple traits, exposing
-different capabilities through granular interfaces:
+A single extension can implement multiple capabilities,
+exposing different interfaces through granular traits:
 
 ```rust
-extension_traits!(BearerTokenProvider, HealthCheck);
+extension_capabilities!(BearerTokenProvider, HealthCheck);
 ```
 
 This is useful for extensibility and version management --
@@ -342,10 +348,10 @@ Error discrimination:
 - **`TraitNotImplemented`** -- extension exists but doesn't
   expose the requested trait.
 
-### Sealed Traits and the `extension_traits!` Macro
+### Sealed Capabilities and the `extension_capabilities!` Macro
 
-**Sealed traits** -- The `ExtensionTrait` marker trait
-(`engine/src/extension/registry.rs`) restricts which trait
+**Sealed capabilities** -- The `ExtensionCapability` marker trait
+(`engine/src/extension/registry.rs`) restricts which capability
 types can be stored in the registry. It uses a sealed
 pattern:
 
@@ -353,7 +359,7 @@ pattern:
 pub(crate) mod private {
     pub trait Sealed {}
 }
-pub trait ExtensionTrait: private::Sealed {}
+pub trait ExtensionCapability: private::Sealed {}
 ```
 
 Each extension trait file self-registers:
@@ -361,22 +367,22 @@ Each extension trait file self-registers:
 ```rust
 // In bearer_token_provider.rs:
 impl private::Sealed for dyn BearerTokenProvider {}
-impl ExtensionTrait for dyn BearerTokenProvider {}
+impl ExtensionCapability for dyn BearerTokenProvider {}
 ```
 
 Because `Sealed` is `pub(crate)`, external crates can
-*implement* existing extension traits but cannot define
-new trait types -- keeping the set of extension capabilities
+*implement* existing extension capabilities but cannot define
+new capability types -- keeping the set of extension capabilities
 well-defined and documented within the engine crate.
 
-**`extension_traits!` macro** -- A convenience macro that
+**`extension_capabilities!` macro** -- A convenience macro that
 extension writers use inside their `impl Extension` block
-to wire up trait registration:
+to wire up capability registration:
 
 ```rust
 #[async_trait(?Send)]
 impl Extension for MyExtension {
-    extension_traits!(BearerTokenProvider);
+    extension_capabilities!(BearerTokenProvider);
 
     async fn start(...) { ... }
 }
@@ -386,17 +392,17 @@ The macro handles the boilerplate that would otherwise
 be error-prone:
 
 - Verifies at **compile time** that each listed trait
-  implements `ExtensionTrait` (sealed), catching attempts
-  to register unsupported traits.
+  implements `ExtensionCapability` (sealed), catching attempts
+  to register unsupported capabilities.
 - Verifies the concrete type implements each listed trait
   plus `Clone + Send + 'static`.
 - Creates monomorphised `coerce` function pointers for
   type-safe downcasting -- these are the `fn` pointers
-  stored in `TraitRegistration` that the registry uses
+  stored in `CapabilityRegistration` that the registry uses
   to produce `Box<dyn Trait>` on lookup.
 
 Without the macro, extension writers would need to
-manually construct `TraitRegistration` values with the
+manually construct `CapabilityRegistration` values with the
 correct `TypeId` and coerce functions -- a process that
 is both tedious and easy to get wrong.
 
@@ -422,9 +428,9 @@ authors get the same cheap-clone semantics in practice by
 wrapping their internal state in `Arc`, but without
 imposing `Sync` at the trait boundary.
 
-#### Why Extension Traits Are `Send`-Only
+#### Why Extension Capabilities Are `Send`-Only
 
-Extension traits (e.g., `BearerTokenProvider`) require
+Extension capabilities (e.g., `BearerTokenProvider`) require
 `Send` but not `Sync`. There is no `!Send` variant of
 extension traits -- unlike the `Extension` lifecycle trait
 which has local/shared variants. This simplifies
@@ -510,16 +516,16 @@ pub trait BearerTokenProvider: Send {
   can update HTTP headers in a `tokio::select!` branch
   without polling.
 
-This trait demonstrates the typical extension trait
+This trait demonstrates the typical extension capability
 pattern:
 
 - `Send`-only (no `Sync` required)
-- Self-registers as a sealed `ExtensionTrait` via the
-  two-line `impl Sealed` / `impl ExtensionTrait` pattern
+- Self-registers as a sealed `ExtensionCapability` via the
+  two-line `impl Sealed` / `impl ExtensionCapability` pattern
 - Consumers look it up by name:
   `registry.get::<dyn BearerTokenProvider>("auth")`
 
-### Adding a New Extension Trait
+### Adding a New Extension Capability
 
 Using `BearerTokenProvider` as the real example.
 
@@ -546,7 +552,7 @@ register the trait for use with the registry:
 ```rust
 impl super::registry::private::Sealed
     for dyn BearerTokenProvider {}
-impl super::registry::ExtensionTrait
+impl super::registry::ExtensionCapability
     for dyn BearerTokenProvider {}
 ```
 
@@ -556,7 +562,7 @@ impl super::registry::ExtensionTrait
 pub mod bearer_token_provider;
 ```
 
-That's it for the engine side. The trait is now usable
+That's it for the engine side. The capability is now usable
 in extension implementations and registry lookups.
 
 ### Implementing an Extension
@@ -609,12 +615,12 @@ impl BearerTokenProvider
 ```
 
 **3. Implement the `Extension` lifecycle trait** with
-`extension_traits!` to wire up registration:
+`extension_capabilities!` to wire up registration:
 
 ```rust
 #[async_trait(?Send)]
 impl Extension for AzureIdentityAuthExtension {
-    extension_traits!(BearerTokenProvider);
+    extension_capabilities!(BearerTokenProvider);
 
     async fn start(
         self: Box<Self>,
@@ -684,16 +690,23 @@ Supports two auth methods:
 - **`development`** -- Azure CLI / Developer CLI
   credentials (local development).
 
-**2. Look it up** from a consumer at `start()` and
-subscribe to token refreshes:
+**2. Look up in the factory** and subscribe to token
+refreshes in `start()`:
 
 ```rust
-let auth = extension_registry
+// In the factory create() closure:
+let auth = capability_registry
     .get::<dyn BearerTokenProvider>(
-        &self.config.auth,
+        &cfg.auth,
     )?;
+// Pass auth to the exporter constructor:
+let exporter = AzureMonitorExporter::new(
+    pipeline_ctx, cfg, auth,
+)?;
 
-let mut token_rx = auth.subscribe_token_refresh();
+// In start(), subscribe to the stored auth field:
+let mut token_rx =
+    self.auth.subscribe_token_refresh();
 token_rx.wait_for(|t| t.is_some()).await?;
 
 // In the event loop:
@@ -712,9 +725,11 @@ tokio::select! {
 ```
 
 The exporter's config holds the extension name as a
-string. At `start()`, it receives the cloned
-`ExtensionRegistry` and calls `get()` to obtain the
-trait object by name.
+string. The factory receives the `CapabilityRegistry`
+and resolves the auth extension at construction time.
+The exporter stores the resulting `Box<dyn BearerTokenProvider>`
+as a field, using it directly in `start()` without
+any registry lookup.
 
 This pattern eliminated ~380 lines of duplicated auth
 code from the Azure Monitor exporter, replacing it with
@@ -734,25 +749,22 @@ start, steady-state, and shutdown phases.
       rejected with ExtensionInNodesSection error
 
 2. Pipeline build (PipelineFactory)
-   +- Allocate node IDs for data-path nodes,
-   |  then for extensions
+   +- Create extensions FIRST from the
+   |  `extensions` section
+   +- register_capabilities() -- collect
+   |  CapabilityRegistration from each extension,
+   |  insert into CapabilityRegistry
    +- Create data-path nodes (receivers,
-   |  processors, exporters)
-   +- create_extension() -- factory lookup by URN,
-   |  config parsing, ExtensionWrapper creation
-   +- register_traits() -- collect
-   |  TraitRegistration from each extension,
-   |  insert into ExtensionRegistry
+   |  processors, exporters) -- each factory
+   |  receives &CapabilityRegistry as last param
    +- Telemetry setup (channel metrics, node
       telemetry guards)
 
 3. Pipeline start (RuntimePipeline::run)
    +- Spawn extension tasks FIRST
-   +- Spawn exporter tasks (with
-   |  extension_registry.clone())
+   +- Spawn exporter tasks
    +- Spawn processor tasks
-   +- Spawn receiver tasks (with
-      extension_registry.clone())
+   +- Spawn receiver tasks
 
 4. Steady state
    +- Extensions run their event loops (e.g.,

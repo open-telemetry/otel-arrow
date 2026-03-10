@@ -70,18 +70,20 @@ pub struct TopicReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TOPIC_RECEIVER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
-        let config = TopicReceiver::parse_config(&node_config.config)?;
-        Ok(ReceiverWrapper::local(
-            TopicReceiver { config },
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            let config = TopicReceiver::parse_config(&node_config.config)?;
+            Ok(ReceiverWrapper::local(
+                TopicReceiver { config },
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
 };
@@ -101,7 +103,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         _effect_handler: local::EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match ctrl_msg_recv.recv().await {

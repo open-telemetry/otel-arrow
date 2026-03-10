@@ -63,17 +63,19 @@ pub struct OTAPExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        Ok(ExporterWrapper::local(
-            OTAPExporter::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            Ok(ExporterWrapper::local(
+                OTAPExporter::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
@@ -110,7 +112,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otap_exporter.start",
@@ -894,12 +895,7 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             _ = exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter,
-                    otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    Interests::empty(),
-                )
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await;
             Ok(())
         }
@@ -1234,12 +1230,7 @@ mod tests {
             let mr = metrics_reporter.clone();
             let _exporter_fut = local_set.spawn_local(async move {
                 let _ = exporter
-                    .start(
-                        pipeline_ctrl_msg_tx,
-                        mr,
-                        otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                        Interests::empty(),
-                    )
+                    .start(pipeline_ctrl_msg_tx, mr, Interests::empty())
                     .await;
             });
 

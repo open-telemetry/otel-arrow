@@ -455,12 +455,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                node_req_tx,
-                                metrics_reporter,
-                                otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                                Interests::empty(),
-                            )
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -526,12 +521,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                node_req_tx,
-                                metrics_reporter,
-                                otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                                Interests::empty(),
-                            )
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -602,12 +592,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                node_req_tx,
-                                metrics_reporter,
-                                otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                                Interests::empty(),
-                            )
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });

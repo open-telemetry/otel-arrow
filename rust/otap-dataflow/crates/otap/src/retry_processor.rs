@@ -350,6 +350,7 @@ pub fn create_retry_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
@@ -855,6 +856,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
+            &otap_df_engine::extension::registry::CapabilityRegistry::new(),
         )
         .expect("create processor");
 

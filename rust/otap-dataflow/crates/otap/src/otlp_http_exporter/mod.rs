@@ -93,6 +93,7 @@ fn factory_create(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
+    _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
     Ok(ExporterWrapper::local(
         OtlpHttpExporter::from_config(pipeline, &node_config.config)?,
@@ -204,7 +205,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, EngineError> {
         let logs_endpoint = Rc::new(
             self.config

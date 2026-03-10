@@ -201,17 +201,19 @@ impl SyslogCefReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: SYSLOG_CEF_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
-        Ok(ReceiverWrapper::local(
-            SyslogCefReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            Ok(ReceiverWrapper::local(
+                SyslogCefReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
@@ -222,7 +224,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
@@ -1678,13 +1679,7 @@ mod telemetry_tests {
 
             // Start receiver
             let handle = tokio::task::spawn_local(async move {
-                let _ = Box::new(receiver)
-                    .start(
-                        ctrl_chan,
-                        eh,
-                        otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    )
-                    .await;
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
             });
 
             // Send one valid and one invalid UDP datagram
@@ -1776,13 +1771,7 @@ mod telemetry_tests {
 
             // Start receiver
             let handle = tokio::task::spawn_local(async move {
-                let _ = Box::new(receiver)
-                    .start(
-                        ctrl_chan,
-                        eh,
-                        otap_df_engine::extension::registry::ExtensionRegistry::new(),
-                    )
-                    .await;
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
             });
             // Allow bind
             tokio::time::sleep(Duration::from_millis(50)).await;

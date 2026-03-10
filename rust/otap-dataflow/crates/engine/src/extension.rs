@@ -163,10 +163,10 @@ impl ExtensionWrapper {
     /// the registry under the given name.
     ///
     /// Called by the engine during pipeline build.
-    pub fn register_traits(&self, registry: &mut registry::ExtensionRegistry, name: &str) {
+    pub fn register_traits(&self, registry: &mut registry::CapabilityRegistry, name: &str) {
         let registrations = match self {
-            ExtensionWrapper::Local { extension, .. } => extension.extension_traits(),
-            ExtensionWrapper::Shared { extension, .. } => extension.extension_traits(),
+            ExtensionWrapper::Local { extension, .. } => extension.extension_capabilities(),
+            ExtensionWrapper::Shared { extension, .. } => extension.extension_capabilities(),
         };
         registry.register_all(name, registrations);
     }

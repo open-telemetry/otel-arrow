@@ -140,29 +140,31 @@ struct FlakyExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: FLAKY_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
-        // Look up state by ID from node config
-        let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
-        let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count) = flaky_id
-            .and_then(get_state)
-            .map(|(c, a, n, p, pc)| (Some(c), Some(a), Some(n), Some(p), Some(pc)))
-            .unwrap_or((None, None, None, None, None));
-        Ok(ExporterWrapper::local(
-            FlakyExporter {
-                counter,
-                should_ack,
-                nack_count,
-                permanent_nack,
-                permanent_nack_count,
-            },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry| {
+            // Look up state by ID from node config
+            let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
+            let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count) = flaky_id
+                .and_then(get_state)
+                .map(|(c, a, n, p, pc)| (Some(c), Some(a), Some(n), Some(p), Some(pc)))
+                .unwrap_or((None, None, None, None, None));
+            Ok(ExporterWrapper::local(
+                FlakyExporter {
+                    counter,
+                    should_ack,
+                    nack_count,
+                    permanent_nack,
+                    permanent_nack_count,
+                },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |_| Ok(()),
 };
@@ -173,7 +175,6 @@ impl Exporter<OtapPdata> for FlakyExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {

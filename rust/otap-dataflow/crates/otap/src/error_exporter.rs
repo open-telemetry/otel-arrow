@@ -49,6 +49,7 @@ impl ErrorExporter {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
+        _capability_registry: &otap_df_engine::extension::registry::CapabilityRegistry,
     ) -> Result<ExporterWrapper<OtapPdata>, otap_df_config::error::Error> {
         let config: ErrorExporterConfig = serde_json::from_value(node_config.config.clone())
             .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
@@ -78,7 +79,6 @@ impl Exporter<OtapPdata> for ErrorExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-        _extension_registry: otap_df_engine::extension::registry::ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {
