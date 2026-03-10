@@ -3,8 +3,10 @@
   "constraints": {
     // primary usage of Golang components is in
     // OpenTelemetry-Collector-Contrib repository which
-    // currently enforces 1.23.0 compatibility
-    "go": "1.23.0"
+    // currently enforces 1.25.0 compatibility
+    "go": "1.25.0",
+    // keep pip-compile refreshes aligned with CI/runtime interpreter
+    "python": "==3.11"
   },
   "extends": [
     "config:recommended",
@@ -62,7 +64,33 @@
         "before 8am on the first day of the month"
       ]
     },
+    {
+      // keep pip-compile source + lock updates together in one PR stream
+      "groupName": "pipeline perf python dependencies",
+      "matchManagers": ["pip-compile"],
+      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.lock.txt",
+        "tools/pipeline_perf_test/**/requirements.txt"
+      ]
+    },
+    {
+      // prevent duplicate PRs from pip_requirements once pip-compile is enabled
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["tools/pipeline_perf_test/**/requirements.txt"],
+      "enabled": false
+    },
   ],
+  // activate pip-compile manager on generated output lock files
+  "pip-compile": {
+    "managerFilePatterns": [
+      "/(^|/)tools\\/pipeline_perf_test\\/.+\\/requirements\\.lock\\.txt$/"
+    ]
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "branchTopic": "pip-compile-refresh",
+    "commitMessageAction": "Refresh pip-compile outputs"
+  },
   "postUpdateOptions": [
     // see https://docs.renovatebot.com/golang/#module-tidying
     // go modules may require running go mod tidy to pass CI
