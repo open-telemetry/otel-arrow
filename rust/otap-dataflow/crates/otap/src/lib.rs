@@ -119,12 +119,16 @@ pub mod tls_utils;
 /// Panics if no crypto feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`) is enabled.
 #[cfg(feature = "experimental-tls")]
 pub fn install_crypto_provider() {
-    let _ = try_install_crypto_provider();
+    try_install_crypto_provider().expect(
+        "Failed to install crypto provider. Ensure exactly one of \
+         crypto-ring, crypto-aws-lc, or crypto-openssl features is enabled.",
+    );
 }
 
 /// Try to install the rustls crypto provider selected by the active feature flag.
 ///
 /// Returns `Ok(())` on success or if already installed, `Err` on failure.
+/// Returns an error if no crypto feature is enabled.
 #[cfg(feature = "experimental-tls")]
 pub fn try_install_crypto_provider() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "crypto-ring")]
@@ -132,20 +136,24 @@ pub fn try_install_crypto_provider() -> Result<(), Box<dyn std::error::Error>> {
         rustls::crypto::ring::default_provider()
             .install_default()
             .map_err(|e| format!("Failed to install ring crypto provider: {e:?}"))?;
+        return Ok(());
     }
     #[cfg(feature = "crypto-aws-lc")]
     {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .map_err(|e| format!("Failed to install aws-lc-rs crypto provider: {e:?}"))?;
+        return Ok(());
     }
     #[cfg(feature = "crypto-openssl")]
     {
         rustls_openssl::default_provider()
             .install_default()
             .map_err(|e| format!("Failed to install OpenSSL crypto provider: {e:?}"))?;
+        return Ok(());
     }
-    Ok(())
+    #[allow(unreachable_code)]
+    Err("No crypto feature enabled. Enable one of: crypto-ring, crypto-aws-lc, crypto-openssl".into())
 }
 
 /// Console exporter similar using built-in OTLP-bytes formatting.

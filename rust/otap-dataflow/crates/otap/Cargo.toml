@@ -100,6 +100,9 @@ test-utils = []
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:arc-swap", "dep:notify"]
 crypto-ring = ["experimental-tls", "rustls/ring", "tokio-rustls/ring", "tonic/tls-ring"]
 crypto-aws-lc = ["experimental-tls", "rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs", "tonic/tls-aws-lc"]
+# Note: tonic does not yet offer a tls-no-provider or tls-openssl feature,
+# so client-side gRPC TLS (OTAP/OTLP exporters) is not available with this backend.
+# Server-side TLS (receivers) works because it uses tokio-rustls directly.
 crypto-openssl = ["experimental-tls", "dep:rustls-openssl"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 aws = ["object_store/aws", "object_store/cloud"]
