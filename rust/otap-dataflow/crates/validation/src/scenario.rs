@@ -30,7 +30,7 @@ pub struct Scenario {
     pipeline: Option<Pipeline>,
     generators: HashMap<String, Generator>,
     captures: HashMap<String, Capture>,
-    containers: Vec<ContainerConfig>,
+    containers: HashMap<String, ContainerConfig>,
     template_path: PathBuf,
     admin_addr: String,
     ready_max_attempts: usize,
@@ -54,7 +54,7 @@ impl Scenario {
             pipeline: None,
             generators: HashMap::new(),
             captures: HashMap::new(),
-            containers: Vec::new(),
+            containers: HashMap::new(),
             template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
@@ -88,11 +88,20 @@ impl Scenario {
         self
     }
 
-    /// Add a Docker container that will be started before the pipeline runs
-    /// and stopped after it shuts down.
+    /// Add a Docker container labeled for wiring. The label is used to
+    /// reference this container from [`ContainerConnection`](crate::traffic::ContainerConnection)
+    /// on generators and captures.
+    ///
+    /// Containers are started before the pipeline runs and stopped after
+    /// it shuts down.
     #[must_use]
-    pub fn add_container(mut self, container: ContainerConfig) -> Self {
-        self.containers.push(container);
+    pub fn add_container(
+        mut self,
+        label: impl Into<String>,
+        container: ContainerConfig,
+    ) -> Self {
+        let key = label.into();
+        let _ = self.containers.insert(key, container);
         self
     }
 
@@ -131,7 +140,7 @@ impl Scenario {
 
         tokio_rt.block_on(async move {
             let mut running_containers = Vec::new();
-            for config in containers {
+            for (_, config) in containers {
                 running_containers.push(config.start().await?);
             }
 
@@ -200,27 +209,11 @@ impl Scenario {
 
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
-        // Collect ports reserved by test containers so we never hand them out.
-        let reserved_ports: std::collections::HashSet<u16> = self
-            .containers
-            .iter()
-            .flat_map(|c| c.exposed_tcp_ports.iter().copied())
-            .collect();
-
         // helper to get port and return error if no ports are found.
-        // Retries if portpicker returns a port reserved by a container.
         let pick_port = |context: &str| -> Result<u16, ValidationError> {
-            for _ in 0..100 {
-                let port = pick_unused_port().ok_or_else(|| {
-                    ValidationError::Config(format!("failed to get port for {context}"))
-                })?;
-                if !reserved_ports.contains(&port) {
-                    return Ok(port);
-                }
-            }
-            Err(ValidationError::Config(format!(
-                "failed to get port for {context}: all picked ports conflict with container ports"
-            )))
+            pick_unused_port().ok_or_else(|| {
+                ValidationError::Config(format!("failed to get port for {context}"))
+            })
         };
 
         // helper to check if generators/captures are missing fields
@@ -242,43 +235,88 @@ impl Scenario {
             .pipeline
             .as_mut()
             .ok_or_else(|| ValidationError::Config("pipeline not provided".into()))?;
+        let containers = &mut self.containers;
 
         // Allocate a receiver port per generator and configure the pipeline.
+        // Generators with a container connection get their port allocated and
+        // mapped to the container instead of wiring the SUV pipeline.
         for generator in self.generators.values_mut() {
-            require_non_empty(
-                &generator.suv_exporter_node,
-                "generator missing suv exporter node name",
-            )?;
+            if let Some(ref mut conn) = generator.container_connection {
+                let container = containers
+                    .get_mut(&conn.container_label)
+                    .ok_or_else(|| {
+                        ValidationError::Config(format!(
+                            "unknown container: {}",
+                            conn.container_label
+                        ))
+                    })?;
+                conn.allocated_port = if let Some(&host) =
+                    container.mapped_ports.get(&conn.internal_port)
+                {
+                    host
+                } else {
+                    let port = pick_port("generator container connection")?;
+                    let _ = container.mapped_ports.insert(conn.internal_port, port);
+                    port
+                };
+            } else {
+                require_non_empty(
+                    &generator.suv_exporter_node,
+                    "generator missing suv exporter node name",
+                )?;
 
-            let port = pick_port("generator wiring")?;
-            generator.suv_port = port;
+                let port = pick_port("generator wiring")?;
+                generator.suv_port = port;
 
-            let node = generator.suv_exporter_node.clone();
-            let endpoint = match generator.suv_exporter_type {
-                MessageType::Otlp => EndpointKind::OtlpGrpcReceiver(node),
-                MessageType::Otap => EndpointKind::OtapGrpcReceiver(node),
-            };
-            pipeline.apply_endpoint(endpoint, port)?;
+                let node = generator.suv_exporter_node.clone();
+                let endpoint = match generator.suv_exporter_type {
+                    MessageType::Otlp => EndpointKind::OtlpGrpcReceiver(node),
+                    MessageType::Otap => EndpointKind::OtapGrpcReceiver(node),
+                };
+                pipeline.apply_endpoint(endpoint, port)?;
+            }
         }
 
         // Allocate an exporter port per capture, configure the pipeline,
         // and wire control paths to the corresponding generators.
+        // Captures with a container connection get their port allocated and
+        // mapped to the container instead of wiring the SUV pipeline.
         let generators = &mut self.generators;
         for capture in self.captures.values_mut() {
-            require_non_empty(
-                &capture.suv_receiver_node,
-                "capture missing suv receiver node name",
-            )?;
+            if let Some(ref mut conn) = capture.container_connection {
+                let container = containers
+                    .get_mut(&conn.container_label)
+                    .ok_or_else(|| {
+                        ValidationError::Config(format!(
+                            "unknown container: {}",
+                            conn.container_label
+                        ))
+                    })?;
+                conn.allocated_port = if let Some(&host) =
+                    container.mapped_ports.get(&conn.internal_port)
+                {
+                    host
+                } else {
+                    let port = pick_port("capture container connection")?;
+                    let _ = container.mapped_ports.insert(conn.internal_port, port);
+                    port
+                };
+            } else {
+                require_non_empty(
+                    &capture.suv_receiver_node,
+                    "capture missing suv receiver node name",
+                )?;
 
-            let port = pick_port("capture wiring")?;
-            capture.suv_port = port;
+                let port = pick_port("capture wiring")?;
+                capture.suv_port = port;
 
-            let node = capture.suv_receiver_node.clone();
-            let endpoint = match capture.suv_receiver_type {
-                MessageType::Otlp => EndpointKind::OtlpGrpcExporter(node),
-                MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
-            };
-            pipeline.apply_endpoint(endpoint, port)?;
+                let node = capture.suv_receiver_node.clone();
+                let endpoint = match capture.suv_receiver_type {
+                    MessageType::Otlp => EndpointKind::OtlpGrpcExporter(node),
+                    MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
+                };
+                pipeline.apply_endpoint(endpoint, port)?;
+            }
 
             for gen_label in &capture.control_streams {
                 let control_port = pick_port("control wiring")?;
@@ -314,6 +352,14 @@ impl Scenario {
         let mut captures_rendered: Vec<String> = vec![];
 
         for (label, capture) in captures.iter() {
+            // Render custom receiver template if this capture has a
+            // container connection; otherwise pass an empty string so
+            // the main template falls through to the built-in receiver.
+            let custom_suv_receiver = match capture.container_connection {
+                Some(ref conn) => conn.render()?,
+                None => String::new(),
+            };
+
             let ctx = context! {
                 suv_receiver_type => &capture.suv_receiver_type,
                 suv_port => capture.suv_port,
@@ -322,6 +368,7 @@ impl Scenario {
                 capture_core_start => capture.core_start,
                 capture_core_end => capture.core_end,
                 capture_label => label,
+                custom_suv_receiver => &custom_suv_receiver,
             };
             captures_rendered.push(
                 tmpl.render(ctx)
@@ -347,6 +394,14 @@ impl Scenario {
         let mut generators_rendered: Vec<String> = vec![];
 
         for (label, generator) in generators.iter() {
+            // Render custom exporter template if this generator has a
+            // container connection; otherwise pass an empty string so
+            // the main template falls through to the built-in exporter.
+            let custom_suv_exporter = match generator.container_connection {
+                Some(ref conn) => conn.render()?,
+                None => String::new(),
+            };
+
             let tls_enabled = generator.tls.is_some();
             let tls_ca_cert = generator
                 .tls
@@ -390,7 +445,8 @@ impl Scenario {
                 tls_client_cert => tls_client_cert,
                 tls_client_key => tls_client_key,
                 mtls_enabled => mtls_enabled,
-                tls_server_name => tls_server_name
+                tls_server_name => tls_server_name,
+                custom_suv_exporter => &custom_suv_exporter,
             };
             generators_rendered.push(
                 tmpl.render(ctx)
@@ -479,18 +535,19 @@ nodes:
     fn add_container_stores_config() {
         let scenario = Scenario::new()
             .add_container(
-                ContainerConfig::new("redis", "7.2.4")
-                    .expose_tcp(6379)
-                    .env("FOO", "bar"),
+                "redis",
+                ContainerConfig::new("redis", "7.2.4").env("FOO", "bar"),
             )
-            .add_container(ContainerConfig::new("kafka", "3.6"));
+            .add_container("kafka", ContainerConfig::new("kafka", "3.6"));
 
         assert_eq!(scenario.containers.len(), 2);
-        assert_eq!(scenario.containers[0].image, "redis");
-        assert_eq!(scenario.containers[0].tag, "7.2.4");
-        assert_eq!(scenario.containers[0].exposed_tcp_ports, vec![6379]);
-        assert_eq!(scenario.containers[1].image, "kafka");
-        assert_eq!(scenario.containers[1].tag, "3.6");
+        let redis = scenario.containers.get("redis").expect("redis missing");
+        assert_eq!(redis.image, "redis");
+        assert_eq!(redis.tag, "7.2.4");
+        assert_eq!(redis.env_vars, vec![("FOO".into(), "bar".into())]);
+        let kafka = scenario.containers.get("kafka").expect("kafka missing");
+        assert_eq!(kafka.image, "kafka");
+        assert_eq!(kafka.tag, "3.6");
     }
 
     #[test]
@@ -541,25 +598,6 @@ nodes:
     }
 
     #[test]
-    fn update_configs_avoids_container_ports() {
-        let pipeline = Pipeline::from_yaml(sample_yaml());
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture("cap", Capture::default().otap_grpc("exporter").control_streams(["gen"]))
-            .add_container(ContainerConfig::new("redis", "7.2.4").expose_tcp(4317));
-
-        scenario.update_configs().expect("should succeed");
-
-        // Verify no allocated port matches the container's exposed port.
-        let generator = scenario.generators.get("gen").unwrap();
-        assert_ne!(generator.suv_port, 4317);
-
-        let capture = scenario.captures.get("cap").unwrap();
-        assert_ne!(capture.suv_port, 4317);
-    }
-
-    #[test]
     fn default_matches_new() {
         let from_new = Scenario::new();
         let from_default = Scenario::default();
@@ -569,4 +607,5 @@ nodes:
         assert!(from_new.containers.is_empty());
         assert!(from_default.containers.is_empty());
     }
+
 }

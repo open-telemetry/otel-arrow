@@ -46,6 +46,10 @@
         - "control_port{{ loop.index }}"
 {% endfor %}
       config:
+{% if custom_suv_exporter %}
+    suv_exporter:
+{{ custom_suv_exporter | indent(6, true) }}
+{% else %}
     suv_exporter:
       type: {{ suv_exporter_plugin_urn }}
       config:
@@ -63,6 +67,7 @@
 {% if mtls_enabled %}
           cert_file: '{{ tls_client_cert }}'
           key_file: '{{ tls_client_key }}'
+{% endif %}
 {% endif %}
 {% endif %}
 {% for control_port in control_ports %}

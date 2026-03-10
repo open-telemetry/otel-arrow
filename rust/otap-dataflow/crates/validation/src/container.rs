@@ -11,6 +11,7 @@
 //! interact with plain Rust types defined here.
 
 use crate::error::ValidationError;
+use std::collections::HashMap;
 use testcontainers::core::IntoContainerPort;
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
@@ -18,14 +19,15 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 /// Describes a Docker container to run alongside the validation scenario.
 ///
-/// Use the builder methods to configure the image, exposed ports, and
-/// environment variables.
+/// Use the builder methods to configure the image and environment variables.
+/// Port mappings are handled automatically by the framework when generators,
+/// captures, or pipeline nodes declare connections via
+/// [`ContainerConnection`](crate::traffic::ContainerConnection).
 ///
 /// # Example
 ///
 /// ```ignore
 /// let redis = ContainerConfig::new("redis", "7.2.4")
-///     .expose_tcp(6379)
 ///     .env("REDIS_ARGS", "--save 60 1");
 /// ```
 pub struct ContainerConfig {
@@ -33,12 +35,14 @@ pub struct ContainerConfig {
     pub(crate) image: String,
     /// Docker image tag (e.g., `"7.2.4"`, `"latest"`)
     pub(crate) tag: String,
-    /// TCP ports to expose from the container
-    pub(crate) exposed_tcp_ports: Vec<u16>,
     /// Environment variables to set on the container
     pub(crate) env_vars: Vec<(String, String)>,
     /// Optional entrypoint override
     pub(crate) entrypoint: Option<String>,
+    /// Fixed host-to-container port mappings keyed by container port,
+    /// with host port as the value. Populated by the framework during
+    /// config wiring for container connections.
+    pub(crate) mapped_ports: HashMap<u16, u16>,
 }
 
 impl ContainerConfig {
@@ -48,17 +52,10 @@ impl ContainerConfig {
         Self {
             image: image.into(),
             tag: tag.into(),
-            exposed_tcp_ports: Vec::new(),
             env_vars: Vec::new(),
             entrypoint: None,
+            mapped_ports: HashMap::new(),
         }
-    }
-
-    /// Expose a TCP port from the container.
-    #[must_use]
-    pub fn expose_tcp(mut self, port: u16) -> Self {
-        self.exposed_tcp_ports.push(port);
-        self
     }
 
     /// Set an environment variable on the container.
@@ -77,15 +74,11 @@ impl ContainerConfig {
 
     /// Start the container described by this configuration.
     ///
-    /// Builds the Docker image, applies exposed ports, environment variables,
+    /// Builds the Docker image, applies port mappings, environment variables,
     /// and entrypoint overrides, then starts the container. Returns a handle
     /// to the running container.
     pub(crate) async fn start(self) -> Result<ContainerAsync<GenericImage>, ValidationError> {
         let mut image = GenericImage::new(&self.image, &self.tag);
-
-        for port in &self.exposed_tcp_ports {
-            image = image.with_exposed_port(port.tcp());
-        }
 
         if let Some(ep) = &self.entrypoint {
             image = image.with_entrypoint(ep);
@@ -93,8 +86,14 @@ impl ContainerConfig {
 
         image = image.with_wait_for(WaitFor::Nothing);
 
-        // Apply environment variables via ImageExt (consumes into ContainerRequest)
+        // Convert to ContainerRequest for settings that consume the image.
         let mut request = testcontainers::core::ContainerRequest::from(image);
+
+        // Apply host-to-container port mappings set during config wiring.
+        for (&container_port, &host_port) in &self.mapped_ports {
+            request = request.with_mapped_port(host_port, container_port.tcp());
+        }
+
         for (key, value) in &self.env_vars {
             request = request.with_env_var(key, value);
         }
@@ -117,30 +116,21 @@ mod tests {
         let config = ContainerConfig::new("redis", "7.2.4");
         assert_eq!(config.image, "redis");
         assert_eq!(config.tag, "7.2.4");
-        assert!(config.exposed_tcp_ports.is_empty());
         assert!(config.env_vars.is_empty());
         assert!(config.entrypoint.is_none());
+        assert!(config.mapped_ports.is_empty());
     }
 
     #[test]
     fn container_config_builder_chaining() {
         let config = ContainerConfig::new("kafka", "7.5.0")
-            .expose_tcp(9092)
-            .expose_tcp(9093)
             .env("FOO", "bar")
             .env("BAZ", "qux")
             .entrypoint("/bin/sh");
 
-        assert_eq!(config.exposed_tcp_ports, vec![9092, 9093]);
         assert_eq!(config.env_vars.len(), 2);
         assert_eq!(config.env_vars[0], ("FOO".into(), "bar".into()));
         assert_eq!(config.entrypoint, Some("/bin/sh".into()));
-    }
-
-    #[test]
-    fn expose_tcp_single_port() {
-        let config = ContainerConfig::new("img", "tag").expose_tcp(8080);
-        assert_eq!(config.exposed_tcp_ports, vec![8080]);
     }
 
     #[test]
@@ -161,16 +151,11 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires Docker daemon running on the host.
     async fn start_and_stop_container() {
-        let config = ContainerConfig::new("alpine", "3.20").expose_tcp(8080);
+        let mut config = ContainerConfig::new("alpine", "3.20");
+        // Simulate a mapped port as the framework would set during config wiring.
+        let _ = config.mapped_ports.insert(8080, 8080);
 
         let container = config.start().await.expect("container should start");
-
-        // Verify the container is running by resolving the mapped host port.
-        let host_port = container
-            .get_host_port_ipv4(8080.tcp())
-            .await
-            .expect("should resolve host port");
-        assert_ne!(host_port, 0);
 
         // Stop the container via testcontainers stop().
         container.stop().await.expect("container should stop");

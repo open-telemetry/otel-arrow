@@ -7,6 +7,7 @@
 
 use crate::ValidationInstructions;
 use crate::error::ValidationError;
+use minijinja::{Environment, context};
 use otap_df_otap::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -19,6 +20,85 @@ const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
 const DEFAULT_WEIGHT_ZERO: u32 = 0;
 const DEFAULT_LOG_WEIGHT: u32 = 100;
+
+/// Describes a connection between a Generator/Capture and a test container.
+///
+/// The `node_template` is a Jinja2 template string for the custom receiver or
+/// exporter node config. The framework renders it with `{{ port }}` set to the
+/// allocated host port that is mapped to the container's `internal_port`.
+///
+/// Whether this describes an exporter or receiver is determined by which struct
+/// holds the connection: [`Generator::to_container`] (exporter) or
+/// [`Capture::from_container`] (receiver).
+///
+/// # Example
+///
+/// ```ignore
+/// ContainerConnection::new("kafka")
+///     .internal_port(9092)
+///     .node_template(r#"
+/// type: "urn:otel:exporter:kafka"
+/// config:
+///   broker: "127.0.0.1:{{ port }}"
+///   topic: "otlp-logs"
+/// "#)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerConnection {
+    /// Label matching a container added via
+    /// [`Scenario::add_container`](crate::scenario::Scenario::add_container).
+    pub(crate) container_label: String,
+    /// The container's internal port (before host mapping).
+    pub(crate) internal_port: u16,
+    /// Jinja2 template for the custom node config. Rendered with
+    /// `{{ port }}` = the allocated host port mapped to `internal_port`.
+    pub(crate) node_template: String,
+    /// Allocated host port (set by the framework during config wiring).
+    pub(crate) allocated_port: u16,
+}
+
+impl ContainerConnection {
+    /// Create a new container connection referencing a container by its label.
+    #[must_use]
+    pub fn new(container_label: impl Into<String>) -> Self {
+        Self {
+            container_label: container_label.into(),
+            internal_port: 0,
+            node_template: String::new(),
+            allocated_port: 0,
+        }
+    }
+
+    /// Set the internal port on the container to connect to. This is the port
+    /// the container listens on internally (before testcontainers host mapping).
+    #[must_use]
+    pub fn internal_port(mut self, port: u16) -> Self {
+        self.internal_port = port;
+        self
+    }
+
+    /// Provide a Jinja2 template for the custom node configuration.
+    /// The template is rendered with `{{ port }}` available in the context,
+    /// set to the host port mapped to the container's internal port.
+    #[must_use]
+    pub fn node_template(mut self, template: impl Into<String>) -> Self {
+        self.node_template = template.into();
+        self
+    }
+
+    /// Render the node template with the allocated port in the Jinja2 context.
+    /// Returns the rendered YAML string for the custom node configuration.
+    pub(crate) fn render(&self) -> Result<String, ValidationError> {
+        let mut env = Environment::new();
+        env.add_template("node", &self.node_template)
+            .map_err(|e| ValidationError::Template(e.to_string()))?;
+        let tmpl = env
+            .get_template("node")
+            .map_err(|e| ValidationError::Template(e.to_string()))?;
+        tmpl.render(context! { port => self.allocated_port })
+            .map_err(|e| ValidationError::Template(e.to_string()))
+    }
+}
 
 /// Protocols supported by generators and receivers.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -144,6 +224,11 @@ pub struct Generator {
     pub(crate) data_source: DataSource,
 
     pub(crate) tls: Option<TlsConfig>,
+
+    /// Optional connection to a test container. When set, the generator's
+    /// exporter node is rendered from the connection's Jinja2 template instead
+    /// of the built-in OTLP/OTAP exporter, and SUV pipeline wiring is skipped.
+    pub(crate) container_connection: Option<ContainerConnection>,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
@@ -165,6 +250,11 @@ pub struct Capture {
     pub(crate) control_streams: Vec<String>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
+
+    /// Optional connection to a test container. When set, the capture's
+    /// receiver node is rendered from the connection's Jinja2 template instead
+    /// of the built-in OTLP/OTAP receiver, and SUV pipeline wiring is skipped.
+    pub(crate) container_connection: Option<ContainerConnection>,
 }
 
 impl Generator {
@@ -259,6 +349,22 @@ impl Generator {
         self.tls = Some(config);
         self
     }
+
+    /// Connect this generator to a test container using a custom exporter.
+    ///
+    /// The generator's `suv_exporter` node will be rendered from the
+    /// connection's Jinja2 `node_template` instead of the built-in OTLP/OTAP
+    /// exporter. The framework allocates a host port, maps it to the
+    /// container's internal port, and makes it available as `{{ port }}` in
+    /// the template.
+    ///
+    /// When a container connection is set, SUV pipeline receiver wiring is
+    /// skipped for this generator (the container acts as the intermediary).
+    #[must_use]
+    pub fn to_container(mut self, connection: ContainerConnection) -> Self {
+        self.container_connection = Some(connection);
+        self
+    }
 }
 
 impl Default for Generator {
@@ -278,6 +384,7 @@ impl Default for Generator {
             log_weight: DEFAULT_LOG_WEIGHT,
             data_source: DataSource::Static,
             tls: None,
+            container_connection: None,
         }
     }
 }
@@ -324,6 +431,22 @@ impl Capture {
         self
     }
 
+    /// Connect this capture to a test container using a custom receiver.
+    ///
+    /// The capture's `suv_receiver` node will be rendered from the
+    /// connection's Jinja2 `node_template` instead of the built-in OTLP/OTAP
+    /// receiver. The framework allocates a host port, maps it to the
+    /// container's internal port, and makes it available as `{{ port }}` in
+    /// the template.
+    ///
+    /// When a container connection is set, SUV pipeline exporter wiring is
+    /// skipped for this capture (the container acts as the intermediary).
+    #[must_use]
+    pub fn from_container(mut self, connection: ContainerConnection) -> Self {
+        self.container_connection = Some(connection);
+        self
+    }
+
     /// Serialize the configured validations as JSON (for template contexts).
     #[must_use]
     pub fn validations_config(&self) -> String {
@@ -345,6 +468,7 @@ impl Default for Capture {
             control_ports: vec![],
             control_streams: vec![],
             validate: vec![],
+            container_connection: None,
         }
     }
 }
