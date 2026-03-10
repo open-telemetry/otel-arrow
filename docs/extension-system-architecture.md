@@ -54,7 +54,7 @@ no wasted resources.
 |         | Vec<CapabilityRegistration>         |
 |         v                                     |
 |  +----------------------+                     |
-|  |  CapabilityRegistry   |  (built once)      |
+|  |  CapabilityRegistry  |   (built once)      |
 |  |  stores cloned trait |                     |
 |  |  objects by name     |                     |
 |  +--+---------------+---+                     |
