@@ -116,7 +116,7 @@ project:
   - `otelcol.node.retry`
   - `otelcol.node.batch`
   - `otelcol.node.otlp_receiver`
-  - `otelcol.node.otlp_exporter`
+  - `otelcol.node.otlp_grpc_exporter`
   - ...
 
 ## Attributes and entity context

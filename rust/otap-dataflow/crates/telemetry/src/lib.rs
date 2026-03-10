@@ -64,6 +64,10 @@ pub use tracing_init::TracingSetup;
 #[doc(hidden)]
 pub use internal_events::_private;
 
+// Re-export tracing::Level so callers can use otap_df_telemetry::Level without
+// adding tracing as a direct dependency.
+pub use tracing::Level;
+
 // Re-export tracing span macros and types for crates that need span instrumentation.
 // This allows dependent crates to use spans without adding tracing as a direct dependency.
 // Re-exported with otel_ prefix for naming consistency with otel_info!, otel_warn!, etc.

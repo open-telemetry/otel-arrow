@@ -24,7 +24,7 @@ groups:
                       key_file: "./test-certs/server.key"
 
             exporter:
-              type: exporter:otlp
+              type: exporter:otlp_grpc
               config:
                 grpc_endpoint: "https://127.0.0.1:4319"
                 tls:

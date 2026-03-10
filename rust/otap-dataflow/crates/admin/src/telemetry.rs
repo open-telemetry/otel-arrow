@@ -1186,6 +1186,8 @@ mod tests {
         }],
     };
 
+    /// Ensures aggregate group ordering is deterministic: metric-set name first,
+    /// then metric count when names are equal.
     #[test]
     fn test_aggregate_metric_groups_sorting_logic() {
         // Test the sorting logic with mock AggregateGroup structs
@@ -1244,6 +1246,8 @@ mod tests {
         assert_eq!(groups[2].metrics.len(), 1);
     }
 
+    /// Verifies attribute-based grouping splits and aggregates metric sets by the
+    /// selected group keys (`env`, `region`) and preserves grouped attributes.
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
         use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
@@ -1484,12 +1488,14 @@ mod tests {
         assert!(prod_us_found && dev_us_found && dev_eu_found);
     }
 
+    /// Validates line-protocol escaping rules for measurement names.
     #[test]
     fn test_escape_lp_measurement() {
         assert_eq!(escape_lp_measurement("cpu, name=avg"), "cpu\\,\\ name=avg");
         assert_eq!(escape_lp_measurement("plain"), "plain");
     }
 
+    /// Validates line-protocol escaping rules for tag keys.
     #[test]
     fn test_escape_lp_tag_key() {
         assert_eq!(
@@ -1499,6 +1505,7 @@ mod tests {
         assert_eq!(escape_lp_tag_key("plain"), "plain");
     }
 
+    /// Validates line-protocol escaping rules for tag values.
     #[test]
     fn test_escape_lp_tag_value() {
         assert_eq!(
@@ -1520,6 +1527,8 @@ mod tests {
         }],
     };
 
+    /// Ensures Prometheus rendering expands MMSC values into min/max/sum/count
+    /// sub-metrics with expected HELP/TYPE lines.
     #[test]
     fn test_agg_prometheus_mmsc_metrics() {
         use otap_df_telemetry::instrument::MmscSnapshot;
@@ -1569,6 +1578,7 @@ mod tests {
         assert!(!output.contains("# TYPE request_duration histogram"));
     }
 
+    /// Ensures line-protocol rendering outputs all MMSC sub-fields for a metric.
     #[test]
     fn test_agg_line_protocol_mmsc_metrics() {
         use otap_df_telemetry::instrument::MmscSnapshot;

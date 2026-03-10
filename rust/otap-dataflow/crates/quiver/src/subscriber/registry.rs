@@ -35,7 +35,7 @@
 //! layer should call `flush_progress()` periodically (e.g., every 25ms) to
 //! write dirty subscribers to disk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,8 +52,8 @@ use super::progress::{
     delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
     write_progress_file,
 };
-use super::state::SubscriberState;
-use super::types::{AckOutcome, BundleRef, SubscriberId};
+use super::state::{SegmentProgress, SubscriberState};
+use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
 
 use crate::record_bundle::SlotId;
 
@@ -189,10 +189,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                             // Mark acked bundles
                             for bundle_idx in 0..entry.bundle_count {
                                 if entry.is_acked(bundle_idx) {
-                                    let bundle_ref = BundleRef::new(
-                                        entry.seg_seq,
-                                        super::types::BundleIndex::new(bundle_idx),
-                                    );
+                                    let bundle_ref =
+                                        BundleRef::new(entry.seg_seq, BundleIndex::new(bundle_idx));
                                     let _ = state.record_outcome(bundle_ref, AckOutcome::Acked);
                                 }
                             }
@@ -766,6 +764,34 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         };
 
         state_lock.is_some_and(|lock| lock.read().is_active())
+    }
+
+    /// Returns a snapshot of the subscriber's per-segment progress.
+    ///
+    /// The returned map is a clone taken under a brief read lock; the caller
+    /// can iterate it without holding any registry locks.  This is intended
+    /// for higher layers (e.g., the durable buffer) that maintain their own
+    /// per-segment caches and only need the progress bitmap to compute
+    /// pending-item counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubscriberError::NotFound`] if the subscriber is not
+    /// registered.
+    pub fn pending_segment_progress(
+        &self,
+        id: &SubscriberId,
+    ) -> Result<BTreeMap<SegmentSeq, SegmentProgress>> {
+        let state_lock = {
+            let subscribers = self.subscribers.read();
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
+
+        let state = state_lock.read();
+        Ok(state.segments().clone())
     }
 
     /// Flushes all dirty subscribers to their progress files.
