@@ -23,13 +23,13 @@ groups:
 
         nodes:
           receiver:
-            type: otap:receiver
+            type: receiver:otap
             config:
               listening_addr: "127.0.0.1:4317"
               response_stream_channel_size: 256
 
           durable_buffer:
-            type: durable_buffer:processor
+            type: processor:durable_buffer
             config:
               # Directory for WAL and segment files (created if not exists)
               path: /var/lib/otap/otap-durable-buffer-otap-example/buffer
@@ -43,7 +43,7 @@ groups:
               size_cap_policy: backpressure
 
           exporter:
-            type: otap:exporter
+            type: exporter:otap
             config:
               grpc_endpoint: "http://127.0.0.1:1235"
 

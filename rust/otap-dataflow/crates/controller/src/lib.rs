@@ -52,6 +52,8 @@ use otap_df_config::engine::{
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
+use otap_df_engine::ReceivedAtNode;
+use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
@@ -106,7 +108,9 @@ fn engine_context() -> LogContext {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
+    Controller<PData>
+{
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
@@ -270,6 +274,48 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             move |cancellation_token| obs_state_store.run(cancellation_token),
         )?;
 
+        // Start the engine-wide metrics collection task.
+        // This samples engine-level metrics (e.g. RSS) on a fixed interval and
+        // reports them once per engine, rather than duplicating across pipelines.
+        let engine_entity_key = controller_ctx.register_engine_entity();
+        let engine_registry = controller_ctx.telemetry_registry();
+        let engine_reporter = metrics_reporter.clone();
+        let engine_metrics_handle = spawn_thread_local_task(
+            "engine-metrics",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| async move {
+                use otap_df_engine::engine_metrics::EngineMetricsMonitor;
+                use std::time::Duration;
+                use tokio::time::{MissedTickBehavior, interval};
+
+                // TODO: Make this interval configurable via engine config.
+                const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
+
+                let mut monitor =
+                    EngineMetricsMonitor::new(engine_registry, engine_entity_key, engine_reporter);
+
+                let mut ticker = interval(ENGINE_METRICS_INTERVAL);
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+                loop {
+                    tokio::select! {
+                        _ = cancellation_token.cancelled() => {
+                            return Ok::<(), otap_df_telemetry::error::Error>(());
+                        }
+                        _ = ticker.tick() => {
+                            monitor.update();
+                            if let Err(err) = monitor.report() {
+                                otel_warn!(
+                                    "engine.metrics.reporting.fail",
+                                    error = err.to_string()
+                                );
+                            }
+                        }
+                    }
+                }
+            },
+        )?;
+
         let mut threads = Vec::new();
         let mut ctrl_msg_senders = Vec::new();
 
@@ -284,6 +330,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
         {
+            let core_allocation = pipeline_entry
+                .policies
+                .effective_resources()
+                .core_allocation
+                .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
@@ -291,6 +342,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let pipeline = pipeline_entry.pipeline;
 
             let num_cores = requested_cores.len();
+            otel_info!(
+                "pipeline.core_allocation",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                num_cores = num_cores,
+                core_allocation = core_allocation
+            );
             for core_id in requested_cores {
                 let pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: pipeline_group_id.clone(),
@@ -432,6 +490,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
+        engine_metrics_handle.shutdown_and_join()?;
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
@@ -563,7 +622,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources.core_allocation,
+                    &pipeline_entry
+                        .policies
+                        .effective_resources()
+                        .core_allocation,
                 )
             })
             .collect()
@@ -815,7 +877,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::policy::{CoreRange, Policies};
+    use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -841,10 +903,10 @@ mod tests {
             r#"
 nodes:
   receiver:
-    type: "urn:test:example:receiver"
+    type: "urn:test:receiver:example"
     config: null
   exporter:
-    type: "urn:test:example:exporter"
+    type: "urn:test:exporter:example"
     config: null
 connections:
   - from: receiver
@@ -859,8 +921,10 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let mut policies = Policies::default();
-        policies.resources.core_allocation = core_allocation;
+        let policies = Policies {
+            resources: Some(ResourcesPolicy { core_allocation }),
+            ..Default::default()
+        };
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),

@@ -51,7 +51,7 @@ pub enum Error {
 
     #[error("Cannot recognize metric type: {metric_type}: {error}")]
     UnrecognizedMetricType {
-        metric_type: i32,
+        metric_type: u8,
         error: TryFromPrimitiveError<MetricType>,
     },
 
@@ -106,8 +106,14 @@ pub enum Error {
     #[error("Invalid attribute transform: {}", reason)]
     InvalidAttributeTransform { reason: String },
 
-    #[error("Unsupported parent id type. Expected u16 or u32, got: {}", actual)]
+    #[error(
+        "Unsupported parent id column type. Expected u16 or u32, got: {}",
+        actual
+    )]
     UnsupportedParentIdType { actual: DataType },
+
+    #[error("parent_id column must not contain nulls")]
+    NullParentId,
 
     #[error("Unsupported payload type, got: {}", actual)]
     UnsupportedPayloadType { actual: i32 },
@@ -179,6 +185,9 @@ pub enum Error {
         given
     )]
     InvalidId { expected: usize, given: usize },
+
+    #[error("Invalid type for an Id column: {}", data_type)]
+    InvalidIdColumnType { data_type: DataType },
 
     #[error(
         "Invalid data type for struct, parent: {}, name: {}, data_type: {}",

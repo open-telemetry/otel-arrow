@@ -5,8 +5,18 @@ policies:
         node: 256
         pipeline: 256
       pdata: 128
+  telemetry:
+    channel_metrics: detailed
 engine:
   telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
     logs:
       level: "debug"
       providers:
@@ -28,15 +38,15 @@ engine:
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
-          channel_metrics: false
+          channel_metrics: detailed
       # Internal telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
         telemetry:
-          type: "internal_telemetry:receiver"
+          type: "receiver:internal_telemetry"
           config: {}
         console:
-          type: "console:exporter"
+          type: "exporter:console"
           config: {}
       connections:
         - from: telemetry
@@ -47,7 +57,7 @@ groups:
       main:
         nodes:
           generator:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_signal_count: 100000
@@ -55,10 +65,36 @@ groups:
                 signals_per_second: 1000
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 1
+          debug:
+            type: processor:debug
+            config:
+              verbosity: basic
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 2
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
-
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 3
         connections:
           - from: generator
+            to: debug
+          - from: debug
             to: noop

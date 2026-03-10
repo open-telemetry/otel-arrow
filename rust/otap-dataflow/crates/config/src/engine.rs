@@ -8,12 +8,14 @@ mod resolve;
 mod validate;
 
 use crate::PipelineGroupId;
+use crate::TopicName;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::topic::TopicSpec;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,6 +42,10 @@ pub struct OtelDataflowSpec {
     /// Top-level policy set.
     #[serde(default)]
     pub policies: Policies,
+
+    /// Global topic declarations visible to all pipeline groups.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub topics: HashMap<TopicName, TopicSpec>,
 
     /// Engine-wide runtime declarations.
     #[serde(default)]
@@ -134,7 +140,7 @@ impl EngineObservabilityPolicies {
             channel_capacity: self.channel_capacity,
             health: self.health,
             telemetry: self.telemetry,
-            resources: ResourcesPolicy::default(),
+            resources: Some(ResourcesPolicy::default()),
         }
     }
 
@@ -183,10 +189,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -220,10 +226,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -265,10 +271,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -279,10 +285,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -304,10 +310,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -331,9 +337,12 @@ groups:
         assert_eq!(config.policies.health, HealthPolicy::default());
         assert!(config.policies.telemetry.pipeline_metrics);
         assert!(config.policies.telemetry.tokio_metrics);
-        assert!(config.policies.telemetry.channel_metrics);
         assert_eq!(
-            config.policies.resources.core_allocation,
+            config.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Basic
+        );
+        assert_eq!(
+            config.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
     }
@@ -351,7 +360,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: false
+    channel_metrics: none
   resources:
     core_allocation:
       type: core_count
@@ -368,7 +377,7 @@ groups:
       health:
         ready_if: [Running, Updating]
       telemetry:
-        channel_metrics: true
+        channel_metrics: basic
       resources:
         core_allocation:
           type: core_count
@@ -384,17 +393,17 @@ groups:
           health:
             ready_if: [Failed]
           telemetry:
-            channel_metrics: false
+            channel_metrics: none
           resources:
             core_allocation:
               type: core_count
               count: 2
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -402,10 +411,10 @@ groups:
       p2:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -415,10 +424,10 @@ groups:
       p3:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -458,14 +467,17 @@ groups:
         assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
-            p1_resolved.policies.resources.core_allocation,
+            p1_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
         );
         assert_eq!(
             p1_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
-        assert!(!p1_resolved.policies.telemetry.channel_metrics);
+        assert_eq!(
+            p1_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::None
+        );
 
         let p2_resolved = resolved
             .pipelines
@@ -482,9 +494,12 @@ groups:
                 crate::health::PhaseKind::Updating,
             ]
         );
-        assert!(p2_resolved.policies.telemetry.channel_metrics);
         assert_eq!(
-            p2_resolved.policies.resources.core_allocation,
+            p2_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Basic
+        );
+        assert_eq!(
+            p2_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
         );
 
@@ -500,11 +515,160 @@ groups:
             p3_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Running]
         );
-        assert!(!p3_resolved.policies.telemetry.channel_metrics);
         assert_eq!(
-            p3_resolved.policies.resources.core_allocation,
+            p3_resolved.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::None
+        );
+        assert_eq!(
+            p3_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
+    }
+
+    #[test]
+    fn from_yaml_parses_topic_declarations_with_queue_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_default:
+    description: "global topic"
+  global_queue:
+    policies:
+      queue_capacity: 42
+      queue_on_full: drop_newest
+groups:
+  g1:
+    topics:
+      local_queue:
+        policies:
+          queue_capacity: 7
+          queue_on_full: drop_newest
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+
+        let global_default = config
+            .topics
+            .get("global_default")
+            .expect("global_default topic should exist");
+        assert_eq!(global_default.policies.queue_capacity, 128);
+        assert_eq!(
+            global_default.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::Block
+        );
+
+        let global_queue = config
+            .topics
+            .get("global_queue")
+            .expect("global_queue topic should exist");
+        assert_eq!(global_queue.policies.queue_capacity, 42);
+        assert_eq!(
+            global_queue.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+
+        let group = config.groups.get("g1").expect("group g1 should exist");
+        let local_queue = group
+            .topics
+            .get("local_queue")
+            .expect("local_queue topic should exist");
+        assert_eq!(local_queue.policies.queue_capacity, 7);
+        assert_eq!(
+            local_queue.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+    }
+
+    #[test]
+    fn resolve_topic_spec_respects_scope_precedence() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  shared:
+    policies:
+      queue_capacity: 100
+      queue_on_full: block
+  global_only:
+    policies:
+      queue_capacity: 101
+      queue_on_full: drop_newest
+groups:
+  g1:
+    topics:
+      shared:
+        policies:
+          queue_capacity: 10
+          queue_on_full: drop_newest
+      group_only:
+        policies:
+          queue_capacity: 11
+          queue_on_full: drop_newest
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+  g2:
+    pipelines:
+      p2:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+
+        let g1_shared = config
+            .resolve_topic_spec(&"g1".into(), &"shared".into())
+            .expect("g1 shared topic should resolve");
+        assert_eq!(g1_shared.policies.queue_capacity, 10);
+        assert_eq!(
+            g1_shared.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+
+        let g2_shared = config
+            .resolve_topic_spec(&"g2".into(), &"shared".into())
+            .expect("g2 shared topic should resolve from global");
+        assert_eq!(g2_shared.policies.queue_capacity, 100);
+        assert_eq!(
+            g2_shared.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::Block
+        );
+
+        let g1_group_only = config
+            .resolve_topic_spec(&"g1".into(), &"group_only".into())
+            .expect("g1 group_only topic should resolve");
+        assert_eq!(g1_group_only.policies.queue_capacity, 11);
+
+        let g2_group_only = config.resolve_topic_spec(&"g2".into(), &"group_only".into());
+        assert!(g2_group_only.is_none(), "g2 should not see g1-local topics");
     }
 
     #[test]
@@ -520,7 +684,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: false
+    channel_metrics: none
 engine:
   observability:
     pipeline:
@@ -533,13 +697,13 @@ engine:
         health:
           ready_if: [Failed]
         telemetry:
-          channel_metrics: true
+          channel_metrics: normal
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -550,10 +714,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -576,9 +740,12 @@ groups:
             obs.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
-        assert!(obs.policies.telemetry.channel_metrics);
         assert_eq!(
-            obs.policies.resources.core_allocation,
+            obs.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Normal
+        );
+        assert_eq!(
+            obs.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
         assert_eq!(
@@ -612,10 +779,10 @@ engine:
             count: 2
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -626,10 +793,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -662,10 +829,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -677,6 +844,41 @@ groups:
         assert!(rendered.contains("channel_capacity.control.node"));
         assert!(rendered.contains("channel_capacity.control.pipeline"));
         assert!(rendered.contains("channel_capacity.pdata"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_zero_topic_queue_capacity() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_topic:
+    policies:
+      queue_capacity: 0
+groups:
+  g1:
+    topics:
+      group_topic:
+        policies:
+          queue_capacity: 0
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err =
+            OtelDataflowSpec::from_yaml(yaml).expect_err("zero topic queue capacity should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("topics.global_topic.policies.queue_capacity"));
+        assert!(rendered.contains("groups.g1.topics.group_topic.policies.queue_capacity"));
     }
 
     #[test]

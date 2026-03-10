@@ -247,6 +247,36 @@ route destinations.
 The Syslog/CEF receiver is considered a core component used to
 establish the performance of the OTAP Dataflow system.
 
+### Core Nodes
+
+[See crate README.](./crates/core-nodes/README.md)
+
+The `otap-df-core-nodes` crate is the destination for core-node
+implementations as they are split out from `otap-df-otap` during the
+ongoing refactor.
+
+Current status:
+
+- The crate is currently a scaffold.
+- No core node implementations have been moved there yet.
+
+### Contrib Nodes
+
+[See crate README.](./crates/contrib-nodes/README.md)
+
+The `otap-df-contrib-nodes` crate contains optional, feature-gated
+exporters and processors that are registered into the OTAP pipeline
+factory maps when enabled.
+
+Contrib feature model:
+
+- Aggregate exporter feature:
+  - `contrib-exporters` enables all contrib exporters
+- Aggregate processor feature:
+  - `contrib-processors` enables all contrib processors
+- Individual feature flags can still be enabled independently for
+  smaller builds.
+
 ### Controller
 
 [See crate README.](./crates/controller/README.md)

@@ -11,7 +11,6 @@ pub mod encoder;
 pub mod formatter;
 
 use crate::registry::EntityKey;
-use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
 use serde::Serialize;
@@ -41,14 +40,14 @@ pub struct LogRecord {
     /// can be interrpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
-    pub body_attrs_bytes: Bytes,
+    pub body_attrs_bytes: bytes::Bytes,
 
     /// The context of this log record, typically pipeline and node context keys.
     pub context: LogContext,
 }
 
-/// Context keys refer to attribute sets in the telemetry registry.
-/// Note: Currently we use at most 1 entity context key per callsite.
+/// Context for log records: entity keys that identify scope attribute
+/// sets in the telemetry registry.
 pub type LogContext = SmallVec<[EntityKey; 1]>;
 
 /// A log context function typically constructs context from

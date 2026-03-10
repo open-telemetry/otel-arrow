@@ -63,7 +63,7 @@ pub fn get_log_record_schema() -> &'static ParserMapSchema {
 pub struct BridgePipeline {
     attributes_schema: Option<ParserMapSchema>,
     pipeline: PipelineExpression,
-    include_dropped_records: bool,
+    options: BridgeOptions,
 }
 
 impl BridgePipeline {
@@ -117,10 +117,9 @@ pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<BridgePipeline, Vec<ParserError>> {
-    let include_dropped_records = options
-        .as_ref()
-        .is_none_or(|v| v.get_include_dropped_records());
-    let parser_options = build_parser_options(options).map_err(|e| vec![e])?;
+    let mut options = options.unwrap_or_default();
+
+    let parser_options = build_parser_options(&mut options).map_err(|e| vec![e])?;
     let attributes_schema = match parser_options
         .get_source_map_schema()
         .and_then(|s| s.get_schema_for_key("Attributes"))
@@ -132,7 +131,7 @@ pub fn parse_kql_query_into_pipeline(
     Ok(BridgePipeline {
         attributes_schema,
         pipeline: result.pipeline,
-        include_dropped_records,
+        options,
     })
 }
 
@@ -241,7 +240,7 @@ pub fn process_export_logs_service_request_using_pipeline(
     let mut final_results = batch.flush();
 
     let mut dropped_records = None;
-    let dropped_record_count = if pipeline.include_dropped_records {
+    let dropped_record_count = if pipeline.options.get_include_dropped_records() {
         for record in initial_dropped_records.into_iter() {
             final_results.dropped_records.push(record);
         }
@@ -270,7 +269,11 @@ pub fn process_export_logs_service_request_using_pipeline(
 
             let count = final_results.dropped_records.len();
 
-            process_log_record_results(&mut dropped_records_request, final_results.dropped_records);
+            process_log_record_results(
+                pipeline.options.get_diagnostic_options(),
+                &mut dropped_records_request,
+                final_results.dropped_records,
+            );
 
             dropped_records = Some(dropped_records_request);
 
@@ -291,6 +294,7 @@ pub fn process_export_logs_service_request_using_pipeline(
     if has_summaries || has_included_records {
         if has_included_records {
             process_log_record_results(
+                pipeline.options.get_diagnostic_options(),
                 &mut export_logs_service_request,
                 final_results.included_records,
             );
@@ -300,9 +304,9 @@ pub fn process_export_logs_service_request_using_pipeline(
             let mut log_records = Vec::new();
 
             for summary in final_results.summaries.included_summaries {
-                let diagnostics = summary.to_string();
+                let diagnostics = summary.diagnostics;
 
-                if let Some(map) = summary.map {
+                let mut log_record = if let Some(map) = summary.map {
                     let mut attributes: Vec<(Box<str>, AnyValue)> =
                         Vec::with_capacity(map.len() + 1);
 
@@ -312,17 +316,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                             .map(|(key, value)| (key, value.into())),
                     );
 
-                    if !diagnostics.is_empty() {
-                        attributes.push((
-                            "query_engine.output".into(),
-                            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
-                                diagnostics,
-                            ))),
-                        ));
-                    }
-
-                    log_records.push(LogRecord::new().with_attributes(attributes));
-                    included_record_count += 1;
+                    LogRecord::new().with_attributes(attributes)
                 } else {
                     let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
                         summary.aggregation_values.len() + summary.group_by_values.len() + 1,
@@ -369,18 +363,20 @@ pub fn process_export_logs_service_request_using_pipeline(
                         }
                     }
 
-                    if !diagnostics.is_empty() {
-                        attributes.push((
-                            "query_engine.output".into(),
-                            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
-                                diagnostics,
-                            ))),
-                        ));
-                    }
+                    LogRecord::new().with_attributes(attributes)
+                };
 
-                    log_records.push(LogRecord::new().with_attributes(attributes));
-                    included_record_count += 1;
-                }
+                handle_diagnostics(
+                    pipeline.options.get_diagnostic_options(),
+                    &mut (&mut log_record, &diagnostics),
+                    |s| BridgeLogRecordDiagnostics::new(&pipeline.pipeline, s.0, s.1),
+                    |s, n, v| {
+                        s.0.attributes.get_values_mut().insert(n.into(), v);
+                    },
+                );
+
+                log_records.push(log_record);
+                included_record_count += 1;
             }
 
             let summary_otlp = ResourceLogs::new().with_scope_logs(
@@ -407,7 +403,7 @@ pub fn process_export_logs_service_request_using_pipeline(
     })
 }
 
-fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions, ParserError> {
+fn build_parser_options(options: &mut BridgeOptions) -> Result<ParserOptions, ParserError> {
     let mut parser_options = ParserOptions::new().with_attached_data_names(&[
         "resource",
         "instrumentation_scope",
@@ -415,7 +411,7 @@ fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions,
     ]);
 
     let (log_record_schema, summary_schema) =
-        build_log_record_schema(options.and_then(|mut v| v.take_attributes_schema()))?;
+        build_log_record_schema(options.take_attributes_schema())?;
 
     if let Some(summary_schema) = summary_schema {
         parser_options = parser_options.with_summary_map_schema(summary_schema);
@@ -491,24 +487,24 @@ fn build_log_record_schema(
 }
 
 fn process_log_record_results(
+    options: &BridgeDiagnosticOptions,
     response: &mut ExportLogsServiceRequest,
     records: Vec<RecordSetEngineRecord<LogRecord>>,
 ) {
-    for record_result in records {
-        let mut diagnostic_output = None;
+    for mut record_result in records {
+        handle_diagnostics(
+            options,
+            &mut record_result,
+            |s| s.into(),
+            |s, n, v| {
+                s.get_record_mut()
+                    .attributes
+                    .get_values_mut()
+                    .insert(n.into(), v);
+            },
+        );
 
-        let diagnostics = record_result.get_diagnostics();
-        if !diagnostics.is_empty() {
-            diagnostic_output = Some(record_result.to_string());
-        }
-
-        let mut log_record = record_result.take_record();
-        if let Some(d) = diagnostic_output {
-            log_record.attributes.get_values_mut().insert(
-                "query_engine.output".into(),
-                AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(d))),
-            );
-        }
+        let log_record = record_result.take_record();
 
         let resource_id = log_record
             .resource_id
@@ -529,6 +525,34 @@ fn process_log_record_results(
             .expect("scope_logs were not found");
 
         scope_logs.log_records.push(log_record);
+    }
+}
+
+fn handle_diagnostics<S, FBuild, FAddAddtribute>(
+    options: &BridgeDiagnosticOptions,
+    state: &mut S,
+    build: FBuild,
+    add_attribute: FAddAddtribute,
+) where
+    FBuild: Fn(&S) -> BridgeLogRecordDiagnostics,
+    FAddAddtribute: Fn(&mut S, &str, AnyValue),
+{
+    let diagnostics = build(state);
+
+    if !diagnostics.is_empty() {
+        match options {
+            BridgeDiagnosticOptions::AddAttribute { attribute_name } => {
+                let diagnostics = diagnostics.to_string();
+                add_attribute(
+                    state,
+                    attribute_name.as_ref(),
+                    AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                        diagnostics,
+                    ))),
+                );
+            }
+            BridgeDiagnosticOptions::Callback(c) => c(diagnostics),
+        }
     }
 }
 

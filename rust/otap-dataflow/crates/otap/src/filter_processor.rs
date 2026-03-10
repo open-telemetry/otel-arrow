@@ -33,7 +33,7 @@ use std::sync::Arc;
 mod config;
 mod metrics;
 /// The URN for the filter processor
-pub const FILTER_PROCESSOR_URN: &str = "urn:otel:filter:processor";
+pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
@@ -71,6 +71,7 @@ pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata>
             create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
 impl FilterProcessor {

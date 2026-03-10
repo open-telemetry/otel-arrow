@@ -45,7 +45,7 @@ pub mod semconv_signal;
 pub mod static_signal;
 
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:traffic_generator:receiver";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_generator";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -75,6 +75,7 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactor
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl FakeGeneratorReceiver {
@@ -199,7 +200,7 @@ impl BatchCache {
             let (_, payload) = pdata.clone().into_parts();
             let size = payload.num_bytes().unwrap_or(0);
             otel_info!(
-                "batch_cache.logsize",
+                "fake_data_generator.batch_cache.logsize",
                 log_record_count = logs_batch_size,
                 batch_size_bytes = size,
                 message = "Pre-generated log batch ready"
@@ -260,7 +261,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             None => "uncapped".to_string(),
         };
         otel_info!(
-            "receiver.start",
+            "fake_data_generator.start",
             signals_per_second = rate_limit_status,
             max_batch_size = max_batch_size,
             metrics_per_iteration = metric_count,
@@ -275,7 +276,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let batch_cache = match generation_strategy {
             GenerationStrategy::PreGenerated => {
                 otel_info!(
-                    "receiver.pre_generate",
+                    "fake_data_generator.pre_generate",
                     message = "Pre-generating batch for high-throughput mode"
                 );
                 Some(
@@ -318,7 +319,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }
                         Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
                             otel_info!(
-                                "receiver.shutdown"
+                                "fake_data_generator.shutdown"
                             );
                             return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
@@ -353,7 +354,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 let remaining_time = wait_till - Instant::now();
                                 if remaining_time.as_secs_f64() > 0.0 {
                                     otel_debug!(
-                                        "rate_limit.sleep",
+                                        "fake_data_generator.rate_limit.sleep",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
                                         "Sleeping to maintain configured signal rate"
                                     );
@@ -362,7 +363,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
                             } else {
                                 otel_debug!(
-                                    "rate_limit.uncapped",
+                                    "fake_data_generator.rate_limit.uncapped",
                                     "Rate limiting disabled, continuing immediately"
                                 );
                             }

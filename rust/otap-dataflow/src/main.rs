@@ -4,8 +4,21 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
-use otap_df_config::policy::{CoreAllocation, CoreRange};
+use otap_df_config::engine::{
+    HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
+};
+use otap_df_config::node::NodeKind;
+use otap_df_config::pipeline::PipelineConfig;
+use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (contrib processors/exporters) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_config::{PipelineGroupId, PipelineId};
+use otap_df_contrib_nodes as _;
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (contrib processors/exporters) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_contrib_nodes as _;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
@@ -65,6 +78,16 @@ struct Args {
     /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
     #[arg(long)]
     http_admin_bind: Option<String>,
+
+    /// Validate the provided configuration and exit without starting the engine.
+    ///
+    /// Checks performed:
+    /// - Configuration file parsing (YAML/JSON schema)
+    /// - Structural validation (version, policies, connections, node references)
+    /// - Component existence (every node URN maps to a registered component in this binary)
+    /// - Component-specific config validation (when supported by the component)
+    #[arg(long)]
+    validate_and_exit: bool,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -131,11 +154,102 @@ fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg.policies.resources.core_allocation = core_allocation;
+        engine_cfg.policies.resources = Some(ResourcesPolicy { core_allocation });
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);
     }
+}
+
+/// Validates that every node in a pipeline references a component URN
+/// that is registered in the `OTAP_PIPELINE_FACTORY`.
+///
+/// Note: structural config validation (connections, node references, policies)
+/// is already performed during config deserialization (`OtelDataflowSpec::from_file`).
+/// This function adds the semantic check that all referenced components are actually
+/// compiled into this binary, and validates their node-specific config statically.
+///
+/// **Scope:** This is *static* validation only — it checks that the config values
+/// can be deserialized into the expected types. It does **not** detect runtime
+/// issues such as port conflicts, unreachable endpoints, missing files, or other
+/// conditions that only manifest when the engine actually starts.
+fn validate_pipeline_components(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    pipeline_cfg: &PipelineConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+        let kind = node_cfg.kind();
+        let urn_str = node_cfg.r#type.as_str();
+
+        let validate_config_fn = match kind {
+            NodeKind::Receiver => OTAP_PIPELINE_FACTORY
+                .get_receiver_factory_map()
+                .get(urn_str)
+                .map(|f| f.validate_config),
+            NodeKind::Processor | NodeKind::ProcessorChain => OTAP_PIPELINE_FACTORY
+                .get_processor_factory_map()
+                .get(urn_str)
+                .map(|f| f.validate_config),
+            NodeKind::Exporter => OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .get(urn_str)
+                .map(|f| f.validate_config),
+        };
+
+        match validate_config_fn {
+            None => {
+                let kind_name = match kind {
+                    NodeKind::Receiver => "receiver",
+                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+                    NodeKind::Exporter => "exporter",
+                };
+                return Err(std::io::Error::other(format!(
+                    "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
+                    kind_name,
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref()
+                ))
+                .into());
+            }
+            Some(validate_fn) => {
+                validate_fn(&node_cfg.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for component `{}` in pipeline_group={} pipeline={} node={}: {}",
+                        urn_str,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        node_id.as_ref(),
+                        e
+                    ))
+                })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_engine_components(
+    engine_cfg: &OtelDataflowSpec,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
+        for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
+            validate_pipeline_components(pipeline_group_id, pipeline_id, pipeline_cfg)?;
+        }
+    }
+
+    // Also validate the observability pipeline nodes, if configured.
+    if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
+        let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+        let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+        let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
+        validate_pipeline_components(&obs_group_id, &obs_pipeline_id, &obs_pipeline_config)?;
+    }
+
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -151,13 +265,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_cores,
         core_id_range,
         http_admin_bind,
+        validate_and_exit,
     } = Args::parse();
 
     println!("{}", system_info());
 
-    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let mut engine_cfg = OtelDataflowSpec::from_file(config)?;
+    let mut engine_cfg = OtelDataflowSpec::from_file(&config)?;
     apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
+
+    validate_engine_components(&engine_cfg)?;
+
+    if validate_and_exit {
+        println!("Configuration '{}' is valid.", config.display());
+        std::process::exit(0);
+    }
+
+    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {
@@ -204,7 +327,7 @@ fn system_info() -> String {
         ""
     };
 
-    // Get available OTAP plugins
+    // Get available OTAP components
     let receivers: Vec<&str> = OTAP_PIPELINE_FACTORY
         .get_receiver_factory_map()
         .keys()
@@ -235,12 +358,12 @@ fn system_info() -> String {
   Build mode: {}
   Memory allocator: {}
 
-Available Plugin URNs:
+Available Component URNs:
   Receivers: {}
   Processors: {}
   Exporters: {}
 
-Configuration files can be found in the configs/ directory.{}",
+Example configuration files can be found in the configs/ directory.{}",
         available_cores,
         available_memory_gb,
         total_memory_gb,
@@ -256,6 +379,7 @@ Configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -269,10 +393,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -381,6 +505,53 @@ groups:
     }
 
     #[test]
+    fn parse_validate_and_exit_flag() {
+        let args = Args::parse_from([
+            "df_engine",
+            "--config",
+            "config.yaml",
+            "--validate-and-exit",
+        ]);
+        assert!(args.validate_and_exit);
+        assert_eq!(args.config, PathBuf::from("config.yaml"));
+    }
+
+    #[test]
+    fn missing_config_even_with_validate_flag() {
+        let result = Args::try_parse_from(["df_engine", "--validate-and-exit"]);
+        match result {
+            Ok(_) => panic!("Expected missing required argument error"),
+            Err(err) => assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument),
+        }
+    }
+
+    #[test]
+    fn validate_unknown_component_rejected() {
+        let pipeline_group_id: PipelineGroupId = "test_group".into();
+        let pipeline_id: PipelineId = "test_pipeline".into();
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:fake:receiver:unknown"
+    config: {}
+  exporter:
+    type: exporter:noop
+    config: {}
+connections:
+  - from: receiver
+    to: exporter
+"#;
+
+        let pipeline_cfg =
+            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), yaml)
+                .expect("pipeline YAML should parse");
+
+        let err = validate_pipeline_components(&pipeline_group_id, &pipeline_id, &pipeline_cfg)
+            .expect_err("semantic component validation should fail");
+        assert!(err.to_string().contains("Unknown receiver component"));
+    }
+
+    #[test]
     fn args_reject_conflicting_core_allocation_flags() {
         let err = Args::try_parse_from([
             "df_engine",
@@ -443,7 +614,7 @@ groups:
         apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
 
         assert_eq!(
-            cfg.policies.resources.core_allocation,
+            cfg.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
         assert_eq!(
@@ -461,7 +632,7 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources.core_allocation,
+            main.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
     }
@@ -487,10 +658,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -501,7 +672,7 @@ groups:
 
         // CLI updates top-level/global policy.
         assert_eq!(
-            cfg.policies.resources.core_allocation,
+            cfg.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 2 }
         );
 
@@ -513,8 +684,54 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources.core_allocation,
+            main.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 5 }
+        );
+    }
+
+    /// Regression test for the bug where a group-level `policies:` block that
+    /// only configures `channel_capacity` (or another non-resources field) would
+    /// cause serde to fill `resources` with `AllCores` default, silently
+    /// shadowing a `--num-cores` CLI flag written to the top-level config.
+    #[test]
+    fn cli_num_cores_not_shadowed_by_implicit_default_resources() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    policies:
+      channel_capacity:
+        pdata: 500
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let mut cfg = OtelDataflowSpec::from_yaml(yaml).expect("config should parse");
+        // The group has a policies block (for channel_capacity) but no resources.
+        // Before the fix, serde would fill in resources=AllCores at the group level,
+        // and the resolver would return that instead of the CLI value.
+        apply_cli_overrides(&mut cfg, Some(4), None, None);
+
+        let resolved = cfg.resolve();
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
+            .expect("default/main should exist");
+        assert_eq!(
+            main.policies.effective_resources().core_allocation,
+            CoreAllocation::CoreCount { count: 4 },
+            "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
     }
 }

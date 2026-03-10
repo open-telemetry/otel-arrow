@@ -56,7 +56,7 @@ mod metrics;
 mod routing;
 
 /// URN for the TransformProcessor
-pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:transform:processor";
+pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
 /// Opentelemetry Processing Language Processor
 pub struct TransformProcessor {
@@ -338,6 +338,7 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 #[async_trait(?Send)]
@@ -360,14 +361,14 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Ack(ack_message) => {
                     self.handle_ack_nack_inbound(
-                        ack_message.calldata.try_into()?,
+                        ack_message.unwind.route.calldata.try_into()?,
                         ack_message.accepted.signal_type(),
                         effect_handler,
                     )
                     .await?;
                 }
                 NodeControlMsg::Nack(nack_message) => {
-                    let outbound_key: Key = nack_message.calldata.try_into()?;
+                    let outbound_key: Key = nack_message.unwind.route.calldata.try_into()?;
                     self.contexts
                         .set_failed_outbound(outbound_key, nack_message.reason);
                     self.handle_ack_nack_inbound(
@@ -451,7 +452,10 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
-    use crate::{pdata::OtapPdata, testing::TestCallData};
+    use crate::{
+        pdata::{Context, OtapPdata},
+        testing::{TestCallData, next_ack, next_nack},
+    };
 
     /// Helper to create test log records with specific severity levels
     fn create_log_records(severities: &[&str]) -> Vec<LogRecord> {
@@ -481,11 +485,11 @@ mod test {
         context: Context,
         signal_type: SignalType,
     ) -> Result<(), EngineError> {
-        let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+        let ack = next_ack(AckMsg::new(OtapPdata::new(
             context,
             OtapPayload::empty(signal_type),
-        )))
-        .unwrap();
+        )));
+        let (_, ack) = ack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
             .await
     }
@@ -497,11 +501,11 @@ mod test {
         signal_type: SignalType,
         reason: &str,
     ) -> Result<(), EngineError> {
-        let (_, nack) = Context::next_nack(NackMsg::new(
+        let nack = next_nack(NackMsg::new(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
-        ))
-        .unwrap();
+        ));
+        let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
             .await
     }
@@ -1163,7 +1167,8 @@ mod test {
                 // now we've ack'd all three outbound, so it should emit an Ack message
                 let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match ack_msg {
-                    PipelineControlMsg::DeliverAck { node_id, .. } => {
+                    PipelineControlMsg::DeliverAck { ack } => {
+                        let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                     }
                     other => {
@@ -1240,7 +1245,8 @@ mod test {
                 // routed messages was Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
                     }
@@ -1318,7 +1324,8 @@ mod test {
                 // messages sent on the default output port were Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
                     }
@@ -1394,7 +1401,8 @@ mod test {
 
                 let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
                     }

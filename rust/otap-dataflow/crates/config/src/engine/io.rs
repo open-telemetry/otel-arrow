@@ -15,8 +15,9 @@ use std::path::Path;
 impl OtelDataflowSpec {
     /// Creates a new [`OtelDataflowSpec`] with the given JSON string.
     pub fn from_json(json: &str) -> Result<Self, Error> {
+        let json = crate::env_substitution::substitute_env_vars(json)?;
         let config: OtelDataflowSpec =
-            serde_json::from_str(json).map_err(|e| Error::DeserializationError {
+            serde_json::from_str(&json).map_err(|e| Error::DeserializationError {
                 context: Default::default(),
                 format: "JSON".to_string(),
                 details: e.to_string(),
@@ -27,8 +28,9 @@ impl OtelDataflowSpec {
 
     /// Creates a new [`OtelDataflowSpec`] with the given YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, Error> {
+        let yaml = crate::env_substitution::substitute_env_vars(yaml)?;
         let config: OtelDataflowSpec =
-            serde_yaml::from_str(yaml).map_err(|e| Error::DeserializationError {
+            serde_yaml::from_str(&yaml).map_err(|e| Error::DeserializationError {
                 context: Context::default(),
                 format: "YAML".to_string(),
                 details: e.to_string(),
@@ -97,6 +99,7 @@ impl OtelDataflowSpec {
         let config = OtelDataflowSpec {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
             policies: Policies::default(),
+            topics: HashMap::new(),
             engine,
             groups,
         };

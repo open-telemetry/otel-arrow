@@ -22,6 +22,7 @@ Main public model types:
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
 - `policy::Policies`: channel-capacity/health/telemetry/resources policy families
+- `topic::TopicSpec`: named inter-pipeline topic specification
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 - `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
@@ -115,6 +116,31 @@ Resolution semantics:
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
 
+## Topic Declarations
+
+Topics can be declared in two scopes:
+
+- top-level: `topics.<name>`
+- group-level: `groups.<group>.topics.<name>` (visible only in that group)
+
+Current topic policy support:
+
+- `policies.queue_capacity` (default: `128`, must be > 0)
+- `policies.queue_on_full`:
+  - `block` (default)
+  - `drop_newest`
+
+Topic declaration precedence (for a pipeline in a given group):
+
+- `groups.<group>.topics.<name>` -> `topics.<name>`
+
+`exporter:topic` node config can optionally override `queue_on_full` locally:
+
+- `config.queue_on_full`: `block` | `drop_newest`
+- effective precedence:
+  `topic:exporter.config.queue_on_full` -> `topic.policies.queue_on_full` -> `block`
+- `queue_capacity` remains topic-scope only
+
 ## Engine Observability Pipeline
 
 The dedicated engine internal telemetry pipeline is configured at:
@@ -128,8 +154,8 @@ It is represented in resolved output as a role-tagged internal pipeline.
 
 Accepted forms:
 
-- Full: `urn:<namespace>:<id>:<kind>`
-- OTel shortcut: `<id>:<kind>` (expanded to `urn:otel:<id>:<kind>`)
+- Full: `urn:<namespace>:<kind>:<id>`
+- OTel shortcut: `<kind>:<id>` (expanded to `urn:otel:<kind>:<id>`)
 
 See also:
 
@@ -143,6 +169,8 @@ See also:
 - `outputs: Vec<PortName>` (optional declaration for named output ports)
 - `default_output: Option<PortName>` (optional default output port)
 - `config: serde_json::Value` (node-specific payload)
+- `entity: Option<NodeEntity>` (optional node entity extension, e.g.,
+  identifying attributes).
 
 `config` is intentionally untyped in this crate so node implementations can own
 their own schema and compatibility policy.

@@ -11,19 +11,11 @@ mod error;
 
 pub use error::{Error, Result};
 
-use crate::views::{
-    common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType},
-    logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
-    metrics::{
-        self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
-        ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-        MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
-        SummaryDataPointView, SummaryView, ValueAtQuantileView,
-    },
-    resource::ResourceView,
-    trace::{
-        EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
-    },
+use crate::views::metrics::{
+    self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
+    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+    SummaryDataPointView, SummaryView, ValueAtQuantileView,
 };
 use crate::{
     encode::record::{
@@ -40,6 +32,16 @@ use crate::{
     otap::{Logs, Metrics, OtapArrowRecords, Traces},
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
+};
+use otap_df_pdata_views::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
+};
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::resource::ResourceView;
+use otap_df_pdata_views::views::trace::{
+    EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 
 /// Traverse the trace structure within the TracesView and produces an `OtapArrowRecords' for the span

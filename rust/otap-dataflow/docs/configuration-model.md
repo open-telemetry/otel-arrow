@@ -17,6 +17,7 @@ The engine runtime accepts a single configuration file format (v1).
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
+- `topics`: optional top-level topic declarations
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
@@ -36,16 +37,16 @@ groups:
       main:
         nodes:
           otlp/ingest:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
           batcher:
-            type: batch:processor
+            type: processor:batch
             config: {}
           otlp/export:
-            type: otlp:exporter
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
         connections:
@@ -108,6 +109,11 @@ Policy precedence for regular pipelines follows the hierarchy:
 - group-level `policies`
 - top-level `policies`
 
+Topic declaration precedence for a pipeline in a given group:
+
+- `groups.<group>.topics.<topic>`
+- `topics.<topic>`
+
 ## Pipeline Structure
 
 At pipeline level:
@@ -118,7 +124,7 @@ At pipeline level:
 
 At node level:
 
-- `type`: `NodeUrn` (`urn:<namespace>:<id>:<kind>` or `<id>:<kind>` for `otel`)
+- `type`: `NodeUrn` (`urn:<namespace>:<kind>:<id>` or `<kind>:<id>` for `otel`)
 - `config`: node-specific payload
 - `outputs` (optional): named output ports for multi-output nodes
 - `default_output` (optional): explicit default output port for implicit sends
@@ -158,10 +164,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -227,6 +233,64 @@ Resolution semantics:
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
 
+## Topic Declarations
+
+Topics are named in-process communication points used to decouple pipelines.
+Producers publish to a topic name, and consumers subscribe to that topic name
+without direct pipeline-to-pipeline wiring.
+
+Common use cases:
+
+- Fan-out distribution where multiple downstream pipelines consume the same
+  stream.
+- Worker-pool style processing where multiple consumers share one input stream.
+- Isolation between ingest, transform, and egress stages while keeping dataflow
+  composition flexible.
+
+Topics are declared in two places:
+
+- global scope: `topics.<name>`
+- group scope: `groups.<group>.topics.<name>`
+
+Current topic policy support:
+
+```yaml
+topics:
+  raw_signals:
+    description: "raw ingest stream"
+    policies:
+      queue_capacity: 1000
+      queue_on_full: drop_newest
+```
+
+Supported `queue_on_full` values:
+
+- `block`
+- `drop_newest`
+
+Topic defaults:
+
+- `policies.queue_capacity = 128`
+- `policies.queue_on_full = block`
+
+`exporter:topic` may locally override full-queue behavior:
+
+```yaml
+nodes:
+  publish/raw:
+    type: exporter:topic
+    config:
+      topic: raw_signals
+      queue_on_full: drop_newest
+```
+
+Exporter-local `queue_on_full` behavior:
+
+- optional (`block` or `drop_newest`)
+- precedence: exporter `config.queue_on_full` -> topic `policies.queue_on_full`
+  -> default `block`
+- `queue_capacity` remains topic-declaration-only (no exporter-local override)
+
 ## Output Ports
 
 Terminology:
@@ -251,28 +315,28 @@ groups:
       main:
         nodes:
           otlp/ingest:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
 
           router:
-            type: type_router:processor
+            type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
 
           logs_exporter:
-            type: otlp:exporter
+            type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
 
           metrics_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
 
           traces_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
 
         connections:
@@ -314,6 +378,7 @@ Config loading validates:
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
 - Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Non-zero topic queue capacity (`topics.*.policies.queue_capacity`).
 - Root schema version compatibility (`version: otel_dataflow/v1`).
 - Observability constraints (`engine.observability.pipeline.policies.resources`
   is rejected).
@@ -333,7 +398,7 @@ Config loading validates:
 
 - Wiring is explicit in a DAG, not implicit from ordered arrays.
 - A single pipeline can express richer fan-in/fan-out relationships directly.
-- Node type is a URN with kind suffix (`otlp:receiver`, `batch:processor`,
+- Node type is a URN with kind suffix (`receiver:otlp`, `processor:batch`,
   etc.).
 - Complex topologies (branching, routing, fallback patterns) are modeled through
   graph shape and node semantics.
@@ -364,7 +429,8 @@ The following ideas are discussed and intentionally left for later steps:
   - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
-- Topic-based inter-pipeline wiring.
+- Topic receiver/exporter runtime wiring and additional topic policy families
+  (slow consumer handling, persistence, delivery guarantees).
 
 ## URN Reference
 

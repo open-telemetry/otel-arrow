@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
-pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:type_router:processor";
+pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:processor:type_router";
 
 /// Well-known output port names for type-based routing
 /// Name of the output port used for trace signals
@@ -278,6 +278,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
         Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<SignalTypeRouterConfig>,
 };
 
 #[cfg(test)]

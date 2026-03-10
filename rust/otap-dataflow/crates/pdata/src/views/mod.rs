@@ -32,18 +32,18 @@
 pub mod otap;
 pub mod otlp;
 
-pub mod common;
-pub mod logs;
 pub mod metrics;
-pub mod resource;
-pub mod trace;
 
 /// helpers for writing benchmarks against view implementations
 #[cfg(feature = "bench")]
 pub mod bench_helpers {
-    use super::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
-    use super::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
-    use super::resource::ResourceView;
+    use otap_df_pdata_views::views::common::{
+        AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
+    };
+    use otap_df_pdata_views::views::logs::{
+        LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+    };
+    use otap_df_pdata_views::views::resource::ResourceView;
     use std::hint::black_box;
 
     /// noop visit `AnyValueView``

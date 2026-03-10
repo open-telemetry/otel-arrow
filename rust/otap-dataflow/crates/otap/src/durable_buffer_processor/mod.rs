@@ -39,37 +39,40 @@
 //!
 //! # Message Flow
 //!
-//! - `Message::Data`: Ingested to storage, ACK sent upstream after WAL fsync
+//! - `Message::Data`: Ingested to storage, ACK sent upstream after durable write
 //! - `TimerTick`: Poll storage for bundles, send downstream
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
-//! - `Nack`: Call handle.defer() and schedule retry via delay_data()
+//! - `Nack (permanent)`: Call handle.reject() — no retry
+//! - `Nack (transient)`: Call handle.defer() and schedule retry via delay_data()
 //! - `Shutdown`: Flush storage engine
 //!
 //! # Retry Behavior and Error Handling
 //!
-//! On NACK from downstream, bundles are retried with exponential backoff until
-//! either delivery succeeds or the data is evicted by the configured retention
-//! policy (`retention_size_cap` + `drop_oldest`).
+//! On NACK from downstream, bundles are handled based on the NACK's `permanent` status:
 //!
-//! There is no `max_retries` limit: without machine-readable error classification
-//! in NACKs, we cannot distinguish temporary failures (network outage—retry will
-//! succeed) from permanent failures (malformed data—retry is futile). A retry
-//! limit would cause **data loss** during legitimate extended outages.
+//! - **Permanent NACKs** (e.g., malformed data, schema validation failures): The bundle
+//!   is immediately rejected via `handle.reject()` and will not be retried. Monitor the
+//!   `bundles_nacked_permanent` metric to detect data being dropped due to permanent failures.
+//!
+//! - **Transient NACKs** (e.g., network issues, temporary downstream unavailability): Bundles
+//!   are retried with exponential backoff until either delivery succeeds or the data is evicted
+//!   by the configured retention policy (`retention_size_cap` + `drop_oldest`).
+//!
+//! There is no `max_retries` limit for transient failures: a retry limit would cause
+//! **data loss** during legitimate extended outages.
 //!
 //! **Operational guidance:**
 //!
+//! - Monitor `bundles_nacked_permanent` metric to detect permanent failures (data loss)
 //! - Monitor `retries_scheduled` metric to detect persistently failing data
 //! - Use `retention_size_cap` to bound storage; `drop_oldest` policy evicts
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
-//!
-//! **Future improvement:** When NACK messages carry error categorization
-//! (e.g., `retryable: bool` or error codes), we can drop permanently-failed
-//! data immediately while still retrying transient failures.
 
 mod bundle_adapter;
 mod config;
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -79,7 +82,9 @@ use linkme::distributed_slice;
 use quiver::budget::DiskBudget;
 use quiver::segment::SegmentSeq;
 use quiver::segment_store::SegmentStore;
-use quiver::subscriber::{BundleHandle, BundleIndex, BundleRef, RegistryCallback, SubscriberId};
+use quiver::subscriber::{
+    BundleHandle, BundleIndex, BundleRef, RegistryCallback, SegmentProvider, SubscriberId,
+};
 use quiver::{QuiverConfig, QuiverEngine};
 use smallvec::smallvec;
 
@@ -88,12 +93,14 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 
-use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
+use bundle_adapter::{
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+};
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
@@ -107,12 +114,17 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
 /// URN for the durable buffer.
-pub const DURABLE_BUFFER_URN: &str = "urn:otel:durable_buffer:processor";
+pub const DURABLE_BUFFER_URN: &str = "urn:otel:processor:durable_buffer";
+
+/// Minimum interval between repeated warning logs for the same condition
+/// (backpressure, flush failures). Prevents log flooding when the timer
+/// tick fires every poll_interval (~100 ms).
+const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
 
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
@@ -124,10 +136,13 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 /// Metrics for the durable buffer processor.
 ///
 /// Follows RFC-aligned telemetry conventions:
-/// - Metric set name follows `otelcol.<entity>` pattern
+/// - Metric set name follows `otap.<role>.<component>` pattern
 /// - Channel metrics already track bundle send/receive counts
-/// - This tracks ACK/NACK status, Arrow item counts, storage, and retries
-#[metric_set(name = "otelcol.node.durable_buffer")]
+/// - This tracks ACK/NACK status, item counts, storage, and retries
+///
+/// Please update the documentation at Telemetry.md when adding new
+/// metrics.
+#[metric_set(name = "otap.processor.durable_buffer")]
 #[derive(Debug, Default, Clone)]
 pub struct DurableBufferMetrics {
     // ─── ACK/NACK tracking ──────────────────────────────────────────────────
@@ -137,46 +152,68 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_acked: Counter<u64>,
 
-    /// Number of bundles rejected (deferred for retry) by downstream.
+    /// Number of bundles deferred for retry after transient downstream failures.
     #[metric(unit = "{bundle}")]
-    pub bundles_nacked: Counter<u64>,
+    pub bundles_nacked_deferred: Counter<u64>,
 
-    // ─── Consumed Arrow item metrics (per signal type) ──────────────────────
-    /// Number of Arrow log records consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{log}")]
-    pub consumed_arrow_logs: Counter<u64>,
+    /// Number of bundles permanently rejected by downstream (not retried).
+    /// These indicate data loss due to permanent failures (e.g., malformed data).
+    #[metric(unit = "{bundle}")]
+    pub bundles_nacked_permanent: Counter<u64>,
 
-    /// Number of Arrow metric data points consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{metric}")]
-    pub consumed_arrow_metrics: Counter<u64>,
+    // ─── Rejected item metrics (per signal type) ────────────────────────
+    /// Number of log records rejected.
+    #[metric(unit = "{log_record}")]
+    pub rejected_log_records: Counter<u64>,
 
-    /// Number of Arrow trace spans consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
+    /// Number of metric data points rejected.
+    #[metric(unit = "{data_point}")]
+    pub rejected_metric_points: Counter<u64>,
+
+    /// Number of spans rejected.
     #[metric(unit = "{span}")]
-    pub consumed_arrow_traces: Counter<u64>,
+    pub rejected_spans: Counter<u64>,
 
-    // ─── Produced Arrow item metrics (per signal type) ──────────────────────
-    /// Number of Arrow log records produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{log}")]
-    pub produced_arrow_logs: Counter<u64>,
+    // ─── Consumed item metrics (per signal type) ────────────────────────
+    /// Number of log records consumed (ingested to durable storage).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{log_record}")]
+    pub consumed_log_records: Counter<u64>,
 
-    /// Number of Arrow metric data points produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{metric}")]
-    pub produced_arrow_metrics: Counter<u64>,
+    /// Number of metric data points consumed (ingested to durable storage).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{data_point}")]
+    pub consumed_metric_points: Counter<u64>,
 
-    /// Number of Arrow trace spans produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
+    /// Number of spans consumed (ingested to durable storage).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
     #[metric(unit = "{span}")]
-    pub produced_arrow_traces: Counter<u64>,
+    pub consumed_spans: Counter<u64>,
+
+    // ─── Produced item metrics (per signal type) ────────────────────────
+    /// Number of log records produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{log_record}")]
+    pub produced_log_records: Counter<u64>,
+
+    /// Number of metric data points produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{data_point}")]
+    pub produced_metric_points: Counter<u64>,
+
+    /// Number of spans produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{span}")]
+    pub produced_spans: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
-    /// Number of ingest errors.
+    /// Number of ingest errors (excludes backpressure/capacity rejections).
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
+
+    /// Number of ingest rejections due to storage backpressure (soft cap exceeded).
+    #[metric(unit = "{rejection}")]
+    pub ingest_backpressure: Counter<u64>,
 
     /// Number of read errors.
     #[metric(unit = "{error}")]
@@ -194,12 +231,28 @@ pub struct DurableBufferMetrics {
     /// Total segments force-dropped due to DropOldest retention policy.
     /// Non-zero values indicate data loss.
     #[metric(unit = "{segment}")]
-    pub dropped_segments: Gauge<u64>,
+    pub dropped_segments: ObserveCounter<u64>,
 
     /// Total bundles lost due to force-dropped segments (DropOldest policy).
     /// Non-zero values indicate data loss.
     #[metric(unit = "{bundle}")]
-    pub dropped_bundles: Gauge<u64>,
+    pub dropped_bundles: ObserveCounter<u64>,
+
+    /// Total individual items (log records, data points, spans) lost due to
+    /// force-dropped segments (DropOldest policy). Non-zero values indicate data loss.
+    #[metric(unit = "{item}")]
+    pub dropped_items: ObserveCounter<u64>,
+
+    /// Total bundles lost due to expired segments (max_age retention).
+    /// Non-zero values indicate data aged out before delivery.
+    #[metric(unit = "{bundle}")]
+    pub expired_bundles: ObserveCounter<u64>,
+
+    /// Total individual items (log records, data points, spans) lost due to
+    /// expired segments (max_age retention). Non-zero values indicate data
+    /// aged out before delivery.
+    #[metric(unit = "{item}")]
+    pub expired_items: ObserveCounter<u64>,
 
     // ─── Retry metrics ──────────────────────────────────────────────────────
     /// Number of retry attempts scheduled.
@@ -209,6 +262,33 @@ pub struct DurableBufferMetrics {
     /// Current number of bundles in-flight to downstream.
     #[metric(unit = "{bundle}")]
     pub in_flight: Gauge<u64>,
+
+    // ─── Requeued item metrics (per signal type) ────────────────────────────
+    // These count individual items in NACKed bundles when scheduled for retry.
+    /// Number of individual log records requeued for retry after NACK.
+    #[metric(unit = "{log_record}")]
+    pub requeued_log_records: Counter<u64>,
+
+    /// Number of individual metric data points requeued for retry after NACK.
+    #[metric(unit = "{data_point}")]
+    pub requeued_metric_points: Counter<u64>,
+
+    /// Number of individual spans requeued for retry after NACK.
+    #[metric(unit = "{span}")]
+    pub requeued_spans: Counter<u64>,
+
+    // ─── Queued item metrics (per signal type) ──────────────────────────────
+    /// Current number of log records queued (ingested but not yet ACKed).
+    #[metric(unit = "{log_record}")]
+    pub queued_log_records: Gauge<u64>,
+
+    /// Current number of metric data points queued (ingested but not yet ACKed).
+    #[metric(unit = "{data_point}")]
+    pub queued_metric_points: Gauge<u64>,
+
+    /// Current number of spans queued (ingested but not yet ACKed).
+    #[metric(unit = "{span}")]
+    pub queued_spans: Gauge<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,6 +364,10 @@ struct PendingBundle {
     handle: QuiverBundleHandle,
     /// Number of retries attempted.
     retry_count: u32,
+    /// Number of items in this bundle (0 for legacy segments without manifest counts).
+    item_count: u64,
+    /// Signal type of this bundle.
+    signal_type: SignalType,
 }
 
 /// Result of attempting to process a bundle with non-blocking send.
@@ -319,7 +403,35 @@ enum EngineState {
     Failed(String),
 }
 
+/// Cached per-segment signal classification for queued-item gauge computation.
+///
+/// Populated once per segment (on first access after finalization) and never
+/// invalidated — segments are immutable after finalization.  Evicted when the
+/// segment is no longer tracked by the subscriber.
+struct SegmentMetricsSummary {
+    /// Per-bundle `(item_count, signal_type)`, ordered by bundle index.
+    bundles: Vec<(u64, Option<SignalType>)>,
+    /// Pre-computed totals for the fully-pending case (no bundles resolved).
+    total_logs: u64,
+    total_metrics: u64,
+    total_spans: u64,
+}
+
+/// Cached segment summary with recency tracking for bounded eviction.
+struct CachedSegmentMetrics {
+    summary: SegmentMetricsSummary,
+    last_seen_generation: u64,
+}
+
 /// Durable buffer that provides crash-resilient buffering via Quiver.
+///
+/// # Segment Metrics Cache
+///
+/// To avoid per-tick allocations in `recompute_queued_counters`, this struct
+/// maintains a `segment_cache` that maps finalized segment sequences to their
+/// pre-computed per-bundle signal classification.  Because segments are
+/// **immutable** after finalization, the cache entry for a given segment
+/// never needs invalidation — only eviction when the segment is cleaned up.
 pub struct DurableBuffer {
     /// The Quiver engine state (lazy initialized on first message).
     engine_state: EngineState,
@@ -349,10 +461,35 @@ pub struct DurableBuffer {
 
     /// Whether timer has been started.
     timer_started: bool,
+
+    /// Last time we logged a flush warning (rate-limiting).
+    last_flush_warn: Option<Instant>,
+
+    /// Last time we logged a backpressure warning (rate-limiting).
+    last_backpressure_warn: Option<Instant>,
+
+    /// Cached per-segment signal classification.
+    ///
+    /// Populated on first access per segment; evicted when the subscriber no
+    /// longer references the segment (all bundles resolved and progress cleaned up)
+    /// and also evicted by recency (LRU-style) when the bounded cache limit is exceeded.
+    segment_cache: HashMap<u64, CachedSegmentMetrics>,
+
+    /// Monotonic generation counter used to track segment cache recency.
+    segment_cache_generation: u64,
+
+    /// Segment IDs for which metadata load failure has already been warned.
+    ///
+    /// Prevents warning spam when `bundle_metadata` repeatedly fails for the
+    /// same segment across telemetry ticks.
+    metadata_load_warned_segments: HashSet<u64>,
 }
 
 impl DurableBuffer {
     /// Creates a new durable buffer with the given configuration.
+    ///
+    /// Validates that the configured `retention_size_cap` is large enough for
+    /// the Quiver engine to operate via [`DiskBudget::minimum_hard_cap()`].
     ///
     /// Note: The Quiver engine is lazily initialized on the first message
     /// to ensure we're running within an async context.
@@ -364,6 +501,39 @@ impl DurableBuffer {
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
 
+        // Validate that per-core budget is large enough for the engine.
+        // QuiverEngine::open() enforces this lazily on first message. Catch it
+        // here so the pipeline fails fast at construction time.
+        let quiver_config = Self::build_quiver_config(&config);
+        let total_size_cap = config.size_cap_bytes();
+        let per_core_size_cap = total_size_cap / num_cores.max(1) as u64;
+        let segment_size = quiver_config.segment.target_size_bytes.get();
+        let wal_max = DiskBudget::effective_wal_size(&quiver_config);
+        let min_per_core = DiskBudget::minimum_hard_cap(segment_size, wal_max);
+
+        if per_core_size_cap < min_per_core {
+            let min_total = min_per_core * num_cores as u64;
+            let max_cores = total_size_cap / min_per_core;
+            return Err(ConfigError::InvalidUserConfig {
+                error: if max_cores == 0 {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small: \
+                         the engine requires at least {min_per_core} bytes per core \
+                         (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Increase retention_size_cap to at least {min_total} bytes",
+                    )
+                } else {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small for {num_cores} core(s): \
+                         per-core capacity is {per_core_size_cap} bytes, but the engine requires at \
+                         least {min_per_core} bytes per core (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Either increase retention_size_cap to at least {min_total} bytes, \
+                         or reduce the core count to at most {max_cores}",
+                    )
+                },
+            });
+        }
+
         Ok(Self {
             engine_state: EngineState::Uninitialized,
             pending_bundles: HashMap::new(),
@@ -373,7 +543,72 @@ impl DurableBuffer {
             num_cores,
             metrics,
             timer_started: false,
+            last_flush_warn: None,
+            last_backpressure_warn: None,
+            segment_cache: HashMap::new(),
+            segment_cache_generation: 0,
+            metadata_load_warned_segments: HashSet::new(),
         })
+    }
+
+    /// Upper bound for cached finalized segment summaries.
+    const MAX_SEGMENT_CACHE_ENTRIES: usize = 4096;
+
+    /// Evict least-recently-used cached segment summaries when above the limit.
+    fn enforce_segment_cache_bound(&mut self) {
+        self.enforce_segment_cache_bound_with_limit(Self::MAX_SEGMENT_CACHE_ENTRIES);
+    }
+
+    fn enforce_segment_cache_bound_with_limit(&mut self, max_entries: usize) {
+        let len = self.segment_cache.len();
+        if len <= max_entries {
+            return;
+        }
+
+        let evict_count = len - max_entries;
+        let mut by_age: Vec<(u64, u64)> = self
+            .segment_cache
+            .iter()
+            .map(|(seq, cached)| (*seq, cached.last_seen_generation))
+            .collect();
+        by_age.sort_by_key(|(_, generation)| *generation);
+
+        for (seq, _) in by_age.into_iter().take(evict_count) {
+            let _ = self.segment_cache.remove(&seq);
+            let _ = self.metadata_load_warned_segments.remove(&seq);
+        }
+    }
+
+    /// Build the [`QuiverConfig`] that will be used for the engine.
+    ///
+    /// This is the single source of truth for translating [`DurableBufferConfig`]
+    /// fields into Quiver engine settings. Both [`new()`](Self::new) (for early
+    /// validation) and [`init_engine()`](Self::init_engine) (for construction)
+    /// call this so the two can never drift apart.
+    ///
+    /// The returned config does **not** include the per-core `data_dir`; that is
+    /// added by `init_engine` since it depends on `core_id`.
+    fn build_quiver_config(config: &DurableBufferConfig) -> QuiverConfig {
+        // Exhaustive destructure: if a field is added to DurableBufferConfig,
+        // the compiler will force you to handle it here (no `..`).
+        let DurableBufferConfig {
+            path: _,               // per-core subdir added by init_engine
+            retention_size_cap: _, // drives the DiskBudget, not QuiverConfig
+            max_age,
+            size_cap_policy: _, // drives the DiskBudget policy
+            poll_interval: _,   // DurableBuffer timer, not engine config
+            otlp_handling: _,   // DurableBuffer adapter concern
+            max_segment_open_duration,
+            initial_retry_interval: _, // DurableBuffer retry logic
+            max_retry_interval: _,     // DurableBuffer retry logic
+            retry_multiplier: _,       // DurableBuffer retry logic
+            max_in_flight: _,          // DurableBuffer flow control
+        } = config;
+
+        let mut quiver_config = QuiverConfig::default();
+        quiver_config.segment.max_open_duration = *max_segment_open_duration;
+        quiver_config.retention.max_age = *max_age;
+        quiver_config
     }
 
     /// Calculate exponential backoff delay with jitter.
@@ -459,6 +694,10 @@ impl DurableBuffer {
             }),
             EngineState::Uninitialized => match self.init_engine().await {
                 Ok((engine, subscriber_id)) => {
+                    // Seed queued gauges immediately so they reflect
+                    // persisted state before the first telemetry tick.
+                    self.recompute_queued_counters(&engine, &subscriber_id);
+
                     self.engine_state = EngineState::Ready {
                         engine,
                         subscriber_id,
@@ -472,6 +711,190 @@ impl DurableBuffer {
                 }
             },
         }
+    }
+
+    /// Recompute the queued item gauges from the subscriber registry.
+    ///
+    /// Accumulates item counts from two sources:
+    /// 1. **Finalized segments**: Queried via subscriber progress and segment store.
+    ///    Uses a per-segment cache to avoid re-computing signal type classification.
+    /// 2. **Open (accumulating) segment**: Queried directly from the engine to include
+    ///    in-flight items that have not yet been finalized.
+    ///
+    /// The gauges reflect all ingested but not-yet-ACKed items across both sources.
+    ///
+    /// *Snapshotting is intentionally non-atomic across these two sources.* During
+    /// segment finalization there is a brief window where a just-finalized segment
+    /// may appear in neither snapshot, causing a temporary under-count. Gauges
+    /// will self-correct on the next telemetry tick.
+    ///
+    /// Uses a segment-level cache (`segment_cache`) for finalized segments to avoid
+    /// per-tick allocations. Segments are immutable after finalization, so the
+    /// per-bundle `(item_count, signal_type)` classification is computed once and
+    /// reused on subsequent ticks.
+    ///
+    /// **Hot-path optimisation**: when no bundles in a segment have been resolved
+    /// yet (the common case for recently-written segments), the pre-computed
+    /// per-signal totals are used in O(1) rather than iterating the per-bundle vec.
+    ///
+    /// # Lock budget
+    ///
+    /// 1. `pending_segment_progress` — subscriber read-lock (brief clone).
+    /// 2. Per cache-miss: `bundle_metadata` — segment-store read-lock.
+    /// 3. `open_segment_metrics` — engine open-segment lock (brief snapshot).
+    ///
+    /// After snapshots are taken, all iteration is lock-free.
+    fn recompute_queued_counters(&mut self, engine: &QuiverEngine, subscriber_id: &SubscriberId) {
+        self.segment_cache_generation = self.segment_cache_generation.wrapping_add(1);
+        let current_generation = self.segment_cache_generation;
+
+        // Step 1: snapshot the subscriber's segment progress (brief lock).
+        let progress_snapshot = match engine.registry().pending_segment_progress(subscriber_id) {
+            Ok(s) => s,
+            Err(e) => {
+                otel_warn!(
+                    "durable_buffer.queued.recompute_error",
+                    error = %e,
+                    reason = "Queued item gauges may be stale"
+                );
+                return;
+            }
+        };
+
+        let mut logs = 0u64;
+        let mut metrics = 0u64;
+        let mut spans = 0u64;
+
+        // Step 2: iterate finalized segments, populating cache on miss.
+        for (&seg_seq, progress) in &progress_snapshot {
+            let seg_raw = seg_seq.raw();
+
+            // Populate cache on first access for this segment.
+            let summary = match self.segment_cache.entry(seg_raw) {
+                Entry::Occupied(entry) => {
+                    let cached = entry.into_mut();
+                    cached.last_seen_generation = current_generation;
+                    &mut cached.summary
+                }
+                Entry::Vacant(entry) => {
+                    let summary = match engine.segment_store().bundle_metadata(seg_seq) {
+                        Ok(metadata) => {
+                            // Metadata load recovered (or succeeded first try), so
+                            // clear any prior warning marker for this segment.
+                            let _ = self.metadata_load_warned_segments.remove(&seg_raw);
+
+                            let mut tl = 0u64;
+                            let mut tm = 0u64;
+                            let mut ts = 0u64;
+
+                            let bundles: Vec<_> = metadata
+                                .iter()
+                                .map(|entry| {
+                                    let sig = entry
+                                        .slot_ids
+                                        .iter()
+                                        .copied()
+                                        .find_map(signal_type_from_slot_id);
+                                    match sig {
+                                        Some(SignalType::Logs) => tl += entry.item_count,
+                                        Some(SignalType::Metrics) => tm += entry.item_count,
+                                        Some(SignalType::Traces) => ts += entry.item_count,
+                                        None => {}
+                                    }
+                                    (entry.item_count, sig)
+                                })
+                                .collect();
+
+                            SegmentMetricsSummary {
+                                bundles,
+                                total_logs: tl,
+                                total_metrics: tm,
+                                total_spans: ts,
+                            }
+                        }
+                        Err(e) => {
+                            // Warn once per segment to avoid per-tick log spam.
+                            if self.metadata_load_warned_segments.insert(seg_raw) {
+                                otel_warn!(
+                                    "durable_buffer.queued.metadata_skip",
+                                    segment = seg_raw,
+                                    error = %e,
+                                    reason = "Segment metadata unavailable; queued counts may under-report"
+                                );
+                            }
+                            continue;
+                        }
+                    };
+                    &mut entry
+                        .insert(CachedSegmentMetrics {
+                            summary,
+                            last_seen_generation: current_generation,
+                        })
+                        .summary
+                }
+            };
+
+            // Fast path: no bundles resolved → use precomputed totals.
+            if progress.resolved_count() == 0 {
+                logs += summary.total_logs;
+                metrics += summary.total_metrics;
+                spans += summary.total_spans;
+            } else {
+                // Slow path: iterate per-bundle, skipping resolved.
+                for (idx, &(item_count, signal)) in summary.bundles.iter().enumerate() {
+                    let Ok(bundle_idx) = u32::try_from(idx) else {
+                        otel_warn!(
+                            "durable_buffer.queued.bundle_index_overflow",
+                            segment = seg_raw,
+                            bundle_index = idx,
+                            reason = "Bundle index exceeds u32 range; skipping in queued gauge recompute"
+                        );
+                        continue;
+                    };
+
+                    if !progress.is_resolved(BundleIndex::new(bundle_idx)) {
+                        match signal {
+                            Some(SignalType::Logs) => logs += item_count,
+                            Some(SignalType::Metrics) => metrics += item_count,
+                            Some(SignalType::Traces) => spans += item_count,
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 3: add items from the open (accumulating) segment.
+        let open_bundles = engine.open_segment_bundle_summaries();
+        for bundle in open_bundles {
+            if bundle.item_count == 0 {
+                continue;
+            }
+
+            let signal = bundle
+                .slot_ids
+                .iter()
+                .copied()
+                .find_map(signal_type_from_slot_id);
+
+            match signal {
+                Some(SignalType::Logs) => logs += bundle.item_count,
+                Some(SignalType::Metrics) => metrics += bundle.item_count,
+                Some(SignalType::Traces) => spans += bundle.item_count,
+                None => {}
+            }
+        }
+
+        // Step 4: evict cache entries for segments no longer tracked.
+        self.segment_cache
+            .retain(|seq, _| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
+        self.metadata_load_warned_segments
+            .retain(|seq| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
+        self.enforce_segment_cache_bound();
+
+        self.metrics.queued_log_records.set(logs);
+        self.metrics.queued_metric_points.set(metrics);
+        self.metrics.queued_spans.set(spans);
     }
 
     /// Initialize the Quiver engine and subscriber.
@@ -490,31 +913,10 @@ impl DurableBuffer {
         let num_cores = self.num_cores.max(1) as u64;
         let per_core_size_cap = total_size_cap / num_cores;
 
-        // Minimum per-core capacity: 1 MiB (enough for WAL + at least a small segment).
-        // Default segment target is 32 MiB, so this is quite small but prevents
-        // obviously broken configurations (e.g., 100 bytes for 1000 cores).
-        const MIN_PER_CORE_BYTES: u64 = 1024 * 1024; // 1 MiB
-
-        if per_core_size_cap < MIN_PER_CORE_BYTES {
-            otel_error!(
-                "durable_buffer.config.invalid",
-                total_size_cap = total_size_cap,
-                num_cores = num_cores,
-                per_core_size_cap = per_core_size_cap,
-                min_per_core_bytes = MIN_PER_CORE_BYTES,
-                message = "per-core storage capacity is below minimum threshold"
-            );
-            return Err(Error::InternalError {
-                message: format!(
-                    "retention_size_cap ({} bytes) is too small for {} cores; \
-                     per-core capacity is {} bytes but minimum is {} bytes (1 MiB)",
-                    total_size_cap, num_cores, per_core_size_cap, MIN_PER_CORE_BYTES
-                ),
-            });
-        }
-
-        // Create per-core data directory: {base_path}/core_{core_id}
+        // Build the QuiverConfig from our DurableBufferConfig (same helper used
+        // in new() for early validation, ensuring the two stay in sync).
         let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
+        let quiver_config = Self::build_quiver_config(&self.config).with_data_dir(&core_data_dir);
 
         otel_info!(
             "durable_buffer.engine.init",
@@ -526,13 +928,16 @@ impl DurableBuffer {
             max_age = ?self.config.max_age
         );
 
-        // Create Quiver configuration with per-core data directory
-        let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
-        quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
-        quiver_config.retention.max_age = self.config.max_age;
-
-        // Create disk budget with per-core share of the total cap
-        let budget = Arc::new(DiskBudget::new(per_core_size_cap, policy));
+        // Create disk budget with per-core share of the total cap.
+        // DiskBudget::for_config() reads segment/WAL sizes directly from the
+        // QuiverConfig, ensuring the budget matches the engine configuration.
+        let budget = Arc::new(
+            DiskBudget::for_config(per_core_size_cap, &quiver_config, policy).map_err(|e| {
+                Error::InternalError {
+                    message: format!("invalid budget configuration: {e}"),
+                }
+            })?,
+        );
 
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
@@ -584,12 +989,12 @@ impl DurableBuffer {
         }
     }
 
-    /// Handle incoming data by ingesting to Quiver's WAL.
+    /// Handle incoming data by ingesting to Quiver storage.
     ///
     /// # Data Flow
     ///
-    /// 1. Data is written to Quiver's WAL for durability
-    /// 2. Upstream is ACK'd after successful WAL write
+    /// 1. Data is written to Quiver's durable storage (WAL → segment finalization)
+    /// 2. Upstream is ACK'd after successful durable write
     /// 3. Data becomes visible to subscribers after segment finalization
     /// 4. Timer tick polls for finalized bundles and forwards downstream
     ///
@@ -629,23 +1034,25 @@ impl DurableBuffer {
 
         // Ingest based on payload type and configuration.
         // Adapters preserve the original payload via into_inner() for NACK on failure.
-        // Returns (Result, Option<item_count>) - item count is only available for Arrow data.
-        let (ingest_result, item_count) = match payload {
+        // Returns (Result, item_count) - item count tracks individual items for all formats.
+        let (ingest_result, item_count): (Result<(), _>, u64) = match payload {
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
                         // Store as opaque binary for efficient pass-through.
-                        // Skip item counting to avoid parsing overhead.
+                        // Item count is computed once inside the adapter constructor
+                        // (protobuf wire-format scan, no full deserialization) and cached.
                         match OtlpBytesAdapter::new(otlp_bytes) {
                             Ok(adapter) => {
+                                let num_items = adapter.cached_item_count();
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     Err(e) => {
                                         Err((e, OtapPayload::OtlpBytes(adapter.into_inner())))
                                     }
                                 };
-                                (result, None) // No item count for pass-through
+                                (result, num_items)
                             }
                             Err((e, original_bytes)) => {
                                 // Adapter creation failed - NACK with original bytes
@@ -683,7 +1090,7 @@ impl DurableBuffer {
                                         OtapPayload::OtapArrowRecords(adapter.into_inner()),
                                     )),
                                 };
-                                (result, Some(num_items))
+                                (result, num_items)
                             }
                             Err(e) => {
                                 // Conversion failed - NACK with original bytes so upstream can retry
@@ -712,31 +1119,43 @@ impl DurableBuffer {
                     Ok(()) => Ok(()),
                     Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
                 };
-                (result, Some(num_items))
+                (result, num_items)
             }
         };
 
         // Handle ingest result
         match ingest_result {
             Ok(()) => {
-                // Track consumed Arrow items by signal type
-                if let Some(num_items) = item_count {
-                    match signal_type {
-                        SignalType::Logs => self.metrics.consumed_arrow_logs.add(num_items),
-                        SignalType::Metrics => self.metrics.consumed_arrow_metrics.add(num_items),
-                        SignalType::Traces => self.metrics.consumed_arrow_traces.add(num_items),
-                    }
+                // Track consumed items by signal type
+                match signal_type {
+                    SignalType::Logs => self.metrics.consumed_log_records.add(item_count),
+                    SignalType::Metrics => self.metrics.consumed_metric_points.add(item_count),
+                    SignalType::Traces => self.metrics.consumed_spans.add(item_count),
                 }
 
-                // ACK upstream after successful WAL write.
+                // ACK upstream after successful durable write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
                 let ack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
                 effect_handler.notify_ack(AckMsg::new(ack_pdata)).await?;
                 Ok(())
             }
             Err((e, original_payload)) => {
-                self.metrics.ingest_errors.add(1);
-                otel_error!("durable_buffer.ingest.failed", error = %e);
+                if e.is_at_capacity() {
+                    // Normal backpressure: soft cap exceeded. Count separately
+                    // and rate-limit logging to avoid flooding.
+                    self.metrics.ingest_backpressure.add(1);
+                    let now = Instant::now();
+                    let should_log = self
+                        .last_backpressure_warn
+                        .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
+                    if should_log {
+                        self.last_backpressure_warn = Some(now);
+                        otel_warn!("durable_buffer.ingest.backpressure", error = %e);
+                    }
+                } else {
+                    self.metrics.ingest_errors.add(1);
+                    otel_error!("durable_buffer.ingest.failed", error = %e);
+                }
 
                 // Preserve original payload so upstream can retry
                 let nack_pdata = OtapPdata::new(context, original_payload);
@@ -771,7 +1190,16 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                otel_warn!("durable_buffer.flush.failed", error = %e);
+                // Rate-limit flush warnings since the timer tick fires every
+                // poll_interval (~100ms).
+                let now = Instant::now();
+                let should_log = self
+                    .last_flush_warn
+                    .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
+                if should_log {
+                    self.last_flush_warn = Some(now);
+                    otel_warn!("durable_buffer.flush.failed", error = %e);
+                }
             }
         }
 
@@ -941,11 +1369,9 @@ impl DurableBuffer {
         // Convert the reconstructed bundle to OtapPdata
         match convert_bundle_to_pdata(handle.data()) {
             Ok(mut pdata) => {
-                // Get item count for Arrow data (cheap); skip for OTLP bytes (expensive)
-                let item_count = match pdata.signal_format() {
-                    SignalFormat::OtapRecords => Some(pdata.num_items() as u64),
-                    SignalFormat::OtlpBytes => None,
-                };
+                // Use the manifest-derived item count carried by the handle.
+                // This avoids re-scanning OTLP bytes on the drain path.
+                let item_count = handle.item_count();
                 let signal_type = pdata.signal_type();
 
                 // Subscribe for ACK/NACK with BundleRef in calldata
@@ -959,17 +1385,13 @@ impl DurableBuffer {
                 // Try non-blocking send downstream
                 match effect_handler.try_send_message(pdata) {
                     Ok(()) => {
-                        // Track produced Arrow items by signal type
-                        if let Some(num_items) = item_count {
-                            match signal_type {
-                                SignalType::Logs => self.metrics.produced_arrow_logs.add(num_items),
-                                SignalType::Metrics => {
-                                    self.metrics.produced_arrow_metrics.add(num_items)
-                                }
-                                SignalType::Traces => {
-                                    self.metrics.produced_arrow_traces.add(num_items)
-                                }
+                        // Track produced items by signal type
+                        match signal_type {
+                            SignalType::Logs => self.metrics.produced_log_records.add(item_count),
+                            SignalType::Metrics => {
+                                self.metrics.produced_metric_points.add(item_count)
                             }
+                            SignalType::Traces => self.metrics.produced_spans.add(item_count),
                         }
 
                         otel_debug!(
@@ -986,6 +1408,8 @@ impl DurableBuffer {
                             PendingBundle {
                                 handle,
                                 retry_count,
+                                item_count,
+                                signal_type,
                             },
                         );
                         self.metrics
@@ -1042,7 +1466,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&ack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&ack.unwind.route.calldata) else {
             // Invalid calldata, just forward the ACK upstream
             return effect_handler.notify_ack(ack).await;
         };
@@ -1074,7 +1498,10 @@ impl DurableBuffer {
 
     /// Handle NACK from downstream.
     ///
-    /// Schedules a retry with exponential backoff using `delay_data()`.
+    /// For permanent NACKs (e.g., malformed data that will never succeed), the bundle
+    /// is rejected immediately without retry.
+    ///
+    /// For transient NACKs, schedules a retry with exponential backoff using `delay_data()`.
     /// The bundle is deferred in Quiver (releasing the claim) and a lightweight
     /// retry ticket is scheduled. When the delay expires, `handle_delayed_retry`
     /// will re-claim the bundle and attempt redelivery.
@@ -1084,20 +1511,53 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&nack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&nack.unwind.route.calldata) else {
             // Invalid calldata, just forward the NACK upstream
             return effect_handler.notify_nack(nack).await;
         };
 
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
-        // Handle retry scheduling
+        // Handle based on whether this is a permanent or transient failure
         if let Some(pending) = self.pending_bundles.remove(&key) {
-            let retry_count = pending.retry_count + 1;
-            self.metrics.bundles_nacked.add(1);
             self.metrics
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
+
+            // Permanent failures should not be retried - reject the bundle immediately
+            if nack.permanent {
+                // Track permanently rejected items by signal type (individual items in NACKed bundles)
+                match pending.signal_type {
+                    SignalType::Logs => self.metrics.rejected_log_records.add(pending.item_count),
+                    SignalType::Metrics => {
+                        self.metrics.rejected_metric_points.add(pending.item_count)
+                    }
+                    SignalType::Traces => self.metrics.rejected_spans.add(pending.item_count),
+                }
+                self.metrics.bundles_nacked_permanent.add(1);
+
+                otel_warn!(
+                    "durable_buffer.bundle.rejected_permanent",
+                    segment_seq = bundle_ref.segment_seq.raw(),
+                    bundle_index = bundle_ref.bundle_index.raw(),
+                    reason = %nack.reason
+                );
+
+                // Reject the bundle in Quiver (marks as permanently failed)
+                pending.handle.reject();
+                return Ok(());
+            }
+
+            // Transient failure - schedule retry with exponential backoff
+            let retry_count = pending.retry_count + 1;
+
+            // Track requeued items by signal type (individual items in NACKed bundles)
+            match pending.signal_type {
+                SignalType::Logs => self.metrics.requeued_log_records.add(pending.item_count),
+                SignalType::Metrics => self.metrics.requeued_metric_points.add(pending.item_count),
+                SignalType::Traces => self.metrics.requeued_spans.add(pending.item_count),
+            }
+            self.metrics.bundles_nacked_deferred.add(1);
 
             // Calculate backoff delay with jitter
             let backoff = self.calculate_backoff(retry_count);
@@ -1150,12 +1610,12 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Decode the retry ticket
-        let Some(calldata) = retry_ticket.source_calldata() else {
+        let Some(calldata) = retry_ticket.source_route() else {
             otel_warn!("durable_buffer.retry.missing_calldata");
             return Ok(());
         };
 
-        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
+        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata.calldata) else {
             otel_warn!("durable_buffer.retry.invalid_calldata");
             return Ok(());
         };
@@ -1407,25 +1867,50 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    // Collect Quiver storage metrics (separate scope to avoid borrow conflicts)
-                    let quiver_metrics = if let Ok((engine, _)) = self.engine() {
+                    // Collect Quiver storage metrics
+                    // (separate scope to avoid borrow conflicts with self)
+                    let quiver_metrics = if let Ok((engine, subscriber_id)) = self.engine() {
                         let budget = engine.budget();
                         Some((
                             budget.used(),
-                            budget.cap(),
+                            budget.hard_cap(),
                             engine.force_dropped_segments(),
                             engine.force_dropped_bundles(),
+                            engine.force_dropped_items(),
+                            engine.expired_bundles(),
+                            engine.expired_items(),
+                            engine.clone(),
+                            subscriber_id.clone(),
                         ))
                     } else {
                         None
                     };
 
-                    // Update metrics from collected values
-                    if let Some((used, cap, dropped_segs, dropped_buns)) = quiver_metrics {
+                    if let Some((
+                        used,
+                        cap,
+                        dropped_segs,
+                        dropped_buns,
+                        dropped_items,
+                        expired_buns,
+                        expired_items,
+                        engine,
+                        subscriber_id,
+                    )) = quiver_metrics
+                    {
                         self.metrics.storage_bytes_used.set(used);
                         self.metrics.storage_bytes_cap.set(cap);
-                        self.metrics.dropped_segments.set(dropped_segs);
-                        self.metrics.dropped_bundles.set(dropped_buns);
+                        self.metrics.dropped_segments.observe(dropped_segs);
+                        self.metrics.dropped_bundles.observe(dropped_buns);
+                        self.metrics.dropped_items.observe(dropped_items);
+                        self.metrics.expired_bundles.observe(expired_buns);
+                        self.metrics.expired_items.observe(expired_items);
+
+                        // Recompute queued item gauges from the subscriber
+                        // registry. This is the single source of truth for
+                        // these gauges, correctly accounting for ACKs,
+                        // force-drops, and expiry.
+                        self.recompute_queued_counters(&engine, &subscriber_id);
                     }
 
                     metrics_reporter
@@ -1440,8 +1925,8 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
-                    if let Some(calldata) = data.source_calldata() {
-                        if decode_retry_ticket(&calldata).is_some() {
+                    if let Some(route) = data.source_route() {
+                        if decode_retry_ticket(&route.calldata).is_some() {
                             // This is a retry ticket - handle retry
                             return self.handle_delayed_retry(data, effect_handler).await;
                         }
@@ -1493,6 +1978,7 @@ pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
     name: DURABLE_BUFFER_URN,
     create: create_durable_buffer,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<DurableBufferConfig>,
 };
 
 #[cfg(test)]
@@ -1581,7 +2067,7 @@ mod tests {
 
         let config = DurableBufferConfig {
             path: std::path::PathBuf::from("/tmp/test"),
-            retention_size_cap: byte_unit::Byte::from_u64(1024),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MiB (above min for default WAL/segment sizes)
             max_age: None,
             size_cap_policy: SizeCapPolicy::Backpressure,
             poll_interval: Duration::from_millis(100),
@@ -1614,5 +2100,428 @@ mod tests {
         let backoff100 = processor.calculate_backoff(100);
         assert!(backoff100 >= Duration::from_millis(15000));
         assert!(backoff100 <= Duration::from_millis(30000));
+    }
+
+    /// Test that DurableBufferMetrics snapshot correctly reports NACK metrics.
+    ///
+    /// Verifies:
+    /// - bundles_nacked_deferred (index 1) and bundles_nacked_permanent (index 2)
+    ///   are distinct counters reported at the correct positions
+    /// - retries_scheduled (index 22) is correctly reported
+    /// - bundles_acked (index 0) is correctly reported
+    /// - Snapshot clears values (delta semantics)
+    #[test]
+    fn test_nack_metrics_snapshot_field_positions() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let config = DurableBufferConfig {
+            path: std::path::PathBuf::from("/tmp/test-metrics"),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MiB
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+
+        // Simulate the metric increments that handle_nack would perform
+        // for permanent NACKs:
+        processor.metrics.bundles_nacked_permanent.add(3);
+
+        // for transient NACKs:
+        processor.metrics.bundles_nacked_deferred.add(5);
+
+        // for retries scheduled (only on transient):
+        processor.metrics.retries_scheduled.add(5);
+
+        // for ACKs:
+        processor.metrics.bundles_acked.add(10);
+
+        // Take a snapshot and verify field positions
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        reporter.report(&mut processor.metrics).unwrap();
+        let snapshot = metrics_rx.try_recv().unwrap();
+        let values = snapshot.get_metrics();
+
+        // Verify total metric count matches DurableBufferMetrics field count
+        assert_eq!(
+            values.len(),
+            30,
+            "DurableBufferMetrics should have 30 fields, got {}",
+            values.len()
+        );
+
+        // Index 0: bundles_acked
+        assert_eq!(
+            values[0].to_u64_lossy(),
+            10,
+            "bundles_acked (index 0) should be 10"
+        );
+
+        // Index 1: bundles_nacked_deferred
+        assert_eq!(
+            values[1].to_u64_lossy(),
+            5,
+            "bundles_nacked_deferred (index 1) should be 5"
+        );
+
+        // Index 2: bundles_nacked_permanent
+        assert_eq!(
+            values[2].to_u64_lossy(),
+            3,
+            "bundles_nacked_permanent (index 2) should be 3"
+        );
+
+        // Index 22: retries_scheduled
+        assert_eq!(
+            values[22].to_u64_lossy(),
+            5,
+            "retries_scheduled (index 22) should be 5"
+        );
+
+        // Verify delta semantics: after snapshot, counters should be cleared.
+        // The NACK-related counter values we set above should now be zero.
+        // (Gauges may still report due to Gauge::clear semantics, so we verify
+        // counters specifically by taking another snapshot.)
+        reporter.report(&mut processor.metrics).unwrap_or(());
+        if let Ok(snap2) = metrics_rx.try_recv() {
+            let vals2 = snap2.get_metrics();
+            assert_eq!(
+                vals2[0].to_u64_lossy(),
+                0,
+                "bundles_acked should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[1].to_u64_lossy(),
+                0,
+                "bundles_nacked_deferred should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[2].to_u64_lossy(),
+                0,
+                "bundles_nacked_permanent should be 0 after reset"
+            );
+            assert_eq!(
+                vals2[22].to_u64_lossy(),
+                0,
+                "retries_scheduled should be 0 after reset"
+            );
+        }
+    }
+
+    /// Test that permanent NACKs decrement the `queued_*` gauges.
+    ///
+    /// The `queued_log_records` (and siblings) gauge tracks items ingested but
+    /// not yet resolved (ACKed or rejected). When a bundle is permanently
+    /// NACKed, it must be decremented just like an ACK — otherwise the gauge
+    /// drifts upward, giving operators a false picture of backlog.
+    #[test]
+    fn test_permanent_nack_decrements_queued_gauge() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let config = DurableBufferConfig {
+            path: std::path::PathBuf::from("/tmp/test-queued-gauge"),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(10);
+
+        // Simulate: 100 log records queued (as if 100 items were ingested).
+        let mut queued_log_records = 100u64;
+        processor.metrics.queued_log_records.set(queued_log_records);
+
+        // Simulate: permanent NACK path decrements by 30 items
+        // (mirrors the code in handle_nack when nack.permanent is true)
+        queued_log_records = queued_log_records.saturating_sub(30);
+        processor.metrics.queued_log_records.set(queued_log_records);
+
+        // Snapshot should show queued_log_records = 70 (index 27)
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap.get_metrics()[27].to_u64_lossy(),
+            70,
+            "queued_log_records should be 70 after decrementing 30 from 100"
+        );
+
+        // Simulate: ACK the remaining 70
+        queued_log_records = queued_log_records.saturating_sub(70);
+        processor.metrics.queued_log_records.set(queued_log_records);
+
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap2 = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap2.get_metrics()[27].to_u64_lossy(),
+            0,
+            "queued_log_records should be 0 after all items resolved"
+        );
+
+        // Verify the same for metrics and spans signals
+        let mut queued_metric_points = 50u64;
+        processor
+            .metrics
+            .queued_metric_points
+            .set(queued_metric_points);
+        queued_metric_points = queued_metric_points.saturating_sub(50);
+        processor
+            .metrics
+            .queued_metric_points
+            .set(queued_metric_points);
+
+        let mut queued_spans = 25u64;
+        processor.metrics.queued_spans.set(queued_spans);
+        queued_spans = queued_spans.saturating_sub(25);
+        processor.metrics.queued_spans.set(queued_spans);
+
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap3 = metrics_rx.try_recv().unwrap();
+        assert_eq!(
+            snap3.get_metrics()[28].to_u64_lossy(),
+            0,
+            "queued_metric_points should be 0"
+        );
+        assert_eq!(
+            snap3.get_metrics()[29].to_u64_lossy(),
+            0,
+            "queued_spans should be 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_segment_included_in_queued_gauge() {
+        use std::sync::Arc;
+        use std::time::SystemTime;
+
+        use arrow::array::{Int32Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use quiver::record_bundle::{
+            BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+        };
+
+        struct SimpleBundle {
+            descriptor: BundleDescriptor,
+            batch: RecordBatch,
+            fingerprint: SchemaFingerprint,
+            slot_id: SlotId,
+            item_count: u64,
+        }
+
+        impl RecordBundle for SimpleBundle {
+            fn descriptor(&self) -> &BundleDescriptor {
+                &self.descriptor
+            }
+
+            fn ingestion_time(&self) -> SystemTime {
+                SystemTime::now()
+            }
+
+            fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
+                if slot == self.slot_id {
+                    Some(PayloadRef {
+                        schema_fingerprint: self.fingerprint,
+                        batch: &self.batch,
+                    })
+                } else {
+                    None
+                }
+            }
+
+            fn item_count(&self) -> u64 {
+                self.item_count
+            }
+        }
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = DurableBufferConfig {
+            path: temp_dir.path().to_path_buf(),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(60),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+        let (engine, subscriber_id) = processor.init_engine().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("b"),
+                    Some("c"),
+                    Some("d"),
+                    Some("e"),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let slot_id = SlotId::new(30); // Logs slot
+        let bundle = SimpleBundle {
+            descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(slot_id, "Logs")]),
+            batch,
+            fingerprint: [0x11u8; 32],
+            slot_id,
+            item_count: 5,
+        };
+
+        engine.ingest(&bundle).await.unwrap();
+
+        // Verify the bundle is actually in the open segment before recomputing gauges
+        let open_bundles = engine.open_segment_bundle_summaries();
+        assert_eq!(
+            open_bundles.len(),
+            1,
+            "bundle should be in open segment and accessible"
+        );
+        assert_eq!(
+            open_bundles[0].item_count, 5,
+            "open segment bundle should have correct item count"
+        );
+        assert!(
+            open_bundles[0].slot_ids.contains(&slot_id),
+            "open segment bundle should have the logs slot"
+        );
+
+        processor.recompute_queued_counters(&engine, &subscriber_id);
+
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap = metrics_rx.try_recv().unwrap();
+
+        assert_eq!(
+            snap.get_metrics()[27].to_u64_lossy(),
+            5,
+            "queued_log_records gauge should include open-segment items"
+        );
+    }
+
+    #[test]
+    fn test_segment_cache_bound_evicts_oldest_and_warn_marker() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let config = DurableBufferConfig {
+            path: std::path::PathBuf::from("/tmp/test-cache-bound"),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+        let _ = processor.segment_cache.insert(
+            10,
+            CachedSegmentMetrics {
+                summary: SegmentMetricsSummary {
+                    bundles: vec![],
+                    total_logs: 0,
+                    total_metrics: 0,
+                    total_spans: 0,
+                },
+                last_seen_generation: 1,
+            },
+        );
+        let _ = processor.segment_cache.insert(
+            20,
+            CachedSegmentMetrics {
+                summary: SegmentMetricsSummary {
+                    bundles: vec![],
+                    total_logs: 0,
+                    total_metrics: 0,
+                    total_spans: 0,
+                },
+                last_seen_generation: 2,
+            },
+        );
+        let _ = processor.segment_cache.insert(
+            30,
+            CachedSegmentMetrics {
+                summary: SegmentMetricsSummary {
+                    bundles: vec![],
+                    total_logs: 0,
+                    total_metrics: 0,
+                    total_spans: 0,
+                },
+                last_seen_generation: 3,
+            },
+        );
+        let _ = processor.metadata_load_warned_segments.insert(10);
+
+        processor.enforce_segment_cache_bound_with_limit(2);
+
+        assert_eq!(processor.segment_cache.len(), 2);
+        assert!(
+            !processor.segment_cache.contains_key(&10),
+            "oldest segment should be evicted"
+        );
+        assert!(
+            !processor.metadata_load_warned_segments.contains(&10),
+            "evicted segment warning marker should be removed"
+        );
+        assert!(processor.segment_cache.contains_key(&20));
+        assert!(processor.segment_cache.contains_key(&30));
     }
 }

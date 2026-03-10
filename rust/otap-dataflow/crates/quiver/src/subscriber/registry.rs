@@ -35,7 +35,7 @@
 //! layer should call `flush_progress()` periodically (e.g., every 25ms) to
 //! write dirty subscribers to disk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,12 +52,31 @@ use super::progress::{
     delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
     write_progress_file,
 };
-use super::state::SubscriberState;
-use super::types::{AckOutcome, BundleRef, SubscriberId};
+use super::state::{SegmentProgress, SubscriberState};
+use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
+
+use crate::record_bundle::SlotId;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SegmentProvider
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Lightweight summary of a single bundle within a segment.
+///
+/// Provides the item count and the set of populated slot IDs.  Higher
+/// layers (e.g., OTAP) use the slot IDs to classify bundles by signal
+/// type without leaking signal semantics into Quiver's storage layer.
+#[derive(Clone, Debug)]
+pub struct BundleMetadata {
+    /// Number of logical data items in this bundle.
+    pub item_count: u64,
+    /// All populated slot IDs for this bundle.
+    ///
+    /// The consumer is responsible for interpreting these IDs.  For
+    /// example, OTAP's `signal_type_from_slot_id` skips shared slots
+    /// (RESOURCE_ATTRS, SCOPE_ATTRS) and classifies the rest by signal.
+    pub slot_ids: Vec<SlotId>,
+}
 
 /// Trait for accessing segment data.
 ///
@@ -66,6 +85,27 @@ use super::types::{AckOutcome, BundleRef, SubscriberId};
 pub trait SegmentProvider: Send + Sync {
     /// Returns the bundle count for a segment.
     fn bundle_count(&self, segment_seq: SegmentSeq) -> Result<u32>;
+
+    /// Returns the total item count across all bundles in a segment.
+    ///
+    /// Returns 0 if the segment pre-dates item_count tracking.
+    fn total_item_count(&self, segment_seq: SegmentSeq) -> Result<u64>;
+
+    /// Returns the item count for a specific bundle within a segment.
+    ///
+    /// Returns 0 if the segment pre-dates item_count tracking or the
+    /// bundle index is out of range.
+    fn bundle_item_count(&self, bundle_ref: BundleRef) -> Result<u64>;
+
+    /// Returns per-bundle metadata (item count) for a segment.
+    ///
+    /// This enables higher layers to classify bundles by signal type without
+    /// Quiver needing to understand signal semantics.
+    fn bundle_metadata(&self, segment_seq: SegmentSeq) -> Result<Vec<BundleMetadata>>;
+
+    /// Returns the bundle and total item counts for a segment in a single
+    /// lock acquisition.
+    fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)>;
 
     /// Reads a bundle from a segment.
     fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle>;
@@ -149,10 +189,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                             // Mark acked bundles
                             for bundle_idx in 0..entry.bundle_count {
                                 if entry.is_acked(bundle_idx) {
-                                    let bundle_ref = BundleRef::new(
-                                        entry.seg_seq,
-                                        super::types::BundleIndex::new(bundle_idx),
-                                    );
+                                    let bundle_ref =
+                                        BundleRef::new(entry.seg_seq, BundleIndex::new(bundle_idx));
                                     let _ = state.record_outcome(bundle_ref, AckOutcome::Acked);
                                 }
                             }
@@ -386,6 +424,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         // Read the bundle data (outside all locks)
         let data = self.segment_provider.read_bundle(bundle_ref)?;
 
+        // Look up the manifest-derived item count to avoid re-scanning data.
+        let item_count = self
+            .segment_provider
+            .bundle_item_count(bundle_ref)
+            .unwrap_or(0);
+
         let callback = Arc::new(RegistryCallback {
             registry: self.clone(),
         });
@@ -395,6 +439,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             id.clone(),
             data,
             callback,
+            item_count,
         )))
     }
 
@@ -575,11 +620,23 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         // Read the bundle data (outside all locks)
         let data = self.segment_provider.read_bundle(bundle_ref)?;
 
+        // Look up the manifest-derived item count to avoid re-scanning data.
+        let item_count = self
+            .segment_provider
+            .bundle_item_count(bundle_ref)
+            .unwrap_or(0);
+
         let callback = Arc::new(RegistryCallback {
             registry: self.clone(),
         });
 
-        Ok(BundleHandle::new(bundle_ref, id.clone(), data, callback))
+        Ok(BundleHandle::new(
+            bundle_ref,
+            id.clone(),
+            data,
+            callback,
+            item_count,
+        ))
     }
 
     /// Records a resolution and marks subscriber as dirty.
@@ -707,6 +764,34 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         };
 
         state_lock.is_some_and(|lock| lock.read().is_active())
+    }
+
+    /// Returns a snapshot of the subscriber's per-segment progress.
+    ///
+    /// The returned map is a clone taken under a brief read lock; the caller
+    /// can iterate it without holding any registry locks.  This is intended
+    /// for higher layers (e.g., the durable buffer) that maintain their own
+    /// per-segment caches and only need the progress bitmap to compute
+    /// pending-item counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubscriberError::NotFound`] if the subscriber is not
+    /// registered.
+    pub fn pending_segment_progress(
+        &self,
+        id: &SubscriberId,
+    ) -> Result<BTreeMap<SegmentSeq, SegmentProgress>> {
+        let state_lock = {
+            let subscribers = self.subscribers.read();
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
+
+        let state = state_lock.read();
+        Ok(state.segments().clone())
     }
 
     /// Flushes all dirty subscribers to their progress files.
@@ -946,10 +1031,24 @@ mod tests {
 
     use crate::subscriber::types::BundleIndex;
 
-    /// Mock segment provider for testing.
-    struct MockSegmentProvider {
-        segments: Mutex<BTreeMap<SegmentSeq, u32>>,
+    /// Per-segment metadata stored in the mock.
+    #[derive(Clone)]
+    struct MockSegmentInfo {
+        bundle_count: u32,
+        /// Item count returned for every bundle in the segment.
+        items_per_bundle: u64,
     }
+
+    /// Mock segment provider for testing.
+    ///
+    /// Stores per-segment bundle counts *and* a per-bundle item count so that
+    /// all `SegmentProvider` methods return realistic, verifiable values.
+    struct MockSegmentProvider {
+        segments: Mutex<BTreeMap<SegmentSeq, MockSegmentInfo>>,
+    }
+
+    /// Default items-per-bundle used by [`MockSegmentProvider::add_segment`].
+    const DEFAULT_ITEMS_PER_BUNDLE: u64 = 10;
 
     impl MockSegmentProvider {
         fn new() -> Self {
@@ -958,36 +1057,72 @@ mod tests {
             }
         }
 
+        /// Adds a segment with `DEFAULT_ITEMS_PER_BUNDLE` items per bundle.
         fn add_segment(&self, seq: u64, bundle_count: u32) {
+            self.add_segment_with_items(seq, bundle_count, DEFAULT_ITEMS_PER_BUNDLE);
+        }
+
+        /// Adds a segment with an explicit items-per-bundle count.
+        fn add_segment_with_items(&self, seq: u64, bundle_count: u32, items_per_bundle: u64) {
+            self.segments.lock().unwrap().insert(
+                SegmentSeq::new(seq),
+                MockSegmentInfo {
+                    bundle_count,
+                    items_per_bundle,
+                },
+            );
+        }
+
+        fn get_info(&self, segment_seq: SegmentSeq) -> Result<MockSegmentInfo> {
             self.segments
                 .lock()
                 .unwrap()
-                .insert(SegmentSeq::new(seq), bundle_count);
+                .get(&segment_seq)
+                .cloned()
+                .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
         }
     }
 
     impl SegmentProvider for MockSegmentProvider {
         fn bundle_count(&self, segment_seq: SegmentSeq) -> Result<u32> {
-            self.segments
-                .lock()
-                .unwrap()
-                .get(&segment_seq)
-                .copied()
-                .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
+            Ok(self.get_info(segment_seq)?.bundle_count)
+        }
+
+        fn total_item_count(&self, segment_seq: SegmentSeq) -> Result<u64> {
+            let info = self.get_info(segment_seq)?;
+            Ok(info.bundle_count as u64 * info.items_per_bundle)
+        }
+
+        fn bundle_item_count(&self, bundle_ref: BundleRef) -> Result<u64> {
+            let info = self.get_info(bundle_ref.segment_seq)?;
+            if bundle_ref.bundle_index.raw() < info.bundle_count {
+                Ok(info.items_per_bundle)
+            } else {
+                Ok(0)
+            }
+        }
+
+        fn bundle_metadata(&self, segment_seq: SegmentSeq) -> Result<Vec<BundleMetadata>> {
+            let info = self.get_info(segment_seq)?;
+            Ok((0..info.bundle_count)
+                .map(|_| BundleMetadata {
+                    item_count: info.items_per_bundle,
+                    slot_ids: Vec::new(),
+                })
+                .collect())
+        }
+
+        fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
+            let info = self.get_info(segment_seq)?;
+            Ok((
+                info.bundle_count,
+                info.bundle_count as u64 * info.items_per_bundle,
+            ))
         }
 
         fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {
             // Check segment exists
-            if !self
-                .segments
-                .lock()
-                .unwrap()
-                .contains_key(&bundle_ref.segment_seq)
-            {
-                return Err(SubscriberError::segment_not_found(
-                    bundle_ref.segment_seq.raw(),
-                ));
-            }
+            self.get_info(bundle_ref.segment_seq)?;
             Ok(ReconstructedBundle::empty())
         }
 
@@ -1801,5 +1936,67 @@ mod tests {
             flushed, 1,
             "subscriber should be dirty after force_complete_segments"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Item-count propagation tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn poll_next_bundle_propagates_item_count() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment_with_items(1, 2, 42);
+
+        let id = SubscriberId::new("item-count-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle.item_count(), 42, "item_count should come from mock");
+        handle.ack();
+    }
+
+    #[tokio::test]
+    async fn next_bundle_propagates_item_count() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment_with_items(1, 1, 99);
+
+        let id = SubscriberId::new("item-count-async").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        let handle = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
+            .await
+            .unwrap()
+            .expect("should get bundle");
+        assert_eq!(handle.item_count(), 99);
+        handle.ack();
+    }
+
+    #[test]
+    fn segment_drop_counts_includes_items() {
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment_with_items(1, 3, 100);
+
+        let (bundles, items) = provider.segment_drop_counts(SegmentSeq::new(1)).unwrap();
+        assert_eq!(bundles, 3);
+        assert_eq!(
+            items, 300,
+            "total items should be bundle_count * items_per_bundle"
+        );
+    }
+
+    #[test]
+    fn bundle_metadata_returns_per_bundle_items() {
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment_with_items(1, 2, 50);
+
+        let metadata = provider.bundle_metadata(SegmentSeq::new(1)).unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].item_count, 50);
+        assert_eq!(metadata[1].item_count, 50);
     }
 }

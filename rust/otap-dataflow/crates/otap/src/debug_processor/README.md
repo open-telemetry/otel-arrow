@@ -78,7 +78,7 @@ it will append to the file rather than overwriting
 
 ```yaml
   debug:
-    type: "debug:processor"
+    type: "processor:debug"
     outputs: ["passthrough_port", "logging_port"]
     config:
       verbosity: basic

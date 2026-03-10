@@ -196,6 +196,8 @@ pub struct Dashboard {
     last_minflt: u64,
     /// Last major page fault count
     last_majflt: u64,
+    /// Whether the terminal has already been restored.
+    restored: bool,
 }
 
 impl Dashboard {
@@ -246,6 +248,7 @@ impl Dashboard {
             last_syscw: initial_syscw,
             last_minflt: initial_minflt,
             last_majflt: initial_majflt,
+            restored: false,
         })
     }
 
@@ -263,10 +266,20 @@ impl Dashboard {
 
     /// Restores terminal state.
     pub fn cleanup(mut self) -> io::Result<()> {
-        disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
-        self.terminal.show_cursor()?;
+        self.restore_terminal();
         Ok(())
+    }
+
+    /// Best-effort terminal restore (used by both `cleanup` and `Drop`).
+    /// Idempotent: subsequent calls after the first are no-ops.
+    fn restore_terminal(&mut self) {
+        if self.restored {
+            return;
+        }
+        self.restored = true;
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = self.terminal.show_cursor();
     }
 
     /// Trims all history vectors to max_history_len (for terminal resize).
@@ -472,6 +485,12 @@ impl Dashboard {
         });
 
         Ok(())
+    }
+}
+
+impl Drop for Dashboard {
+    fn drop(&mut self) {
+        self.restore_terminal();
     }
 }
 
