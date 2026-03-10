@@ -27,7 +27,7 @@ groups:
             config:
               otlp:
                 min_size: 8192
-                sizer: items
+                sizer: bytes
               flush_timeout: 200ms
               format: preserve
           exporter:
