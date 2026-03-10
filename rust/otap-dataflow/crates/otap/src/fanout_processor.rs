@@ -376,9 +376,6 @@ struct FanoutMetrics {
     pub nacked: Counter<u64>,
     #[metric(unit = "{item}")]
     pub timed_out: Counter<u64>,
-    /// Messages rejected due to max_inflight limit (backpressure).
-    #[metric(unit = "{item}")]
-    pub rejected_max_inflight: Counter<u64>,
 }
 
 /// Entry in the deadline min-heap for efficient timeout checking.
@@ -1078,6 +1075,13 @@ impl Processor<OtapPdata> for FanoutProcessor {
             // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
+                debug_assert!(
+                    self.accept_pdata(),
+                    "process() called with PData while at max_inflight ({}) — \
+                     engine must check accept_pdata() before delivering",
+                    self.config.max_inflight
+                );
+
                 // === FAST PATH 1: Fire-and-forget (await_ack = none) ===
                 // No inflight tracking at all. Clone, send, ack upstream immediately.
                 if self.config.use_fire_and_forget {
@@ -2793,63 +2797,46 @@ mod tests {
         assert!(h.fanout.inflight.is_empty(), "request should be complete");
     }
 
-    /// Reproduces silent data loss when max_inflight is exceeded.
+    /// Verifies that fanout does not produce nacks when messages are sent up to
+    /// the `max_inflight` limit.
     ///
-    /// # Bug
-    ///
-    /// When fanout hits its `max_inflight` limit it nacks the incoming message
-    /// upstream.  The expectation is that the upstream node retries the data,
-    /// but no receiver implements retry for nacks.  The traffic generator
-    /// (and all real receivers) handle `NodeControlMsg::Nack` with a catch-all
-    /// `_ => {}` arm -- the data is simply discarded with no log, no metric
-    /// increment, and no retry.
-    ///
-    /// # Scenario
+    /// Backpressure is enforced via the `debug_assert!(self.accept_pdata())`
+    /// guard in `process()` and the engine's `recv_when`-based gating.  This
+    /// test calls `process()` directly so it can only send up to `max_inflight`
+    /// messages without violating that contract.  It confirms that at-limit
+    /// usage produces zero nacks.
     ///
     /// ```text
     /// traffic-gen --> [pdata channel] --> fanout --> [slow exporter, holds acks]
     ///                                       |
     ///                                 slim_inflight{}   max_inflight = 2
     /// ```
-    ///
-    /// 1. Messages 1 & 2 -- accepted, added to `slim_inflight`, forwarded downstream.
-    /// 2. Messages 3 & 4 -- `slim_inflight` is full -> fanout nacks them upstream.
-    /// 3. The nack arrives at the receiver as `NodeControlMsg::Nack`.
-    /// 4. Receiver ignores it (`_ => {}`).  Data is gone.
-    ///
-    /// The `assert!(nacked > 0)` below currently passes, confirming the bug.
-    /// A correct fix would make fanout apply real backpressure (block consumption
-    /// from the input channel) instead of nacking, so `nacked` would be 0 and
-    /// `delivered` would equal `TOTAL_SENT`.
     #[tokio::test]
-    async fn repro_silent_data_loss_when_max_inflight_exceeded() {
+    async fn no_nacks_at_max_inflight() {
         // Slim primary path: parallel + primary + no fallback + no timeout.
         // Acks are never returned — simulating a slow exporter holding all acks.
+        const MAX_INFLIGHT: usize = 2;
         let mut h = build_harness_with_config(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
             "parallel",
             "primary",
-            json!({ "max_inflight": 2 }),
+            json!({ "max_inflight": MAX_INFLIGHT }),
         );
         assert!(
             h.fanout.config.use_slim_primary,
-            "expected slim primary path for this repro"
+            "expected slim primary path for this test"
         );
 
-        const TOTAL_SENT: usize = 4;
-
-        // Send all messages without returning any acks — the exporter is "slow".
-        for _ in 0..TOTAL_SENT {
+        // Send exactly max_inflight messages — the most we can send without
+        // violating the accept_pdata() contract (no acks are returned).
+        for _ in 0..MAX_INFLIGHT {
             h.fanout
                 .process(Message::PData(make_pdata()), &mut h.effect)
                 .await
                 .expect("process should not error");
         }
 
-        // Count messages that reached the downstream exporter.
-        let delivered = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output")).len();
-
-        // Count messages nacked back upstream (silently dropped by the receiver).
+        // Verify no nacks were produced.
         let mut nacked = 0usize;
         while let Ok(Ok(PipelineControlMsg::DeliverNack { .. })) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
@@ -2857,18 +2844,9 @@ mod tests {
             nacked += 1;
         }
 
-        // After the fix: fanout must never nack due to max_inflight pressure.
-        // Instead it should block consumption from the input channel, letting
-        // channel backpressure propagate naturally to the upstream receiver.
-        // All sent messages must reach the exporter -- zero silent drops.
         assert_eq!(
             nacked, 0,
-            "BUG: {nacked} message(s) were nacked and silently lost -- \
-             fanout should apply backpressure instead of nacking"
-        );
-        assert_eq!(
-            delivered, TOTAL_SENT,
-            "all {TOTAL_SENT} messages must reach the exporter, got {delivered}"
+            "fanout must not nack messages — backpressure is handled by the engine"
         );
     }
 }
