@@ -35,7 +35,6 @@ struct AppState {
     metrics_registry: TelemetryRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    /// Can we Arc<Vec<Box<dyn PipelineAdminSender>>> this instead?
     ctrl_msg_senders: Arc<Mutex<Vec<Arc<dyn PipelineAdminSender>>>>,
 }
 
