@@ -28,7 +28,15 @@ Fix any errors before committing.
 
 ## After every Rust code change
 
-After modifying any Rust file, **always** run:
+After modifying any Rust file, run a quick compile check on the affected crate:
+
+```bash
+cd rust/otap-dataflow && cargo check -p <crate_name>
+```
+
+## Before finalizing changes
+
+When all changes are ready, run the full check suite:
 
 ```bash
 cd rust/otap-dataflow && cargo xtask check
