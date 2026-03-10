@@ -13,7 +13,6 @@ use arrow::datatypes::{DataType, Field, Schema, UnionMode};
 pub struct SchemaIdBuilder {
     // This will be used as a stack, where each stack frame has the sorted index of
     // fields at some nested level of the schema
-    sort_buf: Vec<usize>,
     out: String,
 }
 
@@ -22,7 +21,6 @@ impl SchemaIdBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            sort_buf: Vec::with_capacity(32), // re-used buffer
             out: String::with_capacity(128),
         }
     }
@@ -35,18 +33,10 @@ impl SchemaIdBuilder {
     }
 
     fn write_schema(&mut self, schema: &Schema) {
-        self.sort_buf.clear();
-
-        self.sort_buf.extend(0..schema.fields.len());
-        let field_ids = &mut self.sort_buf[0..schema.fields.len()];
-        field_ids.sort_unstable_by_key(|&i| schema.field(i).name());
-
-        for i in 0..schema.fields.len() {
+        for (i, field) in schema.fields.iter().enumerate() {
             if i != 0 {
                 self.out.push(',')
             }
-            let field_idx = self.sort_buf[i];
-            let field = schema.field(field_idx);
             self.write_field(field);
         }
     }
@@ -95,23 +85,14 @@ impl SchemaIdBuilder {
             }
 
             Struct(fields) => {
-                let curr_buff_len = self.sort_buf.len();
-                self.sort_buf.extend(0..fields.len());
-                let field_ids = &mut self.sort_buf[curr_buff_len..(curr_buff_len + fields.len())];
-                field_ids.sort_unstable_by_key(|&i| fields[i].name());
-
                 self.out.push('{');
-                for i in curr_buff_len..self.sort_buf.len() {
-                    if i > curr_buff_len {
+                for (i, field) in fields.iter().enumerate() {
+                    if i != 0 {
                         self.out.push(',');
                     }
-                    let field_idx = self.sort_buf[i];
-                    let field = &fields[field_idx];
                     self.write_field(field);
                 }
                 self.out.push('}');
-
-                self.sort_buf.truncate(curr_buff_len);
             }
 
             Map(field, _) => {
@@ -135,26 +116,14 @@ impl SchemaIdBuilder {
                     UnionMode::Sparse => "SU",
                 };
                 self.out.push_str(tag);
-
-                let curr_buff_len = self.sort_buf.len();
-                self.sort_buf.extend(0..union_fields.len());
-                let field_ids =
-                    &mut self.sort_buf[curr_buff_len..(curr_buff_len + union_fields.len())];
-
-                let fields = union_fields.iter().map(|f| f.1).collect::<Vec<_>>();
-                field_ids.sort_unstable_by_key(|&i| fields[i].name());
-
                 self.out.push('{');
-                for i in curr_buff_len..self.sort_buf.len() {
-                    if i > curr_buff_len {
+                for (i, field) in union_fields.iter().enumerate() {
+                    if i > 0 {
                         self.out.push(',');
                     }
-                    let field_idx = self.sort_buf[i];
-                    let field = &fields[field_idx];
-                    self.write_field(field);
+                    self.write_field(field.1);
                 }
                 self.out.push('}');
-                self.sort_buf.truncate(curr_buff_len);
             }
             _ => panic!("Unsupported datatype: {dt:?}"),
         }
@@ -308,30 +277,30 @@ mod test {
         let result = builder.build_id(&schema);
 
         let expected = vec![
-            "binary:Bin",
             "boolean:Bol",
-            "dense_union:DU{du.a:I8,du.b:I8,du.b:I8}",
-            "dict:Dic<U8,Str>",
-            "duration:Dur",
-            "float32:F32",
-            "float64:F64",
-            "fsb4:FSB<4>",
-            "int16:I16",
-            "int32:I32",
-            "int64:I64",
-            "int8:I8",
-            "list:[U8]",
-            "map:Map<Str,Str>",
-            "map_invalid:Map<>",
-            "map_nested:Map<Str,[U16]>",
-            "sparse_union:SU{su.a:I8,su.b:I8,su.b:I8}",
-            "string:Str",
-            "struct:{s.a:U8,s.b:U16,s.c:U32}",
-            "ts:Tns",
+            "uint8:U8",
             "uint16:U16",
             "uint32:U32",
             "uint64:U64",
-            "uint8:U8",
+            "int8:I8",
+            "int16:I16",
+            "int32:I32",
+            "int64:I64",
+            "float32:F32",
+            "float64:F64",
+            "string:Str",
+            "binary:Bin",
+            "fsb4:FSB<4>",
+            "ts:Tns",
+            "duration:Dur",
+            "list:[U8]",
+            "dict:Dic<U8,Str>",
+            "map:Map<Str,Str>",
+            "map_invalid:Map<>",
+            "map_nested:Map<Str,[U16]>",
+            "struct:{s.b:U16,s.a:U8,s.c:U32}",
+            "dense_union:DU{du.b:I8,du.b:I8,du.a:I8}",
+            "sparse_union:SU{su.b:I8,su.a:I8,su.b:I8}",
         ]
         .join(",");
 

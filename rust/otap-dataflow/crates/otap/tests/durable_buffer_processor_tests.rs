@@ -287,6 +287,7 @@ fn run_pipeline_with_condition<F>(
         max_duration,
         shutdown_deadline,
         shutdown_condition,
+        false,
     );
 }
 
@@ -430,6 +431,11 @@ impl CollectedMetrics {
 /// Returns the collected metrics from all `CollectTelemetry` cycles during the pipeline run.
 /// Uses a dedicated `MetricsReporter` channel to intercept metric snapshots rather than
 /// letting them flow into the `InternalCollector` (which doesn't run in test mode).
+///
+/// When `wait_for_telemetry` is true and the shutdown condition fires, the pipeline
+/// continues running for ~1.5 s so that at least one `CollectTelemetry` cycle flushes
+/// metrics to the reporter channel before shutdown. Without this, fast pipelines on
+/// slow CI may shut down before any metrics snapshot is produced.
 fn run_pipeline_collecting_metrics<F>(
     config: PipelineConfig,
     pipeline_group_id: &PipelineGroupId,
@@ -437,6 +443,7 @@ fn run_pipeline_collecting_metrics<F>(
     max_duration: Duration,
     shutdown_deadline: Duration,
     shutdown_condition: Option<F>,
+    wait_for_telemetry: bool,
 ) -> CollectedMetrics
 where
     F: Fn() -> bool + Send + 'static,
@@ -484,17 +491,30 @@ where
         // Either poll the condition or wait for max_duration, whichever comes first.
         let poll_interval = Duration::from_millis(10);
         let start = Instant::now();
+        let mut condition_triggered = false;
         loop {
             if start.elapsed() >= max_duration {
                 break;
             }
             if let Some(ref condition) = shutdown_condition {
                 if condition() {
+                    condition_triggered = true;
                     break;
                 }
             }
             std::thread::sleep(poll_interval);
         }
+
+        // When a shutdown condition triggered and the caller needs metrics,
+        // wait for at least one telemetry collection cycle (1s interval +
+        // margin) so that metrics snapshots are flushed to the reporter
+        // channel before shutdown. Without this, fast tests on slow CI may
+        // shut down before any CollectTelemetry fires, resulting in empty
+        // metrics.
+        if condition_triggered && wait_for_telemetry {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+
         let deadline = Instant::now() + shutdown_deadline;
         // Try to send shutdown request. If the channel is closed, the pipeline
         // has already terminated (e.g., data generator finished), which is fine.
@@ -888,6 +908,7 @@ fn test_durable_buffer_retries_on_nack() {
         Duration::from_secs(10), // generous max timeout for CI
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+        true, // wait for telemetry cycle before shutdown so metrics are populated
     );
 
     let nacks_before_flip = flip_handle.join().expect("flip thread panicked");
@@ -1717,6 +1738,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         Duration::from_secs(15),
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+        true, // wait for telemetry cycle before shutdown so metrics are populated
     );
 
     let (_permanent_nacks, transient_nacks) = flip_handle.join().expect("flip thread panicked");
@@ -1957,6 +1979,7 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         Duration::from_secs(15),
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+        true, // wait for telemetry cycle before shutdown so metrics are populated
     );
 
     let (transient_nacks, permanent_nacks) = flip_handle.join().expect("flip thread panicked");
