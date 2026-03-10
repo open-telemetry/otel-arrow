@@ -363,6 +363,16 @@ impl GenevaExporter {
                     OtapArrowRecords::Logs(otap_records) => {
                         // TODO: Zero-copy view path for future optimization
                         // Currently commented to keep behavior consistent with main branch
+                        //
+                        // effect_handler
+                        //     .info("Uploading logs to Geneva using zero-copy views")
+                        //     .await;
+                        // let logs_view = OtapLogsView::try_from(&otap_records)
+                        //     .map_err(|e| format!("Failed to build logs view: {}", e))?;
+                        // let batches = self
+                        //     .geneva_client
+                        //     .encode_and_compress_logs_view(&logs_view)
+                        //     .map_err(|e| format!("Failed to encode logs from view: {}", e))?;
 
                         // Fallback path: Convert OTAP Arrow → OTLP bytes
                         otel_info!(
