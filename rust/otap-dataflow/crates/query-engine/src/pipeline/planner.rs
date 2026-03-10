@@ -487,9 +487,13 @@ impl PipelinePlanner {
             });
         };
 
-        // first check if this represents a nested pipeline that should be applied to attributes.
-        // in our AST expression tree, these are modeled as function invocations with a special
-        // anonymous name
+        // handle if this "set" expr is a nested pipeline that should be applied to attributes.
+        // In our AST expression tree, these are modeled as function invocations.
+        //
+        // TODO - in the future we may want some way to identify that this is the special type
+        // of "function" that represents a nested pipeline applied to attributes, either by
+        // its name or some additional metadata. For now, we just know this is the only type
+        // of function invocation supported.
         if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
             let function_id = func.get_function_id();
             let function =
@@ -509,11 +513,6 @@ impl PipelinePlanner {
                             .into(),
                 });
             };
-
-            // TODO - in the future we may want some way to identify that this is the special type
-            // of "function" that represents a nested pipeline applied to attributes, either by
-            // its name or some additional metadata. For now, we just know this is the only type
-            // of function invocation supported.
 
             let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
             for func_expr in function_exprs {
