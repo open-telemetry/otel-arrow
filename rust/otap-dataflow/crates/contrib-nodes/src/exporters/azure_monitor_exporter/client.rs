@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use otap_df_telemetry::otel_warn;
+use otap_df_telemetry::{otel_debug, otel_warn};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
@@ -191,14 +191,20 @@ impl LogsIngestionClient {
                     });
                 }
                 Err(e) => {
+                    attempt += 1;
+
+                    // ToDo: Add an upper bound for server-driven retries (429/5xx with
+                    // Retry-After). Currently only the non-server-driven path enforces
+                    // MAX_RETRIES; a server that perpetually returns 429 with Retry-After
+                    // will cause this loop to retry indefinitely.
                     let delay = if let Some(server_delay) = e.retry_after() {
                         let base_delay = server_delay.max(Duration::from_secs(5));
                         let jitter = Duration::from_secs(3)
                             + Duration::from_secs_f64(rng.random::<f64>() * 7.0);
                         base_delay + jitter
                     } else {
-                        attempt += 1;
                         if attempt >= MAX_RETRIES {
+                            otel_warn!("azure_monitor_exporter.export.retries_exhausted", attempts = attempt, error = ?e);
                             return Err(Error::ExportFailed {
                                 attempts: attempt,
                                 last_error: Box::new(e),
@@ -210,7 +216,7 @@ impl LogsIngestionClient {
                         base_delay.mul_f64(jitter_factor)
                     };
 
-                    otel_warn!("azure_monitor_exporter.export.retry_delay", delay_ms = delay.as_millis() as u64, error = ?e);
+                    otel_debug!("azure_monitor_exporter.export.retrying", attempt = attempt, delay_ms = delay.as_millis() as u64, error = ?e);
 
                     tokio::time::sleep(delay).await;
                 }
@@ -262,7 +268,7 @@ impl LogsIngestionClient {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
 
-        otel_warn!(
+        otel_debug!(
             "azure_monitor_exporter.client.error",
             status = status.as_u16(),
             message = %body
