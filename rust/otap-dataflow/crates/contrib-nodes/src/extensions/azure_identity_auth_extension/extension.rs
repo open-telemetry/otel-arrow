@@ -313,9 +313,6 @@ impl Extension for AzureIdentityAuthExtension {
                             );
                             break;
                         }
-                        ExtensionControlMsg::TimerTick {} => {
-                            // Timer ticks handled by tokio::select sleep_until
-                        }
                         ExtensionControlMsg::Config { config } => {
                             otel_info!(
                                 "azure_identity_auth.config_update",

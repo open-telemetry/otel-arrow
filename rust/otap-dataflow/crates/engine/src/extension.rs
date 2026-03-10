@@ -407,9 +407,6 @@ mod tests {
         ) -> Result<TerminalState, crate::error::Error> {
             loop {
                 match ctrl_chan.recv().await? {
-                    ExtensionControlMsg::TimerTick { .. } => {
-                        self.counter.increment_timer_tick();
-                    }
                     ExtensionControlMsg::Config { .. } => {
                         self.counter.increment_config();
                     }

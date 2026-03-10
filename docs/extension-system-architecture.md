@@ -87,8 +87,8 @@ no wasted resources.
 
 2. **PData-free.** Extensions are completely decoupled from
    the pipeline data type (`PData`). They receive their own
-   `ExtensionControlMsg` messages (shutdown, timer ticks,
-   config updates, telemetry collection) through a dedicated
+   `ExtensionControlMsg` messages (shutdown, config
+   updates, telemetry collection) through a dedicated
    control channel and never process pipeline data directly.
 
 3. **Separate control channel.** Extensions use
@@ -174,7 +174,7 @@ Key points:
   extension into its own task. After this, the engine can
   only reach it through the control channel.
 - **`ControlChannel`** wraps a receiver for
-  `ExtensionControlMsg` (shutdown, timer ticks, config
+  `ExtensionControlMsg` (shutdown, config
   updates, telemetry collection). No pipeline data ever
   flows through it.
 - **`EffectHandler`** provides node identity and metrics
@@ -251,7 +251,6 @@ so they have no `Ack`, `Nack`, or `DelayedData` variants.
 #[derive(Debug, Clone)]
 pub enum ExtensionControlMsg {
     Config { config: serde_json::Value },
-    TimerTick {},
     CollectTelemetry {
         metrics_reporter: MetricsReporter,
     },
@@ -263,11 +262,15 @@ Each variant:
 
 - **`Config`** -- notifies the extension of a configuration
   change (hot reload).
-- **`TimerTick`** -- periodic tick from the engine.
 - **`CollectTelemetry`** -- asks the extension to flush its
   local metrics into the provided `MetricsReporter`.
 - **`Shutdown`** -- requests graceful shutdown with a
   deadline and human-readable reason.
+
+Extensions manage their own periodic timers directly via
+`tokio::time` rather than receiving timer ticks from
+the engine. This keeps the control channel lean and
+avoids unnecessary wakeups.
 
 These messages flow through a dedicated channel per
 extension (created by `ExtensionWrapper`), kept separate
@@ -772,7 +775,7 @@ start, steady-state, and shutdown phases.
    +- Data-path components use registry lookups
    |  as needed
    +- ExtensionControlMsg flows normally
-      (config, timer, telemetry)
+      (config, telemetry)
 
 5. Shutdown
    +- Data-path nodes receive Shutdown and drain

@@ -197,9 +197,6 @@ pub enum ExtensionControlMsg {
         config: serde_json::Value,
     },
 
-    /// Emitted when a scheduled timer expires.
-    TimerTick {},
-
     /// Asks the extension to collect/flush its local telemetry metrics.
     CollectTelemetry {
         /// Metrics reporter used to collect telemetry metrics.
