@@ -394,8 +394,8 @@ impl GenevaExporter {
                         };
 
                         // Decode OTLP bytes to ResourceLogs
-                        let logs_request = ExportLogsServiceRequest::decode(&bytes[..])
-                            .map_err(|e| {
+                        let logs_request =
+                            ExportLogsServiceRequest::decode(&bytes[..]).map_err(|e| {
                                 self.metrics.conversion_errors.inc();
                                 format!("Failed to decode logs request: {}", e)
                             })?;
@@ -409,7 +409,9 @@ impl GenevaExporter {
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.encode_duration.record(encode_ms);
 
-                        let record_count: u64 = logs_request.resource_logs.iter()
+                        let record_count: u64 = logs_request
+                            .resource_logs
+                            .iter()
                             .flat_map(|rl| &rl.scope_logs)
                             .map(|sl| sl.log_records.len() as u64)
                             .sum();
@@ -463,7 +465,9 @@ impl GenevaExporter {
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.encode_duration.record(encode_ms);
 
-                        let record_count: u64 = traces_request.resource_spans.iter()
+                        let record_count: u64 = traces_request
+                            .resource_spans
+                            .iter()
                             .flat_map(|rs| &rs.scope_spans)
                             .map(|ss| ss.spans.len() as u64)
                             .sum();
@@ -497,8 +501,8 @@ impl GenevaExporter {
                         );
 
                         // Decode OTLP bytes to ResourceLogs
-                        let logs_request = ExportLogsServiceRequest::decode(&bytes[..])
-                            .map_err(|e| {
+                        let logs_request =
+                            ExportLogsServiceRequest::decode(&bytes[..]).map_err(|e| {
                                 self.metrics.conversion_errors.inc();
                                 format!("Failed to decode logs request: {}", e)
                             })?;
@@ -512,7 +516,9 @@ impl GenevaExporter {
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.encode_duration.record(encode_ms);
 
-                        let record_count: u64 = logs_request.resource_logs.iter()
+                        let record_count: u64 = logs_request
+                            .resource_logs
+                            .iter()
                             .flat_map(|rl| &rl.scope_logs)
                             .map(|sl| sl.log_records.len() as u64)
                             .sum();
@@ -550,7 +556,9 @@ impl GenevaExporter {
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.encode_duration.record(encode_ms);
 
-                        let record_count: u64 = traces_request.resource_spans.iter()
+                        let record_count: u64 = traces_request
+                            .resource_spans
+                            .iter()
                             .flat_map(|rs| &rs.scope_spans)
                             .map(|ss| ss.spans.len() as u64)
                             .sum();
@@ -853,11 +861,9 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineControlMsg::DeliverAck { ack } => {
-                            let (node_id, ack) =
-                                next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
-                            let got: TestCallData =
-                                ack.unwind.route.calldata.try_into().unwrap();
+                            let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
                             assert_eq!(ack.accepted.num_items(), 0);
                             break;
@@ -899,8 +905,7 @@ mod tests {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);
-                            let got: TestCallData =
-                                nack.unwind.route.calldata.try_into().unwrap();
+                            let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
                             assert!(
                                 nack.reason.contains("Failed to decode logs request"),
