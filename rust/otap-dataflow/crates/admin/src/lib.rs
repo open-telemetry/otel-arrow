@@ -12,7 +12,7 @@ mod telemetry;
 
 use axum::Router;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
@@ -34,7 +34,10 @@ struct AppState {
     metrics_registry: TelemetryRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
+    /// Wrapped in a Mutex so the shutdown handler can take ownership and drop
+    /// them after sending shutdown messages. Holding these senders prevents
+    /// pipeline ctrl channels from closing, which blocks pipeline thread joins.
+    ctrl_msg_senders: Arc<Mutex<Option<Vec<Arc<dyn PipelineAdminSender>>>>>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -48,7 +51,7 @@ pub async fn run(
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
-        ctrl_msg_senders,
+        ctrl_msg_senders: Arc::new(Mutex::new(Some(ctrl_msg_senders))),
     };
 
     let app = Router::new()

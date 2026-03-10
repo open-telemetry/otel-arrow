@@ -281,7 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let result = controller.run_forever(engine_cfg);
+    let result = controller.run_till_shutdown(engine_cfg);
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
