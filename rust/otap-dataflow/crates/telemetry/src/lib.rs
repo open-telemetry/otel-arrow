@@ -30,7 +30,7 @@ use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
@@ -79,7 +79,7 @@ pub use self_tracing::LogContext;
 
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
@@ -225,7 +225,7 @@ impl InternalTelemetrySystem {
             dispatcher,
             sdk_meter_provider,
             _otel_runtime: otel_runtime,
-            log_level: config.logs.level,
+            log_level: config.logs.level.clone(),
             provider_modes: config.logs.providers.clone(),
             context_fn,
             console_async_reporter,
@@ -270,7 +270,7 @@ impl InternalTelemetrySystem {
             },
         };
 
-        TracingSetup::new(provider, self.log_level, self.context_fn)
+        TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -302,8 +302,8 @@ impl InternalTelemetrySystem {
 
     /// Returns the configured log level.
     #[must_use]
-    pub const fn log_level(&self) -> LogLevel {
-        self.log_level
+    pub const fn log_level(&self) -> &LogLevel {
+        &self.log_level
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.
@@ -363,7 +363,7 @@ impl Default for InternalTelemetrySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::{
+    use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
     use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};

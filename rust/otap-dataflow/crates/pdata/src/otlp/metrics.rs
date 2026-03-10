@@ -653,7 +653,7 @@ impl MetricsProtoBytesEncoder {
             let metric_type = MetricType::try_from(*metric_type_val).map_err(|e| {
                 Error::UnrecognizedMetricType {
                     error: e,
-                    metric_type: *metric_type_val as i32,
+                    metric_type: *metric_type_val,
                 }
             })?;
 

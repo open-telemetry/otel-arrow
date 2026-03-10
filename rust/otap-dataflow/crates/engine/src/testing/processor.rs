@@ -6,8 +6,10 @@
 //! These utilities are designed to make testing processors simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::Interests;
 use crate::config::ProcessorConfig;
 use crate::control::pipeline_ctrl_msg_channel;
+use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
@@ -87,6 +89,18 @@ impl<PData> TestContext<PData> {
     /// Sleeps for the specified duration.
     pub async fn sleep(&self, duration: Duration) {
         sleep(duration).await;
+    }
+
+    /// Sets whether outgoing messages need source node tagging on the effect handler.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.set_source_tagging(value);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.set_source_tagging(value);
+            }
+        }
     }
 
     /// Sets the pipeline control message sender on the effect handler.
@@ -273,7 +287,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         self.rt.block_on(async move {
             let mut runtime = self
                 .processor
-                .prepare_runtime(metrics_reporter)
+                .prepare_runtime(metrics_reporter, Interests::empty())
                 .await
                 .expect("Failed to prepare runtime");
 

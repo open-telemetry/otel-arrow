@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
-pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
+pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
 
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
@@ -324,6 +324,7 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff
@@ -454,7 +455,7 @@ impl RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = ack.accepted.signal_type();
-        let calldata = ack.calldata.clone();
+        let calldata = ack.unwind.route.calldata.clone();
 
         let num_items = match calldata.try_into() {
             Err(_err) => {
@@ -479,7 +480,7 @@ impl RetryProcessor {
     ) -> Result<(), Error> {
         let signal = nack.refused.signal_type();
 
-        let mut rstate: RetryState = match nack.calldata.clone().try_into() {
+        let mut rstate: RetryState = match nack.unwind.route.calldata.clone().try_into() {
             Err(_err) => {
                 // Malformed context error: we don't know what this is.
                 effect_handler.notify_nack(nack).await?;
@@ -626,8 +627,8 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
-                    if let Some(calldata) = data.current_calldata() {
-                        let rstate: RetryState = calldata.try_into()?;
+                    if let Some(calldata) = data.source_route() {
+                        let rstate: RetryState = calldata.calldata.try_into()?;
                         let _ = self
                             .handle_delayed(when, data, effect_handler, rstate.num_items)
                             .await?;
@@ -678,8 +679,8 @@ impl RetryProcessor {
 #[cfg(test)]
 mod test {
     use super::{RETRY_PROCESSOR_URN, RetryConfig};
-    use crate::pdata::{Context, OtapPdata};
-    use crate::testing::{TestCallData, create_test_pdata};
+    use crate::pdata::OtapPdata;
+    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
@@ -897,9 +898,9 @@ mod test {
                         NackMsg::new("simulated downstream failure", current_data.clone())
                     };
 
-                    let (_, nack_ctx) = Context::next_nack(nack).unwrap();
+                    let (_, nack_msg) = next_nack(nack).unwrap();
 
-                    ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                    ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     nacks_delivered += 1;
 
                     // The processor should schedule a delayed retry via DelayData
@@ -936,12 +937,12 @@ mod test {
                     // Send final ACK or NACK
                     if let Some(message) = &outcome_failure {
                         let nack = NackMsg::new(format!("TEST {} FAILED", message), current_data);
-                        let (_, nack_ctx) = Context::next_nack(nack).unwrap();
-                        ctx.process(Message::nack_ctrl_msg(nack_ctx)).await.unwrap();
+                        let (_, nack_msg) = next_nack(nack).unwrap();
+                        ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     } else {
                         let ack = AckMsg::new(current_data);
-                        let (_, ack_ctx) = Context::next_ack(ack).unwrap();
-                        ctx.process(Message::ack_ctrl_msg(ack_ctx)).await.unwrap();
+                        let (_, ack_msg) = next_ack(ack).unwrap();
+                        ctx.process(Message::ack_ctrl_msg(ack_msg)).await.unwrap();
                     }
 
                     // Verify the processor sent the ACK or NACK upstream
@@ -954,27 +955,31 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineControlMsg::DeliverAck { node_id, ack } => {
+                    PipelineControlMsg::DeliverAck { ack } => {
+                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
                         );
                         assert_eq!(node_id, 4444);
 
-                        let ackdata: TestCallData = ack.calldata.try_into().expect("my calldata");
+                        let ackdata: TestCallData =
+                            ack.unwind.route.calldata.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), ackdata);
 
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                    PipelineControlMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(&outcome_failure.expect("expecting nack"))
                         );
                         assert_eq!(node_id, 4444);
 
-                        let nackdata: TestCallData = nack.calldata.try_into().expect("my calldata");
+                        let nackdata: TestCallData =
+                            nack.unwind.route.calldata.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), nackdata);
 
                         // Requested RETURN_DATA, check item count match

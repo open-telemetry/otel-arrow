@@ -1,138 +1,30 @@
 # Engine-wide settings
 {% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
-settings:
+version: otel_dataflow/v1
+engine:
   http_admin:
     bind_address: {{ admin_bind_address }}
-{% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
-{% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
-{% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
-{% if suv_receiver_type == "otap" -%}
-  {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
-{% endif -%}
-{% set suv_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
-{% if suv_exporter_type == "otap" -%}
-  {% set suv_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
-{% endif -%}
-{% set suv_pipeline = pipeline_config | default("nodes:") -%}
-{% set max_signal_count = max_signal_count | default(2000) -%}
-{% set max_batch_size = max_batch_size | default(100) -%}
-{% set signals_per_second = signals_per_second | default(100) -%}
-{% set metric_weight = metric_weight | default(0) -%}
-{% set trace_weight = trace_weight | default(0) -%}
-{% set log_weight = log_weight | default(100) -%}
 
-{% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
-{% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
-{% set control_addr = control_addr | default("127.0.0.1:4316") -%}
-{% set control_endpoint = control_endpoint | default("http://127.0.0.1:4316") -%}
-
-pipeline_groups:
+groups:
   validation_test:
     pipelines:
       # ======================================================================
       # Validation pipeline to validate equivalence
       # ======================================================================
-      validate:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 1
-                end: 1
-        nodes:
-          suv_receiver:
-            type: "{{ suv_receiver_plugin_urn }}"
-            config:
-              {% if suv_receiver_type == "otlp" -%}
-              protocols:                                                                                                                                                                        
-                grpc:                                                                                                                                                                           
-                  listening_addr: "{{ suv_addr }}"
-              {% endif %}
-              {% if suv_receiver_type == "otap" -%}
-              listening_addr: "{{ suv_addr }}"
-              response_stream_channel_size: 256
-              {% endif %}
-
-          control_receiver:
-            type: "urn:otel:otlp:receiver"
-            config:
-              protocols:                                                                                                                                                                        
-                grpc:                                                                                                                                                                           
-                  listening_addr: "{{ control_addr }}"
-
-          validation_exporter:
-            type: "urn:otel:validation:exporter"
-            config:
-                expect_failure: false
-                control_input: control_receiver
-                suv_input: suv_receiver
-        connections:
-          - from: suv_receiver
-            to: validation_exporter
-          - from: control_receiver
-            to: validation_exporter
-
+{{ capture_pipeline | indent(6, true)}}
       # ======================================================================
       # System Under Validation pipeline
       # ======================================================================
       suv:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 0
-                end: 0
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: {{ suv_core_start | default(0) }}
+                  end: {{ suv_core_end | default(0) }}
 {{ suv_pipeline | indent(8, true)}}
-
       # ======================================================================
       # Pipeline generating traffic
       # ======================================================================
-      traffic_gen:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 2
-                end: 2
-
-        nodes:
-          receiver:
-            type: "urn:otel:traffic_generator:receiver"
-            config:
-              traffic_config:
-                max_signal_count: {{ max_signal_count }}
-                max_batch_size: {{ max_batch_size }}
-                signals_per_second: {{ signals_per_second }}
-                metric_weight: {{ metric_weight }}
-                trace_weight: {{ trace_weight }}
-                log_weight: {{ log_weight }}
-              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-
-          fanout:
-            type: "urn:otel:fanout_temp:processor"
-            outputs: ["suv_port", "control_port"]
-            config:
-          suv_exporter:
-            type: "{{ suv_exporter_plugin_urn }}"
-            config:
-              grpc_endpoint: "{{ suv_endpoint }}"
-              {% if suv_exporter_type == "otap" -%}
-              compression_method: none
-              arrow:
-                payload_compression: none
-              {% endif %}
-
-          control_exporter:
-            type: "urn:otel:otlp:exporter"
-            config:
-              grpc_endpoint: "{{ control_endpoint }}"
-        connections:
-          - from: receiver
-            to: fanout
-          - from: fanout["suv_port"]
-            to: suv_exporter
-          - from: fanout["control_port"]
-            to: control_exporter
+{{ generator_pipeline | indent(6, true)}}

@@ -21,11 +21,13 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_pdata::OtapPayload;
-use otap_df_pdata::views::common::InstrumentationScopeView;
-use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::resource::ResourceView;
+use otap_df_pdata_views::views::common::InstrumentationScopeView;
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
@@ -33,7 +35,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// The URN for the console exporter
-pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:console:exporter";
+pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:exporter:console";
 
 /// Configuration for the console exporter
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -90,6 +92,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<ConsoleExporterConfig>,
 };
 
 #[async_trait(?Send)]

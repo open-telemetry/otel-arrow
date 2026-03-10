@@ -862,7 +862,7 @@ pub fn metrics_multiple_sums_no_resource() -> MetricsData {
 }
 
 /// Configuration for generating metrics with specific shapes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MetricsConfig {
     /// Number of data points per gauge metric (one gauge per entry)
     pub gauge_points: Vec<usize>,
@@ -874,6 +874,33 @@ pub struct MetricsConfig {
     pub summary_points: Vec<usize>,
     /// Whether to add varying attributes to data points
     pub vary_attributes: bool,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of metadata attributes per metric (default 0).
+    pub metric_attrs: usize,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            gauge_points: Vec::new(),
+            sum_points: Vec::new(),
+            histogram_points: Vec::new(),
+            summary_points: Vec::new(),
+            vary_attributes: false,
+            num_resources: 1,
+            scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            metric_attrs: 0,
+        }
+    }
 }
 
 impl MetricsConfig {
@@ -918,6 +945,41 @@ impl MetricsConfig {
         self
     }
 
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
+    }
+
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of metadata attributes per metric.
+    #[must_use]
+    pub const fn with_metric_attrs(mut self, n: usize) -> Self {
+        self.metric_attrs = n;
+        self
+    }
+
     /// Calculate total data point count across all metrics
     #[must_use]
     pub fn total_points(&self) -> usize {
@@ -937,6 +999,140 @@ impl MetricsConfig {
     }
 }
 
+/// Configuration for generating logs with a specific number of log records.
+#[derive(Debug, Clone)]
+pub struct LogsConfig {
+    /// Number of log records per scope.
+    pub logs_per_scope: usize,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of attributes per log record (default 0).
+    pub log_attrs: usize,
+}
+
+impl LogsConfig {
+    /// Create a new `LogsConfig` with the given number of log records per scope.
+    #[must_use]
+    pub const fn new(logs_per_scope: usize) -> Self {
+        Self {
+            logs_per_scope,
+            num_resources: 1,
+            scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            log_attrs: 0,
+        }
+    }
+
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
+    }
+
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per log record.
+    #[must_use]
+    pub const fn with_log_attrs(mut self, n: usize) -> Self {
+        self.log_attrs = n;
+        self
+    }
+}
+
+/// Configuration for generating traces with a specific number of spans.
+#[derive(Debug, Clone)]
+pub struct TracesConfig {
+    /// Number of spans per scope.
+    pub spans_per_scope: usize,
+    /// Number of distinct resources (default 1).
+    pub num_resources: usize,
+    /// Number of scopes per resource (default 1).
+    pub scopes_per_resource: usize,
+    /// Number of attributes per resource (default 0).
+    pub resource_attrs: usize,
+    /// Number of attributes per scope (default 0).
+    pub scope_attrs: usize,
+    /// Number of attributes per span (default 0).
+    pub span_attrs: usize,
+}
+
+impl TracesConfig {
+    /// Create a new `TracesConfig` with the given number of spans per scope.
+    #[must_use]
+    pub const fn new(spans_per_scope: usize) -> Self {
+        Self {
+            spans_per_scope,
+            num_resources: 1,
+            scopes_per_resource: 1,
+            resource_attrs: 0,
+            scope_attrs: 0,
+            span_attrs: 0,
+        }
+    }
+
+    /// Set the number of distinct resources.
+    #[must_use]
+    pub const fn with_resources(mut self, n: usize) -> Self {
+        self.num_resources = n;
+        self
+    }
+
+    /// Set the number of scopes per resource.
+    #[must_use]
+    pub const fn with_scopes_per_resource(mut self, n: usize) -> Self {
+        self.scopes_per_resource = n;
+        self
+    }
+
+    /// Set the number of attributes per resource.
+    #[must_use]
+    pub const fn with_resource_attrs(mut self, n: usize) -> Self {
+        self.resource_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per scope.
+    #[must_use]
+    pub const fn with_scope_attrs(mut self, n: usize) -> Self {
+        self.scope_attrs = n;
+        self
+    }
+
+    /// Set the number of attributes per span.
+    #[must_use]
+    pub const fn with_span_attrs(mut self, n: usize) -> Self {
+        self.span_attrs = n;
+        self
+    }
+}
+
 /// Generator for test data.
 ///
 /// TODO: This is a placeholder, only varies timestamp_offset; add
@@ -952,6 +1148,20 @@ pub struct DataGenerator {
     count: usize,
     time_value: u64,
     metrics_config: Option<MetricsConfig>,
+    logs_config: Option<LogsConfig>,
+    traces_config: Option<TracesConfig>,
+}
+
+/// Generate `count` synthetic KeyValue attributes with the given prefix.
+fn generate_attrs(prefix: &str, count: usize) -> Vec<KeyValue> {
+    (0..count)
+        .map(|i| {
+            KeyValue::new(
+                format!("{prefix}.attr_{i}"),
+                AnyValue::new_string(format!("value_{i}")),
+            )
+        })
+        .collect()
 }
 
 impl DataGenerator {
@@ -965,6 +1175,8 @@ impl DataGenerator {
             // One million nanoseconds past the UTC epoch.
             time_value: 1_000_000_000_000_000,
             metrics_config: None,
+            logs_config: None,
+            traces_config: None,
         }
     }
 
@@ -976,6 +1188,34 @@ impl DataGenerator {
             count: 0,
             time_value: 1_000_000_000_000_000,
             metrics_config: Some(config),
+            logs_config: None,
+            traces_config: None,
+        }
+    }
+
+    /// Create a DataGenerator with a specific logs configuration
+    #[must_use]
+    pub const fn with_logs_config(config: LogsConfig) -> Self {
+        Self {
+            limit: 0,
+            count: 0,
+            time_value: 1_000_000_000_000_000,
+            metrics_config: None,
+            logs_config: Some(config),
+            traces_config: None,
+        }
+    }
+
+    /// Create a DataGenerator with a specific traces configuration
+    #[must_use]
+    pub const fn with_traces_config(config: TracesConfig) -> Self {
+        Self {
+            limit: 0,
+            count: 0,
+            time_value: 1_000_000_000_000_000,
+            metrics_config: None,
+            logs_config: None,
+            traces_config: Some(config),
         }
     }
 }
@@ -1131,6 +1371,7 @@ impl DataGenerator {
 
         let mut metrics = Vec::new();
         let vary_attrs = config.vary_attributes;
+        let metric_attrs = generate_attrs("metric", config.metric_attrs);
 
         // Generate gauge metrics
         for (idx, &point_count) in config.gauge_points.iter().enumerate() {
@@ -1139,6 +1380,7 @@ impl DataGenerator {
                     .name(format!("gauge_{}", idx))
                     .description(format!("Gauge metric {}", idx))
                     .unit("1")
+                    .metadata(metric_attrs.clone())
                     .data_gauge(Gauge::new(
                         self.build_number_data_points(point_count, vary_attrs),
                     ))
@@ -1153,6 +1395,7 @@ impl DataGenerator {
                     .name(format!("sum_{}", idx))
                     .description(format!("Sum metric {}", idx))
                     .unit("1")
+                    .metadata(metric_attrs.clone())
                     .data_sum(Sum::new(
                         AggregationTemporality::Cumulative,
                         true,
@@ -1169,6 +1412,7 @@ impl DataGenerator {
                     .name(format!("histogram_{}", idx))
                     .description(format!("Histogram metric {}", idx))
                     .unit("s")
+                    .metadata(metric_attrs.clone())
                     .data_histogram(Histogram::new(
                         AggregationTemporality::Delta,
                         self.build_histogram_data_points(point_count, vary_attrs),
@@ -1184,6 +1428,7 @@ impl DataGenerator {
                     .name(format!("summary_{}", idx))
                     .description(format!("Summary metric {}", idx))
                     .unit("ms")
+                    .metadata(metric_attrs.clone())
                     .data_summary(Summary::new(
                         self.build_summary_data_points(point_count, vary_attrs),
                     ))
@@ -1191,13 +1436,123 @@ impl DataGenerator {
             );
         }
 
-        MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                metrics,
-            )],
-        )])
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
+        let resource_metrics: Vec<ResourceMetrics> = (0..config.num_resources)
+            .map(|_| {
+                let scope_metrics: Vec<ScopeMetrics> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        ScopeMetrics::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
+                                .finish(),
+                            metrics.clone(),
+                        )
+                    })
+                    .collect();
+                let attrs = resource_attrs.clone();
+                ResourceMetrics::new(Resource::build().attributes(attrs).finish(), scope_metrics)
+            })
+            .collect();
+
+        MetricsData::new(resource_metrics)
+    }
+
+    /// Generate test OTLP logs data using the configured LogsConfig.
+    #[must_use]
+    pub fn generate_logs_from_config(&mut self) -> LogsData {
+        let config = self
+            .logs_config
+            .as_ref()
+            .expect("logs_config must be set")
+            .clone();
+
+        let log_attrs = generate_attrs("log", config.log_attrs);
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
+        let resource_logs: Vec<ResourceLogs> = (0..config.num_resources)
+            .map(|_| {
+                let scope_logs: Vec<ScopeLogs> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        let logs: Vec<LogRecord> = (0..config.logs_per_scope)
+                            .map(|_| {
+                                LogRecord::build()
+                                    .time_unix_nano(self.timestamp())
+                                    .observed_time_unix_nano(self.timestamp())
+                                    .severity_number(SeverityNumber::Info as i32)
+                                    .attributes(log_attrs.clone())
+                                    .finish()
+                            })
+                            .collect();
+                        ScopeLogs::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
+                                .finish(),
+                            logs,
+                        )
+                    })
+                    .collect();
+                let attrs = resource_attrs.clone();
+                ResourceLogs::new(Resource::build().attributes(attrs).finish(), scope_logs)
+            })
+            .collect();
+
+        LogsData::new(resource_logs)
+    }
+
+    /// Generate test OTLP traces data using the configured TracesConfig.
+    #[must_use]
+    pub fn generate_traces_from_config(&mut self) -> TracesData {
+        let config = self
+            .traces_config
+            .as_ref()
+            .expect("traces_config must be set")
+            .clone();
+
+        let span_attrs = generate_attrs("span", config.span_attrs);
+        let scope_attrs = generate_attrs("scope", config.scope_attrs);
+        let resource_attrs = generate_attrs("resource", config.resource_attrs);
+        let mut span_counter: u64 = 0;
+        let resource_spans: Vec<ResourceSpans> = (0..config.num_resources)
+            .map(|_| {
+                let scope_spans: Vec<ScopeSpans> = (0..config.scopes_per_resource)
+                    .map(|s| {
+                        let spans: Vec<Span> = (0..config.spans_per_scope)
+                            .map(|_| {
+                                span_counter += 1;
+                                Span::build()
+                                    .trace_id(vec![0u8; 16])
+                                    .span_id({
+                                        let mut id = [0u8; 8];
+                                        let bytes = span_counter.to_be_bytes();
+                                        id.copy_from_slice(&bytes);
+                                        id.to_vec()
+                                    })
+                                    .name(format!("span_{span_counter}"))
+                                    .start_time_unix_nano(self.timestamp())
+                                    .end_time_unix_nano(self.timestamp())
+                                    .status(Status::new(StatusCode::Ok, "ok"))
+                                    .attributes(span_attrs.clone())
+                                    .finish()
+                            })
+                            .collect();
+                        ScopeSpans::new(
+                            InstrumentationScope::build()
+                                .name(format!("scope_{s}"))
+                                .attributes(scope_attrs.clone())
+                                .finish(),
+                            spans,
+                        )
+                    })
+                    .collect();
+                let attrs = resource_attrs.clone();
+                ResourceSpans::new(Resource::build().attributes(attrs).finish(), scope_spans)
+            })
+            .collect();
+
+        TracesData::new(resource_spans)
     }
 
     fn build_gauge_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
@@ -1303,5 +1658,162 @@ impl DataGenerator {
                 builder.finish()
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::otap::{OtapArrowRecords, OtapBatchStore};
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::testing::round_trip::otlp_to_otap;
+
+    fn rows(store: &impl OtapBatchStore, pt: ArrowPayloadType) -> usize {
+        store.get(pt).map_or(0, |b| b.num_rows())
+    }
+
+    #[test]
+    fn test_logs_from_config_row_counts() {
+        let num_resources = 3;
+        let scopes_per_resource = 2;
+        let logs_per_scope = 50;
+        let resource_attrs = 3;
+        let scope_attrs = 2;
+        let log_attrs = 4;
+
+        let mut datagen = DataGenerator::with_logs_config(
+            LogsConfig::new(logs_per_scope)
+                .with_resources(num_resources)
+                .with_scopes_per_resource(scopes_per_resource)
+                .with_resource_attrs(resource_attrs)
+                .with_scope_attrs(scope_attrs)
+                .with_log_attrs(log_attrs),
+        );
+
+        let data = datagen.generate_logs_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Logs(l) => l,
+            _ => unreachable!(),
+        };
+
+        let expected_logs = num_resources * scopes_per_resource * logs_per_scope;
+        let expected_scopes = num_resources * scopes_per_resource;
+
+        assert_eq!(rows(&store, ArrowPayloadType::Logs), expected_logs);
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ResourceAttrs),
+            num_resources * resource_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ScopeAttrs),
+            expected_scopes * scope_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::LogAttrs),
+            expected_logs * log_attrs,
+        );
+    }
+
+    #[test]
+    fn test_traces_from_config_row_counts() {
+        let num_resources = 2;
+        let scopes_per_resource = 3;
+        let spans_per_scope = 40;
+        let resource_attrs = 2;
+        let scope_attrs = 3;
+        let span_attrs = 5;
+
+        let mut datagen = DataGenerator::with_traces_config(
+            TracesConfig::new(spans_per_scope)
+                .with_resources(num_resources)
+                .with_scopes_per_resource(scopes_per_resource)
+                .with_resource_attrs(resource_attrs)
+                .with_scope_attrs(scope_attrs)
+                .with_span_attrs(span_attrs),
+        );
+
+        let data = datagen.generate_traces_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Traces(t) => t,
+            _ => unreachable!(),
+        };
+
+        let expected_spans = num_resources * scopes_per_resource * spans_per_scope;
+        let expected_scopes = num_resources * scopes_per_resource;
+
+        assert_eq!(rows(&store, ArrowPayloadType::Spans), expected_spans);
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ResourceAttrs),
+            num_resources * resource_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::ScopeAttrs),
+            expected_scopes * scope_attrs,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::SpanAttrs),
+            expected_spans * span_attrs,
+        );
+    }
+
+    #[test]
+    fn test_metrics_from_config_row_counts() {
+        let num_resources = 2;
+        let scopes_per_resource = 2;
+        let resource_attrs = 2;
+        let scope_attrs = 3;
+        let gauge_points = vec![10, 20];
+        let sum_points = vec![15];
+        let histogram_points = vec![5];
+        let summary_points = vec![8];
+
+        let config = MetricsConfig::new()
+            .with_gauges(gauge_points.clone())
+            .with_sums(sum_points.clone())
+            .with_histograms(histogram_points.clone())
+            .with_summaries(summary_points.clone())
+            .with_resources(num_resources)
+            .with_scopes_per_resource(scopes_per_resource)
+            .with_resource_attrs(resource_attrs)
+            .with_scope_attrs(scope_attrs);
+
+        let total_metrics =
+            gauge_points.len() + sum_points.len() + histogram_points.len() + summary_points.len();
+        let total_number_points: usize =
+            gauge_points.iter().sum::<usize>() + sum_points.iter().sum::<usize>();
+        let total_histogram_points: usize = histogram_points.iter().sum();
+        let total_summary_points: usize = summary_points.iter().sum();
+
+        assert_eq!(
+            config.total_points(),
+            total_number_points + total_histogram_points + total_summary_points,
+        );
+
+        let mut datagen = DataGenerator::with_metrics_config(config);
+        let data = datagen.generate_metrics_from_config();
+        let store = match otlp_to_otap(&data.into()) {
+            OtapArrowRecords::Metrics(m) => m,
+            _ => unreachable!(),
+        };
+
+        let total_scopes = num_resources * scopes_per_resource;
+
+        // Each scope gets the full set of metrics.
+        assert_eq!(
+            rows(&store, ArrowPayloadType::UnivariateMetrics),
+            total_scopes * total_metrics,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::NumberDataPoints),
+            total_scopes * total_number_points,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::HistogramDataPoints),
+            total_scopes * total_histogram_points,
+        );
+        assert_eq!(
+            rows(&store, ArrowPayloadType::SummaryDataPoints),
+            total_scopes * total_summary_points,
+        );
     }
 }

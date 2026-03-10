@@ -8,12 +8,11 @@ use crate::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
 };
 
-use crate::views::{
-    common::{
-        AnyValueView, AttributeView, InstrumentationScopeView, SpanId, Str, TraceId, ValueType,
-    },
-    otlp::proto::wrappers::{GenericObj, Wraps},
+use crate::views::otlp::proto::wrappers::{GenericObj, Wraps};
+use otap_df_pdata_views::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
 };
+use otap_df_pdata_views::{SpanId, TraceId};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 

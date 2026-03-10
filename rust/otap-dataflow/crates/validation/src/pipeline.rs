@@ -1,19 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pipeline wiring helpers for validation scenarios.
+//! Pipeline wiring helpers for validation scenarios. Allows loading YAML
+//! pipelines and rewriting receiver/exporter endpoints at runtime so tests
+//! can bind to ephemeral ports.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::error::ValidationError;
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 use std::fs;
 
 /// Pipeline configuration wrapper that supports rewiring logical endpoints.
 pub struct Pipeline {
     pub(crate) suv_yaml: Value,
-    pub(crate) input_wire: Option<EndpointWire>,
-    pub(crate) output_wire: Option<EndpointWire>,
+    pub(crate) core_start: u16,
+    pub(crate) core_end: u16,
 }
 
 impl Pipeline {
@@ -24,211 +26,154 @@ impl Pipeline {
         Ok(Self::from_yaml(&content))
     }
 
+    /// Load a pipeline from a YAML file with `${VAR}` placeholder substitution.
+    pub fn from_file_with_vars(path: &str, vars: &[(&str, &str)]) -> Result<Self, ValidationError> {
+        let mut content = fs::read_to_string(path)
+            .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
+        for (key, value) in vars {
+            content = content.replace(&format!("${{{key}}}"), value);
+        }
+        if let Some(start) = content.find("${") {
+            let end = content[start..]
+                .find('}')
+                .map_or(content.len(), |i| start + i + 1);
+            let unresolved = &content[start..end];
+            return Err(ValidationError::Config(format!(
+                "unresolved placeholder {unresolved} in {path}"
+            )));
+        }
+        Ok(Self::from_yaml(&content))
+    }
+
     /// Load a pipeline from a YAML string slice.
     #[must_use]
     pub fn from_yaml(yaml: &str) -> Self {
         let suv_yaml: Value = serde_yaml::from_str(yaml).expect("invalid pipeline yaml");
         Self {
             suv_yaml,
-            input_wire: None,
-            output_wire: None,
+            core_start: 0,
+            core_end: 0,
         }
     }
 
-    /// Wire a node's OTLP gRPC receiver to a logical endpoint label.
+    /// Set the core range for the SUV pipeline.
     #[must_use]
-    pub fn wire_otlp_grpc_receiver(mut self, node_name: impl Into<String>) -> Self {
-        self.input_wire = Some(EndpointWire {
-            node: node_name.into(),
-            kind: EndpointKind::OtlpGrpcReceiver,
-        });
-        self
-    }
-
-    /// Wire a node's OTLP gRPC exporter to a logical endpoint label.
-    #[must_use]
-    pub fn wire_otlp_grpc_exporter(mut self, node_name: impl Into<String>) -> Self {
-        self.output_wire = Some(EndpointWire {
-            node: node_name.into(),
-            kind: EndpointKind::OtlpGrpcExporter,
-        });
-        self
-    }
-
-    /// Wire a node's OTAP gRPC receiver to a logical endpoint label.
-    #[must_use]
-    pub fn wire_otap_grpc_receiver(mut self, node_name: impl Into<String>) -> Self {
-        self.input_wire = Some(EndpointWire {
-            node: node_name.into(),
-            kind: EndpointKind::OtapGrpcReceiver,
-        });
-        self
-    }
-
-    /// Wire a node's OTAP gRPC exporter to a logical endpoint label.
-    #[must_use]
-    pub fn wire_otap_grpc_exporter(mut self, node_name: impl Into<String>) -> Self {
-        self.output_wire = Some(EndpointWire {
-            node: node_name.into(),
-            kind: EndpointKind::OtapGrpcExporter,
-        });
+    pub fn core_range(mut self, start: u16, end: u16) -> Self {
+        self.core_start = start;
+        self.core_end = end;
         self
     }
 
     /// Serialize the current pipeline configuration into a YAML string.
-    pub fn to_yaml_string(&self) -> Result<String, ValidationError> {
+    pub(crate) fn to_yaml_string(&self) -> Result<String, ValidationError> {
         serde_yaml::to_string(&self.suv_yaml)
             .map_err(|e| ValidationError::Config(format!("failed to serialize pipeline yaml: {e}")))
     }
 
-    pub(crate) fn update_pipeline(
+    /// Apply a single endpoint rewrite directly.
+    pub(crate) fn apply_endpoint(
         &mut self,
-        input_addr: &str,
-        output_endpoint: &str,
+        wire: EndpointKind,
+        port: u16,
     ) -> Result<(), ValidationError> {
-        let wire = self
-            .input_wire
-            .clone()
-            .ok_or_else(|| ValidationError::Config("no input wire configured".into()))?;
-        match wire.kind {
-            EndpointKind::OtlpGrpcReceiver => self.set_otlp_receiver_addr(input_addr)?,
-            EndpointKind::OtapGrpcReceiver => self.set_otap_receiver_addr(input_addr)?,
-            _ => {
-                return Err(ValidationError::Config(
-                    "input wire is not a receiver".into(),
-                ));
-            }
-        }
-
-        let out_wire = self
-            .output_wire
-            .clone()
-            .ok_or_else(|| ValidationError::Config("no output wire configured".into()))?;
-        match out_wire.kind {
-            EndpointKind::OtlpGrpcExporter | EndpointKind::OtapGrpcExporter => {
-                self.set_exporter_endpoint(output_endpoint)
-            }
-            _ => Err(ValidationError::Config(
-                "output wire is not an exporter".into(),
-            )),
-        }
+        wire.apply_to_value(&mut self.suv_yaml, port)
     }
-
-    fn set_otlp_receiver_addr(&mut self, addr: &str) -> Result<(), ValidationError> {
-        let node = self
-            .input_wire
-            .as_ref()
-            .filter(|w| matches!(w.kind, EndpointKind::OtlpGrpcReceiver))
-            .map(|w| w.node.clone())
-            .ok_or_else(|| ValidationError::Config("input wire is not an OTLP receiver".into()))?;
-        let nodes = self
-            .suv_yaml
-            .get_mut("nodes")
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
-        let node_cfg = nodes
-            .get_mut(&node)
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
-        let config = node_cfg
-            .entry(Value::from("config"))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        let config_map = config.as_mapping_mut().ok_or_else(|| {
-            ValidationError::Config(format!("config section for node {node} is not a mapping"))
-        })?;
-        let protocols = config_map
-            .entry(Value::from("protocols"))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        let protocols_map = protocols.as_mapping_mut().ok_or_else(|| {
-            ValidationError::Config(format!(
-                "protocols section for node {node} is not a mapping"
-            ))
-        })?;
-        let grpc = protocols_map
-            .entry(Value::from("grpc"))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        let grpc_map = grpc.as_mapping_mut().ok_or_else(|| {
-            ValidationError::Config(format!("grpc section for node {node} is not a mapping"))
-        })?;
-        let _ = grpc_map.insert(Value::from("listening_addr"), Value::from(addr.to_string()));
-        Ok(())
-    }
-
-    fn set_otap_receiver_addr(&mut self, addr: &str) -> Result<(), ValidationError> {
-        let node = self
-            .input_wire
-            .as_ref()
-            .filter(|w| matches!(w.kind, EndpointKind::OtapGrpcReceiver))
-            .map(|w| w.node.clone())
-            .ok_or_else(|| ValidationError::Config("input wire is not an OTAP receiver".into()))?;
-        let nodes = self
-            .suv_yaml
-            .get_mut("nodes")
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
-        let node_cfg = nodes
-            .get_mut(&node)
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
-        let config = node_cfg
-            .entry(Value::from("config"))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        let config_map = config.as_mapping_mut().ok_or_else(|| {
-            ValidationError::Config(format!("config section for node {node} is not a mapping"))
-        })?;
-        let _ = config_map.insert(Value::from("listening_addr"), Value::from(addr.to_string()));
-        Ok(())
-    }
-
-    fn set_exporter_endpoint(&mut self, endpoint: &str) -> Result<(), ValidationError> {
-        let node = self
-            .output_wire
-            .as_ref()
-            .map(|w| w.node.clone())
-            .ok_or_else(|| ValidationError::Config("output wire missing".into()))?;
-        let nodes = self
-            .suv_yaml
-            .get_mut("nodes")
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
-        let node_cfg = nodes
-            .get_mut(&node)
-            .and_then(Value::as_mapping_mut)
-            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
-        let config = node_cfg
-            .entry(Value::from("config"))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        let config_map = config.as_mapping_mut().ok_or_else(|| {
-            ValidationError::Config(format!("config section for node {node} is not a mapping"))
-        })?;
-        let _ = config_map.insert(
-            Value::from("grpc_endpoint"),
-            Value::from(endpoint.to_string()),
-        );
-        Ok(())
-    }
-}
-
-/// Internal wiring descriptor connecting a pipeline node to an endpoint rewrite.
-#[derive(Clone)]
-pub struct EndpointWire {
-    /// Node id in the pipeline YAML.
-    pub node: String,
-    /// Kind of endpoint to rewrite.
-    pub kind: EndpointKind,
 }
 
 /// Types of endpoints that can be rewired in validation pipelines.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum EndpointKind {
     /// OTLP gRPC receiver listening address.
-    OtlpGrpcReceiver,
+    OtlpGrpcReceiver(String),
     /// OTLP gRPC exporter destination.
-    OtlpGrpcExporter,
+    OtlpGrpcExporter(String),
     /// OTAP gRPC receiver listening address.
-    OtapGrpcReceiver,
+    OtapGrpcReceiver(String),
     /// OTAP gRPC exporter destination.
-    OtapGrpcExporter,
+    OtapGrpcExporter(String),
+}
+
+impl EndpointKind {
+    /// Apply rewrite to the given YAML value in-place using the provided port.
+    pub fn apply_to_value(&self, doc: &mut Value, port: u16) -> Result<(), ValidationError> {
+        match self {
+            EndpointKind::OtlpGrpcReceiver(node) => set_otlp_receiver_addr(doc, node, port)?,
+            EndpointKind::OtapGrpcReceiver(node) => set_otap_receiver_addr(doc, node, port)?,
+            EndpointKind::OtlpGrpcExporter(node) | EndpointKind::OtapGrpcExporter(node) => {
+                set_exporter_endpoint(doc, node, port)?
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the node name this endpoint targets.
+    #[must_use]
+    pub fn node_name(&self) -> &str {
+        match self {
+            EndpointKind::OtlpGrpcReceiver(node)
+            | EndpointKind::OtlpGrpcExporter(node)
+            | EndpointKind::OtapGrpcReceiver(node)
+            | EndpointKind::OtapGrpcExporter(node) => node,
+        }
+    }
+}
+
+fn node_config_map<'a>(doc: &'a mut Value, node: &str) -> Result<&'a mut Mapping, ValidationError> {
+    let nodes = doc
+        .get_mut("nodes")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
+    let node_cfg = nodes
+        .get_mut(Value::from(node.to_string()))
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
+    let config = node_cfg
+        .entry(Value::from("config"))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    config.as_mapping_mut().ok_or_else(|| {
+        ValidationError::Config(format!("config section for node {node} is not a mapping"))
+    })
+}
+
+fn set_otlp_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
+    let config_map = node_config_map(doc, node)?;
+    let protocols = config_map
+        .entry(Value::from("protocols"))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    let protocols_map = protocols.as_mapping_mut().ok_or_else(|| {
+        ValidationError::Config(format!(
+            "protocols section for node {node} is not a mapping"
+        ))
+    })?;
+    let grpc = protocols_map
+        .entry(Value::from("grpc"))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    let grpc_map = grpc.as_mapping_mut().ok_or_else(|| {
+        ValidationError::Config(format!("grpc section for node {node} is not a mapping"))
+    })?;
+    let _ = grpc_map.insert(
+        Value::from("listening_addr"),
+        Value::from(format!("127.0.0.1:{port}")),
+    );
+    Ok(())
+}
+
+fn set_otap_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
+    let config_map = node_config_map(doc, node)?;
+    let _ = config_map.insert(
+        Value::from("listening_addr"),
+        Value::from(format!("127.0.0.1:{port}")),
+    );
+    Ok(())
+}
+
+fn set_exporter_endpoint(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
+    let config_map = node_config_map(doc, node)?;
+    let _ = config_map.insert(
+        Value::from("grpc_endpoint"),
+        Value::from(format!("http://127.0.0.1:{port}")),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -257,12 +202,13 @@ nodes:
 
     #[test]
     fn otlp_wiring_rewrites_addresses() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml())
-            .wire_otlp_grpc_receiver("receiver")
-            .wire_otlp_grpc_exporter("exporter");
+        let mut pipeline = Pipeline::from_yaml(sample_yaml());
         pipeline
-            .update_pipeline("127.0.0.1:5555", "http://127.0.0.1:7777")
-            .expect("update should succeed");
+            .apply_endpoint(EndpointKind::OtlpGrpcReceiver("receiver".into()), 5555)
+            .expect("receiver rewrite succeeds");
+        pipeline
+            .apply_endpoint(EndpointKind::OtlpGrpcExporter("exporter".into()), 7777)
+            .expect("exporter rewrite succeeds");
         let rendered = pipeline
             .to_yaml_string()
             .expect("serialization should succeed");
@@ -306,12 +252,13 @@ nodes:
 
     #[test]
     fn otap_wiring_rewrites_addresses() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml())
-            .wire_otap_grpc_receiver("otap_recv")
-            .wire_otap_grpc_exporter("otap_exp");
+        let mut pipeline = Pipeline::from_yaml(sample_yaml());
         pipeline
-            .update_pipeline("127.0.0.1:6000", "http://127.0.0.1:7000")
-            .expect("update should succeed");
+            .apply_endpoint(EndpointKind::OtapGrpcReceiver("otap_recv".into()), 6000)
+            .expect("receiver rewrite succeeds");
+        pipeline
+            .apply_endpoint(EndpointKind::OtapGrpcExporter("otap_exp".into()), 7000)
+            .expect("exporter rewrite succeeds");
         let rendered = pipeline
             .to_yaml_string()
             .expect("serialization should succeed");
@@ -347,9 +294,9 @@ nodes:
 
     #[test]
     fn missing_output_wire_errors() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml()).wire_otlp_grpc_receiver("receiver");
+        let mut pipeline = Pipeline::from_yaml(sample_yaml());
         let err = pipeline
-            .update_pipeline("127.0.0.1:5555", "http://127.0.0.1:7777")
+            .apply_endpoint(EndpointKind::OtlpGrpcExporter("missing".into()), 1234)
             .unwrap_err();
         assert!(matches!(err, ValidationError::Config(_)));
     }

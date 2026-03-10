@@ -11,7 +11,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
           - "--core-id-range"
           - "1-12"
@@ -32,7 +32,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
           - "--core-id-range"
           - "0-0"
@@ -53,7 +53,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
           - "--core-id-range"
           - "13-14"

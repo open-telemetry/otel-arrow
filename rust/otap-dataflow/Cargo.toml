@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
@@ -48,11 +49,14 @@ tikv-jemallocator = { workspace = true, optional = true }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-controller = { path = "crates/controller" }
+otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
 otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 otap-df-telemetry = { path = "crates/telemetry" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
@@ -73,10 +77,11 @@ async-unsync = "0.3.0"
 axum = "0.8.4"
 base64 = "0.22.1"
 bitflags = "2.10"
-bytes = "1.11"
+bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
@@ -101,7 +106,8 @@ libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
 tikv-jemalloc-ctl = { version = "0.6.1" }
 memmap2 = "0.9"
-nix = { version = "0.31.0", features = ["process", "signal", "fs"] }
+memory-stats = "1"
+nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
 object_store = {version = "0.12.3", default-features = false}
@@ -190,13 +196,8 @@ zip = "=4.2.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-# Recordset KQL OTLP query_engine Processor
-data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engine-recordset-otlp-bridge" }
-data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
-
-# Azure Monitor Exporter
-azure_core = {version = "0.31.0", default-features = false }
-azure_identity = {version = "0.31.0", default-features = false }
+azure_core = {version = "0.32.0", default-features = false }
+azure_identity = {version = "0.32.0", default-features = false }
 flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"
@@ -208,20 +209,23 @@ default = ["jemalloc"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
+aws = ["otap-df-otap/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
-# Experimental exporters (opt-in)
-experimental-exporters = ["otap-df-otap/experimental-exporters"]
-geneva-exporter = ["otap-df-otap/geneva-exporter"]
-azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
-# Experimental processors (opt-in)
-experimental-processors = ["otap-df-otap/experimental-processors"]
-condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
-recordset-kql-processor = ["otap-df-otap/recordset-kql-processor"]
-resource-validator-processor = ["otap-df-otap/resource-validator-processor"]
+
+# Contrib exporters (opt-in) - now in contrib-nodes
+contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
+geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
+azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib processors (opt-in) - now in contrib-nodes
+contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
+condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
+recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
+resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints

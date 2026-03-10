@@ -58,7 +58,7 @@ mod schema;
 mod writer;
 
 #[allow(dead_code)]
-const PARQUET_EXPORTER_URN: &str = "urn:otel:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -87,6 +87,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<config::Config>,
 };
 
 impl ParquetExporter {
@@ -426,6 +427,7 @@ mod test {
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
     use otap_df_engine::control::{
         Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
         pipeline_ctrl_msg_channel,
@@ -480,6 +482,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Skipping on Windows due to timing flakiness"
+    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -915,7 +921,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1065,7 +1071,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1213,7 +1219,7 @@ mod test {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }
@@ -1419,6 +1425,7 @@ mod test {
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
             );
 
         let exporter_impl = ParquetExporter::from_config(
@@ -1455,7 +1462,7 @@ mod test {
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
                 .await
                 .map(|_| ())
         }

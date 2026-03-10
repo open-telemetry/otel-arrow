@@ -1,6 +1,6 @@
 # Syslog and CEF Receiver
 
-**URN:** `urn:otel:syslog_cef:receiver`
+**URN:** `urn:otel:receiver:syslog_cef`
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
 and Common Event Format (CEF) security logs. The receiver automatically detects
@@ -12,7 +12,7 @@ Apache Arrow columnar format for downstream processing.
 The receiver automatically detects and parses the following message formats:
 
 | Format | Description |
-|--------|-------------|
+| ----- | ---------- |
 | **RFC 5424** | Modern syslog format with structured data support |
 | **RFC 3164** | Traditional BSD syslog format |
 | **CEF** | ArcSight Common Event Format for security events |
@@ -23,24 +23,54 @@ The receiver automatically detects and parses the following message formats:
 ```yaml
 receivers:
   syslog_cef:
-    listening_addr: "0.0.0.0:514"
-    protocol: tcp  # or "udp"
+    protocol:
+      tcp:
+        listening_addr: "0.0.0.0:514"
 
-    # Optional: TLS configuration (TCP only, requires "experimental-tls" feature)
-    tls:
-      cert_file: "/path/to/server.crt"
-      key_file: "/path/to/server.key"
-      client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
-      handshake_timeout: "10s"             # Optional: default 10s
+        # Optional: TLS configuration (requires "experimental-tls" feature)
+        tls:
+          cert_file: "/path/to/server.crt"
+          key_file: "/path/to/server.key"
+          client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
+          handshake_timeout: "10s"             # Optional: default 10s
+```
+
+Or for UDP:
+
+```yaml
+receivers:
+  syslog_cef:
+    protocol:
+      udp:
+        listening_addr: "0.0.0.0:514"
+```
+
+Optionally, batching parameters can be tuned to control how messages are
+accumulated before being sent downstream. Reducing these values limits the
+scope of in-memory data loss at the cost of higher per-batch overhead:
+
+```yaml
+receivers:
+  syslog_cef:
+    protocol:
+      tcp:
+        listening_addr: "0.0.0.0:514"
+    batch:
+      flush_timeout_ms: 50    # Flush after 50 ms (default: 100)
+      max_size: 25       # Flush after 25 messages (default: 100)
 ```
 
 ### Configuration Options
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `protocol` | `string` | Yes | Transport protocol: `tcp` or `udp` |
-| `tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
+| ----- | ---- | -------- | ----------- |
+| `protocol` | `object` | Yes | Exactly one of `tcp` or `udp` |
+| `protocol.tcp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
+| `protocol.tcp.tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
+| `protocol.udp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
+| `batch` | `object` | No | Batching configuration (see below) |
+| `batch.flush_timeout_ms` | `integer` | No | Max ms before flushing a batch (default: `100`) |
+| `batch.max_size` | `integer` | No | Max messages per batch (default: `100`) |
 
 ## Transport Protocols
 
@@ -92,6 +122,21 @@ strategy (in order):
 > preserved in the `body` field to help identify devices sending non-standard
 > data.
 
+### Detected Input Format (`input.format`)
+
+Every log record emitted by this receiver includes an `input.format` attribute
+indicating the format that was detected by the auto-detection logic above.
+This allows downstream processors to filter, route, or transform records based
+on the originating format without re-inspecting the content.
+
+| `input.format` Value | Description |
+| -------------------- | ----------- |
+| `rfc5424` | RFC 5424 syslog message |
+| `rfc3164` | RFC 3164 (BSD) syslog message |
+| `cef` | Raw CEF message (no syslog header) |
+| `cef_rfc5424` | CEF message wrapped in an RFC 5424 syslog header |
+| `cef_rfc3164` | CEF message wrapped in an RFC 3164 syslog header |
+
 ### RFC 5424 Parsing
 
 RFC 5424 messages follow this structure:
@@ -113,14 +158,15 @@ RFC 5424 messages follow this structure:
 **Resulting LogRecord:**
 
 | Field | Value |
-|-------|-------|
+| ----- | ------- |
 | `timestamp` | `2003-10-11T22:14:15.003Z` |
 | `severity_number` | `18` (ERROR2 - maps from syslog severity 2/Critical) |
 | `severity_text` | `ERROR2` |
 | `body` | *(null - fully parsed)* |
 
 | Attribute | Value |
-|-----------|-------|
+| --------- | ----- |
+| `input.format` | `rfc5424` |
 | `syslog.version` | `1` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |
@@ -149,14 +195,15 @@ RFC 3164 messages follow this structure:
 **Resulting LogRecord:**
 
 | Field | Value |
-|-------|-------|
+| ----- | ----- |
 | `timestamp` | `<current_year>-10-11T22:14:15` (local timezone) |
 | `severity_number` | `18` (ERROR2) |
 | `severity_text` | `ERROR2` |
 | `body` | *(null - fully parsed)* |
 
 | Attribute | Value |
-|-----------|-------|
+| --------- | ----- |
+| `input.format` | `rfc3164` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |
 | `syslog.host_name` | `mymachine` |
@@ -191,7 +238,7 @@ CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 d
 **Resulting LogRecord:**
 
 | Field | Value |
-|-------|-------|
+| ----- | ----- |
 | `timestamp` | `0` *(not available in CEF format)* |
 | `observed_time` | *(set to current time when batch is built)* |
 | `severity_number` | `0` (UNSPECIFIED - CEF has its own severity) |
@@ -199,7 +246,8 @@ CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 d
 | `body` | *(empty - fully parsed)* |
 
 | Attribute | Value |
-|-----------|-------|
+| --------- | ----- |
+| `input.format` | `cef` |
 | `cef.version` | `0` |
 | `cef.device_vendor` | `Security` |
 | `cef.device_product` | `threatmanager` |
@@ -231,14 +279,15 @@ are parsed:
 **Resulting LogRecord:**
 
 | Field | Value |
-|-------|-------|
+| ----- | ----- |
 | `timestamp` | `2003-10-11T22:14:15.003Z` |
 | `severity_number` | `18` (ERROR2 - from syslog severity 2/Critical) |
 | `severity_text` | `ERROR2` |
 | `body` | *(empty - fully parsed)* |
 
 | Attribute | Value |
-|-----------|-------|
+| --------- | ----- |
+| `input.format` | `cef_rfc5424` |
 | `syslog.version` | `1` |
 | `syslog.facility` | `4` |
 | `syslog.severity` | `2` |
@@ -263,7 +312,7 @@ Syslog severity levels are mapped to OpenTelemetry severity numbers per the
 [OTel Logs Data Model][otel-severity]:
 
 | Syslog Severity | Syslog Name | OTel Severity Number | OTel Severity Text |
-|-----------------|-------------|----------------------|--------------------|
+| --------------- | ----------- | ---------------------- | ------------------- |
 | 0 | Emergency | 21 | FATAL |
 | 1 | Alert | 19 | ERROR3 |
 | 2 | Critical | 18 | ERROR2 |
@@ -315,21 +364,27 @@ messages into Apache Arrow record batches before sending downstream:
 |                              |                     sent     |
 |                              |                              |
 |   Flush conditions:          |                              |
-|   +- Size: 100 messages      +-------------------------->   |
-|   +- Time: 100ms timeout     |                              |
+|   +- Size: max_size messages +-------------------------->   |
+|   +- Time: flush_timeout_ms  |                              |
 |                                                             |
 +-------------------------------------------------------------+
 ```
 
 A batch is flushed when either:
 
-- **100 messages** have accumulated, or
-- **100ms** have elapsed since the last flush, or
+- **`batch.max_size`** messages have accumulated (default: 100), or
+- **`batch.flush_timeout_ms`** milliseconds have elapsed since the last flush
+  (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
+
+Both thresholds are optionally configurable via the `batch` section (see
+[Configuration](#configuration)). Lowering these values reduces the window
+of in-memory data that could be lost on a crash, at the expense of more
+frequent (and smaller) downstream sends.
 
 This batching strategy balances:
 
-- **Latency**: 100ms max delay for low-volume streams
+- **Latency**: Configurable max delay for low-volume streams
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
 
@@ -348,7 +403,7 @@ format, which provides:
 The receiver exposes the following internal metrics:
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| ------- | ------ | ------------- |
 | `received_logs_total` | Counter | Total logs observed at socket |
 | `received_logs_forwarded` | Counter | Logs successfully sent downstream |
 | `received_logs_invalid` | Counter | Logs that failed to parse |
@@ -361,8 +416,9 @@ The receiver exposes the following internal metrics:
 ```yaml
 receivers:
   syslog_cef:
-    listening_addr: "0.0.0.0:1514"
-    protocol: tcp
+    protocol:
+      tcp:
+        listening_addr: "0.0.0.0:1514"
 
 processors:
   batch:
@@ -383,5 +439,5 @@ pipelines:
 ## Feature Flags
 
 | Feature | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `experimental-tls` | Enables TLS support for secure TCP connections |
