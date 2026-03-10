@@ -47,8 +47,8 @@ use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
-/// The URN for the OTLP exporter
-pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp";
+/// The URN for the OTLP gRPC exporter
+pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]

@@ -79,13 +79,13 @@ impl ValueAccessor {
         root: &'a StaticScalarExpression,
         scope: &PipelineResolutionScope<'a>,
     ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
-        let mut s: Vec<ScalarStaticResolutionResult> = self
+        let s: Vec<ScalarStaticResolutionResult> = self
             .selectors
             .iter_mut()
             .map(|s| s.try_resolve_static(scope))
             .collect();
 
-        Self::select_from_value(root, &mut s.drain(..))
+        Self::select_from_value(root, &mut s.into_iter())
     }
 
     pub(crate) fn fmt_with_indent(
@@ -113,7 +113,7 @@ impl ValueAccessor {
 
     pub(crate) fn select_from_value<'a, 'b>(
         root: &'a StaticScalarExpression,
-        selectors: &mut std::vec::Drain<ScalarStaticResolutionResult<'b>>,
+        selectors: &mut std::vec::IntoIter<ScalarStaticResolutionResult<'b>>,
     ) -> Result<Option<&'a StaticScalarExpression>, ExpressionError> {
         match selectors.next() {
             Some(s) => match s? {

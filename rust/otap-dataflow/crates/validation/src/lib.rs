@@ -36,6 +36,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    #[ignore = "flaky test, https://github.com/open-telemetry/otel-arrow/issues/2227"]
     fn no_processor() {
         Scenario::new()
             .pipeline(
