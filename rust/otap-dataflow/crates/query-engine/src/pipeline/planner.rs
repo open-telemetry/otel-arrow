@@ -491,16 +491,29 @@ impl PipelinePlanner {
         // in our AST expression tree, these are modeled as function invocations with a special
         // anonymous name
         if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
-            // TODO don't unwrap here - need to check if the function definition is null
-            // TODO - in the future we may want some way to identify that this is the special type
-            // of "function" that represents a nested pipeline applied to attributes. For now, we
-            // just know this is the only type of function invocation supported.
-            let function = functions.get(func.get_function_id()).unwrap();
+            let function_id = func.get_function_id();
+            let function =
+                functions
+                    .get(function_id)
+                    .ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!("did not find function with id {}", function_id),
+                        query_location: Some(func.get_query_location().clone()),
+                    })?;
+
             let PipelineFunctionImplementation::Expressions(function_exprs) =
                 function.get_implementation()
             else {
-                todo!("return error")
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "only functions with 'Expressions' implementation is currently supported"
+                            .into(),
+                });
             };
+
+            // TODO - in the future we may want some way to identify that this is the special type
+            // of "function" that represents a nested pipeline applied to attributes, either by
+            // its name or some additional metadata. For now, we just know this is the only type
+            // of function invocation supported.
 
             let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
             for func_expr in function_exprs {
@@ -510,7 +523,9 @@ impl PipelinePlanner {
                         DataExpression::Transform(t.clone())
                     }
                     PipelineFunctionExpression::Return(_r) => {
-                        todo!("invalid")
+                        return Err(Error::NotYetSupportedError {
+                            message: "return statement in function not yet supported".into(),
+                        });
                     }
                 };
                 inner_pipeline_data_exprs.push(data_expr);
