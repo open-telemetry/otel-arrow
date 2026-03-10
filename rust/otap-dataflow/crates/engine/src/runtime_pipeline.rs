@@ -341,9 +341,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         }
 
         // Drop the original sender so the channel closes when all node tasks complete.
-        // Each node already holds its own clone. Without this drop, the
-        // PipelineCtrlMsgManager's recv() never returns None and the manager
-        // can only exit via the draining deadline timeout.
+        // Each node holds its own clone and without this drop, the PipelinCtrlMsgManager
+        // can only exit via a timeout.
         drop(pipeline_ctrl_msg_tx);
 
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
