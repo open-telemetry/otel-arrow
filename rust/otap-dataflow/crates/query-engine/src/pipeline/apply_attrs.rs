@@ -619,4 +619,43 @@ mod test {
             &[OtlpProtoMessage::Logs(expected.clone())],
         );
     }
+
+    #[tokio::test]
+    async fn test_pipeline_conditionally_set_keys() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1") {
+                    set value = "a"
+                } else if (key == "k2") {
+                    set value = "b"
+                } else {
+                    set value = "c"
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("b")),
+                    KeyValue::new("k3", AnyValue::new_string("c")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
 }

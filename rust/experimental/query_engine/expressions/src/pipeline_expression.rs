@@ -372,6 +372,7 @@ impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineFunctionExpression {
+    Conditional(ConditionalDataExpression),
     Discard(DiscardDataExpression),
     Transform(TransformExpression),
     Return(ScalarExpression),
@@ -383,6 +384,7 @@ impl PipelineFunctionExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
         match self {
+            Self::Conditional(c) => c.try_fold(scope),
             Self::Discard(d) => d.try_fold(scope),
             Self::Transform(t) => t.try_fold(scope),
             Self::Return(_r) => Ok(()), // no need to fold return
@@ -397,6 +399,10 @@ impl PipelineFunctionExpression {
         indent: &str,
     ) -> std::fmt::Result {
         match self {
+            PipelineFunctionExpression::Conditional(c) => {
+                write!(f, "Conditional: ")?;
+                c.fmt_with_indent(f, format!("{indent}           ").as_str())
+            }
             PipelineFunctionExpression::Discard(d) => {
                 write!(f, "Discard: ")?;
                 d.fmt_with_indent(f, format!("{indent}           ").as_str())

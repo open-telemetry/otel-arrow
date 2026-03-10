@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::BooleanArray;
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, concat_batches, not, or};
+use arrow::compute::{and, concat_batches, filter, filter_record_batch, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -209,6 +209,89 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         Ok(result)
+    }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_ctx: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        let mut already_selected_vec = BooleanArray::new(
+            BooleanBuffer::new_unset(attrs_record_batch.num_rows()),
+            None,
+        );
+
+        let mut branch_results = Vec::with_capacity(
+            self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
+        );
+
+        for branch in &mut self.branches {
+            if already_selected_vec.true_count() == attrs_record_batch.num_rows() {
+                // all rows have been selected by previous branches, so there is no need to continue
+                // executing the next branches with empty batches
+                break;
+            }
+
+            let filter_exec = match &mut branch.condition {
+                Composite::Base(filter) => filter,
+                _ => {
+                    todo!("return planning error")
+                }
+            };
+            let predicate = filter_exec.predicate.as_mut().unwrap();
+            let predicate_selection_vec =
+                predicate.evaluate_filter(&attrs_record_batch, session_ctx)?;
+            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+            already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+            let mut branch_record_batch =
+                filter_record_batch(&attrs_record_batch, &branch_selection_vec)?;
+            for stage in &mut branch.pipeline_stages {
+                branch_record_batch = stage
+                    .execute_on_attributes(
+                        branch_record_batch,
+                        session_ctx,
+                        config_options,
+                        task_context.clone(),
+                        exec_options,
+                    )
+                    .await?;
+            }
+
+            branch_results.push(branch_record_batch)
+        }
+
+        if already_selected_vec.true_count() != attrs_record_batch.num_rows() {
+            let mut default_branch_batch =
+                filter_record_batch(&attrs_record_batch, &not(&already_selected_vec)?)?;
+
+            if let Some(default_branch) = self.default_branch.as_mut() {
+                for stage in default_branch {
+                    default_branch_batch = stage
+                        .execute_on_attributes(
+                            default_branch_batch,
+                            session_ctx,
+                            config_options,
+                            task_context.clone(),
+                            exec_options,
+                        )
+                        .await?;
+                }
+            }
+            branch_results.push(default_branch_batch);
+        }
+
+        let batch_refs = branch_results.iter().collect::<Vec<_>>();
+        let final_result = concat_batches(branch_results[0].schema_ref(), batch_refs)?;
+
+        Ok(final_result)
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
     }
 }
 

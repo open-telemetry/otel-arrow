@@ -517,6 +517,9 @@ impl PipelinePlanner {
             let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
             for func_expr in function_exprs {
                 let data_expr = match func_expr {
+                    PipelineFunctionExpression::Conditional(c) => {
+                        DataExpression::Conditional(c.clone())
+                    }
                     PipelineFunctionExpression::Discard(d) => DataExpression::Discard(d.clone()),
                     PipelineFunctionExpression::Transform(t) => {
                         DataExpression::Transform(t.clone())
