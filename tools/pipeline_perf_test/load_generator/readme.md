@@ -30,19 +30,19 @@ python loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
 ### Standalone syslog UDP load generation
 
 ```bash
-python loadgen.py --load-type syslog --syslog-server 0.0.0.0 --syslog-port 5140 --duration 2
+python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --duration 30
 ```
 
 ### Standalone syslog TCP load generation
 
 ```bash
-python loadgen.py --load-type syslog --syslog-server 0.0.0.0 --syslog-port 514 --syslog-transport tcp --duration 2
+python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport tcp --duration 30
 ```
 
 ### Standalone syslog CEF load generation
 
 ```bash
-python loadgen.py --load-type syslog --syslog-content-type cef --syslog-server 0.0.0.0 --syslog-port 5140 --duration 2
+python loadgen.py --load-type syslog --syslog-content-type cef --syslog-server 127.0.0.1 --syslog-port 5140 --duration 30
 ```
 
 ### Server mode (HTTP API control)
@@ -57,7 +57,7 @@ python loadgen.py --serve
 # Start load generation
 curl -X POST http://localhost:5001/start \
   -H "Content-Type: application/json" \
-  -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2, "syslog_server": "0.0.0.0", "syslog_port": 5140}'
+  -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2, "syslog_server": "127.0.0.1", "syslog_port": 5140}'
 
 # Stop load generation
 curl -X POST http://localhost:5001/stop
