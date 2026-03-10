@@ -2,17 +2,29 @@
 
 import glob
 import os
+import subprocess
 import sys
 
 CR = b'\r'
 CRLF = b'\r\n'
 LF = b'\n'
 
+# Only check git-tracked files so local build artifacts, venvs, perf results,
+# etc. are skipped automatically.
+_tracked_files = set(
+    os.path.normpath(f)
+    for f in subprocess.run(
+        ['git', 'ls-files'], capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+)
+
 def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1):
     error_count = 0
 
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
+            continue
+        if os.path.normpath(filename) not in _tracked_files:
             continue
         with open(filename, 'rb') as file:
             content = file.read()
