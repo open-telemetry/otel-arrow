@@ -557,4 +557,49 @@ mod test {
             &[OtlpProtoMessage::Logs(expected)],
         );
     }
+
+    #[tokio::test]
+    async fn test_pipeline_set_string_to_literal() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("b")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = "a"
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(14.0))])
+                .finish(),
+        ]);
+
+        println!(
+            "{:#?}",
+            result.resource_logs[0].scope_logs[0].log_records[0].attributes
+        )
+
+        // assert_equivalent(
+        //     &[OtlpProtoMessage::Logs(result)],
+        //     &[OtlpProtoMessage::Logs(expected.clone())],
+        // );
+
+        // // assert filter also works when literal on the left
+        // let query = r#"
+        //     logs | apply attributes {
+        //         where 10.0 < value
+        //     }"#;
+
+        // let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        // assert_equivalent(
+        //     &[OtlpProtoMessage::Logs(result)],
+        //     &[OtlpProtoMessage::Logs(expected)],
+        // );
+    }
 }

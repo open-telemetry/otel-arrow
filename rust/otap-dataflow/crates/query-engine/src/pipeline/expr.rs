@@ -431,7 +431,7 @@ pub(crate) struct ScopedPhysicalExpr {
 
     /// Options for projection, including whether to remove dictionary encoding (which is required
     /// for arrow numeric compute kernels).
-    projection_opts: ProjectionOptions,
+    pub(crate) projection_opts: ProjectionOptions,
 }
 
 /// Identifies the source for the input to the physical expression
@@ -526,11 +526,26 @@ impl ScopedPhysicalExpr {
             }
         };
 
+        // evaluate the expression
+        let result_vals = self.evaluate_on_batch(session_context, &projected_rb)?;
+
+        Ok(Some(PhysicalExprEvalResult::new(
+            result_vals,
+            result_data_scope,
+            &source_rb,
+        )))
+    }
+
+    pub(crate) fn evaluate_on_batch(
+        &mut self,
+        session_context: &SessionContext,
+        record_batch: &RecordBatch,
+    ) -> Result<ColumnarValue> {
         // plan the physical expressions from logical expression. This happens lazily the first
         // time we receive a non-null batch
         if self.physical_expr.is_none() {
             let session_state = session_context.state();
-            let df_schema = DFSchema::try_from(projected_rb.schema_ref().as_ref().clone())?;
+            let df_schema = DFSchema::try_from(record_batch.schema_ref().as_ref().clone())?;
             let physical_expr = create_physical_expr(
                 &self.logical_expr,
                 &df_schema,
@@ -545,13 +560,9 @@ impl ScopedPhysicalExpr {
             .physical_expr
             .as_ref()
             .expect("physical expr initialized")
-            .evaluate(&projected_rb)?;
+            .evaluate(&record_batch)?;
 
-        Ok(Some(PhysicalExprEvalResult::new(
-            result_vals,
-            result_data_scope,
-            &source_rb,
-        )))
+        Ok(result_vals)
     }
 
     /// Filters the record batch by key, and then projects the column containing values of the

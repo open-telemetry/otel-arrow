@@ -28,8 +28,11 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::get_required_array;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
+use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -39,9 +42,10 @@ use crate::pipeline::expr::types::{
 };
 use crate::pipeline::expr::{
     DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult, ScopedLogicalExpr,
-    ScopedPhysicalExpr,
+    ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::ColumnAccessor;
+use crate::pipeline::project::Projection;
 use crate::pipeline::state::ExecutionState;
 
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column
@@ -278,6 +282,120 @@ impl PipelineStage for AssignPipelineStage {
             },
         }
     }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        // project attributes ...
+        // TODO - we should probably only do this if virtual "value" column is selected ...
+        let type_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+
+        // TODO pretty sure we need to check if everything has the same type
+        // TODO pretty sure we need to remove any dict encoding if necessary ...
+        // TODO - should use "try upsert column" during projection?
+
+        // find the first type
+        let attr_type = type_column.iter().flatten().next().unwrap();
+        let attr_type = AttributeValueType::try_from(attr_type).unwrap();
+        let values_column = match attr_type {
+            AttributeValueType::Bool => attrs_record_batch.column_by_name(consts::ATTRIBUTE_BOOL),
+            AttributeValueType::Bytes => attrs_record_batch.column_by_name(consts::ATTRIBUTE_BYTES),
+            AttributeValueType::Double => {
+                attrs_record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
+            }
+            AttributeValueType::Int => attrs_record_batch.column_by_name(consts::ATTRIBUTE_INT),
+            AttributeValueType::Str => attrs_record_batch.column_by_name(consts::ATTRIBUTE_STR),
+            _ => {
+                todo!("other values types")
+            }
+        };
+        // TODO - if need to project this and don't have it, should be empty batch I think ...
+        let values_column = values_column.unwrap().clone();
+
+        let mut fields = attrs_record_batch.schema().fields.to_vec();
+        fields.push(Arc::new(Field::new(
+            VALUE_COLUMN_NAME,
+            values_column.data_type().clone(),
+            true,
+        )));
+
+        let mut columns = attrs_record_batch.columns().to_vec();
+        columns.push(values_column);
+
+        if self.source.projection_opts.downcast_dicts {
+            Projection::try_downcast_dicts(&mut fields, &mut columns)?
+        }
+
+        let projected_rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+
+        let result = self
+            .source
+            .evaluate_on_batch(session_context, &projected_rb)?
+            .to_array(attrs_record_batch.num_rows())?;
+
+        // TODO - clone avoid?
+        let mut result_type = result.data_type().clone();
+        if let DataType::Dictionary(_, v) = result_type {
+            result_type = *v.clone()
+        }
+
+        // TODO - need some better logic around what we're replacing here ...
+        // e.g. is it the key, is it the value, is it some specific column ...
+
+        let (field_name, supports_dict, attr_type) = match result_type {
+            DataType::Utf8 => (consts::ATTRIBUTE_STR, true, AttributeValueType::Str),
+            _ => {
+                todo!()
+            }
+        };
+
+        // TODO - need downcast result to dict if supported
+
+        let field_index = attrs_record_batch
+            .schema()
+            .fields()
+            .find(field_name)
+            .map(|(i, _)| i);
+
+        // TODO - any opportunity to reuse arrays
+        let mut fields = attrs_record_batch.schema_ref().fields.to_vec();
+        let mut columns = attrs_record_batch.columns().to_vec();
+
+        // TODO there's a "try upsert column" that could be used here
+        if let Some(field_index) = field_index {
+            fields[field_index] = Arc::new(
+                fields[field_index]
+                    .as_ref()
+                    .clone()
+                    .with_data_type(result.data_type().clone()),
+            );
+            columns[field_index] = result;
+        } else {
+            fields.push(Arc::new(Field::new(
+                field_name,
+                result.data_type().clone(),
+                true,
+            )));
+            columns.push(result);
+        }
+
+        let result = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+
+        Ok(result)
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
+    }
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
@@ -366,6 +484,14 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
         | ExprLogicalType::String
         | ExprLogicalType::Int64
         | ExprLogicalType::Float64 => source_type == &ExprLogicalType::AnyValue,
+
+        ExprLogicalType::AnyValue => matches!(
+            source_type,
+            ExprLogicalType::Boolean
+                | ExprLogicalType::String
+                | ExprLogicalType::Int64
+                | ExprLogicalType::Float64
+        ),
 
         // TODO - handle other cases as we support a greater variety of destinations
         _ => false,
