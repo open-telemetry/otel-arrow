@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
@@ -376,6 +378,13 @@ pub(crate) fn parse_apply_operator_call(
     pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
+
+    // we'll be creating a pipeline function to represent the pipeline, and we'll use this hash
+    // as part of the function name ...
+    let mut hasher = DefaultHasher::new();
+    operator_call_rule.as_str().hash(&mut hasher);
+    let func_hash = hasher.finish();
+
     let mut inner_rules = operator_call_rule.into_inner();
 
     // parse the target of the nested pipeline application:
@@ -417,8 +426,14 @@ pub(crate) fn parse_apply_operator_call(
         let function_expr = match data_expr {
             DataExpression::Discard(d) => PipelineFunctionExpression::Discard(d),
             DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
-            _ => {
-                todo!("need add the others")
+            other => {
+                return Err(ParserError::SyntaxNotSupported(
+                    other.get_query_location().clone(),
+                    format!(
+                        "Expression type not supported in apply operator call {}",
+                        other.get_name()
+                    ),
+                ));
             }
         };
 
@@ -426,17 +441,14 @@ pub(crate) fn parse_apply_operator_call(
     }
 
     let pipeline_function = PipelineFunction::new_with_expressions(
-        query_location.clone(), // TODO might not need clone
+        query_location.clone(),
         Vec::new(),
         None,
         function_exprs,
     );
 
-    // TODO - juggling of the function ID is not currently correct.
-    // we need to account for the fact that some function IDs may have been
-    // added in child pipelines
-    let fn_name = "__apply__TODO_some_hash";
-    let function_id = pipeline_builder.push_function_definition(fn_name, pipeline_function);
+    let fn_name = format!("__apply__{func_hash}");
+    let function_id = pipeline_builder.push_function_definition(&fn_name, pipeline_function);
 
     let transform_expr = TransformExpression::Set(SetTransformExpression::new(
         target_rule_query_location,

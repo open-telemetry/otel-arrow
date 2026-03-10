@@ -28,9 +28,6 @@ pub(crate) trait PipelineBuilder {
     }
 }
 
-// TODO - should probably add a wrapper around this that keeps track of the function IDs
-// TODO - need to somehow merge the function Ids from the child back into this ...
-
 pub struct RootPipelineBuilder<'a> {
     parser_state: &'a mut ParserState,
     max_func_id: Option<usize>,
