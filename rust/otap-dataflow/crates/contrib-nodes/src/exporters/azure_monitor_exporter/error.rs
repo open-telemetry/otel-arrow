@@ -423,7 +423,10 @@ mod tests {
             attempts: 5,
             last_error: Box::new(inner),
         };
-        assert_eq!(error.to_string(), "Export failed after 5 attempts: Payload too large");
+        assert_eq!(
+            error.to_string(),
+            "Export failed after 5 attempts: Payload too large"
+        );
         assert!(error.source().is_some());
     }
 
