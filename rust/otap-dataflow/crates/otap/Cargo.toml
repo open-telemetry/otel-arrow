@@ -69,7 +69,6 @@ weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
-zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
 hyper = { workspace = true }
