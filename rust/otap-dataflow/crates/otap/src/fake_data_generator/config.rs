@@ -73,6 +73,7 @@ pub enum GenerationStrategy {
 ///     weight: 1
 /// ```
 #[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceAttributeSet {
     /// Key-value pairs merged into the resource of every generated signal.
     pub attrs: HashMap<String, String>,
@@ -390,7 +391,7 @@ fn default_resource_weight() -> NonZeroU32 {
 ///
 /// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.
 #[must_use]
-pub fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usize> {
+pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usize> {
     entries
         .iter()
         .enumerate()
@@ -426,28 +427,35 @@ where
         OneOrMany::Many(list) => list,
     };
 
-    Ok(raw
-        .into_iter()
+    raw.into_iter()
         .filter_map(|e| match e {
             RawEntry::Weighted(s) => {
                 if s.attrs.is_empty() {
-                    None
+                    // Explicit weighted entry with no attrs is a misconfiguration:
+                    // the user wrote `attrs: {}` (or omitted it entirely) alongside
+                    // a `weight`, which has no useful effect and is almost certainly
+                    // a typo.  Reject it rather than silently ignoring it.
+                    Some(Err(serde::de::Error::custom(
+                        "resource_attributes entry has `attrs` that is empty; \
+                         either provide at least one attribute or remove the entry",
+                    )))
                 } else {
-                    Some(s)
+                    Some(Ok(s))
                 }
             }
             RawEntry::Plain(map) => {
                 if map.is_empty() {
+                    // A bare empty map `{}` in a list is harmless noise; skip it.
                     None
                 } else {
-                    Some(ResourceAttributeSet {
+                    Some(Ok(ResourceAttributeSet {
                         attrs: map,
                         weight: default_resource_weight(),
-                    })
+                    }))
                 }
             }
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -594,6 +602,38 @@ mod tests {
             ]
         }));
         assert!(result.is_err(), "weight=0 should be rejected");
+    }
+
+    #[test]
+    fn resource_attributes_unknown_field_is_rejected() {
+        // "weights" is a common typo for "weight" — must not silently fall back
+        // to weight=1 with the stray field ignored.
+        let result = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {"tenant.id": "prod"}, "weights": 3}
+            ]
+        }));
+        assert!(
+            result.is_err(),
+            "unknown field 'weights' should be rejected"
+        );
+    }
+
+    #[test]
+    fn resource_attributes_weighted_empty_attrs_is_rejected() {
+        let result = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {}, "weight": 2}
+            ]
+        }));
+        assert!(
+            result.is_err(),
+            "weighted entry with empty attrs should be rejected"
+        );
     }
 
     #[test]
