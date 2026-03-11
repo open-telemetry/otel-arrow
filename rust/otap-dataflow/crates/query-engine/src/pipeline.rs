@@ -335,18 +335,6 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(otap_batch).await.unwrap();
-
-        println!("Logs Record Batch:");
-        let logs = result.get(ArrowPayloadType::Logs).unwrap();
-        print_batches(&[logs.clone()]).unwrap();
-        println!("Log Attrs Record Batch:");
-        let attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
-        print_batches(&[attrs.clone()]).unwrap();
-
-        println!("result input = {:#?}", result);
-
-        println!("as otap = {:#?}", otap_to_logs_data(result.clone()));
-
         otap_to_logs_data(result)
     }
 
