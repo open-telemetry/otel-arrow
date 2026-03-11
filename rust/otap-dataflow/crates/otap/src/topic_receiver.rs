@@ -70,9 +70,25 @@ pub struct TopicReceiverMetrics {
     /// Number of downstream NACK controls successfully bridged to topic nack.
     #[metric(unit = "{item}")]
     pub bridged_downstream_nacks: Counter<u64>,
-    /// Number of downstream ACK/NACK controls that could not be bridged.
+    /// Number of downstream ACK/NACK controls ignored because topic Ack/Nack
+    /// propagation is disabled for this receiver.
     #[metric(unit = "{event}")]
-    pub bridge_failures: Counter<u64>,
+    pub bridge_controls_ignored_propagation_disabled: Counter<u64>,
+    /// Number of downstream ACK/NACK controls missing the bridged topic
+    /// message id in calldata.
+    #[metric(unit = "{event}")]
+    pub bridge_missing_calldata: Counter<u64>,
+    /// Number of downstream ACK/NACK controls carrying an id that is not
+    /// currently tracked by the topic runtime.
+    ///
+    /// With the current raw `message_id` bridge this also includes invalid or
+    /// forged ids; those causes are not distinguishable yet.
+    #[metric(unit = "{event}")]
+    pub bridge_invalid_or_untracked_id: Counter<u64>,
+    /// Number of downstream ACK/NACK controls that failed to bridge for some
+    /// runtime reason other than an unknown message id.
+    #[metric(unit = "{event}")]
+    pub bridge_runtime_failures: Counter<u64>,
 }
 
 /// Topic receiver configuration.
@@ -234,57 +250,85 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 _ = metrics_reporter.report(&mut metrics);
                             }
                             Ok(NodeControlMsg::Ack(ack)) => {
-                                if ack_propagation_mode == TopicAckPropagationMode::Auto {
-                                    if let Some(message_id) = Self::decode_topic_message_id(&ack.unwind.route.calldata) {
-                                        match subscription.ack(message_id) {
-                                            Ok(()) => metrics.bridged_downstream_acks.add(1),
-                                            Err(e) => {
-                                                metrics.bridge_failures.add(1);
-                                                otel_warn!(
-                                                    "topic_receiver.bridge_ack_failed",
-                                                    node = receiver_id.name.as_ref(),
-                                                    topic = config.topic.as_ref(),
-                                                    error = e.to_string(),
-                                                    message = "Failed to ack topic message from downstream ack control"
-                                                );
-                                            }
+                                if ack_propagation_mode != TopicAckPropagationMode::Auto {
+                                    metrics
+                                        .bridge_controls_ignored_propagation_disabled
+                                        .add(1);
+                                } else if let Some(message_id) =
+                                    Self::decode_topic_message_id(&ack.unwind.route.calldata)
+                                {
+                                    match subscription.ack(message_id) {
+                                        Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                        Err(Error::MessageNotTracked) => {
+                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            otel_warn!(
+                                                "topic_receiver.bridge_ack_untracked_or_invalid_id",
+                                                node = receiver_id.name.as_ref(),
+                                                topic = config.topic.as_ref(),
+                                                message_id = message_id,
+                                                message = "Failed to ack topic message because the downstream control referenced an untracked or invalid message id"
+                                            );
                                         }
-                                    } else {
-                                        metrics.bridge_failures.add(1);
-                                        otel_warn!(
-                                            "topic_receiver.bridge_ack_missing_calldata",
-                                            node = receiver_id.name.as_ref(),
-                                            topic = config.topic.as_ref(),
-                                            message = "Downstream ack missing topic message id calldata"
-                                        );
+                                        Err(e) => {
+                                            metrics.bridge_runtime_failures.add(1);
+                                            otel_warn!(
+                                                "topic_receiver.bridge_ack_failed",
+                                                node = receiver_id.name.as_ref(),
+                                                topic = config.topic.as_ref(),
+                                                error = e.to_string(),
+                                                message = "Failed to ack topic message from downstream ack control"
+                                            );
+                                        }
                                     }
+                                } else {
+                                    metrics.bridge_missing_calldata.add(1);
+                                    otel_warn!(
+                                        "topic_receiver.bridge_ack_missing_calldata",
+                                        node = receiver_id.name.as_ref(),
+                                        topic = config.topic.as_ref(),
+                                        message = "Downstream ack missing topic message id calldata"
+                                    );
                                 }
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
-                                if ack_propagation_mode == TopicAckPropagationMode::Auto {
-                                    if let Some(message_id) = Self::decode_topic_message_id(&nack.unwind.route.calldata) {
-                                        match subscription.nack(message_id, nack.reason.as_str()) {
-                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
-                                            Err(e) => {
-                                                metrics.bridge_failures.add(1);
-                                                otel_warn!(
-                                                    "topic_receiver.bridge_nack_failed",
-                                                    node = receiver_id.name.as_ref(),
-                                                    topic = config.topic.as_ref(),
-                                                    error = e.to_string(),
-                                                    message = "Failed to nack topic message from downstream nack control"
-                                                );
-                                            }
+                                if ack_propagation_mode != TopicAckPropagationMode::Auto {
+                                    metrics
+                                        .bridge_controls_ignored_propagation_disabled
+                                        .add(1);
+                                } else if let Some(message_id) =
+                                    Self::decode_topic_message_id(&nack.unwind.route.calldata)
+                                {
+                                    match subscription.nack(message_id, nack.reason.as_str()) {
+                                        Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                        Err(Error::MessageNotTracked) => {
+                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            otel_warn!(
+                                                "topic_receiver.bridge_nack_untracked_or_invalid_id",
+                                                node = receiver_id.name.as_ref(),
+                                                topic = config.topic.as_ref(),
+                                                message_id = message_id,
+                                                message = "Failed to nack topic message because the downstream control referenced an untracked or invalid message id"
+                                            );
                                         }
-                                    } else {
-                                        metrics.bridge_failures.add(1);
-                                        otel_warn!(
-                                            "topic_receiver.bridge_nack_missing_calldata",
-                                            node = receiver_id.name.as_ref(),
-                                            topic = config.topic.as_ref(),
-                                            message = "Downstream nack missing topic message id calldata"
-                                        );
+                                        Err(e) => {
+                                            metrics.bridge_runtime_failures.add(1);
+                                            otel_warn!(
+                                                "topic_receiver.bridge_nack_failed",
+                                                node = receiver_id.name.as_ref(),
+                                                topic = config.topic.as_ref(),
+                                                error = e.to_string(),
+                                                message = "Failed to nack topic message from downstream nack control"
+                                            );
+                                        }
                                     }
+                                } else {
+                                    metrics.bridge_missing_calldata.add(1);
+                                    otel_warn!(
+                                        "topic_receiver.bridge_nack_missing_calldata",
+                                        node = receiver_id.name.as_ref(),
+                                        topic = config.topic.as_ref(),
+                                        message = "Downstream nack missing topic message id calldata"
+                                    );
                                 }
                             }
                             Ok(NodeControlMsg::Shutdown { .. }) => break,

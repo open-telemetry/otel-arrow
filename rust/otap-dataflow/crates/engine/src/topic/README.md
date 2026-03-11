@@ -107,6 +107,13 @@ especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
 a message that another subscriber still Acks upstream. Future enhancements are
 tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
 
+## Observability Notes
+
+Current topic exporter and receiver metrics cover publish behavior, lag, and
+Ack/Nack bridging. A future observability improvement is to expose topic-owned
+gauges for balanced group count and broadcast subscriber count once per topic,
+rather than duplicating those values in node-local metrics.
+
 ## Backend Capability Contract
 
 Current minimal behavior:

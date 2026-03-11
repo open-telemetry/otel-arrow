@@ -2830,7 +2830,7 @@ groups:
         .expect("topic set should build");
 
         let local_block = set
-            .get_required(&TopicName::from("local_block"))
+            .get_required(TopicName::from("local_block"))
             .expect("local_block topic must exist");
         assert_eq!(
             local_block.default_queue_on_full(),
@@ -2855,7 +2855,7 @@ groups:
 
         // group-local declaration must override global policy for same local name
         let overridden = set
-            .get_required(&TopicName::from("global_drop"))
+            .get_required(TopicName::from("global_drop"))
             .expect("overridden topic must exist");
         assert_eq!(
             overridden.default_queue_on_full(),

@@ -5,6 +5,7 @@
 
 use otap_df_config::SubscriptionGroupName;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
+use otap_df_telemetry::otel_warn;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -179,11 +180,18 @@ impl TrackedPublishTracker {
 
         self.ensure_timeout_worker();
         let entry = Arc::new(TrackedPublishEntry::new(Instant::now() + timeout, permit));
-        _ = self
+        let replaced = self
             .inner
             .entries
             .lock()
             .insert(message_id, Arc::clone(&entry));
+        if replaced.is_some() {
+            otel_warn!(
+                "topic.tracked_publish.duplicate_message_id",
+                message_id = message_id,
+                message = "Tracked publish tracker registered a duplicate message id and overwrote the previous entry"
+            );
+        }
         self.inner.wakeups.notify_one();
         TrackedPublishReceipt::new(message_id, entry)
     }
@@ -192,6 +200,7 @@ impl TrackedPublishTracker {
     ///
     /// Returns `true` if this call resolved a pending publish. Returns `false`
     /// if the message id was not tracked or had already been resolved.
+    #[must_use]
     pub fn resolve(&self, message_id: u64, outcome: TrackedPublishOutcome) -> bool {
         let Some(entry) = self.inner.entries.lock().remove(&message_id) else {
             return false;
@@ -204,6 +213,7 @@ impl TrackedPublishTracker {
     /// Discard one tracked publish without producing an outcome.
     ///
     /// This releases the in-flight slot associated with the publish.
+    #[must_use]
     pub fn discard(&self, message_id: u64) -> bool {
         let removed = self.inner.entries.lock().remove(&message_id).is_some();
         if removed {

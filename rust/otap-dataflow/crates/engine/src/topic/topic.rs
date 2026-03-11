@@ -95,6 +95,8 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.max(2).next_power_of_two();
         let mask = cap - 1;
+        debug_assert!(cap.is_power_of_two());
+        debug_assert_eq!(mask, cap - 1);
         let mut slots = Vec::with_capacity(cap);
         for _ in 0..cap {
             slots.push(Mutex::new(None));
@@ -117,6 +119,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     }
 
     pub(crate) fn try_read(&self, read_seq: u64) -> BroadcastReadResult<T> {
+        debug_assert!(read_seq > 0);
         let current_write = self.write_seq.load(Ordering::Acquire);
         if read_seq > current_write {
             return BroadcastReadResult::NotReady;
@@ -379,7 +382,11 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
                 payload: msg,
             };
             if group.tx.send(envelope).await.is_err() {
-                let _discarded = self.outcomes.discard(id);
+                let discarded = self.outcomes.discard(id);
+                debug_assert!(
+                    discarded,
+                    "freshly registered tracked publish should still be discardable when balanced send fails"
+                );
                 return Err(TopicClosed);
             }
         }
@@ -430,11 +437,19 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             match group.tx.try_send(envelope) {
                 Ok(()) => {}
                 Err(async_channel::TrySendError::Full(_)) => {
-                    let _discarded = self.outcomes.discard(id);
+                    let discarded = self.outcomes.discard(id);
+                    debug_assert!(
+                        discarded,
+                        "freshly registered tracked publish should still be discardable when balanced try_send reports full"
+                    );
                     return Ok(TrackedTryPublishOutcome::DroppedOnFull);
                 }
                 Err(async_channel::TrySendError::Closed(_)) => {
-                    let _discarded = self.outcomes.discard(id);
+                    let discarded = self.outcomes.discard(id);
+                    debug_assert!(
+                        discarded,
+                        "freshly registered tracked publish should still be discardable when balanced try_send reports closed"
+                    );
                     return Err(TopicClosed);
                 }
             }
@@ -677,9 +692,13 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             };
             for sender in senders.as_ref() {
                 if sender.send(envelope.clone()).await.is_err() {
-                    let _resolved = self
+                    let resolved = self
                         .outcomes
                         .resolve(id, TrackedPublishOutcome::TopicClosed);
+                    debug_assert!(
+                        resolved,
+                        "freshly registered tracked publish should still resolve when mixed balanced send fails"
+                    );
                     return Err(TopicClosed);
                 }
             }
@@ -750,11 +769,19 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 match sender.try_send(envelope.clone()) {
                     Ok(()) => {}
                     Err(async_channel::TrySendError::Full(_)) => {
-                        let _discarded = self.outcomes.discard(id);
+                        let discarded = self.outcomes.discard(id);
+                        debug_assert!(
+                            discarded,
+                            "freshly registered tracked publish should still be discardable when mixed balanced try_send reports full"
+                        );
                         return Ok(TrackedTryPublishOutcome::DroppedOnFull);
                     }
                     Err(async_channel::TrySendError::Closed(_)) => {
-                        let _discarded = self.outcomes.discard(id);
+                        let discarded = self.outcomes.discard(id);
+                        debug_assert!(
+                            discarded,
+                            "freshly registered tracked publish should still be discardable when mixed balanced try_send reports closed"
+                        );
                         return Err(TopicClosed);
                     }
                 }

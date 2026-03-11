@@ -25,7 +25,7 @@ use otap_df_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedTryPublishOutcome,
 };
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
@@ -58,7 +58,16 @@ pub struct TopicExporterMetrics {
     /// Number of messages rejected because tracked outcome capacity was exhausted.
     #[metric(unit = "{item}")]
     pub dropped_messages_on_outcome_capacity: Counter<u64>,
+    /// Current number of tracked publishes waiting for a terminal outcome.
+    ///
+    /// Future: add a pending-bytes gauge once retained payload size accounting
+    /// is available for tracked publishes.
+    #[metric(unit = "{item}")]
+    pub tracked_in_flight: Gauge<u64>,
     /// Number of tracked publishes that resolved by timeout.
+    ///
+    /// Future: add an outcome-latency histogram once histogram instruments are
+    /// available in the telemetry layer.
     #[metric(unit = "{item}")]
     pub outcome_timeouts: Counter<u64>,
     /// Number of pending end-to-end messages nacked during shutdown.
@@ -187,6 +196,8 @@ impl Exporter<OtapPdata> for TopicExporter {
                     maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
                         if let Some((message_id, outcome)) = maybe_outcome {
                             if let Some(data) = pending_messages.remove(&message_id) {
+                                // Future: record tracked publish outcome latency here once
+                                // histogram instruments are available.
                                 match outcome {
                                     TrackedPublishOutcome::Ack => {
                                         metrics.end_to_end_acks.add(1);
@@ -223,6 +234,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                         Message::Control(NodeControlMsg::CollectTelemetry {
                             mut metrics_reporter,
                         }) => {
+                            metrics.tracked_in_flight.set(pending_messages.len() as u64);
                             _ = metrics_reporter.report(&mut metrics);
                         }
                         Message::Control(NodeControlMsg::Shutdown { .. }) => {
