@@ -1568,30 +1568,14 @@ impl InvokeFunctionScalarExpression {
         {
             let mut return_statement = None;
             let mut return_count = 0;
-
-            // discard expression may cause the function to return Null if the predicate does not
-            // pass, so we consider when folding that if there is a discard expression then we
-            // cannot determine the function return type statically.
-            //
-            // TODO - in the future we may consider folding the discard logical expr and if it can
-            // be statically determined to return true/false, then we'll consider this during fold
-            let mut discard_count = 0;
-
             for e in expressions {
-                match e {
-                    PipelineFunctionExpression::Return(r) => {
-                        return_count += 1;
-                        return_statement = Some(r);
-                    }
-                    PipelineFunctionExpression::Discard(_d) => {
-                        discard_count += 1;
-                    }
-                    _ => {}
+                if let PipelineFunctionExpression::Return(r) = e {
+                    return_count += 1;
+                    return_statement = Some(r);
                 }
             }
 
             if return_count == 1
-                && discard_count == 0
                 // safety: we can "expect" on return_statement here because if return_count is 
                 // non-zero, then we've set this variable to `Some` in the loop above
                 && let ScalarExpression::Static(s) = return_statement.expect("return_statement not None")
@@ -3504,97 +3488,6 @@ mod tests {
                     ValueAccessor::new(),
                 )),
             )],
-            None,
-        );
-
-        // Note: If a discard expr is present return value won't be folded
-        run_test_success(
-            PipelineFunction::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![PipelineFunctionParameter::new(
-                    QueryLocation::new_fake(),
-                    PipelineFunctionParameterType::Scalar(None),
-                )],
-                None,
-                vec![
-                    PipelineFunctionExpression::Discard(
-                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                                QueryLocation::new_fake(),
-                                ScalarExpression::Argument(ArgumentScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    Some(ValueType::String),
-                                    0,
-                                    ValueAccessor::new(),
-                                )),
-                                ScalarExpression::Static(StaticScalarExpression::String(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                                )),
-                                true,
-                            )),
-                        ),
-                    ),
-                    PipelineFunctionExpression::Return(ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "hello world",
-                        )),
-                    )),
-                ],
-            ),
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "x",
-                        )),
-                    )]),
-                ),
-            ))],
-            None,
-        );
-
-        // Note: we're ensuring here that successfully evaluates whether it skips folding if there
-        //  is a discard statement, even if there is no return statement
-        run_test_success(
-            PipelineFunction::new_with_expressions(
-                QueryLocation::new_fake(),
-                vec![PipelineFunctionParameter::new(
-                    QueryLocation::new_fake(),
-                    PipelineFunctionParameterType::Scalar(None),
-                )],
-                None,
-                vec![PipelineFunctionExpression::Discard(
-                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                            QueryLocation::new_fake(),
-                            ScalarExpression::Argument(ArgumentScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                Some(ValueType::String),
-                                0,
-                                ValueAccessor::new(),
-                            )),
-                            ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
-                            )),
-                            true,
-                        )),
-                    ),
-                )],
-            ),
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "x",
-                        )),
-                    )]),
-                ),
-            ))],
             None,
         );
 
