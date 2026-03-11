@@ -29,8 +29,8 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension as _, ProcessorFactory};
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -112,8 +112,8 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_otap::testing::create_test_pdata;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
 

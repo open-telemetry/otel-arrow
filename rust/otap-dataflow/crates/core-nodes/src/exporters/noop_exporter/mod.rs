@@ -14,8 +14,8 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
 /// The URN for the noop exporter.
@@ -81,7 +81,12 @@ mod tests {
 
     #[test]
     fn test_noop_exporter_with_subscription() {
-        test_exporter_with_subscription(&NOOP_EXPORTER, json!({}), Interests::ACKS, Interests::ACKS);
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS,
+            Interests::ACKS,
+        );
         test_exporter_with_subscription(
             &NOOP_EXPORTER,
             json!({}),

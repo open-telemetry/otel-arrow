@@ -10,10 +10,10 @@ use otap_df_config::engine::{
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
+use otap_df_config::{PipelineGroupId, PipelineId};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_contrib_nodes as _;
 use otap_df_controller::Controller;
 // Keep this side-effect import so the crate is linked and its `linkme`

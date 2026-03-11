@@ -14,8 +14,8 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -126,6 +126,11 @@ mod tests {
             Interests::NACKS,
             Interests::NACKS | Interests::RETURN_DATA,
         );
-        test_exporter_with_subscription(&ERROR_EXPORTER, config, Interests::ACKS, Interests::empty());
+        test_exporter_with_subscription(
+            &ERROR_EXPORTER,
+            config,
+            Interests::ACKS,
+            Interests::empty(),
+        );
     }
 }

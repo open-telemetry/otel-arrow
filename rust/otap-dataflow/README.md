@@ -255,15 +255,6 @@ The `otap-df-core-nodes` crate is the destination for core-node
 implementations as they are split out from `otap-df-otap` during the
 ongoing refactor.
 
-Current status:
-
-- **6 components implemented** across 3 categories (exporters, processors, receivers)
-- **Exporters**: console_exporter, error_exporter, noop_exporter
-- **Processors**: debug_processor, delay_processor
-- **Receivers**: fake_data_generator
-- All components are automatically registered via `linkme::distributed_slice`
-- Follow a consistent contrib-style architecture with per-component subfolders
-
 ### Contrib Nodes
 
 [See crate README.](./crates/contrib-nodes/README.md)
