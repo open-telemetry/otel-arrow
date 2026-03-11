@@ -182,11 +182,23 @@ impl ObservedStateStore {
     /// Reports a new observed event in the store.
     fn report_engine(&self, observed_event: EngineEvent) -> Result<ApplyOutcome, Error> {
         match &observed_event.r#type {
-            EventType::Request(_) => {
-                otel_info!("state.observed_event", observed_event = ?observed_event);
+            EventType::Request(req) => {
+                otel_info!("state.observed_event",
+                    pipeline_group_id = %observed_event.key.pipeline_group_id,
+                    pipeline_id = %observed_event.key.pipeline_id,
+                    core_id = observed_event.key.core_id,
+                    event_type = ?req,
+                    message = observed_event.message.as_deref().unwrap_or(""),
+                );
             }
-            EventType::Error(_) => {
-                otel_error!("state.observed_error", observed_event = ?observed_event);
+            EventType::Error(err) => {
+                otel_error!("state.observed_error",
+                    pipeline_group_id = %observed_event.key.pipeline_group_id,
+                    pipeline_id = %observed_event.key.pipeline_id,
+                    core_id = observed_event.key.core_id,
+                    event_type = ?err,
+                    message = observed_event.message.as_deref().unwrap_or(""),
+                );
             }
             EventType::Success(_) => {}
         };
