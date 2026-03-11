@@ -4,13 +4,14 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use data_engine_expressions::{
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-    DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
-    MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
-    NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction,
-    PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
+    ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
+    DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression,
+    LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
+    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+    PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
+    PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
+    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor, ValueType,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -424,7 +425,14 @@ pub(crate) fn parse_apply_operator_call(
     let mut function_exprs = Vec::with_capacity(inner_data_exprs.len());
     for data_expr in inner_data_exprs {
         let function_expr = match data_expr {
-            DataExpression::Discard(d) => PipelineFunctionExpression::Discard(d),
+            DataExpression::Discard(d) => PipelineFunctionExpression::Discard(d.with_target(
+                MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    Some(ValueType::Map),
+                    0,
+                    ValueAccessor::new(),
+                )),
+            )),
             DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
             other => {
                 return Err(ParserError::SyntaxNotSupported(
@@ -442,8 +450,11 @@ pub(crate) fn parse_apply_operator_call(
 
     let pipeline_function = PipelineFunction::new_with_expressions(
         query_location.clone(),
-        Vec::new(),
-        None,
+        vec![PipelineFunctionParameter::new(
+            target_rule_query_location.clone(),
+            PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+        )],
+        Some(ValueType::Map),
         function_exprs,
     );
 
@@ -469,14 +480,15 @@ pub(crate) fn parse_apply_operator_call(
 #[cfg(test)]
 mod tests {
     use data_engine_expressions::{
-        ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        DiscardDataExpression, EqualToLogicalExpression, InvokeFunctionScalarExpression,
-        LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
-        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-        PipelineFunction, PipelineFunctionExpression, QueryLocation, ReduceMapTransformExpression,
-        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        TransformExpression, ValueAccessor,
+        ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
+        DataExpression, DiscardDataExpression, EqualToLogicalExpression,
+        InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector,
+        MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
+        OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression,
+        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
+        ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
+        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -1001,12 +1013,15 @@ mod tests {
 
         let expected = PipelineFunction::new_with_expressions(
             QueryLocation::new_fake(),
-            Vec::new(),
-            None,
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
             vec![
                 PipelineFunctionExpression::Discard(
-                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                        LogicalExpression::Not(NotLogicalExpression::new(
+                    DiscardDataExpression::new(QueryLocation::new_fake())
+                        .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                             QueryLocation::new_fake(),
                             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                                 QueryLocation::new_fake(),
@@ -1026,12 +1041,19 @@ mod tests {
                                 )),
                                 true,
                             )),
+                        )))
+                        .with_target(MutableValueExpression::Argument(
+                            ArgumentScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Some(ValueType::Map),
+                                0,
+                                ValueAccessor::new(),
+                            ),
                         )),
-                    ),
                 ),
                 PipelineFunctionExpression::Discard(
-                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                        LogicalExpression::Not(NotLogicalExpression::new(
+                    DiscardDataExpression::new(QueryLocation::new_fake())
+                        .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                             QueryLocation::new_fake(),
                             LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                                 QueryLocation::new_fake(),
@@ -1051,8 +1073,15 @@ mod tests {
                                 )),
                                 true,
                             )),
+                        )))
+                        .with_target(MutableValueExpression::Argument(
+                            ArgumentScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Some(ValueType::Map),
+                                0,
+                                ValueAccessor::new(),
+                            ),
                         )),
-                    ),
                 ),
             ],
         );
@@ -1146,11 +1175,14 @@ mod tests {
 
         let expected0 = PipelineFunction::new_with_expressions(
             QueryLocation::new_fake(),
-            Vec::new(),
-            None,
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
             vec![PipelineFunctionExpression::Discard(
-                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                    LogicalExpression::Not(NotLogicalExpression::new(
+                DiscardDataExpression::new(QueryLocation::new_fake())
+                    .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                         QueryLocation::new_fake(),
                         LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                             QueryLocation::new_fake(),
@@ -1168,19 +1200,29 @@ mod tests {
                             )),
                             true,
                         )),
+                    )))
+                    .with_target(MutableValueExpression::Argument(
+                        ArgumentScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Some(ValueType::Map),
+                            0,
+                            ValueAccessor::new(),
+                        ),
                     )),
-                ),
             )],
         );
         assert_eq!(&functions[0], &expected0);
 
         let expected1 = PipelineFunction::new_with_expressions(
             QueryLocation::new_fake(),
-            Vec::new(),
-            None,
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
             vec![PipelineFunctionExpression::Discard(
-                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                    LogicalExpression::Not(NotLogicalExpression::new(
+                DiscardDataExpression::new(QueryLocation::new_fake())
+                    .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                         QueryLocation::new_fake(),
                         LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                             QueryLocation::new_fake(),
@@ -1198,8 +1240,15 @@ mod tests {
                             )),
                             true,
                         )),
+                    )))
+                    .with_target(MutableValueExpression::Argument(
+                        ArgumentScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Some(ValueType::Map),
+                            0,
+                            ValueAccessor::new(),
+                        ),
                     )),
-                ),
             )],
         );
         assert_eq!(&functions[1], &expected1);
