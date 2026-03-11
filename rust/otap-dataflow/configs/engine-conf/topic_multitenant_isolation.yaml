@@ -1,0 +1,358 @@
+version: otel_dataflow/v1
+
+# Multitenant isolation scenario:
+# - traffic generators publish into a shared ingress topic
+# - ingress router consumes ingress topic and splits traffic into tenant topics
+# - one topic per tenant
+# - three independent tenant pipelines consume/process/export their own topic
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 1024
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  topic_multitenant_isolation:
+    topics:
+      ingress:
+        description: "Shared ingress topic between traffic generators and ingress router"
+        policies:
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
+      tenant_a:
+        description: "Tenant A isolated topic"
+        policies:
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
+      tenant_b:
+        description: "Tenant B isolated topic"
+        policies:
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
+      tenant_c:
+        description: "Tenant C isolated topic"
+        policies:
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
+
+    pipelines:
+      traffic_gen_tenant_a:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 3
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          tenant_a_enricher:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: service.namespace
+                  value: tenant-a
+              apply_to: ["resource"]
+
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: tenant_a_enricher
+          - from: tenant_a_enricher
+            to: ingress_exporter
+
+      traffic_gen_tenant_b:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 3
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          tenant_b_enricher:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: service.namespace
+                  value: tenant-b
+              apply_to: ["resource"]
+
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: tenant_b_enricher
+          - from: tenant_b_enricher
+            to: ingress_exporter
+
+      traffic_gen_tenant_c:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          tenant_c_enricher:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: service.namespace
+                  value: tenant-c
+              apply_to: ["resource"]
+
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: tenant_c_enricher
+          - from: tenant_c_enricher
+            to: ingress_exporter
+
+      ingress_router:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: ingress_router
+
+          tenant_router:
+            type: processor:content_router
+            outputs: ["tenant_a", "tenant_b", "tenant_c", "unmatched"]
+            config:
+              routing_key:
+                resource_attribute: "service.namespace"
+              case_sensitive: false
+              routes:
+                tenant-a: tenant_a
+                tenant-b: tenant_b
+                tenant-c: tenant_c
+              default_output: unmatched
+
+          tenant_a_exporter:
+            type: exporter:topic
+            config:
+              topic: tenant_a
+              queue_on_full: block
+
+          tenant_b_exporter:
+            type: exporter:topic
+            config:
+              topic: tenant_b
+              queue_on_full: block
+
+          tenant_c_exporter:
+            type: exporter:topic
+            config:
+              topic: tenant_c
+              queue_on_full: block
+
+          unmatched_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: ingress_receiver
+            to: tenant_router
+          - from: tenant_router["tenant_a"]
+            to: tenant_a_exporter
+          - from: tenant_router["tenant_b"]
+            to: tenant_b_exporter
+          - from: tenant_router["tenant_c"]
+            to: tenant_c_exporter
+          - from: tenant_router["unmatched"]
+            to: unmatched_sink
+
+      tenant_a_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          tenant_a_receiver:
+            type: receiver:topic
+            config:
+              topic: tenant_a
+              subscription:
+                mode: balanced
+                group: tenant_a_processors
+
+          tenant_a_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          tenant_a_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: tenant_a_receiver
+            to: tenant_a_retry
+          - from: tenant_a_retry
+            to: tenant_a_sink
+
+      tenant_b_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          tenant_b_receiver:
+            type: receiver:topic
+            config:
+              topic: tenant_b
+              subscription:
+                mode: balanced
+                group: tenant_b_processors
+
+          tenant_b_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          tenant_b_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: tenant_b_receiver
+            to: tenant_b_retry
+          - from: tenant_b_retry
+            to: tenant_b_sink
+
+      tenant_c_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          tenant_c_receiver:
+            type: receiver:topic
+            config:
+              topic: tenant_c
+              subscription:
+                mode: balanced
+                group: tenant_c_processors
+
+          tenant_c_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          tenant_c_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: tenant_c_receiver
+            to: tenant_c_retry
+          - from: tenant_c_retry
+            to: tenant_c_sink
