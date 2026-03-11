@@ -4,8 +4,8 @@
 //! Implementation of the configuration of the fake signal receiver
 //!
 
-use serde::{Deserialize, Serialize};
 use serde::de::Deserializer;
+use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 

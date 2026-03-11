@@ -68,7 +68,10 @@ fn static_log_attributes() -> Vec<KeyValue> {
 
 /// Generates TracesData with static hardcoded spans
 #[must_use]
-pub fn static_otlp_traces(signal_count: usize, extra_attrs: Option<&HashMap<String, String>>) -> TracesData {
+pub fn static_otlp_traces(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> TracesData {
     let spans = static_spans(signal_count);
 
     let scopes = vec![ScopeSpans::new(
@@ -91,7 +94,10 @@ pub fn static_otlp_traces(signal_count: usize, extra_attrs: Option<&HashMap<Stri
 
 /// Generates LogsData with static hardcoded log records
 #[must_use]
-pub fn static_otlp_logs(signal_count: usize, extra_attrs: Option<&HashMap<String, String>>) -> LogsData {
+pub fn static_otlp_logs(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> LogsData {
     let logs = static_logs(signal_count);
 
     let scopes = vec![ScopeLogs::new(
@@ -114,7 +120,10 @@ pub fn static_otlp_logs(signal_count: usize, extra_attrs: Option<&HashMap<String
 
 /// Generates MetricsData with static hardcoded metrics
 #[must_use]
-pub fn static_otlp_metrics(signal_count: usize, extra_attrs: Option<&HashMap<String, String>>) -> MetricsData {
+pub fn static_otlp_metrics(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> MetricsData {
     let metrics = static_metrics(signal_count);
 
     let scopes = vec![ScopeMetrics::new(
