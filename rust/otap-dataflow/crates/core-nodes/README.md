@@ -1,28 +1,27 @@
 # Core Nodes
 
-This crate contains essential node implementations (exporters, receivers, and processors)
-for the OTAP Dataflow Engine. Components are organized by category with per-component subfolders.
+This crate contains essential node implementations (exporters, receivers, and
+processors) for the OTAP Dataflow Engine. Components are organized by category
+with per-component subfolders.
 
 ## Architecture
 
 Each component lives in its own subfolder within a category:
 
-```md
-src/
-  ├─ exporters/
-  │  ├─ mod.rs (category exports)
-  │  ├─ console_exporter/
-  │  ├─ error_exporter/
-  │  └─ noop_exporter/
-  ├─ processors/
-  │  ├─ mod.rs (category exports)
-  │  ├─ debug_processor/
-  │  └─ delay_processor/
-  ├─ receivers/
-  │  ├─ mod.rs (category exports)
-  │  └─ fake_data_generator/
-  └─ lib.rs
-```
+    src/
+      exporters/
+        mod.rs (category exports)
+        console_exporter/
+        error_exporter/
+        noop_exporter/
+      processors/
+        mod.rs (category exports)
+        debug_processor/
+        delay_processor/
+      receivers/
+        mod.rs (category exports)
+        fake_data_generator/
+      lib.rs
 
 ## Components
 
@@ -59,7 +58,8 @@ src/
 #### debug_processor
 
 - Outputs received signals with configurable filtering, sampling, and verbosity
-- Supports multiple output modes (console, file, outports) and marshaling formats
+- Supports multiple output modes (console, file, outports) and marshaling
+  formats
 - Useful for understanding data flow through pipelines
 
 #### delay_processor
