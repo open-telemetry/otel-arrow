@@ -88,7 +88,7 @@ pub enum Error {
 
     // ==================== Export Errors ====================
     /// Export failed after retries.
-    #[error("Export failed after {attempts} attempts")]
+    #[error("Export failed after {attempts} attempts: {last_error}")]
     ExportFailed {
         /// Number of attempts made.
         attempts: u32,
@@ -423,7 +423,10 @@ mod tests {
             attempts: 5,
             last_error: Box::new(inner),
         };
-        assert_eq!(error.to_string(), "Export failed after 5 attempts");
+        assert_eq!(
+            error.to_string(),
+            "Export failed after 5 attempts: Payload too large"
+        );
         assert!(error.source().is_some());
     }
 

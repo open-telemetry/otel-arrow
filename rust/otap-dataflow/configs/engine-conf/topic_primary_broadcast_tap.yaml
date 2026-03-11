@@ -1,0 +1,233 @@
+version: otel_dataflow/v1
+
+# Primary + tap-oriented mixed criticality scenario:
+# - traffic generator publishes to a shared ingress topic
+# - primary o11y pipeline consumes ingress in balanced mode and forwards to a backend topic
+# - tap pipeline consumes ingress in broadcast mode and republishes to a dedicated analytics topic
+# - two analytics pipelines consume that analytics topic in broadcast mode
+# Goal: keep the primary path strict and isolated while the tap path stays best-effort through broadcast delivery and lag handling.
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 1024
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  topic_primary_broadcast_tap:
+    topics:
+      ingress_main:
+        description: "Shared ingress topic: balanced for primary delivery, broadcast for the tap pipeline"
+        policies:
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
+            on_lag: drop_oldest
+
+      backend_logs:
+        description: "Primary path logs forwarded to backend sink"
+        policies:
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
+
+      analytics_tap:
+        description: "Best-effort broadcast fanout topic for analytics pipelines"
+        policies:
+          balanced:
+            queue_capacity: 2048
+            on_full: block
+          broadcast:
+            queue_capacity: 2048
+            on_lag: drop_oldest
+
+    pipelines:
+      traffic_gen:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 8
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          ingress_main_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress_main
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: ingress_main_exporter
+
+      primary_o11y:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+
+        nodes:
+          ingress_main_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress_main
+              subscription:
+                mode: balanced
+                group: primary_o11y
+
+          logs_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          backend_logs_exporter:
+            type: exporter:topic
+            config:
+              topic: backend_logs
+              queue_on_full: block
+
+        connections:
+          - from: ingress_main_receiver
+            to: logs_retry
+          - from: logs_retry
+            to: backend_logs_exporter
+
+      tap_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_main_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress_main
+              subscription:
+                mode: broadcast
+
+          analytics_tap_exporter:
+            type: exporter:topic
+            config:
+              topic: analytics_tap
+
+        connections:
+          - from: ingress_main_receiver
+            to: analytics_tap_exporter
+
+      security_analytics:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          analytics_tap_receiver:
+            type: receiver:topic
+            config:
+              topic: analytics_tap
+              subscription:
+                mode: broadcast
+
+          security_analytics_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: analytics_tap_receiver
+            to: security_analytics_sink
+
+      anomaly_detection:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          analytics_tap_receiver:
+            type: receiver:topic
+            config:
+              topic: analytics_tap
+              subscription:
+                mode: broadcast
+
+          anomaly_detection_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: analytics_tap_receiver
+            to: anomaly_detection_sink
+
+      backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          backend_logs_receiver:
+            type: receiver:topic
+            config:
+              topic: backend_logs
+              subscription:
+                mode: balanced
+                group: backend_workers
+
+          backend_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: backend_logs_receiver
+            to: backend_sink

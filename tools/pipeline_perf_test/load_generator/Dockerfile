@@ -3,8 +3,8 @@ FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b
 WORKDIR /app
 
 # Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock.txt .
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock.txt
 
 # Copy the load generator code
 COPY *.py ./
