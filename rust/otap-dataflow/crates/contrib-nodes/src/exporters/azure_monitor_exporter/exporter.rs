@@ -526,7 +526,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     let minutes = (total_secs % 3600) / 60;
                                     let seconds = total_secs % 60;
 
-                                    otel_info!("azure_monitor_exporter.auth.token_refresh", refresh_in = format!("{}h {}m {}s", hours, minutes, seconds));
+                                    otel_info!("azure_monitor_exporter.auth.token_acquired", next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds));
                                 }
                                 Err(e) => {
                                     otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
