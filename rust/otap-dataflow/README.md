@@ -257,8 +257,12 @@ ongoing refactor.
 
 Current status:
 
-- The crate is currently a scaffold.
-- No core node implementations have been moved there yet.
+- **6 components implemented** across 3 categories (exporters, processors, receivers)
+- **Exporters**: console_exporter, error_exporter, noop_exporter
+- **Processors**: debug_processor, delay_processor
+- **Receivers**: fake_data_generator
+- All components are automatically registered via `linkme::distributed_slice`
+- Follow a consistent contrib-style architecture with per-component subfolders
 
 ### Contrib Nodes
 

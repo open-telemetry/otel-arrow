@@ -3,8 +3,8 @@
 
 //! Console exporter that prints OTLP data with hierarchical formatting.
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;

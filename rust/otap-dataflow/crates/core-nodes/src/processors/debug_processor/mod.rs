@@ -12,7 +12,7 @@ use self::config::{Config, DisplayMode, SignalActive, Verbosity};
 use self::metrics::DebugPdataMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use self::sampling::Sampler;
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -534,16 +534,16 @@ impl DebugProcessor {
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_processor::config::{Config, DisplayMode, SignalActive, Verbosity};
-    use crate::debug_processor::filter::{FilterMode, FilterRules};
-    use crate::debug_processor::output::OutputMode;
-    use crate::debug_processor::predicate::{
+    use crate::processors::debug_processor::config::{Config, DisplayMode, SignalActive, Verbosity};
+    use crate::processors::debug_processor::filter::{FilterMode, FilterRules};
+    use crate::processors::debug_processor::output::OutputMode;
+    use crate::processors::debug_processor::predicate::{
         KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
     };
-    use crate::debug_processor::sampling::SamplingConfig;
-    use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{next_ack, next_nack};
+    use crate::processors::debug_processor::sampling::SamplingConfig;
+    use crate::processors::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1414,7 +1414,7 @@ mod tests {
     /// Tests that the debug processor forwards ACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
-        use crate::testing::TestCallData;
+        use otap_df_otap::testing::TestCallData;
         use otap_df_engine::Interests;
         use otap_df_engine::control::{AckMsg, PipelineControlMsg};
 
@@ -1466,7 +1466,7 @@ mod tests {
     /// Tests that the debug processor forwards NACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
-        use crate::testing::TestCallData;
+        use otap_df_otap::testing::TestCallData;
         use otap_df_engine::Interests;
         use otap_df_engine::control::{NackMsg, PipelineControlMsg};
 

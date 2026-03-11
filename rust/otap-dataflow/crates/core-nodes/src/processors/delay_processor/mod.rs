@@ -17,8 +17,6 @@
 //!
 //! The `delay` field uses humantime format (e.g., "100ms", "1s", "2s500ms").
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -31,6 +29,8 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension as _, ProcessorFactory};
+use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,6 +113,7 @@ mod tests {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_otap::testing::create_test_pdata;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -159,7 +160,7 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let pdata = crate::testing::create_test_pdata();
+                let pdata = create_test_pdata();
 
                 let start = std::time::Instant::now();
                 ctx.process(Message::PData(pdata))
