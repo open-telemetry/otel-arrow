@@ -74,6 +74,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 100
         metric_weight: 0
@@ -87,6 +88,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 100
         metric_weight: 0
@@ -100,6 +102,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 100
         metric_weight: 0
@@ -113,6 +116,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 100
         metric_weight: 0
@@ -127,6 +131,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 100
@@ -141,6 +146,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 100
@@ -155,6 +161,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 100
@@ -169,6 +176,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 100
@@ -184,6 +192,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 0
@@ -198,6 +207,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 0
@@ -212,6 +222,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 0
@@ -226,6 +237,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        generation_strategy: fresh
         observation_interval: 60
         log_weight: 0
         metric_weight: 0
