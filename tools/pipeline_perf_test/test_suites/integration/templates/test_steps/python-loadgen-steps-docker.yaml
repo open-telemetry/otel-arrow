@@ -53,6 +53,8 @@ steps:
               output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
               variables:
                 backend_hostname: backend-service
+                syslog_transport: '{{syslog_transport | default("udp")}}'
+                exporter: '{{exporter | default("otap")}}'
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
