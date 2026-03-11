@@ -446,8 +446,7 @@ mod tests {
                 }
                 Ok(AccessToken {
                     token: "recovered_token".to_string().into(),
-                    expires_on: OffsetDateTime::now_utc()
-                        + azure_core::time::Duration::minutes(60),
+                    expires_on: OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(60),
                 })
             }
         }
