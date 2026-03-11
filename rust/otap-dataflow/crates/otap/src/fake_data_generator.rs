@@ -1327,4 +1327,73 @@ mod tests {
             .run_test(scenario())
             .run_validation(validation_procedure_pregenerated());
     }
+
+    #[test]
+    fn test_resource_attribute_rotation_across_batches() {
+        use std::collections::HashMap;
+
+        let attrs_a = HashMap::from([
+            ("tenant.id".to_string(), "prod".to_string()),
+        ]);
+        let attrs_b = HashMap::from([
+            ("tenant.id".to_string(), "staging".to_string()),
+        ]);
+        let generator = SignalGenerator::Static(vec![attrs_a, attrs_b]);
+
+        // attrs_for_batch should rotate through the two sets
+        assert_eq!(
+            generator.attrs_for_batch(0).unwrap()["tenant.id"],
+            "prod"
+        );
+        assert_eq!(
+            generator.attrs_for_batch(1).unwrap()["tenant.id"],
+            "staging"
+        );
+        assert_eq!(
+            generator.attrs_for_batch(2).unwrap()["tenant.id"],
+            "prod"
+        );
+        assert_eq!(
+            generator.attrs_for_batch(3).unwrap()["tenant.id"],
+            "staging"
+        );
+
+        // Verify generated signals carry the rotated attributes
+        let logs_batch_0 = match generator.generate_logs(1, 0) {
+            OtlpProtoMessage::Logs(logs) => logs,
+            _ => panic!("expected logs"),
+        };
+        let logs_batch_1 = match generator.generate_logs(1, 1) {
+            OtlpProtoMessage::Logs(logs) => logs,
+            _ => panic!("expected logs"),
+        };
+
+        let get_tenant_id = |logs: &LogsData| -> String {
+            logs.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "tenant.id")
+                .expect("tenant.id attribute missing")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+        };
+
+        assert_ne!(
+            get_tenant_id(&logs_batch_0),
+            get_tenant_id(&logs_batch_1),
+            "consecutive batches should use different resource attribute sets"
+        );
+    }
+
+    #[test]
+    fn test_resource_attribute_rotation_empty_attrs() {
+        let generator = SignalGenerator::Static(vec![]);
+        assert!(generator.attrs_for_batch(0).is_none());
+        assert!(generator.attrs_for_batch(1).is_none());
+    }
 }
