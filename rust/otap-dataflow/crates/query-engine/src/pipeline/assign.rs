@@ -291,10 +291,12 @@ impl PipelineStage for AssignPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        let input_schema = attrs_record_batch.schema_ref();
+
         // project attributes ...
-        // TODO - we should probably only do this if virtual "value" column is selected ...
-        let type_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_TYPE)
-            .unwrap()
+        let (type_column_index, _) = input_schema.fields().find(consts::ATTRIBUTE_TYPE).unwrap();
+        let type_column = attrs_record_batch
+            .column(type_column_index)
             .as_any()
             .downcast_ref::<UInt8Array>()
             .unwrap();
@@ -334,7 +336,7 @@ impl PipelineStage for AssignPipelineStage {
 
         let projected_rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
 
-        let result = self
+        let mut result = self
             .source
             .evaluate_on_batch(session_context, &projected_rb)?
             .to_array(attrs_record_batch.num_rows())?;
@@ -348,7 +350,7 @@ impl PipelineStage for AssignPipelineStage {
         // TODO - need some better logic around what we're replacing here ...
         // e.g. is it the key, is it the value, is it some specific column ...
 
-        let (field_name, supports_dict, attr_type) = match result_type {
+        let (field_name, supports_dict, result_attr_type) = match result_type {
             DataType::Utf8 => (consts::ATTRIBUTE_STR, true, AttributeValueType::Str),
             DataType::Int64 => (consts::ATTRIBUTE_INT, true, AttributeValueType::Int),
             DataType::Float64 => (consts::ATTRIBUTE_DOUBLE, false, AttributeValueType::Double),
@@ -359,6 +361,28 @@ impl PipelineStage for AssignPipelineStage {
         };
 
         // TODO - need downcast result to dict if supported
+        if supports_dict {
+            match result.data_type() {
+                DataType::Dictionary(k, _) => {
+                    // just double check the key type is u16
+                    todo!() // TODO - how to trigger this?
+                }
+                _ => {
+                    let field_info = FieldInfo::new_from_array(&result);
+                    let cardinality = estimate_cardinality(&field_info);
+                    if cardinality != Cardinality::GreaterThanU16 {
+                        // can downcast to dict
+                        result = cast(
+                            &result,
+                            &DataType::Dictionary(
+                                Box::new(DataType::UInt16),
+                                Box::new(result.data_type().clone()),
+                            ),
+                        )?
+                    }
+                }
+            }
+        }
 
         let field_index = attrs_record_batch
             .schema()
@@ -386,6 +410,15 @@ impl PipelineStage for AssignPipelineStage {
                 true,
             )));
             columns.push(result);
+        }
+
+        // replace the type column if the result changed the attribute type
+        if result_attr_type != attr_type {
+            let new_type_column = UInt8Array::from_iter_values(std::iter::repeat_n(
+                result_attr_type as u8,
+                attrs_record_batch.num_rows(),
+            ));
+            columns[type_column_index] = Arc::new(new_type_column)
         }
 
         let result = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
@@ -491,6 +524,8 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
                 | ExprLogicalType::String
                 | ExprLogicalType::Int64
                 | ExprLogicalType::Float64
+                | ExprLogicalType::AnyValueNumeric
+                | ExprLogicalType::ScalarInt
         ),
 
         // TODO - handle other cases as we support a greater variety of destinations
