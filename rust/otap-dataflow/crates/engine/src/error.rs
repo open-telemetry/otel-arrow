@@ -9,7 +9,7 @@
 use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
-use otap_df_config::{NodeUrn, PortName};
+use otap_df_config::{NodeUrn, PortName, TopicName};
 use otap_df_telemetry::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
@@ -433,6 +433,44 @@ pub enum Error {
         /// The name of the unknown port.
         port: PortName,
     },
+    /// A topic with the same name already exists in the broker.
+    #[error("topic `{topic}` already exists")]
+    TopicAlreadyExists {
+        /// The name of the topic that already exists.
+        topic: TopicName,
+    },
+
+    /// A topic reference could not be resolved in the current scope.
+    #[error("unknown topic `{topic}`")]
+    UnknownTopic {
+        /// The unresolved topic name or local alias.
+        topic: String,
+    },
+
+    /// The referenced message was not published through the tracked outcome path.
+    #[error("message is not tracked for publish outcomes")]
+    MessageNotTracked,
+
+    /// An operation could not be completed because the topic is closed.
+    #[error("topic closed")]
+    TopicClosed,
+
+    /// Balanced (consumer-group) subscriptions are not supported on this topic.
+    #[error("balanced subscriptions are not supported on this topic")]
+    SubscribeBalancedNotSupported,
+
+    /// Broadcast subscriptions are not supported on this topic.
+    #[error("broadcast subscriptions are not supported on this topic")]
+    SubscribeBroadcastNotSupported,
+
+    /// This topic only supports a single consumer group, but a subscription request would violate that constraint.
+    #[error("this topic only supports a single consumer group")]
+    SubscribeSingleGroupViolation,
+
+    /// A subscription operation failed because the subscription was closed or
+    /// disconnected by topic policy.
+    #[error("subscription closed")]
+    SubscriptionClosed,
 }
 
 impl Error {
@@ -471,6 +509,14 @@ impl Error {
             Error::UnknownReceiver { .. } => "UnknownReceiver",
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
+            Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
+            Error::UnknownTopic { .. } => "UnknownTopic",
+            Error::MessageNotTracked => "MessageNotTracked",
+            Error::TopicClosed => "TopicClosed",
+            Error::SubscribeBalancedNotSupported => "SubscribeBalancedNotSupported",
+            Error::SubscribeBroadcastNotSupported => "SubscribeBroadcastNotSupported",
+            Error::SubscribeSingleGroupViolation => "SubscribeSingleGroupViolation",
+            Error::SubscriptionClosed => "SubscriptionClosed",
         }
         .to_owned()
     }

@@ -154,6 +154,14 @@ impl Context {
         false
     }
 
+    /// Are there any subscribers interested in ACK or NACK notifications?
+    #[must_use]
+    pub fn has_ack_or_nack_subscribers(&self) -> bool {
+        self.stack
+            .iter()
+            .any(|f| (f.interests & Interests::ACKS_OR_NACKS) != Interests::empty())
+    }
+
     /// Set the source node for this context.
     pub fn set_source_node(&mut self, node_id: usize) {
         let mut interests = Interests::empty();
@@ -384,6 +392,19 @@ impl OtapPdata {
         &self.payload
     }
 
+    /// Clone this pdata while resetting transport context to default.
+    ///
+    /// This is used at transport boundaries (for example topic hops between
+    /// pipelines) where in-process Ack/Nack routing state must not leak across
+    /// boundaries.
+    #[must_use]
+    pub fn clone_without_context(&self) -> Self {
+        Self {
+            context: Context::default(),
+            payload: self.payload.clone(),
+        }
+    }
+
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {
@@ -486,6 +507,12 @@ impl OtapPdata {
     #[must_use]
     pub fn get_source_node(&self) -> Option<usize> {
         self.context.source_node()
+    }
+
+    /// Returns `true` when this message has at least one upstream Ack/Nack interest.
+    #[must_use]
+    pub fn has_ack_or_nack_interests(&self) -> bool {
+        self.context.has_ack_or_nack_subscribers()
     }
 }
 
@@ -1465,6 +1492,33 @@ mod test {
 
         // Payload still intact for the retry processor
         assert_eq!(ack_msg.accepted.num_items(), 1);
+    }
+
+    #[test]
+    fn test_clone_without_context_resets_ack_nack_routing_state() {
+        let (test_data, pdata) = create_test();
+        let pdata = pdata
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                test_data.into(),
+                101,
+            )
+            .add_source_node(202);
+        assert!(pdata.has_subscribers());
+        assert_eq!(pdata.get_source_node(), Some(202));
+
+        let cloned = pdata.clone_without_context();
+        assert!(!cloned.has_subscribers());
+        assert_eq!(cloned.get_source_node(), None);
+
+        let ack = AckMsg::new(cloned.clone());
+        assert!(next_ack(ack).is_none(), "reset context must not route acks");
+
+        let nack = NackMsg::new("test", cloned);
+        assert!(
+            next_nack(nack).is_none(),
+            "reset context must not route nacks"
+        );
     }
 
     // -----------------------------------------------------------------------
