@@ -285,7 +285,6 @@ impl Pipeline {
 mod test {
     use std::sync::Arc;
 
-    use arrow::util::pretty::print_batches;
     use data_engine_expressions::PipelineExpression;
 
     use data_engine_parser_abstractions::Parser;
