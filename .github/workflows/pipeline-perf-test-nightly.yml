@@ -85,31 +85,37 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run syslog performance test log suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
 
       - name: Run standard load batch size test suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/100klrps-batch-sizes-docker.yaml
 
       - name: Run backpressure performance test log suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/backpressure-docker.yaml
 
       - name: Run filter performance test log suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/filter-docker.yaml
 
       - name: Run filter performance test otelcol log suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
       - name: Run saturation/scaling performance test suite
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
@@ -122,48 +128,56 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload syslog results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: syslog-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
       - name: Upload standard load batch size results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: standardload-batch-size-nightly-results
           path: tools/pipeline_perf_test/results/nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
 
       - name: Upload backpressure results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: backpressure-nightly-results
           path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
 
       - name: Upload filter results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: filter-nightly-results
           path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
 
       - name: Upload otelcol filter results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: filter-otelcol-results
           path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
       - name: Upload saturation results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: saturation-nightly-results
           path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
       - name: Upload scaling efficiency metrics
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: scaling-efficiency-nightly-results
           path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
       - name: Add benchmark link to job summary
+        if: ${{ !cancelled() }}
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
