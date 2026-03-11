@@ -518,6 +518,17 @@ impl QuiverEngine {
         self.expired_items.load(Ordering::Relaxed)
     }
 
+    /// Returns a snapshot of the open segment's bundle summaries.
+    ///
+    /// This method acquires a brief lock on the open segment to capture the current
+    /// manifest and return per-bundle item counts and populated slot IDs. The
+    /// snapshot is useful for telemetry collection and observability without
+    /// blocking ingest operations for long.
+    pub fn open_segment_bundle_summaries(&self) -> Vec<super::segment::OpenSegmentBundleSummary> {
+        let open_seg = self.open_segment.lock();
+        open_seg.snapshot_bundles()
+    }
+
     /// Returns WAL statistics (rotation count, purge count).
     ///
     /// Call this before dropping the engine to capture final stats.

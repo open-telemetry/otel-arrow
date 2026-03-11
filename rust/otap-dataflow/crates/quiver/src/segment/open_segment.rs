@@ -31,7 +31,7 @@ use super::types::{
     MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     StreamId, StreamKey,
 };
-use crate::record_bundle::RecordBundle;
+use crate::record_bundle::{RecordBundle, SlotId};
 
 /// In-memory buffer for an open segment.
 ///
@@ -243,6 +243,33 @@ impl OpenSegment {
     pub fn manifest(&self) -> impl Iterator<Item = &ManifestEntry> {
         self.manifest.iter()
     }
+
+    /// Returns a snapshot of the open segment's manifest summary.
+    ///
+    /// The snapshot includes each bundle's item count and its populated slot IDs.
+    /// This keeps signal classification outside of Quiver while still providing
+    /// enough information for higher layers to compute per-signal metrics.
+    #[must_use]
+    pub fn snapshot_bundles(&self) -> Vec<OpenSegmentBundleSummary> {
+        let mut summaries = Vec::with_capacity(self.manifest.len());
+        for entry in &self.manifest {
+            let slot_ids: Vec<SlotId> = entry.slot_ids().collect();
+            summaries.push(OpenSegmentBundleSummary {
+                item_count: entry.item_count(),
+                slot_ids,
+            });
+        }
+        summaries
+    }
+}
+
+/// Snapshot of an open segment bundle's item count and populated slots.
+#[derive(Clone, Debug)]
+pub struct OpenSegmentBundleSummary {
+    /// Number of logical data items in the bundle.
+    pub item_count: u64,
+    /// Slot IDs populated in the bundle.
+    pub slot_ids: Vec<SlotId>,
 }
 
 impl Default for OpenSegment {
@@ -592,5 +619,57 @@ mod tests {
             }
             other => panic!("expected InvalidFormat, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn snapshot_bundles_empty_segment() {
+        let seg = OpenSegment::new();
+        let summaries = seg.snapshot_bundles();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn snapshot_bundles_includes_item_count_and_slots() {
+        let mut seg = OpenSegment::new();
+        let schema = test_schema();
+        let fp = [0x11u8; 32];
+
+        let batch_a = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+        let bundle_a =
+            TestBundle::new(slot_descriptors()).with_payload(SlotId::new(10), fp, batch_a);
+        let _ = seg.append(&bundle_a).expect("append succeeds");
+
+        let batch_b = make_batch(&schema, &[4, 5], &["d", "e"]);
+        let bundle_b =
+            TestBundle::new(slot_descriptors()).with_payload(SlotId::new(2), fp, batch_b);
+        let _ = seg.append(&bundle_b).expect("append succeeds");
+
+        let summaries = seg.snapshot_bundles();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].item_count, 3);
+        assert_eq!(summaries[1].item_count, 2);
+        assert_eq!(summaries[0].slot_ids, vec![SlotId::new(10)]);
+        assert_eq!(summaries[1].slot_ids, vec![SlotId::new(2)]);
+    }
+
+    #[test]
+    fn snapshot_bundles_multiple_slots_per_bundle() {
+        let mut seg = OpenSegment::new();
+        let schema = test_schema();
+        let fp = [0x11u8; 32];
+
+        let batch_metrics = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+        let batch_shared = make_batch(&schema, &[4, 5, 6], &["d", "e", "f"]);
+        let bundle = TestBundle::new(slot_descriptors())
+            .with_payload(SlotId::new(15), fp, batch_metrics)
+            .with_payload(SlotId::new(2), fp, batch_shared);
+        let _ = seg.append(&bundle).expect("append succeeds");
+
+        let summaries = seg.snapshot_bundles();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].item_count, 3);
+        assert_eq!(summaries[0].slot_ids.len(), 2);
+        assert!(summaries[0].slot_ids.contains(&SlotId::new(15)));
+        assert!(summaries[0].slot_ids.contains(&SlotId::new(2)));
     }
 }
