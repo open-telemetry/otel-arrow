@@ -248,9 +248,11 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// returned. Pipeline data stays in the channel, providing
     /// natural backpressure to upstream nodes.
     ///
-    /// During shutdown draining the guard is ignored — pdata is
-    /// always drained until the deadline, regardless of
-    /// `accept_pdata`.
+    /// During shutdown draining, pdata is drained until the deadline.
+    /// The `accept_pdata` guard is still honored — when it is `false`,
+    /// only control messages (e.g. Ack/Nack) are delivered so that
+    /// stateful processors can reduce their in-flight state and
+    /// reopen capacity for further draining.
     ///
     /// # Errors
     ///
@@ -312,7 +314,9 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                     sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
                 }
 
-                // Drain pdata first, then timer, then other control msgs
+                // Drain pdata (gated by accept_pdata) and deliver control messages.
+                // Honoring accept_pdata during draining lets stateful processors
+                // receive Ack/Nack to reduce in-flight state and reopen capacity.
                 tokio::select! {
                     biased;
 
@@ -325,8 +329,16 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                         return Ok(Message::Control(shutdown));
                     }
 
-                    // 2) Any pdata?
-                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
+                    // 2) Control messages (ack/nack needed for backpressure resolution)
+                    ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
+                        Ok(msg) => {
+                            return Ok(Message::Control(msg));
+                        }
+                        Err(e) => return Err(e),
+                    },
+
+                    // 3) Pdata (gated by accept_pdata)
+                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if accept_pdata => match pdata {
                         Ok(mut pdata) => {
                             pdata.received_at_node(self.node_id, self.interests);
                             return Ok(Message::PData(pdata));
@@ -340,8 +352,6 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                             return Ok(Message::Control(shutdown));
                         }
                     },
-
-
                 }
             }
 

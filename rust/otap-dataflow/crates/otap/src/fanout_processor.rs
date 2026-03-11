@@ -32,7 +32,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
 use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,8 @@ struct FanoutConfig {
     )]
     pub timeout_check_interval: Duration,
     /// Maximum number of in-flight messages tracked by the processor.
-    /// When exceeded, new messages are nacked to apply backpressure.
+    /// When the limit is reached, `accept_pdata()` returns `false` to apply backpressure
+    /// via the engine's `recv_when` gate — no data is lost or nacked.
     /// Only applies when await_ack is "primary" or "all" (not "none").
     /// Default: 10000. Set to 0 for unlimited (not recommended for production).
     #[serde(default = "FanoutConfig::default_max_inflight")]
@@ -376,6 +377,18 @@ struct FanoutMetrics {
     pub nacked: Counter<u64>,
     #[metric(unit = "{item}")]
     pub timed_out: Counter<u64>,
+    /// Current number of in-flight requests tracked by the processor.
+    #[metric(unit = "{item}")]
+    pub in_flight: Gauge<u64>,
+    /// Configured max_inflight value (0 means unlimited).
+    #[metric(unit = "{item}")]
+    pub max_inflight_config: Gauge<u64>,
+    /// 1 when fanout is currently refusing new pdata via accept_pdata(), else 0.
+    #[metric(unit = "1")]
+    pub throttled: Gauge<u64>,
+    /// Increments on transition from not-throttled to throttled.
+    #[metric(unit = "{episode}")]
+    pub throttle_episodes: Counter<u64>,
 }
 
 /// Entry in the deadline min-heap for efficient timeout checking.
@@ -400,6 +413,8 @@ pub struct FanoutProcessor {
     deadline_heap: BinaryHeap<Reverse<Deadline>>,
     next_id: u64,
     timer_started: bool,
+    /// Tracks previous throttle state for throttle_episodes transition detection.
+    was_throttled: bool,
 }
 
 fn build_calldata(request_id: u64, dest_index: usize) -> CallData {
@@ -424,7 +439,8 @@ fn now() -> Instant {
 
 impl FanoutProcessor {
     fn new(pipeline_ctx: PipelineContext, config: ValidatedConfig) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+        let mut metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+        metrics.max_inflight_config.set(config.max_inflight as u64);
         Self {
             config,
             metrics,
@@ -433,6 +449,7 @@ impl FanoutProcessor {
             deadline_heap: BinaryHeap::new(),
             next_id: 1,
             timer_started: false,
+            was_throttled: false,
         }
     }
 
@@ -448,6 +465,23 @@ impl FanoutProcessor {
         })?;
         let validated = cfg.validate(node_config)?;
         Ok(Self::new(pipeline_ctx, validated))
+    }
+
+    /// Updates saturation gauges after any state mutation that changes inflight count.
+    fn update_saturation_metrics(&mut self) {
+        let current_inflight = if self.config.use_slim_primary {
+            self.slim_inflight.len()
+        } else {
+            self.inflight.len()
+        };
+        self.metrics.in_flight.set(current_inflight as u64);
+
+        let throttled = !self.accept_pdata();
+        self.metrics.throttled.set(u64::from(throttled));
+        if throttled && !self.was_throttled {
+            self.metrics.throttle_episodes.add(1);
+        }
+        self.was_throttled = throttled;
     }
 
     async fn ensure_timer(
@@ -1035,7 +1069,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match msg {
+        let result = match msg {
             Message::Control(NodeControlMsg::Ack(ack)) => {
                 // Fire-and-forget never receives acks (no subscription).
                 // Slim primary path uses dedicated handler.
@@ -1069,11 +1103,11 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 mut metrics_reporter,
             }) => {
                 _ = metrics_reporter.report(&mut self.metrics);
-                Ok(())
+                return Ok(());
             }
             // Shutdown and other control messages are ignored: we drop inflight state on drop,
             // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
-            Message::Control(_) => Ok(()),
+            Message::Control(_) => return Ok(()),
             Message::PData(pdata) => {
                 debug_assert!(
                     self.accept_pdata(),
@@ -1093,33 +1127,35 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 // Minimal state: just request_id → original_pdata.
                 if self.config.use_slim_primary {
                     self.process_slim_primary(pdata, effect_handler).await?;
-                    return Ok(());
-                }
+                    Ok(())
+                } else {
+                    // === FULL PATH: Sequential, await_all, fallback, or timeout ===
+                    // Full inflight tracking with DestinationVec.
+                    // Note: max_inflight backpressure is enforced by accept_pdata() at the engine
+                    // level, so no nack is needed here.
 
-                // === FULL PATH: Sequential, await_all, fallback, or timeout ===
-                // Full inflight tracking with DestinationVec.
-                // Note: max_inflight backpressure is enforced by accept_pdata() at the engine
-                // level, so no nack is needed here.
-
-                let request_id = self.register_inflight(pdata, effect_handler).await?;
-                let inflight = self
-                    .inflight
-                    .get_mut(&request_id)
-                    .expect("inflight just inserted");
-                let deadlines = Self::dispatch_ready(
-                    request_id,
-                    inflight,
-                    &self.config.destinations,
-                    effect_handler,
-                )
-                .await?;
-                for d in deadlines {
-                    self.deadline_heap.push(Reverse(d));
+                    let request_id = self.register_inflight(pdata, effect_handler).await?;
+                    let inflight = self
+                        .inflight
+                        .get_mut(&request_id)
+                        .expect("inflight just inserted");
+                    let deadlines = Self::dispatch_ready(
+                        request_id,
+                        inflight,
+                        &self.config.destinations,
+                        effect_handler,
+                    )
+                    .await?;
+                    for d in deadlines {
+                        self.deadline_heap.push(Reverse(d));
+                    }
+                    self.metrics.sent.add(1);
+                    Ok(())
                 }
-                self.metrics.sent.add(1);
-                Ok(())
             }
-        }
+        };
+        self.update_saturation_metrics();
+        result
     }
 }
 
