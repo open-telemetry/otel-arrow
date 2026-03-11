@@ -5,7 +5,8 @@
 
 use crate::attributes::{
     ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    NodeWithCustomAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
+    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
+    PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::node::NodeId as EngineNodeId;
@@ -15,6 +16,7 @@ use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineI
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -126,6 +128,9 @@ pub struct PipelineContext {
     /// for example to map source-node name to index for inferring
     /// routes at runtime (e.g., how crates/validation works).
     node_names: NodeNameIndex,
+    /// Optional pipeline-scoped topic set injected by the controller.
+    /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
+    topic_set: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 impl ControllerContext {
@@ -208,6 +213,7 @@ impl PipelineContext {
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
+            topic_set: None,
         }
     }
 
@@ -258,6 +264,23 @@ impl PipelineContext {
     /// Sets the shared node-name-to-index mapping for this pipeline context.
     pub fn set_node_names(&mut self, node_names: NodeNameIndex) {
         self.node_names = node_names;
+    }
+
+    /// Sets the pipeline-scoped topic set resource.
+    pub fn set_topic_set<T: Send + Sync + 'static>(
+        &mut self,
+        topic_set: crate::topic::TopicSet<T>,
+    ) {
+        self.topic_set = Some(Arc::new(topic_set));
+    }
+
+    /// Returns the pipeline-scoped topic set, if one was injected.
+    #[must_use]
+    pub fn topic_set<T: Send + Sync + 'static>(&self) -> Option<crate::topic::TopicSet<T>> {
+        self.topic_set
+            .as_ref()
+            .and_then(|resource| resource.downcast_ref::<crate::topic::TopicSet<T>>())
+            .cloned()
     }
 
     /// Returns the pipeline index for the given node name, if it exists.
@@ -323,6 +346,43 @@ impl PipelineContext {
                 );
             }
         }
+    }
+
+    /// Registers a metric set for the current node entity extended with a topic attribute.
+    ///
+    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
+    #[must_use]
+    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> MetricSet<T> {
+        let entity_key = if self.node_telemetry_attrs.is_empty() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithTopicAttributeSet {
+                    node_attrs: self.node_attribute_set(),
+                    topic,
+                })
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(NodeWithCustomTopicAttributeSet {
+                    node_custom_attrs: self.node_with_custom_attribute_set(),
+                    topic,
+                })
+        };
+
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key);
+
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+            telemetry.track_entity(entity_key);
+        }
+
+        metrics
     }
 
     /// Registers the pipeline entity for this context.
@@ -474,6 +534,7 @@ impl PipelineContext {
             node_telemetry_attrs,
             internal_telemetry: None,
             node_names: self.node_names.clone(),
+            topic_set: self.topic_set.clone(),
         }
     }
 }
