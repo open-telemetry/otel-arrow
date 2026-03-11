@@ -5,13 +5,14 @@ use serde::Serialize;
 
 use super::config::ApiConfig;
 use super::error::Error;
+use chrono::Utc;
 use otap_df_telemetry::otel_warn;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue},
 };
 use std::time::Duration;
-use sysinfo::{Networks, System};
+use sysinfo::System;
 
 const HEARTBEAT_STREAM_NAME: &str = "HEALTH_ASSESSMENT_BLOB";
 const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 2;
@@ -28,6 +29,9 @@ pub struct Heartbeat {
 
 #[derive(Serialize)]
 struct HeartbeatRow {
+    #[serde(rename = "Time")]
+    time: String,
+
     #[serde(rename = "Computer")]
     computer: String,
 
@@ -46,8 +50,8 @@ struct HeartbeatRow {
     #[serde(rename = "Version")]
     version: String,
 
-    #[serde(rename = "ComputerPrivateIps")]
-    computer_private_ips: String,
+    #[serde(rename = "SCAgentChannel")]
+    sc_agent_channel: String,
 }
 
 #[inline]
@@ -117,27 +121,6 @@ fn default_heartbeat_os_type() -> String {
     }
 }
 
-/// Returns private IPv4 addresses as a JSON array string, e.g. `["10.0.0.1","192.168.1.5"]`.
-/// Matches the C++ ODSUploader behavior of `MdsdUtil::GetPrivateIps()`.
-fn default_heartbeat_computer_private_ips() -> String {
-    let networks = Networks::new_with_refreshed_list();
-    let mut ips: Vec<String> = Vec::new();
-
-    for (_name, data) in &networks {
-        for ip_network in data.ip_networks() {
-            if let std::net::IpAddr::V4(v4) = ip_network.addr {
-                if v4.is_private() && !v4.is_loopback() {
-                    ips.push(v4.to_string());
-                }
-            }
-        }
-    }
-
-    ips.sort();
-    ips.dedup();
-    serde_json::to_string(&ips).unwrap_or_else(|_| "[]".to_string())
-}
-
 impl Heartbeat {
     /// Create a new Heartbeat instance.
     pub fn new(config: &ApiConfig) -> Result<Self, Error> {
@@ -157,13 +140,14 @@ impl Heartbeat {
                 config.dcr_endpoint, config.dcr, HEARTBEAT_STREAM_NAME
             ),
             heartbeat_row: HeartbeatRow {
+                time: Utc::now().to_rfc3339(),
                 computer: default_heartbeat_computer(),
                 os_type: default_heartbeat_os_type(),
                 os_name: default_heartbeat_os_name(),
                 os_major_version: default_heartbeat_os_major_version(),
                 os_minor_version: default_heartbeat_os_minor_version(),
                 version: default_heartbeat_version(),
-                computer_private_ips: default_heartbeat_computer_private_ips(),
+                sc_agent_channel: "Direct".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         })
@@ -177,13 +161,14 @@ impl Heartbeat {
             client,
             endpoint,
             heartbeat_row: HeartbeatRow {
+                time: Utc::now().to_rfc3339(),
                 computer: "test-computer".to_string(),
                 os_type: "Linux".to_string(),
                 os_name: "test-os".to_string(),
                 os_major_version: "1".to_string(),
                 os_minor_version: "0".to_string(),
                 version: "test-version".to_string(),
-                computer_private_ips: "[]".to_string(),
+                sc_agent_channel: "Direct".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         }
@@ -196,6 +181,7 @@ impl Heartbeat {
 
     /// Send a heartbeat to the Azure Monitor Logs Ingestion endpoint.
     pub async fn send(&mut self) -> Result<(), Error> {
+        self.heartbeat_row.time = Utc::now().to_rfc3339();
         let payload = serde_json::json!([self.heartbeat_row]);
         let response = self
             .client
@@ -273,66 +259,72 @@ mod tests {
     #[test]
     fn test_heartbeat_row_serialization() {
         let row = HeartbeatRow {
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test-computer".to_string(),
             os_type: "Linux".to_string(),
             os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
             version: "1.0.0".to_string(),
-            computer_private_ips: "[\"10.0.0.1\"]".to_string(),
+            sc_agent_channel: "Direct".to_string(),
         };
 
         let json = serde_json::to_value(&row).unwrap();
 
+        assert_eq!(json["Time"], "2026-03-11T10:00:00Z");
         assert_eq!(json["Computer"], "test-computer");
         assert_eq!(json["OSType"], "Linux");
         assert_eq!(json["OSName"], "Ubuntu");
         assert_eq!(json["OSMajorVersion"], "22");
         assert_eq!(json["OSMinorVersion"], "04");
         assert_eq!(json["Version"], "1.0.0");
-        assert_eq!(json["ComputerPrivateIps"], "[\"10.0.0.1\"]");
+        assert_eq!(json["SCAgentChannel"], "Direct");
     }
 
     #[test]
     fn test_heartbeat_row_serialization_field_names() {
         let row = HeartbeatRow {
+            time: "".to_string(),
             computer: "".to_string(),
             os_type: "".to_string(),
             os_name: "".to_string(),
             os_major_version: "".to_string(),
             os_minor_version: "".to_string(),
             version: "".to_string(),
-            computer_private_ips: "".to_string(),
+            sc_agent_channel: "".to_string(),
         };
 
         let json = serde_json::to_string(&row).unwrap();
 
         // Verify PascalCase field names
+        assert!(json.contains("\"Time\""));
         assert!(json.contains("\"Computer\""));
         assert!(json.contains("\"OSType\""));
         assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"OSMajorVersion\""));
         assert!(json.contains("\"OSMinorVersion\""));
         assert!(json.contains("\"Version\""));
-        assert!(json.contains("\"ComputerPrivateIps\""));
+        assert!(json.contains("\"SCAgentChannel\""));
 
         // Verify no snake_case field names
+        assert!(!json.contains("\"time\""));
         assert!(!json.contains("\"version\""));
         assert!(!json.contains("\"os_name\""));
         assert!(!json.contains("\"os_type\""));
-        assert!(!json.contains("\"computer_private_ips\""));
+        assert!(!json.contains("\"sc_agent_channel\""));
     }
 
     #[test]
     fn test_heartbeat_payload_is_array() {
         let row = HeartbeatRow {
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test".to_string(),
             os_type: "Linux".to_string(),
             os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
             version: "1.0.0".to_string(),
-            computer_private_ips: "[]".to_string(),
+            sc_agent_channel: "Direct".to_string(),
         };
 
         let payload = serde_json::json!([row]);

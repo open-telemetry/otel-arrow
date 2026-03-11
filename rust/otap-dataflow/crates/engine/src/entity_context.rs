@@ -183,6 +183,7 @@ impl Debug for NodeTelemetryHandle {
 struct NodeTelemetryState {
     entity_key: EntityKey,
     metric_keys: Vec<MetricSetKey>,
+    extra_entity_keys: Vec<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
@@ -197,6 +198,7 @@ impl NodeTelemetryHandle {
             state: Rc::new(RefCell::new(NodeTelemetryState {
                 entity_key,
                 metric_keys: Vec::new(),
+                extra_entity_keys: Vec::new(),
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
@@ -225,6 +227,11 @@ impl NodeTelemetryHandle {
     /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
+    }
+
+    /// Track an additional entity key so it is cleaned up with the node telemetry lifecycle.
+    pub(crate) fn track_entity(&self, entity_key: EntityKey) {
+        self.state.borrow_mut().extra_entity_keys.push(entity_key);
     }
 
     /// Associate the inbound channel entity key with this node for task-local scoping.
@@ -279,6 +286,7 @@ impl NodeTelemetryHandle {
         }
         state.cleaned = true;
         let keys = std::mem::take(&mut state.metric_keys);
+        let extra_entity_keys = std::mem::take(&mut state.extra_entity_keys);
         let entity_key = state.entity_key;
         let input_channel_key = state.input_channel_key.take();
         let output_channel_keys = std::mem::take(&mut state.output_channel_keys);
@@ -295,6 +303,9 @@ impl NodeTelemetryHandle {
             let _ = self.registry.unregister_entity(key);
         }
         for (_, key) in output_channel_keys {
+            let _ = self.registry.unregister_entity(key);
+        }
+        for key in extra_entity_keys {
             let _ = self.registry.unregister_entity(key);
         }
         let _ = self.registry.unregister_entity(entity_key);

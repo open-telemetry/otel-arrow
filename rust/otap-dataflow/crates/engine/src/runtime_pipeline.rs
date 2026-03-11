@@ -340,6 +340,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             node_metric_handles[id] = Some(handles);
         }
 
+        // Drop the original sender so the channel closes when all node tasks complete.
+        // Each node holds its own clone and without this drop, the PipelinCtrlMsgManager
+        // can only exit via a timeout.
+        drop(pipeline_ctrl_msg_tx);
+
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
