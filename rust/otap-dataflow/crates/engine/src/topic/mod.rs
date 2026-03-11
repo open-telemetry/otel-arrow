@@ -4,6 +4,7 @@
 //! Topic module: broker, topic state, subscription, and related types.
 
 mod backend;
+mod binding;
 mod broker;
 mod handle;
 mod subscription;
@@ -16,6 +17,7 @@ mod types;
 mod tests;
 
 pub use backend::{InMemoryBackend, SubscriptionBackend, TopicBackend, TopicState};
+pub use binding::PipelineTopicBinding;
 pub use broker::TopicBroker;
 pub use handle::{TopicHandle, TrackedTopicPublisher};
 pub use otap_df_config::topic::{

@@ -71,7 +71,8 @@ use otap_df_engine::entity_context::{
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_engine::topic::{
-    InMemoryBackend, TopicBroker, TopicOptions, TopicPublishOutcomeConfig, TopicSet,
+    InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
+    TopicSet,
 };
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
@@ -691,13 +692,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     .map_err(|e| Error::PipelineRuntimeError {
                         source: Box::new(e),
                     })?;
-                let handle = handle
+                let handle = handle.with_default_publish_outcome_config(
+                    Self::map_topic_spec_to_publish_outcome_config(topic_spec),
+                );
+                let binding = PipelineTopicBinding::from(handle)
                     .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                    .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode)
-                    .with_default_publish_outcome_config(
-                        Self::map_topic_spec_to_publish_outcome_config(topic_spec),
-                    );
-                _ = set.insert(global_topic_name.clone(), handle);
+                    .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode);
+                _ = set.insert(global_topic_name.clone(), binding);
             }
         }
 
@@ -714,14 +715,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             .map_err(|e| Error::PipelineRuntimeError {
                                 source: Box::new(e),
                             })?;
-                    let handle = handle
+                    let handle = handle.with_default_publish_outcome_config(
+                        Self::map_topic_spec_to_publish_outcome_config(topic_spec),
+                    );
+                    let binding = PipelineTopicBinding::from(handle)
                         .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                        .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode)
-                        .with_default_publish_outcome_config(
-                            Self::map_topic_spec_to_publish_outcome_config(topic_spec),
+                        .with_default_ack_propagation_mode(
+                            topic_spec.policies.ack_propagation.mode,
                         );
                     // Group-local declarations override globals with the same local name.
-                    _ = set.insert(group_topic_name.clone(), handle);
+                    _ = set.insert(group_topic_name.clone(), binding);
                 }
             }
         }

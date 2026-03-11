@@ -13,16 +13,12 @@ use crate::topic::types::{
     TrackedPublishPermit, TrackedPublishReceipt, TrackedTryPublishOutcome,
 };
 use otap_df_config::TopicName;
-use otap_df_config::topic::{
-    TopicAckPropagationMode, TopicBroadcastOnLagPolicy, TopicQueueOnFullPolicy,
-};
+use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use tokio::sync::Semaphore;
 
 /// A handle to a topic, used for publishing and subscribing.
 pub struct TopicHandle<T: Send + Sync + 'static> {
     inner: Arc<dyn TopicState<T>>,
-    queue_on_full_default: TopicQueueOnFullPolicy,
-    ack_propagation_mode_default: TopicAckPropagationMode,
     publish_outcome_default: TopicPublishOutcomeConfig,
 }
 
@@ -30,8 +26,6 @@ impl<T: Send + Sync + 'static> Clone for TopicHandle<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
-            queue_on_full_default: self.queue_on_full_default.clone(),
-            ack_propagation_mode_default: self.ack_propagation_mode_default,
             publish_outcome_default: self.publish_outcome_default,
         }
     }
@@ -60,31 +54,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     pub(crate) fn new(inner: Arc<dyn TopicState<T>>) -> Self {
         Self {
             inner,
-            queue_on_full_default: TopicQueueOnFullPolicy::Block,
-            ack_propagation_mode_default: TopicAckPropagationMode::Disabled,
             publish_outcome_default: TopicPublishOutcomeConfig::default(),
-        }
-    }
-
-    /// Return a cloned handle with the topic-level default full-queue policy.
-    #[must_use]
-    pub fn with_default_queue_on_full(&self, policy: TopicQueueOnFullPolicy) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            queue_on_full_default: policy,
-            ack_propagation_mode_default: self.ack_propagation_mode_default,
-            publish_outcome_default: self.publish_outcome_default,
-        }
-    }
-
-    /// Return a cloned handle with the topic-level default Ack/Nack propagation mode.
-    #[must_use]
-    pub fn with_default_ack_propagation_mode(&self, mode: TopicAckPropagationMode) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            queue_on_full_default: self.queue_on_full_default.clone(),
-            ack_propagation_mode_default: mode,
-            publish_outcome_default: self.publish_outcome_default,
         }
     }
 
@@ -93,8 +63,6 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     pub fn with_default_publish_outcome_config(&self, config: TopicPublishOutcomeConfig) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
-            queue_on_full_default: self.queue_on_full_default.clone(),
-            ack_propagation_mode_default: self.ack_propagation_mode_default,
             publish_outcome_default: config,
         }
     }
@@ -154,18 +122,6 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     #[must_use]
     pub fn name(&self) -> &TopicName {
         self.inner.name()
-    }
-
-    /// Topic-level default behavior when the queue is full.
-    #[must_use]
-    pub fn default_queue_on_full(&self) -> TopicQueueOnFullPolicy {
-        self.queue_on_full_default.clone()
-    }
-
-    /// Topic-level default mode for cross-pipeline Ack/Nack propagation.
-    #[must_use]
-    pub const fn default_ack_propagation_mode(&self) -> TopicAckPropagationMode {
-        self.ack_propagation_mode_default
     }
 
     /// Topic-level default configuration for tracked publish outcomes.

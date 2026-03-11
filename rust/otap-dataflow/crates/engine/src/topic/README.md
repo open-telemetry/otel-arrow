@@ -18,10 +18,12 @@ The topic module is organized in three layers:
 1. Public API layer
 
 - `TopicBroker<T>`: create, lookup, list, remove, and close topics.
-- `TopicHandle<T>`: publish and subscribe entry point.
+- `TopicHandle<T>`: pure publish and subscribe runtime entry point.
+- `PipelineTopicBinding<T>`: pipeline-scoped wrapper with resolved
+  `queue_on_full` and `ack_propagation` defaults.
 - `Subscription<T>`: receive + ack/nack interface.
 - `TopicSet<T>`: per-pipeline resolved map of local topic alias ->
-  `TopicHandle<T>`.
+  `PipelineTopicBinding<T>`.
 
 1. Backend abstraction layer
 
@@ -43,6 +45,7 @@ High-level flow:
 ```text
 Publisher/Subscriber Node
     -> TopicSet (local alias resolution)
+    -> PipelineTopicBinding
     -> TopicHandle
     -> dyn TopicState (backend-agnostic contract)
     -> backend implementation (in-memory today)
@@ -250,7 +253,8 @@ let _topic = broker.create_topic(
 
 1. Topics are created with `TopicBroker::create_topic` /
    `create_topics` (or in-memory convenience methods).
-2. Nodes obtain a `TopicHandle` via broker lookup or from a `TopicSet`.
+2. Nodes obtain a `TopicHandle` via broker lookup, or a
+   `PipelineTopicBinding` from a `TopicSet`.
 3. Publishers use `publish`/`try_publish`; subscribers use `subscribe`
    -> `Subscription::recv`.
 4. `TopicHandle::close` or `TopicBroker::remove_topic` closes the topic.

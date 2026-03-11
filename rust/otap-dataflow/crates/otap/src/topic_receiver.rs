@@ -130,7 +130,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     error: "Topic set is not available in pipeline context".to_owned(),
                 }
             })?;
-            let topic = topic_set.get_required(&config.topic).map_err(|_| {
+            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
                 ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
@@ -146,7 +146,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                     group: group.clone(),
                 },
             };
-            let subscription = topic
+            let subscription = topic_binding
                 .subscribe(mode, SubscriberOptions::default())
                 .map_err(|e| ConfigError::InvalidUserConfig {
                     error: format!(
@@ -154,12 +154,12 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                         config.topic
                     ),
                 })?;
-            let ack_propagation_mode = topic.default_ack_propagation_mode();
+            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
             let broadcast_on_lag =
                 matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
-                    .then(|| topic.broadcast_on_lag_policy());
-            let metrics =
-                pipeline.register_metrics_with_topic::<TopicReceiverMetrics>(topic.name().into());
+                    .then(|| topic_binding.broadcast_on_lag_policy());
+            let metrics = pipeline
+                .register_metrics_with_topic::<TopicReceiverMetrics>(topic_binding.name().into());
             Ok(ReceiverWrapper::local(
                 TopicReceiver {
                     config,
@@ -393,7 +393,8 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet, TrackedPublishOutcome,
+        PipelineTopicBinding, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
+        TrackedPublishOutcome,
     };
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
@@ -464,8 +465,8 @@ mod tests {
                     },
                 )
                 .expect("topic should be created");
-            let receiver_handle =
-                base_handle.with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
+            let receiver_handle = PipelineTopicBinding::from(base_handle.clone())
+                .with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
 
             let receiver_set = TopicSet::new("receiver-set");
             _ = receiver_set.insert(topic_name.clone(), receiver_handle);

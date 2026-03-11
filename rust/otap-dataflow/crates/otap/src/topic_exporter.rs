@@ -102,7 +102,7 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
                     error: "Topic set is not available in pipeline context".to_owned(),
                 }
             })?;
-            let topic = topic_set.get_required(&config.topic).map_err(|_| {
+            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
                 ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic exporter (pipeline `{}`/`{}`)",
@@ -115,10 +115,11 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
             let queue_on_full = config
                 .queue_on_full
                 .clone()
-                .unwrap_or_else(|| topic.default_queue_on_full());
-            let ack_propagation_mode = topic.default_ack_propagation_mode();
-            let metrics =
-                pipeline.register_metrics_with_topic::<TopicExporterMetrics>(topic.name().into());
+                .unwrap_or_else(|| topic_binding.default_queue_on_full());
+            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+            let metrics = pipeline
+                .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
+            let topic = topic_binding.into_handle();
             Ok(ExporterWrapper::local(
                 TopicExporter {
                     topic,
@@ -365,8 +366,8 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions,
-        TopicSet,
+        PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
+        TopicBroker, TopicOptions, TopicSet,
     };
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
@@ -425,8 +426,8 @@ mod tests {
                     },
                 )
                 .expect("topic should be created");
-            let exporter_handle =
-                base_handle.with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
+            let exporter_handle = PipelineTopicBinding::from(base_handle.clone())
+                .with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
 
             let topic_set = TopicSet::new("exporter-set");
             _ = topic_set.insert(topic_name.clone(), exporter_handle);
