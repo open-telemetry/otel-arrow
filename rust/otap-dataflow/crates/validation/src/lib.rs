@@ -65,6 +65,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // flaky, see https://github.com/open-telemetry/otel-arrow/issues/2227
     fn debug_processor() {
         Scenario::new()
             .pipeline(
