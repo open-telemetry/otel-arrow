@@ -105,9 +105,8 @@ async fn shutdown_all_pipelines(
     );
 
     // Send shutdown message to all pipelines
-    let errors: Vec<_> = state
-        .ctrl_msg_senders
-        .iter()
+    let errors: Vec<_> = (*state.ctrl_msg_senders.lock().await)
+        .drain(..)
         .filter_map(|sender| {
             // Use the timeout from params for the shutdown deadline
             let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
