@@ -112,8 +112,12 @@ The macros support `tracing`-style formatting hints:
 - `?value` -- Debug formatting (`fmt::Debug`)
 - `value` -- passed directly (integers, booleans, etc.)
 
-Prefer `%` (Display) for info/warn/error severity events. Reserve `?` (Debug)
-for debug-level events, as it can expose internal struct layouts.
+Avoid Debug-formatting (`?`) large or deeply nested structs at info/warn/error
+severity -- break them into individual meaningful fields instead. For **error
+values**, prefer `%` (Display) when the type has a well-crafted `Display` impl
+(especially first-party `thiserror` types); `?` (Debug) is acceptable when
+`Display` is too terse or unavailable. For **simple types** (enums, paths,
+durations), either sigil is fine at any level.
 
 ```rust
 otel_info!("node.connect",
@@ -121,7 +125,22 @@ otel_info!("node.connect",
     count    = 42,
 );
 
-// Debug formatting is acceptable at debug level:
+// BAD -- Debug-dumping a large nested struct at info level:
+otel_info!("state.observed_event", observed_event = ?observed_event);
+
+// GOOD -- break the struct into individual fields:
+otel_info!("state.observed_event",
+    pipeline_group_id = %observed_event.key.pipeline_group_id,
+    pipeline_id = %observed_event.key.pipeline_id,
+    core_id = observed_event.key.core_id,
+    event_type = ?req,
+    message = observed_event.message.as_deref().unwrap_or(""),
+);
+
+// Debug on simple enums or types without Display is fine at any level:
+otel_info!("durable_buffer.shutdown.start", deadline = ?deadline);
+
+// Full Debug formatting for complex types is best at debug level:
 otel_debug!("node.connect",
     config = ?node_config,
 );
