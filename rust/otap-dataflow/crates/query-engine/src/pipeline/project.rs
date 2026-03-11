@@ -27,7 +27,7 @@ pub struct ProjectionOptions {
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
 #[derive(Debug)]
 pub struct Projection {
-    schema: ProjectedSchema,
+    pub schema: ProjectedSchema,
 }
 
 impl From<Vec<String>> for Projection {

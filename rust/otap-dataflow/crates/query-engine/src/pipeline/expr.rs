@@ -427,7 +427,7 @@ pub(crate) struct ScopedPhysicalExpr {
     /// the correct order before evaluating the physical expression. This is necessary because OTAP
     /// record batches are not guaranteed to always have the same set of columns in the same order
     /// across subsequent batches, but this consistent schema is expected by the physical expr.
-    projection: Projection,
+    pub(crate) projection: Projection,
 
     /// Options for projection, including whether to remove dictionary encoding (which is required
     /// for arrow numeric compute kernels).
@@ -445,7 +445,7 @@ enum PhysicalExprDataSource {
 
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
 /// the call to PhysicalExpr::evaluate. We just pass a static empty record batch.
-static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
+pub(crate) static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
     LazyLock::new(|| RecordBatch::new_empty(Arc::new(Schema::new(Vec::<Field>::new()))));
 
 impl ScopedPhysicalExpr {

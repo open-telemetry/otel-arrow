@@ -12,6 +12,8 @@
 //! Note: implementation is currently a work in progress, and not all destinations are supported
 //!
 
+use std::borrow::Cow;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -41,11 +43,11 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult, ScopedLogicalExpr,
-    ScopedPhysicalExpr, VALUE_COLUMN_NAME,
+    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult,
+    SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::ColumnAccessor;
-use crate::pipeline::project::Projection;
+use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column
@@ -62,6 +64,12 @@ pub(crate) struct AssignPipelineStage {
 
     /// Expression that will produce the data to be assigned to the destination
     source: ScopedPhysicalExpr,
+
+    /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
+    /// applying an expression that references the virtual "value" column. If this is the case, we
+    /// project the active attribute value column to a new column called "value". If the expression
+    /// doesn't reference this virtual column, we skip doing this projection
+    projection_contains_value_column: bool,
 }
 
 impl AssignPipelineStage {
@@ -80,10 +88,21 @@ impl AssignPipelineStage {
         let physical_planner = ExprPhysicalPlanner::default();
         let physical_expr = physical_planner.plan(source_logical_plan)?;
 
+        let projection_contains_value_column =
+            physical_expr
+                .projection
+                .schema
+                .iter()
+                .all(|projected_col| match projected_col {
+                    ProjectedSchemaColumn::Root(col_name) => col_name == VALUE_COLUMN_NAME,
+                    _ => false,
+                });
+
         Ok(Self {
             dest_scope: Rc::new(DataScope::from(&dest_column)),
             dest_column,
             source: physical_expr,
+            projection_contains_value_column,
         })
     }
 
@@ -291,6 +310,7 @@ impl PipelineStage for AssignPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        // TODO check if record batch is empty
         let input_schema = attrs_record_batch.schema_ref();
 
         // project attributes ...
@@ -308,33 +328,44 @@ impl PipelineStage for AssignPipelineStage {
         // find the first type
         let attr_type = type_column.iter().flatten().next().unwrap();
         let attr_type = AttributeValueType::try_from(attr_type).unwrap();
-        let values_column = match attr_type {
-            AttributeValueType::Bool => attrs_record_batch.column_by_name(consts::ATTRIBUTE_BOOL),
-            AttributeValueType::Bytes => attrs_record_batch.column_by_name(consts::ATTRIBUTE_BYTES),
-            AttributeValueType::Double => {
-                attrs_record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
+
+        let projected_rb = if self.projection_contains_value_column {
+            let values_column = match attr_type {
+                AttributeValueType::Bool => {
+                    attrs_record_batch.column_by_name(consts::ATTRIBUTE_BOOL)
+                }
+                AttributeValueType::Bytes => {
+                    attrs_record_batch.column_by_name(consts::ATTRIBUTE_BYTES)
+                }
+                AttributeValueType::Double => {
+                    attrs_record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
+                }
+                AttributeValueType::Int => attrs_record_batch.column_by_name(consts::ATTRIBUTE_INT),
+                AttributeValueType::Str => attrs_record_batch.column_by_name(consts::ATTRIBUTE_STR),
+                _ => {
+                    todo!("other values types")
+                }
+            };
+            // TODO - if need to project this and don't have it, should be empty batch I think ...
+            let values_column = values_column.unwrap().clone();
+
+            let mut fields = vec![Arc::new(Field::new(
+                VALUE_COLUMN_NAME,
+                values_column.data_type().clone(),
+                true,
+            ))];
+            let mut columns = vec![values_column];
+
+            if self.source.projection_opts.downcast_dicts {
+                Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
-            AttributeValueType::Int => attrs_record_batch.column_by_name(consts::ATTRIBUTE_INT),
-            AttributeValueType::Str => attrs_record_batch.column_by_name(consts::ATTRIBUTE_STR),
-            _ => {
-                todo!("other values types")
-            }
+
+            Cow::Owned(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
+        } else {
+            // TODO assert that the projection has no columns
+            // TODO comment on why this is allowed
+            Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())
         };
-        // TODO - if need to project this and don't have it, should be empty batch I think ...
-        let values_column = values_column.unwrap().clone();
-
-        let mut fields = vec![Arc::new(Field::new(
-            VALUE_COLUMN_NAME,
-            values_column.data_type().clone(),
-            true,
-        ))];
-        let mut columns = vec![values_column];
-
-        if self.source.projection_opts.downcast_dicts {
-            Projection::try_downcast_dicts(&mut fields, &mut columns)?
-        }
-
-        let projected_rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
 
         let mut result = self
             .source
