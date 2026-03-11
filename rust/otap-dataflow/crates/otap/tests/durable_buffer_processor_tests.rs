@@ -483,8 +483,9 @@ where
         core_id: 0,
     };
     // Create a metrics reporter with our own receiver so we can inspect metrics.
-    // The channel is large enough to hold many telemetry collection cycles.
-    let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1000);
+    // Use a very large channel so it never overflows, even on extremely slow CI
+    // where many telemetry snapshots accumulate before the test drains them.
+    let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1_000_000);
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
     let shutdown_handle = std::thread::spawn(move || {

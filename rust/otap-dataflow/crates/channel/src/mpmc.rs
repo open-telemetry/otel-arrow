@@ -13,13 +13,177 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SenderWaiterKey {
+    // Stable key into the waiter slot array; generation prevents ABA when a
+    // slot index is reused after cancellation/completion.
+    index: usize,
+    generation: u64,
+}
+
+struct SenderWaiterSlot {
+    generation: u64,
+    waker: Option<Waker>,
+    in_use: bool,
+    queued: bool,
+}
+
+impl SenderWaiterSlot {
+    const fn vacant() -> Self {
+        Self {
+            generation: 0,
+            waker: None,
+            in_use: false,
+            queued: false,
+        }
+    }
+}
+
+struct SenderWaiters {
+    // FIFO queue of waiter keys used to preserve wake order across producers.
+    queue: VecDeque<SenderWaiterKey>,
+    // Slot storage allows O(1) refresh/unregister by key without scanning the queue.
+    slots: Vec<SenderWaiterSlot>,
+    // Reuse released slots to avoid per-contention allocations.
+    free_slots: Vec<usize>,
+    next_generation: u64,
+}
+
+impl SenderWaiters {
+    fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            slots: Vec::new(),
+            free_slots: Vec::new(),
+            next_generation: 0,
+        }
+    }
+
+    fn wake_one(&mut self) {
+        while let Some(key) = self.queue.pop_front() {
+            let Some(slot) = self.slots.get_mut(key.index) else {
+                continue;
+            };
+            // Stale queue entries are expected when futures are canceled or
+            // re-queued; skip until we find a live queued waiter.
+            if !slot.in_use || slot.generation != key.generation || !slot.queued {
+                continue;
+            }
+            slot.queued = false;
+            if let Some(waker) = slot.waker.take() {
+                waker.wake();
+                break;
+            }
+        }
+    }
+
+    fn wake_all(&mut self) {
+        while let Some(key) = self.queue.pop_front() {
+            let Some(slot) = self.slots.get_mut(key.index) else {
+                continue;
+            };
+            // Same stale-entry filtering as wake_one, but drain everything.
+            if !slot.in_use || slot.generation != key.generation || !slot.queued {
+                continue;
+            }
+            slot.queued = false;
+            if let Some(waker) = slot.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    fn register_or_refresh(&mut self, waiter_key: &mut Option<SenderWaiterKey>, waker: &Waker) {
+        if let Some(existing_key) = *waiter_key {
+            if let Some(slot) = self.slots.get_mut(existing_key.index) {
+                if slot.in_use && slot.generation == existing_key.generation {
+                    if slot.waker.as_ref().is_none_or(|w| !w.will_wake(waker)) {
+                        slot.waker = Some(waker.clone());
+                    }
+                    if !slot.queued {
+                        slot.queued = true;
+                        self.queue.push_back(existing_key);
+                    }
+                    return;
+                }
+            }
+        }
+
+        let index = if let Some(index) = self.free_slots.pop() {
+            index
+        } else {
+            self.slots.push(SenderWaiterSlot::vacant());
+            self.slots.len() - 1
+        };
+
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+
+        let slot = &mut self.slots[index];
+        slot.generation = generation;
+        slot.waker = Some(waker.clone());
+        slot.in_use = true;
+        slot.queued = true;
+
+        let key = SenderWaiterKey { index, generation };
+        self.queue.push_back(key);
+        *waiter_key = Some(key);
+    }
+
+    fn unregister(&mut self, waiter_key: SenderWaiterKey) {
+        let Some(slot) = self.slots.get_mut(waiter_key.index) else {
+            return;
+        };
+        if !slot.in_use || slot.generation != waiter_key.generation {
+            return;
+        }
+        slot.in_use = false;
+        slot.queued = false;
+        slot.waker = None;
+        self.free_slots.push(waiter_key.index);
+    }
+}
+
 struct ChannelState<T> {
     buffer: VecDeque<T>,
     capacity: NonZeroUsize,
     is_closed: bool,
     senders: usize,
     receiver_wakers: VecDeque<Waker>,
-    sender_wakers: VecDeque<Waker>,
+    // Waiters are allocated only when the channel becomes full, so uncontended
+    // send/recv paths keep the old small state footprint.
+    sender_waiters: Option<SenderWaiters>,
+}
+
+impl<T> ChannelState<T> {
+    fn wake_one_sender_waiter(&mut self) {
+        if let Some(waiters) = self.sender_waiters.as_mut() {
+            waiters.wake_one();
+        }
+    }
+
+    fn wake_all_sender_waiters(&mut self) {
+        if let Some(waiters) = self.sender_waiters.as_mut() {
+            waiters.wake_all();
+        }
+    }
+
+    fn register_or_refresh_sender_waiter(
+        &mut self,
+        waiter_key: &mut Option<SenderWaiterKey>,
+        waker: &Waker,
+    ) {
+        // Keyed waiter slots fix canceled-send stale wakers without wake-all.
+        self.sender_waiters
+            .get_or_insert_with(SenderWaiters::new)
+            .register_or_refresh(waiter_key, waker);
+    }
+
+    fn unregister_sender_waiter(&mut self, waiter_key: SenderWaiterKey) {
+        if let Some(waiters) = self.sender_waiters.as_mut() {
+            waiters.unregister(waiter_key);
+        }
+    }
 }
 
 /// A local MPMC channel.
@@ -39,7 +203,7 @@ impl<T> Channel<T> {
                 is_closed: false,
                 senders: 1,
                 receiver_wakers: VecDeque::new(),
-                sender_wakers: VecDeque::new(),
+                sender_waiters: None,
             }),
         });
 
@@ -87,10 +251,7 @@ impl<T> Drop for Receiver<T> {
         // against the number of senders plus one (for this receiver)
         if Rc::strong_count(&self.channel) == state.senders + 1 {
             state.is_closed = true;
-            // Wake all blocked senders in FIFO order
-            while let Some(waker) = state.sender_wakers.pop_front() {
-                waker.wake();
-            }
+            state.wake_all_sender_waiters();
         }
     }
 }
@@ -121,11 +282,19 @@ impl<T> Sender<T> {
     /// Attempts to send a value to the channel (async method).
     #[allow(dead_code)]
     pub async fn send_async(&self, value: T) -> Result<(), SendError<T>> {
-        SendFuture {
-            sender: self.clone(),
-            value: Some(value),
+        // Fast path: avoid creating/polling a future when there is capacity.
+        match self.send(value) {
+            Ok(()) => Ok(()),
+            Err(SendError::Full(value)) => {
+                SendFuture {
+                    sender: self.clone(),
+                    value: Some(value),
+                    waiter_key: None,
+                }
+                .await
+            }
+            Err(error) => Err(error),
         }
-        .await
     }
 
     /// Closes the channel, preventing further sends.
@@ -158,9 +327,8 @@ impl<T> Receiver<T> {
         if let Some(value) = state.buffer.pop_front() {
             // Wake one sender if channel was full
             if state.buffer.len() == state.capacity.get() - 1 {
-                if let Some(waker) = state.sender_wakers.pop_front() {
-                    waker.wake();
-                }
+                // Wake one live waiter (FIFO) to avoid thundering-herd wakeups.
+                state.wake_one_sender_waiter();
             }
             Ok(value)
         } else if state.is_closed {
@@ -187,9 +355,21 @@ impl<T> Receiver<T> {
 struct SendFuture<T> {
     sender: Sender<T>,
     value: Option<T>,
+    waiter_key: Option<SenderWaiterKey>,
 }
 
 impl<T> Unpin for SendFuture<T> {}
+
+impl<T> Drop for SendFuture<T> {
+    fn drop(&mut self) {
+        let Some(waiter_key) = self.waiter_key.take() else {
+            return;
+        };
+        // `tokio::select!` cancellation is common: remove blocked sender waiter.
+        let mut state = self.sender.channel.state.borrow_mut();
+        state.unregister_sender_waiter(waiter_key);
+    }
+}
 
 impl<T> Future for SendFuture<T> {
     type Output = Result<(), SendError<T>>;
@@ -204,8 +384,13 @@ impl<T> Future for SendFuture<T> {
             Ok(()) => Poll::Ready(Ok(())),
             Err(SendError::Full(value)) => {
                 self.value = Some(value);
-                let mut state = self.sender.channel.state.borrow_mut();
-                state.sender_wakers.push_back(cx.waker().clone());
+                // Persist the waiter key across polls so we can refresh in place.
+                let mut waiter_key = self.waiter_key;
+                {
+                    let mut state = self.sender.channel.state.borrow_mut();
+                    state.register_or_refresh_sender_waiter(&mut waiter_key, cx.waker());
+                }
+                self.waiter_key = waiter_key;
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -226,7 +411,13 @@ impl<T> Future for RecvFuture<'_, T> {
             Err(RecvError::Empty) => {
                 let mut state = self.receiver.channel.state.borrow_mut();
                 // Store both the order and the waker
-                state.receiver_wakers.push_back(cx.waker().clone());
+                if !state
+                    .receiver_wakers
+                    .iter()
+                    .any(|w| w.will_wake(cx.waker()))
+                {
+                    state.receiver_wakers.push_back(cx.waker().clone());
+                }
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -795,6 +986,50 @@ mod tests {
 
             assert!(*send_completed.borrow());
             assert_eq!(rx.recv().await.unwrap(), 2);
+        });
+
+        rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
+    }
+
+    #[test]
+    fn test_canceled_send_does_not_block_waiting_sender() {
+        let rt = create_test_runtime();
+        let local = tokio::task::LocalSet::new();
+
+        let handle = local.spawn_local(async {
+            let (tx, rx) = Channel::new(NonZeroUsize::new(1).unwrap());
+            tx.send(0).expect("initial send must succeed");
+
+            // Register a sender waker, then cancel the future to leave a stale
+            // waiter in the queue.
+            let tx_canceled = tx.clone();
+            let canceled = tokio::task::spawn_local(async move {
+                tokio::select! {
+                    _ = tx_canceled.send_async(1) => panic!("send should stay blocked while channel is full"),
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                }
+            });
+            canceled.await.expect("canceled task should complete");
+
+            // A real waiting sender should still make progress after one recv.
+            let tx_waiting = tx.clone();
+            let waiting = tokio::task::spawn_local(async move {
+                tx_waiting
+                    .send_async(2)
+                    .await
+                    .expect("waiting sender should be awakened");
+            });
+
+            tokio::task::yield_now().await;
+            assert_eq!(rx.recv().await.expect("must receive first value"), 0);
+
+            timeout(Duration::from_millis(200), waiting)
+                .await
+                .expect("waiting sender timed out")
+                .expect("waiting sender task failed");
+
+            assert_eq!(rx.recv().await.expect("must receive second value"), 2);
         });
 
         rt.block_on(local);
