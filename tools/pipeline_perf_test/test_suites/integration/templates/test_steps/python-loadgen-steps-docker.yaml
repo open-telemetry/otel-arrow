@@ -9,6 +9,7 @@ steps:
             target_rate: {{syslog_rate | default(5000)}}
             batch_size:  {{syslog_batch_size | default(100)}}
             load_type: syslog
+            syslog_transport: '{{syslog_transport | default("udp")}}'
             message_body:  '{{syslog_message | default(None)}}'
   - name: Deploy Backend Engine
     action:
