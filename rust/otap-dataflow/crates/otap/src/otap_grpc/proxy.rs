@@ -1047,14 +1047,7 @@ mod tests {
         use std::sync::Arc;
         use tokio_rustls::TlsAcceptor;
 
-        if let Err(err) = crate::crypto::install_crypto_provider() {
-            // Non-fatal if already installed by another test.
-            otel_debug!(
-                "provider.installation.failed",
-                error = ?err,
-                "rustls default provider installation failed in test"
-            );
-        }
+        crate::crypto::ensure_crypto_provider();
 
         let ca = generate_ca("Proxy Handshake Test CA");
         let server = ca.issue_leaf(

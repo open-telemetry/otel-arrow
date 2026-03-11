@@ -977,7 +977,7 @@ mod test {
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
     ) -> (PipelineContext, ExporterWrapper<OtapPdata>) {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
         let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -2335,7 +2335,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2383,7 +2383,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2432,7 +2432,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2481,7 +2481,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2532,7 +2532,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2583,7 +2583,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2632,7 +2632,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_pem() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2685,7 +2685,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_file() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2739,7 +2739,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_failure_wrong_client_cert() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2801,7 +2801,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_cert_without_key() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2857,7 +2857,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_key_without_cert() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();

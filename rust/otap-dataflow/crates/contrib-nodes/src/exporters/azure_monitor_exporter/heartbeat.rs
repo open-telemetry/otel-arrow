@@ -222,7 +222,7 @@ mod tests {
     // ==================== Test Helpers ====================
 
     fn create_test_client() -> Client {
-        crate::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         Client::builder().build().unwrap()
     }
 

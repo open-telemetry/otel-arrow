@@ -53,7 +53,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_tls_reload_integration() {
-        let _ = otap_df_otap::crypto::install_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let cert_path = path.join("server.crt");

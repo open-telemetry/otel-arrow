@@ -53,3 +53,16 @@ pub fn install_crypto_provider() -> Result<(), String> {
 
     Ok(())
 }
+
+/// Installs the crypto provider idempotently (intended for test setup).
+///
+/// Uses [`std::sync::Once`] so it is safe to call from every test — the actual
+/// installation happens at most once per process.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn ensure_crypto_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = install_crypto_provider();
+    });
+}

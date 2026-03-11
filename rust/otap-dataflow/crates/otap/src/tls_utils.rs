@@ -1667,7 +1667,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lazy_reload_resolver() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let cert_path = path.join("server.crt");
@@ -1822,7 +1822,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(target_os = "macos", ignore = "Skipping on macOS due to flakiness")]
     async fn test_reloadable_client_ca_verifier_file_watch() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca_path = path.join("ca.crt");
@@ -1862,7 +1862,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_reloadable_client_ca_verifier_from_pem() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
@@ -1885,7 +1885,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_build_reloadable_server_config_with_mtls() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
@@ -1926,7 +1926,7 @@ mod tests {
     /// 4. Data can be exchanged over the encrypted connection
     #[tokio::test]
     async fn test_accept_tls_connection_server_only() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2037,7 +2037,7 @@ mod tests {
     /// 4. TLS handshake completes successfully
     #[tokio::test]
     async fn test_accept_tls_connection_mtls() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2156,7 +2156,7 @@ mod tests {
     /// Test accept_tls_connection timeout when client doesn't complete handshake.
     #[tokio::test]
     async fn test_accept_tls_connection_timeout() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2230,7 +2230,7 @@ mod tests {
     /// - Handshake should fail
     #[tokio::test]
     async fn test_accept_tls_connection_untrusted_server() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2323,7 +2323,7 @@ mod tests {
     /// - Handshake should fail
     #[tokio::test]
     async fn test_accept_tls_connection_untrusted_client() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2431,7 +2431,7 @@ mod tests {
     /// - Handshake should fail due to hostname mismatch
     #[tokio::test]
     async fn test_accept_tls_connection_hostname_mismatch() {
-        let _ = crate::crypto::install_crypto_provider();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
