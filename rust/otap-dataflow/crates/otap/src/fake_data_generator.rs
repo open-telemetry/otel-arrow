@@ -29,7 +29,7 @@ use otap_df_engine::{
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
@@ -194,6 +194,10 @@ impl BatchCache {
     /// Create a new batch cache by pre-generating a single batch for each signal type.
     /// The batch contains up to `batch_size` records, which will be sent multiple times
     /// per iteration to match the total signal count.
+    ///
+    /// **Note:** Cached batches always use the first resource-attribute set (slot 0).
+    /// Resource attribute rotation is not supported with `pre_generated` strategy;
+    /// use `fresh` or `templates` for per-batch attribute rotation.
     fn new(
         generator: &SignalGenerator,
         batch_size: usize,
@@ -300,6 +304,13 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         // Create batch cache if using PreGenerated strategy
         let batch_cache = match generation_strategy {
             GenerationStrategy::PreGenerated => {
+                if !self.config.resource_attributes().is_empty() {
+                    otel_warn!(
+                        "fake_data_generator.config_warning",
+                        message = "resource_attributes rotation is not supported with pre_generated strategy; \
+                                   only the first attribute set will be used. Use 'fresh' or 'templates' for rotation."
+                    );
+                }
                 otel_info!(
                     "fake_data_generator.pre_generate",
                     message = "Pre-generating batch for high-throughput mode"

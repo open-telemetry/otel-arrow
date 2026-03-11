@@ -85,8 +85,12 @@ pub struct Config {
     enable_ack_nack: bool,
 
     /// Additional resource attributes to merge into generated signals.
-    /// When multiple entries are provided, the generator round-robins through
-    /// them per batch, producing mixed-tenant traffic on a single connection.
+    /// Only applies to `data_source: static`. When multiple entries are provided,
+    /// the generator round-robins through them per batch, producing mixed-tenant
+    /// traffic on a single connection.
+    ///
+    /// **Note:** Per-batch rotation requires `generation_strategy: fresh` (or `templates`).
+    /// With `pre_generated`, only the first attribute set is used.
     ///
     /// ```yaml
     /// resource_attributes:
