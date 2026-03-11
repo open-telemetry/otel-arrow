@@ -68,6 +68,26 @@ Generates fake data with performance metrics:
 - Generates fake data -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
+### `fake-multi-tenant-perf.yaml`
+
+Generates mixed-tenant traffic using weighted resource attribute rotation:
+
+- Uses `data_source: static` with two resource attribute sets (`tenant.id: prod` and
+  `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split per pipeline.
+- Generates fake data -> performance exporter
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+The `resource_attributes` field accepts three forms:
+
+| Form | Description |
+|------|-------------|
+| Single map | All batches carry the same attributes (weight 1) |
+| List of maps | Equal round-robin rotation across entries (weight 1 each) |
+| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+
+> **Note:** `resource_attributes` only applies to `data_source: static`.
+> With `generation_strategy: pre_generated`, only the first attribute set is used.
+
 ### `otap-otap.yaml`
 
 A basic OTAP pipeline configuration:
