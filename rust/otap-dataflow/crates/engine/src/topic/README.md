@@ -95,6 +95,9 @@ Mapping from YAML to runtime behavior:
 - `exporter:topic.config.queue_on_full` is a per-publisher override
   for balanced full-queue behavior; it does not override broadcast lag
   policy.
+- The controller rejects cycles in the global topic wiring graph at
+  startup, including same-pipeline feedback through a topic and
+  multi-pipeline topic loops.
 
 Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast

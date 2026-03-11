@@ -275,6 +275,13 @@ General topic capabilities:
   observe the same stream.
 - Mixed topologies where one topic serves both balanced and broadcast consumers.
 
+Topic wiring must remain acyclic across topic hops. During startup, the
+controller rejects feedback loops that involve declared topics, including:
+
+- same-pipeline loops such as `receiver:topic -> ... -> exporter:topic`
+- cross-pipeline loops where one pipeline eventually routes back into an
+  earlier topic
+
 Current topic declaration shape:
 
 ```yaml

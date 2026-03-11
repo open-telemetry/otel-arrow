@@ -75,6 +75,14 @@ pub enum Error {
         value: String,
     },
 
+    /// A cycle was detected in the global topic wiring graph.
+    #[error("Topic wiring cycle detected: {cycle:?}")]
+    #[diagnostic(code(data_plane::topic_wiring_cycle_detected), url(docsrs))]
+    TopicWiringCycleDetected {
+        /// The cycle path, with the starting vertex repeated at the end.
+        cycle: Vec<String>,
+    },
+
     /// Failed to spawn an OS thread.
     #[error("Failed to spawn thread '{thread_name}': {source}")]
     ThreadSpawnError {

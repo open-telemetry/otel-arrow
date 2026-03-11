@@ -132,6 +132,13 @@ General topic capabilities:
 - support broadcast fan-out / tap pipelines
 - support mixed balanced + broadcast consumers on one topic
 
+Topic wiring must remain acyclic across topic hops. During startup, the
+controller rejects feedback loops that involve declared topics, including:
+
+- same-pipeline loops such as `receiver:topic -> ... -> exporter:topic`
+- cross-pipeline loops where one pipeline eventually routes back into an
+  earlier topic
+
 Current topic declaration shape:
 
 ```yaml

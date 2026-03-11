@@ -212,6 +212,36 @@ struct InferredTopicModeReport {
     has_unknown_receiver_mode: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TopicWiringVertex {
+    PipelineNode {
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        node_id: otap_df_config::NodeId,
+    },
+    Topic {
+        declared_name: TopicName,
+    },
+}
+
+impl TopicWiringVertex {
+    fn label(&self) -> String {
+        match self {
+            Self::PipelineNode {
+                pipeline_group_id,
+                pipeline_id,
+                node_id,
+            } => format!(
+                "pipeline:{}/{}/{}",
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+                node_id.as_ref()
+            ),
+            Self::Topic { declared_name } => format!("topic:{}", declared_name.as_ref()),
+        }
+    }
+}
+
 /// Returns the set of entity keys relevant to this context.
 fn engine_context() -> LogContext {
     if let Some(node) = node_entity_key() {
@@ -466,6 +496,199 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         (inferred_modes, inferred_mode_reports)
     }
 
+    fn add_topic_wiring_edge(
+        adjacency: &mut HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
+        from: TopicWiringVertex,
+        to: TopicWiringVertex,
+    ) {
+        adjacency.entry(from.clone()).or_default().push(to.clone());
+        let _ = adjacency.entry(to).or_default();
+    }
+
+    fn collect_topic_wiring_edges_for_pipeline(
+        adjacency: &mut HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        pipeline: &PipelineConfig,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+    ) {
+        for connection in pipeline.connection_iter() {
+            let targets = connection.to_nodes();
+            for source in connection.from_sources() {
+                let source_vertex = TopicWiringVertex::PipelineNode {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: pipeline_id.clone(),
+                    node_id: source.node_id().clone(),
+                };
+                for target in &targets {
+                    let target_vertex = TopicWiringVertex::PipelineNode {
+                        pipeline_group_id: pipeline_group_id.clone(),
+                        pipeline_id: pipeline_id.clone(),
+                        node_id: target.clone(),
+                    };
+                    Self::add_topic_wiring_edge(adjacency, source_vertex.clone(), target_vertex);
+                }
+            }
+        }
+
+        let mut topic_nodes = pipeline.node_iter().collect::<Vec<_>>();
+        topic_nodes.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+        for (node_id, node_config) in topic_nodes {
+            if node_config.r#type.id() != "topic" {
+                continue;
+            }
+            let Some(topic_name) = Self::parse_topic_name_from_node_config(node_config) else {
+                continue;
+            };
+            let Some(declared_name) = Self::resolve_declared_topic_name(
+                pipeline_group_id,
+                &topic_name,
+                global_names,
+                group_names,
+            ) else {
+                continue;
+            };
+            let node_vertex = TopicWiringVertex::PipelineNode {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                node_id: node_id.clone(),
+            };
+            let topic_vertex = TopicWiringVertex::Topic { declared_name };
+            match node_config.kind() {
+                NodeKind::Exporter => {
+                    Self::add_topic_wiring_edge(adjacency, node_vertex, topic_vertex);
+                }
+                NodeKind::Receiver => {
+                    Self::add_topic_wiring_edge(adjacency, topic_vertex, node_vertex);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn detect_topic_wiring_cycles(
+        adjacency: &HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
+    ) -> Vec<Vec<TopicWiringVertex>> {
+        fn visit(
+            node: &TopicWiringVertex,
+            adjacency: &HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
+            visiting: &mut HashSet<TopicWiringVertex>,
+            visited: &mut HashSet<TopicWiringVertex>,
+            current_path: &mut Vec<TopicWiringVertex>,
+            cycles: &mut Vec<Vec<TopicWiringVertex>>,
+        ) {
+            if visited.contains(node) {
+                return;
+            }
+            if visiting.contains(node) {
+                if let Some(pos) = current_path.iter().position(|candidate| candidate == node) {
+                    cycles.push(current_path[pos..].to_vec());
+                }
+                return;
+            }
+
+            let _ = visiting.insert(node.clone());
+            current_path.push(node.clone());
+
+            if let Some(targets) = adjacency.get(node) {
+                for target in targets {
+                    visit(target, adjacency, visiting, visited, current_path, cycles);
+                }
+            }
+
+            let _ = visiting.remove(node);
+            let _ = visited.insert(node.clone());
+            let _ = current_path.pop();
+        }
+
+        let mut nodes = adjacency.keys().cloned().collect::<Vec<_>>();
+        nodes.sort_by_key(TopicWiringVertex::label);
+
+        let mut cycles = Vec::new();
+        let mut visiting = HashSet::new();
+        let mut visited = HashSet::new();
+        let mut current_path = Vec::new();
+
+        for node in nodes {
+            visit(
+                &node,
+                adjacency,
+                &mut visiting,
+                &mut visited,
+                &mut current_path,
+                &mut cycles,
+            );
+        }
+
+        cycles
+    }
+
+    fn validate_topic_wiring_acyclic(
+        config: &OtelDataflowSpec,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+    ) -> Result<(), Error> {
+        let mut adjacency = HashMap::<TopicWiringVertex, Vec<TopicWiringVertex>>::new();
+
+        let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
+        group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        for group_id in group_ids {
+            let group_cfg = config
+                .groups
+                .get(&group_id)
+                .expect("group collected from config must still exist");
+            let mut pipeline_ids = group_cfg.pipelines.keys().cloned().collect::<Vec<_>>();
+            pipeline_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            for pipeline_id in pipeline_ids {
+                let pipeline_cfg = group_cfg
+                    .pipelines
+                    .get(&pipeline_id)
+                    .expect("pipeline collected from config must still exist");
+                Self::collect_topic_wiring_edges_for_pipeline(
+                    &mut adjacency,
+                    &group_id,
+                    &pipeline_id,
+                    pipeline_cfg,
+                    global_names,
+                    group_names,
+                );
+            }
+        }
+
+        if let Some(observability_pipeline) = config.engine.observability.pipeline.as_ref() {
+            let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+            let observability_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+            let pipeline_cfg = observability_pipeline.clone().into_pipeline_config();
+            Self::collect_topic_wiring_edges_for_pipeline(
+                &mut adjacency,
+                &system_group_id,
+                &observability_pipeline_id,
+                &pipeline_cfg,
+                global_names,
+                group_names,
+            );
+        }
+
+        if let Some(cycle) = Self::detect_topic_wiring_cycles(&adjacency)
+            .into_iter()
+            .next()
+        {
+            let mut cycle_labels = cycle
+                .iter()
+                .map(TopicWiringVertex::label)
+                .collect::<Vec<_>>();
+            if let Some(first) = cycle.first() {
+                cycle_labels.push(first.label());
+            }
+            return Err(Error::TopicWiringCycleDetected {
+                cycle: cycle_labels,
+            });
+        }
+
+        Ok(())
+    }
+
     fn emit_topic_mode_reports(reports: &[InferredTopicModeReport]) {
         for report in reports {
             otel_info!(
@@ -613,6 +836,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     fn declare_topics(config: &OtelDataflowSpec) -> Result<DeclaredTopics<PData>, Error> {
         let broker = TopicBroker::<PData>::new();
         let (global_names, group_names) = Self::build_declared_topic_name_maps(config)?;
+        Self::validate_topic_wiring_acyclic(config, &global_names, &group_names)?;
         let (inferred_modes, mut inferred_mode_reports) =
             Self::infer_topic_modes(config, &global_names, &group_names);
         let default_selection_policy = config.engine.topics.impl_selection;
@@ -2075,6 +2299,103 @@ groups:
                 assert_eq!(backend, TopicBackendKind::InMemory);
                 assert_eq!(policy, "ack_propagation");
                 assert_eq!(value, "auto");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declare_topics_rejects_same_pipeline_topic_wiring_cycle() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  loop: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          loop_receiver:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: loop
+          loop_exporter:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: loop
+        connections:
+          - from: loop_receiver
+            to: loop_exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = Controller::<()>::declare_topics(&config)
+            .err()
+            .expect("same-pipeline topic feedback loop should be rejected");
+        match err {
+            Error::TopicWiringCycleDetected { cycle } => {
+                assert!(cycle.len() >= 4, "unexpected cycle path: {cycle:?}");
+                assert_eq!(cycle.first(), cycle.last());
+                assert!(cycle.contains(&"topic:global::loop".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p1/loop_receiver".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p1/loop_exporter".to_owned()));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declare_topics_rejects_cross_pipeline_topic_wiring_cycle() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  topic_a: {}
+  topic_b: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          from_topic_a:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_a
+          to_topic_b:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: topic_b
+        connections:
+          - from: from_topic_a
+            to: to_topic_b
+      p2:
+        nodes:
+          from_topic_b:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_b
+          to_topic_a:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: topic_a
+        connections:
+          - from: from_topic_b
+            to: to_topic_a
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = Controller::<()>::declare_topics(&config)
+            .err()
+            .expect("cross-pipeline topic cycle should be rejected");
+        match err {
+            Error::TopicWiringCycleDetected { cycle } => {
+                assert!(cycle.len() >= 6, "unexpected cycle path: {cycle:?}");
+                assert_eq!(cycle.first(), cycle.last());
+                assert!(cycle.contains(&"topic:global::topic_a".to_owned()));
+                assert!(cycle.contains(&"topic:global::topic_b".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p1/from_topic_a".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p1/to_topic_b".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p2/from_topic_b".to_owned()));
+                assert!(cycle.contains(&"pipeline:g1/p2/to_topic_a".to_owned()));
             }
             other => panic!("unexpected error: {other:?}"),
         }
