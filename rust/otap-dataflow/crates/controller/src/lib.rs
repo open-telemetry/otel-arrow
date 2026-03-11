@@ -52,8 +52,8 @@ use otap_df_config::engine::{
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::topic::{
-    TopicAckPropagationPolicy, TopicBackendKind, TopicBroadcastOnLagPolicy,
-    TopicImplSelectionPolicy, TopicSpec,
+    TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
+    TopicSpec,
 };
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
@@ -70,7 +70,9 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_engine::topic::{InMemoryBackend, TopicBroker, TopicOptions, TopicSet};
+use otap_df_engine::topic::{
+    InMemoryBackend, TopicBroker, TopicOptions, TopicPublishOutcomeConfig, TopicSet,
+};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -158,10 +160,10 @@ impl TopicBackendCapabilities {
         }
     }
 
-    const fn supports_ack_propagation(self, policy: TopicAckPropagationPolicy) -> bool {
+    const fn supports_ack_propagation(self, policy: TopicAckPropagationMode) -> bool {
         match policy {
-            TopicAckPropagationPolicy::Disabled => self.supports_ack_propagation_disabled,
-            TopicAckPropagationPolicy::Auto => self.supports_ack_propagation_auto,
+            TopicAckPropagationMode::Disabled => self.supports_ack_propagation_disabled,
+            TopicAckPropagationMode::Auto => self.supports_ack_propagation_auto,
         }
     }
 }
@@ -173,10 +175,10 @@ const fn broadcast_on_lag_policy_value(policy: TopicBroadcastOnLagPolicy) -> &'s
     }
 }
 
-const fn ack_propagation_policy_value(policy: TopicAckPropagationPolicy) -> &'static str {
+const fn ack_propagation_policy_value(policy: TopicAckPropagationMode) -> &'static str {
     match policy {
-        TopicAckPropagationPolicy::Disabled => "disabled",
-        TopicAckPropagationPolicy::Auto => "auto",
+        TopicAckPropagationMode::Disabled => "disabled",
+        TopicAckPropagationMode::Auto => "auto",
     }
 }
 
@@ -260,6 +262,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 capacity: broadcast_capacity,
                 on_lag: broadcast_on_lag,
             },
+        }
+    }
+
+    fn map_topic_spec_to_publish_outcome_config(spec: &TopicSpec) -> TopicPublishOutcomeConfig {
+        TopicPublishOutcomeConfig {
+            max_in_flight: spec.policies.ack_propagation.max_in_flight.max(1),
+            timeout: spec.policies.ack_propagation.timeout,
         }
     }
 
@@ -539,12 +548,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             });
         }
 
-        if !capabilities.supports_ack_propagation(policies.ack_propagation) {
+        if !capabilities.supports_ack_propagation(policies.ack_propagation.mode) {
             return Err(Error::UnsupportedTopicPolicy {
                 topic: topic.clone(),
                 backend,
                 policy: "ack_propagation",
-                value: ack_propagation_policy_value(policies.ack_propagation).to_owned(),
+                value: ack_propagation_policy_value(policies.ack_propagation.mode).to_owned(),
             });
         }
 
@@ -684,7 +693,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     })?;
                 let handle = handle
                     .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                    .with_default_ack_propagation(topic_spec.policies.ack_propagation);
+                    .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode)
+                    .with_default_publish_outcome_config(
+                        Self::map_topic_spec_to_publish_outcome_config(topic_spec),
+                    );
                 _ = set.insert(global_topic_name.clone(), handle);
             }
         }
@@ -704,7 +716,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             })?;
                     let handle = handle
                         .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                        .with_default_ack_propagation(topic_spec.policies.ack_propagation);
+                        .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode)
+                        .with_default_publish_outcome_config(
+                            Self::map_topic_spec_to_publish_outcome_config(topic_spec),
+                        );
                     // Group-local declarations override globals with the same local name.
                     _ = set.insert(group_topic_name.clone(), handle);
                 }
@@ -1503,7 +1518,7 @@ mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
-    use otap_df_config::topic::{TopicAckPropagationPolicy, TopicBroadcastOnLagPolicy};
+    use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2035,7 +2050,7 @@ groups:
             supports_ack_propagation_auto: false,
         };
         let mut spec = TopicSpec::default();
-        spec.policies.ack_propagation = TopicAckPropagationPolicy::Auto;
+        spec.policies.ack_propagation.mode = TopicAckPropagationMode::Auto;
 
         let err = Controller::<()>::validate_topic_runtime_support_with_capabilities(
             &topic,
@@ -2431,7 +2446,10 @@ topics:
       broadcast:
         queue_capacity: 8
         on_lag: disconnect
-      ack_propagation: auto
+      ack_propagation:
+        mode: auto
+        max_in_flight: 21
+        timeout: 45s
 groups:
   g1:
     topics:
@@ -2443,7 +2461,10 @@ groups:
           broadcast:
             queue_capacity: 8
             on_lag: drop_oldest
-          ack_propagation: disabled
+          ack_propagation:
+            mode: disabled
+            max_in_flight: 22
+            timeout: 46s
       # Same local alias as global to verify group-local override path.
       global_drop:
         policies:
@@ -2453,7 +2474,10 @@ groups:
           broadcast:
             queue_capacity: 8
             on_lag: drop_oldest
-          ack_propagation: disabled
+          ack_propagation:
+            mode: disabled
+            max_in_flight: 23
+            timeout: 47s
     pipelines:
       p1:
         nodes:
@@ -2489,12 +2513,20 @@ groups:
             otap_df_config::topic::TopicQueueOnFullPolicy::Block
         );
         assert_eq!(
-            local_block.default_ack_propagation(),
-            otap_df_config::topic::TopicAckPropagationPolicy::Disabled
+            local_block.default_ack_propagation_mode(),
+            otap_df_config::topic::TopicAckPropagationMode::Disabled
         );
         assert_eq!(
             local_block.broadcast_on_lag_policy(),
             otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+        );
+        assert_eq!(
+            local_block.default_publish_outcome_config().max_in_flight,
+            22
+        );
+        assert_eq!(
+            local_block.default_publish_outcome_config().timeout,
+            std::time::Duration::from_secs(46)
         );
 
         // group-local declaration must override global policy for same local name
@@ -2506,12 +2538,20 @@ groups:
             otap_df_config::topic::TopicQueueOnFullPolicy::Block
         );
         assert_eq!(
-            overridden.default_ack_propagation(),
-            otap_df_config::topic::TopicAckPropagationPolicy::Disabled
+            overridden.default_ack_propagation_mode(),
+            otap_df_config::topic::TopicAckPropagationMode::Disabled
         );
         assert_eq!(
             overridden.broadcast_on_lag_policy(),
             otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+        );
+        assert_eq!(
+            overridden.default_publish_outcome_config().max_in_flight,
+            23
+        );
+        assert_eq!(
+            overridden.default_publish_outcome_config().timeout,
+            std::time::Duration::from_secs(47)
         );
     }
 

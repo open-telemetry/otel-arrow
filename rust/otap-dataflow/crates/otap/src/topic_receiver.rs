@@ -11,7 +11,7 @@ use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::topic::{
-    SubscriptionGroupName, TopicAckPropagationPolicy, TopicBroadcastOnLagPolicy,
+    SubscriptionGroupName, TopicAckPropagationMode, TopicBroadcastOnLagPolicy,
 };
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -22,9 +22,7 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topic::{
-    RecvItem, SubscriberOptions, Subscription, SubscriptionMode, message_has_publisher_ack,
-};
+use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, SubscriptionMode};
 use otap_df_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
@@ -111,7 +109,7 @@ impl Default for TopicSubscriptionConfig {
 pub struct TopicReceiver {
     config: TopicReceiverConfig,
     subscription: Subscription<OtapPdata>,
-    ack_propagation: TopicAckPropagationPolicy,
+    ack_propagation_mode: TopicAckPropagationMode,
     broadcast_on_lag: Option<TopicBroadcastOnLagPolicy>,
     metrics: MetricSet<TopicReceiverMetrics>,
 }
@@ -156,7 +154,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                         config.topic
                     ),
                 })?;
-            let ack_propagation = topic.default_ack_propagation();
+            let ack_propagation_mode = topic.default_ack_propagation_mode();
             let broadcast_on_lag =
                 matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
                     .then(|| topic.broadcast_on_lag_policy());
@@ -166,7 +164,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
                 TopicReceiver {
                     config,
                     subscription,
-                    ack_propagation,
+                    ack_propagation_mode,
                     broadcast_on_lag,
                     metrics,
                 },
@@ -202,7 +200,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         let TopicReceiver {
             config,
             mut subscription,
-            ack_propagation,
+            ack_propagation_mode,
             broadcast_on_lag,
             mut metrics,
         } = *self;
@@ -216,7 +214,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
             node = receiver_id.name.as_ref(),
             topic = config.topic.as_ref(),
             subscription = subscription_mode,
-            ack_propagation = format!("{ack_propagation:?}"),
+            ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic receiver started"
         );
         let telemetry_cancel_handle = effect_handler
@@ -236,7 +234,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 _ = metrics_reporter.report(&mut metrics);
                             }
                             Ok(NodeControlMsg::Ack(ack)) => {
-                                if ack_propagation == TopicAckPropagationPolicy::Auto {
+                                if ack_propagation_mode == TopicAckPropagationMode::Auto {
                                     if let Some(message_id) = Self::decode_topic_message_id(&ack.unwind.route.calldata) {
                                         match subscription.ack(message_id) {
                                             Ok(()) => metrics.bridged_downstream_acks.add(1),
@@ -263,7 +261,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
-                                if ack_propagation == TopicAckPropagationPolicy::Auto {
+                                if ack_propagation_mode == TopicAckPropagationMode::Auto {
                                     if let Some(message_id) = Self::decode_topic_message_id(&nack.unwind.route.calldata) {
                                         match subscription.nack(message_id, nack.reason.as_str()) {
                                             Ok(()) => metrics.bridged_downstream_nacks.add(1),
@@ -302,8 +300,8 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 // Ack/Nack routing context before forwarding.
                                 // Use source-tag-aware send so fan-in wiring can attribute source node.
                                 let mut pdata = env.payload.clone_without_context();
-                                if ack_propagation == TopicAckPropagationPolicy::Auto
-                                    && message_has_publisher_ack(env.id)
+                                if ack_propagation_mode == TopicAckPropagationMode::Auto
+                                    && env.tracked
                                 {
                                     let topic_message_calldata = smallvec![Context8u8::from(env.id)];
                                     effect_handler.subscribe_to(
@@ -384,7 +382,7 @@ mod tests {
     use crate::pdata::OtapPdata;
     use crate::testing::{create_test_pdata, next_ack};
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::topic::TopicAckPropagationPolicy;
+    use otap_df_config::topic::TopicAckPropagationMode;
     use otap_df_engine::config::ReceiverConfig;
     use otap_df_engine::control::{
         AckMsg, Controllable, NodeControlMsg, pipeline_ctrl_msg_channel,
@@ -395,7 +393,7 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        AckStatus, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
+        TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet, TrackedPublishOutcome,
     };
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
@@ -450,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn bridges_downstream_ack_to_topic_ack_event_when_enabled() {
+    fn bridges_downstream_ack_to_topic_outcome_when_enabled() {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
@@ -467,7 +465,7 @@ mod tests {
                 )
                 .expect("topic should be created");
             let receiver_handle =
-                base_handle.with_default_ack_propagation(TopicAckPropagationPolicy::Auto);
+                base_handle.with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
 
             let receiver_set = TopicSet::new("receiver-set");
             _ = receiver_set.insert(topic_name.clone(), receiver_handle);
@@ -515,9 +513,8 @@ mod tests {
                     .await
             });
 
-            let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(8);
-            let publisher = base_handle.with_ack_sender(ack_tx);
-            publisher
+            let publisher = base_handle.tracked_publisher();
+            let receipt = publisher
                 .publish(Arc::new(create_test_pdata()))
                 .await
                 .expect("publish should succeed");
@@ -534,12 +531,10 @@ mod tests {
                 .await
                 .expect("failed to send ack control to topic receiver");
 
-            let ack_event = tokio::time::timeout(Duration::from_secs(2), ack_rx.recv())
+            let outcome = tokio::time::timeout(Duration::from_secs(2), receipt.wait_for_outcome())
                 .await
-                .expect("timed out waiting for topic ack event")
-                .expect("topic ack channel closed");
-            assert_eq!(ack_event.status, AckStatus::Ack);
-            assert_ne!(ack_event.publisher_id, 0);
+                .expect("timed out waiting for tracked topic outcome");
+            assert_eq!(outcome, TrackedPublishOutcome::Ack);
 
             receiver_ctrl
                 .send(NodeControlMsg::Shutdown {

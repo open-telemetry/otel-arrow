@@ -65,7 +65,10 @@ topics:
       broadcast:
         queue_capacity: 4096
         on_lag: drop_oldest
-      ack_propagation: disabled
+      ack_propagation:
+        mode: disabled
+        max_in_flight: 1024
+        timeout: 30s
 ```
 
 Mapping from YAML to runtime behavior:
@@ -82,13 +85,15 @@ Mapping from YAML to runtime behavior:
   consumer-group queues.
 - `broadcast.queue_capacity` and `broadcast.on_lag` govern the
   broadcast ring and slow-subscriber behavior.
-- `policies.ack_propagation` controls whether topic hops can bridge
-  Ack/Nack across pipelines.
+- `ack_propagation.mode` controls whether topic hops can bridge Ack/Nack
+  across pipelines.
+- `ack_propagation.max_in_flight` and `ack_propagation.timeout` govern
+  tracked publish outcomes per publisher handle when propagation is enabled.
 - `exporter:topic.config.queue_on_full` is a per-publisher override
   for balanced full-queue behavior; it does not override broadcast lag
   policy.
 
-Current limitation: in broadcast mode, `ack_propagation: auto` does not
+Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast
 subscriber Ack/Nack resolves the upstream message, so upstream completion does
 not mean all broadcast subscribers processed the message. This matters
@@ -112,7 +117,7 @@ Recommended full engine-level contract for a future second backend:
 1. Capabilities should cover backend availability plus support for the
    selected runtime mode (`BalancedOnly`, `BroadcastOnly`, `Mixed`) and
    policy families such as `broadcast.on_lag` and
-   `ack_propagation`.
+   `ack_propagation.mode`.
 1. Topic creation should validate the selected backend, mode, and
    policies against that contract before instantiating backend state.
 1. Failures should use explicit errors such as
@@ -285,9 +290,10 @@ let _topic = broker.create_topic(
 - Ack/Nack
   - Subscribers ack/nack by message ID (`Subscription::ack` /
     `Subscription::nack`).
-  - Ack routing is per publisher handle when `with_ack_sender` is used
-    (directly or via `TopicSet::with_ack_sender`).
-  - If no ack sender is registered, ack/nack returns `Error::AckNotEnabled`.
+  - Publishers that need terminal Ack/Nack use
+    `TopicHandle::tracked_publisher()`.
+  - Tracked publishes resolve through `TrackedPublishReceipt`.
+  - Ack/nack on an untracked message returns `Error::MessageNotTracked`.
 
 ## Guarantees
 

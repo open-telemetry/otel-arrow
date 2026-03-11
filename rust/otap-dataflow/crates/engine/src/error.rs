@@ -443,21 +443,13 @@ pub enum Error {
     /// A topic reference could not be resolved in the current scope.
     #[error("unknown topic `{topic}`")]
     UnknownTopic {
-        /// The name of the topic that could not be found.
-        topic: TopicName,
+        /// The unresolved topic name or local alias.
+        topic: String,
     },
 
-    /// Acknowledgement is not enabled for this subscription.
-    #[error("ack not enabled for this subscription")]
-    AckNotEnabled,
-
-    /// An ack event could not be sent because the ack channel is full.
-    #[error("ack channel full, event dropped")]
-    AckChannelFull,
-
-    /// An ack event could not be sent because the ack channel is closed.
-    #[error("ack channel closed")]
-    AckChannelClosed,
+    /// The referenced message was not published through the tracked outcome path.
+    #[error("message is not tracked for publish outcomes")]
+    MessageNotTracked,
 
     /// An operation could not be completed because the topic is closed.
     #[error("topic closed")]
@@ -519,9 +511,7 @@ impl Error {
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
             Error::UnknownTopic { .. } => "UnknownTopic",
-            Error::AckNotEnabled => "AckNotEnabled",
-            Error::AckChannelFull => "AckChannelFull",
-            Error::AckChannelClosed => "AckChannelClosed",
+            Error::MessageNotTracked => "MessageNotTracked",
             Error::TopicClosed => "TopicClosed",
             Error::SubscribeBalancedNotSupported => "SubscribeBalancedNotSupported",
             Error::SubscribeBroadcastNotSupported => "SubscribeBroadcastNotSupported",

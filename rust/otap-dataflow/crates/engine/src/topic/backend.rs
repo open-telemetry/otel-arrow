@@ -31,13 +31,16 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use crate::error::Error;
 use crate::topic::topic::TopicInner;
-use crate::topic::types::{AckEvent, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions};
+use crate::topic::types::{
+    PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishPermit,
+    TrackedPublishReceipt, TrackedTryPublishOutcome,
+};
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
-use tokio::sync::mpsc;
 
 /// The future type returned by [`TopicState::publish`].
 ///
@@ -46,8 +49,9 @@ use tokio::sync::mpsc;
 /// noise compared to network I/O.
 pub type PublishFuture<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 
-/// The future type returned by [`TopicState::publish_with_id`].
-pub type PublishWithIdFuture<'a> = Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>>;
+/// The future type returned by [`TopicState::publish_tracked`].
+pub type PublishTrackedFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<TrackedPublishReceipt, Error>> + Send + 'a>>;
 
 /// Factory: creates per-topic state. One implementation per backend.
 pub trait TopicBackend<T: Send + Sync + 'static>: Send + Sync + 'static {
@@ -59,26 +63,45 @@ pub trait TopicBackend<T: Send + Sync + 'static>: Send + Sync + 'static {
 pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     /// Topic name.
     fn name(&self) -> &TopicName;
-    /// Publish one payload and return the broker-assigned message id.
-    fn publish_with_id(&self, publisher_id: u16, msg: Arc<T>) -> PublishWithIdFuture<'_>;
-    /// Publish one payload under `publisher_id`.
-    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_> {
-        Box::pin(async move {
-            _ = self.publish_with_id(publisher_id, msg).await?;
-            Ok(())
-        })
-    }
-    /// Try to publish one payload and return `(outcome, message_id)`.
-    fn try_publish_with_id(
+    /// Publish one payload.
+    fn publish(&self, msg: Arc<T>) -> PublishFuture<'_>;
+    /// Publish one payload and return a tracked-outcome receipt.
+    ///
+    /// `timeout` defines the maximum time the publish may remain unresolved
+    /// after the topic accepts it for tracked delivery. If no subscriber
+    /// produces a terminal Ack/Nack before that deadline, the returned receipt
+    /// resolves as [`TrackedPublishOutcome::TimedOut`](crate::topic::TrackedPublishOutcome::TimedOut).
+    ///
+    /// `permit` is a caller-acquired in-flight capacity token. Tracked
+    /// publishers use it to enforce `max_in_flight` before entering the topic.
+    /// Ownership is transferred to the topic runtime and the permit is released
+    /// only when the tracked outcome reaches a terminal state or the publish is
+    /// rejected before admission.
+    ///
+    /// External backend implementations can construct the returned receipt with
+    /// [`TrackedPublishReceipt::pending`](crate::topic::TrackedPublishReceipt::pending)
+    /// and resolve it later through the paired
+    /// [`TrackedPublishResolver`](crate::topic::TrackedPublishResolver).
+    fn publish_tracked(
         &self,
-        publisher_id: u16,
         msg: Arc<T>,
-    ) -> Result<(PublishOutcome, u64), Error>;
-    /// Try to publish one payload under `publisher_id` without awaiting.
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
-        self.try_publish_with_id(publisher_id, msg)
-            .map(|(outcome, _)| outcome)
-    }
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> PublishTrackedFuture<'_>;
+    /// Try to publish one payload without awaiting.
+    fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error>;
+    /// Try to publish one tracked payload without awaiting.
+    ///
+    /// `timeout` and `permit` have the same meaning as in
+    /// [`TopicState::publish_tracked`]. If the topic cannot accept the message
+    /// immediately, the implementation returns a
+    /// [`TrackedTryPublishOutcome`] instead of awaiting.
+    fn try_publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error>;
     /// Create a balanced subscription backend for consumer-group `group`.
     fn subscribe_balanced(
         &self,
@@ -92,8 +115,6 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error>;
     /// Effective broadcast lag policy for this topic.
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
-    /// Register an ack sender for a publisher handle and return its publisher id.
-    fn register_publisher(&self, sender: mpsc::Sender<AckEvent>) -> u16;
     /// Close the topic. Existing subscriptions eventually observe closure.
     fn close(&self);
 }

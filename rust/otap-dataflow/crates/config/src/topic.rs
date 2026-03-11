@@ -8,6 +8,7 @@ use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::time::Duration;
 
 /// Name of a topic declaration/reference.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
@@ -235,7 +236,7 @@ pub struct TopicPolicies {
     pub broadcast: TopicBroadcastPolicies,
     /// Policy controlling cross-pipeline Ack/Nack propagation over topic hops.
     #[serde(default)]
-    pub ack_propagation: TopicAckPropagationPolicy,
+    pub ack_propagation: TopicAckPropagationPolicies,
 }
 
 impl TopicPolicies {
@@ -251,6 +252,11 @@ impl TopicPolicies {
         if self.broadcast.queue_capacity == 0 {
             errors.push(format!(
                 "{path_prefix}.broadcast.queue_capacity must be greater than 0"
+            ));
+        }
+        if self.ack_propagation.max_in_flight == 0 {
+            errors.push(format!(
+                "{path_prefix}.ack_propagation.max_in_flight must be greater than 0"
             ));
         }
         errors
@@ -299,6 +305,35 @@ impl Default for TopicBroadcastPolicies {
     }
 }
 
+/// Policies for cross-pipeline Ack/Nack propagation over topic hops.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TopicAckPropagationPolicies {
+    /// Ack/Nack propagation mode for the topic hop.
+    #[serde(default)]
+    pub mode: TopicAckPropagationMode,
+    /// Maximum number of unresolved tracked publish outcomes per publisher handle.
+    #[serde(default = "default_topic_ack_propagation_max_in_flight")]
+    pub max_in_flight: usize,
+    /// Maximum time to wait before a tracked publish outcome is timed out.
+    #[serde(
+        default = "default_topic_ack_propagation_timeout",
+        with = "humantime_serde"
+    )]
+    #[schemars(with = "String")]
+    pub timeout: Duration,
+}
+
+impl Default for TopicAckPropagationPolicies {
+    fn default() -> Self {
+        Self {
+            mode: TopicAckPropagationMode::default(),
+            max_in_flight: default_topic_ack_propagation_max_in_flight(),
+            timeout: default_topic_ack_propagation_timeout(),
+        }
+    }
+}
+
 /// Behavior when a balanced queue reaches `queue_capacity`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -324,7 +359,7 @@ pub enum TopicBroadcastOnLagPolicy {
 /// Policy controlling whether topic hops can bridge Ack/Nack across pipelines.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TopicAckPropagationPolicy {
+pub enum TopicAckPropagationMode {
     /// Disable cross-pipeline Ack/Nack propagation.
     #[default]
     Disabled,
@@ -340,16 +375,25 @@ const fn default_topic_broadcast_queue_capacity() -> usize {
     128
 }
 
+const fn default_topic_ack_propagation_max_in_flight() -> usize {
+    1024
+}
+
+const fn default_topic_ack_propagation_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SubscriptionGroupName, TopicAckPropagationPolicy, TopicBackendKind,
+        SubscriptionGroupName, TopicAckPropagationMode, TopicBackendKind,
         TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName, TopicQueueOnFullPolicy,
         TopicSpec,
     };
     use crate::error::Error;
     use serde::Deserialize;
     use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn defaults_match_expected_values() {
@@ -359,16 +403,21 @@ mod tests {
         assert_eq!(topic.policies.balanced.queue_capacity, 128);
         assert_eq!(topic.policies.broadcast.queue_capacity, 128);
         assert_eq!(
+            topic.policies.ack_propagation.mode,
+            TopicAckPropagationMode::Disabled
+        );
+        assert_eq!(topic.policies.ack_propagation.max_in_flight, 1024);
+        assert_eq!(
+            topic.policies.ack_propagation.timeout,
+            Duration::from_secs(30)
+        );
+        assert_eq!(
             topic.policies.broadcast.on_lag,
             TopicBroadcastOnLagPolicy::DropOldest
         );
         assert_eq!(
             topic.policies.balanced.on_full,
             TopicQueueOnFullPolicy::Block
-        );
-        assert_eq!(
-            topic.policies.ack_propagation,
-            TopicAckPropagationPolicy::Disabled
         );
     }
 
@@ -377,11 +426,13 @@ mod tests {
         let mut topic = TopicSpec::default();
         topic.policies.balanced.queue_capacity = 0;
         topic.policies.broadcast.queue_capacity = 0;
+        topic.policies.ack_propagation.max_in_flight = 0;
 
         let errors = topic.validation_errors("topics.raw");
-        assert_eq!(errors.len(), 2);
+        assert_eq!(errors.len(), 3);
         assert!(errors[0].contains(".balanced.queue_capacity"));
         assert!(errors[1].contains(".broadcast.queue_capacity"));
+        assert!(errors[2].contains(".ack_propagation.max_in_flight"));
     }
 
     #[test]
@@ -395,12 +446,24 @@ policies:
   broadcast:
     queue_capacity: 2
     on_lag: disconnect
-  ack_propagation: auto
+  ack_propagation:
+    mode: auto
+    max_in_flight: 3
+    timeout: 45s
 "#;
 
         let topic: TopicSpec = serde_yaml::from_str(yaml).expect("topic should parse");
         assert_eq!(topic.policies.balanced.queue_capacity, 1);
         assert_eq!(topic.policies.broadcast.queue_capacity, 2);
+        assert_eq!(
+            topic.policies.ack_propagation.mode,
+            TopicAckPropagationMode::Auto
+        );
+        assert_eq!(topic.policies.ack_propagation.max_in_flight, 3);
+        assert_eq!(
+            topic.policies.ack_propagation.timeout,
+            Duration::from_secs(45)
+        );
         assert_eq!(
             topic.policies.broadcast.on_lag,
             TopicBroadcastOnLagPolicy::Disconnect
@@ -408,10 +471,6 @@ policies:
         assert_eq!(
             topic.policies.balanced.on_full,
             TopicQueueOnFullPolicy::DropNewest
-        );
-        assert_eq!(
-            topic.policies.ack_propagation,
-            TopicAckPropagationPolicy::Auto
         );
     }
 
@@ -441,6 +500,19 @@ policies:
             serde_yaml::from_str::<TopicSpec>(yaml).expect_err("flat policy fields should fail");
         let rendered = err.to_string();
         assert!(rendered.contains("balanced_queue_capacity") || rendered.contains("queue_on_full"));
+    }
+
+    #[test]
+    fn rejects_scalar_ack_propagation_value() {
+        let yaml = r#"
+backend: in_memory
+policies:
+  ack_propagation: auto
+"#;
+
+        let err = serde_yaml::from_str::<TopicSpec>(yaml)
+            .expect_err("scalar ack_propagation should fail");
+        assert!(err.to_string().contains("ack_propagation"));
     }
 
     #[test]

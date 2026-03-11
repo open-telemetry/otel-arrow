@@ -147,7 +147,10 @@ topics:
       broadcast:
         queue_capacity: 4096
         on_lag: drop_oldest
-      ack_propagation: auto
+      ack_propagation:
+        mode: auto
+        max_in_flight: 1024
+        timeout: 30s
 ```
 
 - `backend`:
@@ -168,15 +171,20 @@ declaration with explicit errors.
 - `policies.broadcast.on_lag`:
   - `drop_oldest` (default)
   - `disconnect`
-- `policies.ack_propagation`:
+- `policies.ack_propagation.mode`:
   - `disabled` (default)
   - `auto`
+- `policies.ack_propagation.max_in_flight` (default: `1024`, must be > 0)
+- `policies.ack_propagation.timeout` (default: `30s`)
 
 `policies.balanced.on_full` applies to balanced delivery paths.
 `policies.broadcast.on_lag` applies to broadcast delivery paths.
-`policies.ack_propagation` applies to the topic hop as a whole.
+`policies.ack_propagation.mode` applies to the topic hop as a whole.
+`policies.ack_propagation.max_in_flight` and
+`policies.ack_propagation.timeout` apply to tracked publish outcomes when
+Ack/Nack propagation is enabled.
 
-Current limitation: in broadcast mode, `ack_propagation: auto` does not
+Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast
 subscriber Ack/Nack resolves the upstream message, so upstream completion does
 not mean all broadcast subscribers processed the message. This matters
@@ -197,6 +205,8 @@ Topic declaration precedence (for a pipeline in a given group):
 - queue capacities remain topic-scope only
 - broadcast lag handling remains topic-scope only via
   `policies.broadcast.on_lag`
+- Ack/Nack tracking limits remain topic-scope only via
+  `policies.ack_propagation`
 
 ## Engine Observability Pipeline
 

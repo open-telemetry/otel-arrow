@@ -2,111 +2,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Topic internals, nothing here is directly exposed to users.
-//!
-//! # TopicInner -- Enum Dispatch
-//!
-//! `TopicInner<T>` is an enum over three specialized topic implementations,
-//! selected at creation time by `TopicOptions`. Enum dispatch (not `dyn Trait`)
-//! is used because `publish()` is async -- a trait object would require
-//! `Box<dyn Future>` per call, adding an allocation on the hottest path. The
-//! enum keeps future sizes known at compile time and enables inlining.
-//!
-//! # Three Topic Variants
-//!
-//! Each variant pays only for the delivery mechanisms it needs:
-//!
-//! - **`BalancedOnlyTopic`**: Uses `OnceLock<SingleGroup>` for lazy, lock-free
-//!   group initialization. Only one consumer group is allowed (enforced at
-//!   subscribe time via `SingleGroupViolation`). No ring buffer allocated.
-//!
-//! - **`BroadcastOnlyTopic`**: Uses `FastBroadcastRing` only. No `async_channel`
-//!   allocated. `publish()` is synchronous (no `.await`), making it the fastest
-//!   variant.
-//!
-//! - **`MixedTopic`**: Supports both modes. Every publish writes to all balanced
-//!   groups AND the broadcast ring. The groups list uses `RwLock<Vec<...>>` --
-//!   subscribe takes a write lock (rare), publish takes a short read lock to
-//!   clone the senders, then drops the guard before any `.await` to keep the
-//!   future `Send`.
-//!
-//! # FastBroadcastRing
-//!
-//! A power-of-two ring buffer with overwrite-oldest semantics. Key design choices:
-//!
-//! - **Per-slot `parking_lot::Mutex`** (not `RwLock`): readers hold the lock
-//!   only for `Arc::clone` (~nanoseconds). `Mutex` has lower uncontended
-//!   overhead than `RwLock`.
-//! - **Bitmask indexing**: `(seq - 1) & mask` instead of modulo. Capacity is
-//!   always rounded up to the next power of two.
-//! - **Single sequence source (BroadcastOnly)**: `FastBroadcastRing` owns the
-//!   publish sequence counter for `BroadcastOnlyTopic`, avoiding a second
-//!   per-topic atomic increment on that publish hot path.
-//! - **Lag detection**: `try_read()` compares the subscriber's `read_seq`
-//!   against `write_seq` to detect when the subscriber has fallen behind by
-//!   more than the buffer capacity. It returns `Lagged { missed, new_read_seq }`
-//!   so the subscriber can skip ahead.
-//!
-//! # WakerSet
-//!
-//! Replaces `tokio::sync::Notify` with a minimal implementation. The key
-//! optimization is the `has_waiters` atomic: `wake_all()` skips the Mutex
-//! entirely when no subscribers are blocked, which is the common case in
-//! high-throughput scenarios. `register()` deduplicates wakers via
-//! `Waker::will_wake()` to prevent unbounded `Vec` growth.
-//!
-//! # PublisherRegistry
-//!
-//! Maps publisher_id (u16) -> `mpsc::Sender<AckEvent>`. IDs start at 1;
-//! publisher_id 0 means "no ack sender registered" (returns `NotEnabled`).
-//! Routing logic: extract publisher_id from message ID bit-packing, look up
-//! the per-publisher sender; if not found, return `NotEnabled`. Uses
-//! `try_send` (non-blocking) to avoid backpressure from slow ack consumers.
-//!
-//! # AckState
-//!
-//! Thin wrapper held by `Subscription`. Delegates to
-//! `PublisherRegistry::route_ack()`. This separation keeps ack logic out of
-//! the subscription receive path.
 
+use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use crate::error::Error;
 use crate::error::Error::{
-    AckChannelClosed, AckChannelFull, AckNotEnabled, SubscribeBalancedNotSupported,
-    SubscribeBroadcastNotSupported, SubscribeSingleGroupViolation, SubscriptionClosed, TopicClosed,
+    MessageNotTracked, SubscribeBalancedNotSupported, SubscribeBroadcastNotSupported,
+    SubscribeSingleGroupViolation, SubscriptionClosed, TopicClosed,
 };
-use crate::topic::backend::{PublishFuture, PublishWithIdFuture, SubscriptionBackend, TopicState};
+use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
 use crate::topic::types::{
-    AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions,
-    message_id,
+    Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishEntry,
+    TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::mpsc;
-// ---------------------------------------------------------------------------
-// Internal: consumer group (balanced mode)
-// ---------------------------------------------------------------------------
+use tokio::sync::Notify;
+use tokio::time::{Instant, sleep_until};
 
-/// A bounded async_channel pair for one consumer group (used by MixedTopic).
-/// The tx side is cloned per-publish (under a short read lock), the rx side is
-/// cloned per-subscriber. async_channel handles the MPMC fan-out internally.
 struct ConsumerGroup<T> {
     tx: async_channel::Sender<Envelope<T>>,
     rx: async_channel::Receiver<Envelope<T>>,
 }
 
-// ---------------------------------------------------------------------------
-// Internal: single consumer group for BalancedOnly mode
-// ---------------------------------------------------------------------------
-
-/// Like ConsumerGroup but also stores the group name for SingleGroupViolation
-/// enforcement. Stored inside OnceLock -- initialized lazily on first subscribe,
-/// lock-free on subsequent subscribes.
 struct SingleGroup<T> {
     group_name: SubscriptionGroupName,
     tx: async_channel::Sender<Envelope<T>>,
@@ -119,20 +44,6 @@ pub(crate) enum BroadcastReadResult<T> {
     Lagged { missed: u64, new_read_seq: u64 },
 }
 
-// ---------------------------------------------------------------------------
-// WakerSet — lightweight alternative to tokio::sync::Notify
-// ---------------------------------------------------------------------------
-
-/// Lightweight multi-waker notification. `has_waiters` is the key optimization:
-/// `wake_all()` skips the Mutex entirely when no subscribers are blocked (the
-/// common case in high-throughput scenarios). `register()` deduplicates via
-/// `Waker::will_wake()` to prevent unbounded Vec growth when a subscriber is
-/// polled repeatedly between publishes.
-///
-/// Correctness invariant: `has_waiters` must be set/cleared under the same
-/// Mutex that guards the waker Vec, so that drain + flag-clear in `wake_all()`
-/// is atomic with respect to pushes in `register()`. `register()` always sets
-/// `has_waiters = true` (even on the dedup path) as defense-in-depth.
 struct WakerSet {
     has_waiters: AtomicBool,
     wakers: Mutex<Vec<Waker>>,
@@ -148,9 +59,6 @@ impl WakerSet {
 
     fn register(&self, waker: &Waker) {
         let mut wakers = self.wakers.lock();
-        // Deduplicate: if this waker is already registered, replace it in place
-        // instead of pushing a duplicate. Prevents unbounded growth when a
-        // subscriber is polled multiple times between publishes.
         for existing in wakers.iter_mut() {
             if existing.will_wake(waker) {
                 existing.clone_from(waker);
@@ -177,116 +85,139 @@ impl WakerSet {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PublisherRegistry — maps publisher IDs to per-publisher ack senders
-// ---------------------------------------------------------------------------
-
-/// Routes ack/nack events to the correct channel based on publisher_id.
-///
-/// IDs start at 1 (via `next_id`); publisher_id 0 means "no ack sender
-/// registered" (returns `NotEnabled`). The entries Vec is small (one entry
-/// per `with_ack_sender()` call) so linear scan is fine.
-///
-/// All sends use `try_send` (non-blocking) to avoid backpressure from slow
-/// ack consumers.
-pub(crate) struct PublisherRegistry {
-    topic_name: TopicName,
-    entries: Mutex<Vec<(u16, mpsc::Sender<AckEvent>)>>,
-    next_id: AtomicU16,
+pub(crate) struct OutcomeRegistry {
+    entries: Mutex<HashMap<u64, Arc<TrackedPublishEntry>>>,
+    closed: AtomicBool,
+    wakeups: Notify,
+    timeout_worker_started: AtomicBool,
 }
 
-impl PublisherRegistry {
-    fn new(topic_name: TopicName) -> Self {
+impl OutcomeRegistry {
+    fn new() -> Self {
         Self {
-            topic_name,
-            // Start at 1 so publisher_id=0 means "no ack sender registered".
-            next_id: AtomicU16::new(1),
-            entries: Mutex::new(Vec::new()),
+            entries: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            wakeups: Notify::new(),
+            timeout_worker_started: AtomicBool::new(false),
         }
     }
 
-    /// Register a per-publisher ack sender. Returns the assigned publisher_id.
-    pub(crate) fn register(&self, sender: mpsc::Sender<AckEvent>) -> u16 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.entries.lock().push((id, sender));
-        id
-    }
-
-    /// Route an ack/nack to the correct sender based on the publisher_id
-    /// encoded in the message ID.
-    pub(crate) fn route_ack(
-        &self,
+    fn register(
+        self: &Arc<Self>,
         message_id: u64,
-        status: AckStatus,
-        reason: Option<Arc<str>>,
-    ) -> Result<(), Error> {
-        let pub_id = message_id::publisher_id(message_id);
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> TrackedPublishReceipt {
+        self.ensure_timeout_worker();
+        let entry = Arc::new(TrackedPublishEntry::new(Instant::now() + timeout, permit));
+        _ = self.entries.lock().insert(message_id, Arc::clone(&entry));
+        self.wakeups.notify_one();
+        TrackedPublishReceipt::new(message_id, entry)
+    }
 
-        if pub_id == 0 {
-            return Err(AckNotEnabled);
+    fn resolve(&self, message_id: u64, outcome: TrackedPublishOutcome) -> Result<(), Error> {
+        let entry = self
+            .entries
+            .lock()
+            .remove(&message_id)
+            .ok_or(MessageNotTracked)?;
+        let _resolved = entry.resolve(outcome);
+        self.wakeups.notify_one();
+        Ok(())
+    }
+
+    fn discard(&self, message_id: u64) {
+        let _ = self.entries.lock().remove(&message_id);
+        self.wakeups.notify_one();
+    }
+
+    fn close_all(&self) {
+        self.closed.store(true, Ordering::Release);
+        let drained = {
+            let mut entries = self.entries.lock();
+            entries.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
+        };
+        for entry in drained {
+            let _resolved = entry.resolve(TrackedPublishOutcome::TopicClosed);
         }
+        self.wakeups.notify_waiters();
+    }
 
-        let entries = self.entries.lock();
-        match entries.iter().find(|(id, _)| *id == pub_id) {
-            Some((_, sender)) => {
-                let event = AckEvent {
-                    topic: self.topic_name.clone(),
-                    message_id,
-                    status,
-                    reason,
-                    publisher_id: pub_id,
-                };
-                Self::try_send(sender, event)
-            }
-            None => Err(AckNotEnabled),
+    fn ensure_timeout_worker(self: &Arc<Self>) {
+        if self
+            .timeout_worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let registry = Arc::clone(self);
+            _ = tokio::spawn(async move {
+                registry.timeout_worker().await;
+            });
         }
     }
 
-    fn try_send(sender: &mpsc::Sender<AckEvent>, event: AckEvent) -> Result<(), Error> {
-        match sender.try_send(event) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(AckChannelFull),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(AckChannelClosed),
+    async fn timeout_worker(self: Arc<Self>) {
+        loop {
+            if self.closed.load(Ordering::Acquire) && self.entries.lock().is_empty() {
+                break;
+            }
+
+            let next_deadline = self.next_deadline();
+            match next_deadline {
+                Some(deadline) => {
+                    tokio::select! {
+                        _ = sleep_until(deadline) => self.resolve_expired(deadline),
+                        _ = self.wakeups.notified() => {}
+                    }
+                }
+                None => {
+                    self.wakeups.notified().await;
+                }
+            }
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.entries
+            .lock()
+            .values()
+            .filter(|entry| entry.is_pending())
+            .map(|entry| entry.deadline())
+            .min()
+    }
+
+    fn resolve_expired(&self, now: Instant) {
+        let expired = {
+            let mut entries = self.entries.lock();
+            let expired_ids = entries
+                .iter()
+                .filter_map(|(id, entry)| {
+                    (entry.is_pending() && entry.deadline() <= now).then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            expired_ids
+                .into_iter()
+                .filter_map(|id| entries.remove(&id))
+                .collect::<Vec<_>>()
+        };
+
+        for entry in expired {
+            let _resolved = entry.resolve(TrackedPublishOutcome::TimedOut);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// FastBroadcastRing — power-of-two ring buffer with drop-oldest semantics
-// ---------------------------------------------------------------------------
-
-/// A fixed-capacity ring buffer for broadcast delivery.
-///
-/// The capacity is always rounded up to the next power of two to enable
-/// bitmask indexing (`(seq - 1) & mask`). Each slot is independently locked
-/// with a `parking_lot::Mutex` -- readers hold the lock only long enough to
-/// `Arc::clone` the payload.
-///
-/// The ring owns the write sequence used for slot placement and lag detection.
-/// It supports two explicit publish forms:
-/// - `publish_and_encode_id()`: encodes ID from `(publisher_id, ring_seq)`.
-/// - `publish_with_preencoded_id()`: stores a caller-provided pre-encoded message ID.
-///
-/// Lag detection: `try_read()` compares the subscriber's `read_seq` against
-/// `write_seq - capacity` to detect overwritten slots.
 pub(crate) struct FastBroadcastRing<T: Send + Sync + 'static> {
-    /// Ring buffer slots. Each slot holds (ring_seq, message_id, payload).
-    /// Uses Mutex instead of RwLock for lower uncontended overhead.
-    slots: Box<[Mutex<Option<(u64, u64, Arc<T>)>>]>,
+    slots: Box<[Mutex<Option<(u64, Envelope<T>)>>]>,
     capacity: usize,
-    /// Bitmask for power-of-two indexing: `seq & mask` instead of `seq % capacity`.
     mask: usize,
-    /// Current write sequence (0 = no messages yet, 1 = first message written).
     write_seq: AtomicU64,
-    /// WakerSet-based wakeup — atomic fast-check avoids Mutex when no waiters.
     waker_set: WakerSet,
-    /// Closed flag — subscribers check this when woken.
     closed: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     fn new(capacity: usize) -> Self {
-        // Round up to next power of two (minimum 2).
         let cap = capacity.max(2).next_power_of_two();
         let mask = cap - 1;
         let mut slots = Vec::with_capacity(cap);
@@ -303,27 +234,13 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         }
     }
 
-    /// Publish one message and return its encoded message ID.
-    ///
-    /// The message ID is encoded from `(publisher_id, ring_seq)`.
-    pub(crate) fn publish_and_encode_id(&self, publisher_id: u16, payload: Arc<T>) -> u64 {
-        let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
-        let id = message_id::encode(publisher_id, seq);
-        let idx = ((seq - 1) as usize) & self.mask;
-        *self.slots[idx].lock() = Some((seq, id, payload));
-        self.waker_set.wake_all();
-        id
-    }
-
-    /// Publish one message with a caller-provided pre-encoded message ID.
-    pub(crate) fn publish_with_preencoded_id(&self, id: u64, payload: Arc<T>) {
+    pub(crate) fn publish(&self, envelope: Envelope<T>) {
         let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
         let idx = ((seq - 1) as usize) & self.mask;
-        *self.slots[idx].lock() = Some((seq, id, payload));
+        *self.slots[idx].lock() = Some((seq, envelope));
         self.waker_set.wake_all();
     }
 
-    /// Try to read a message at the given subscriber read_seq.
     pub(crate) fn try_read(&self, read_seq: u64) -> BroadcastReadResult<T> {
         let current_write = self.write_seq.load(Ordering::Acquire);
         if read_seq > current_write {
@@ -343,15 +260,10 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         let idx = ((read_seq - 1) as usize) & self.mask;
         let slot = self.slots[idx].lock();
         match &*slot {
-            Some((slot_seq, id, payload)) if *slot_seq == read_seq => {
-                BroadcastReadResult::Ready(Envelope {
-                    id: *id,
-                    payload: Arc::clone(payload),
-                })
+            Some((slot_seq, envelope)) if *slot_seq == read_seq => {
+                BroadcastReadResult::Ready(envelope.clone())
             }
-            Some((slot_seq, _, _)) if *slot_seq > read_seq => {
-                // Slot was overwritten since `current_write` was sampled.
-                // Recompute lag against a fresh write_seq snapshot.
+            Some((slot_seq, _)) if *slot_seq > read_seq => {
                 let now = self.write_seq.load(Ordering::Acquire);
                 if now >= self.capacity as u64 && read_seq <= now - self.capacity as u64 {
                     let new_read_seq = now - self.capacity as u64 + 1;
@@ -365,21 +277,18 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
                 }
             }
             None => BroadcastReadResult::NotReady,
-            Some((_slot_seq, _id, _payload)) => BroadcastReadResult::NotReady,
+            Some((_slot_seq, _envelope)) => BroadcastReadResult::NotReady,
         }
     }
 
-    /// Get current write_seq so new subscribers start from the right position.
     pub(crate) fn current_seq(&self) -> u64 {
         self.write_seq.load(Ordering::Acquire)
     }
 
-    /// Register a waker to be notified when new data is published.
     pub(crate) fn register_waker(&self, waker: &Waker) {
         self.waker_set.register(waker);
     }
 
-    /// Close the ring: mark closed and wake all subscribers.
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.waker_set.wake_all();
@@ -390,13 +299,6 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TopicInner — enum-dispatched topic implementations
-// ---------------------------------------------------------------------------
-
-/// The core topic type, dispatched by `TopicOptions`. All methods delegate to
-/// the active variant. The enum match arms are trivial forwarding -- the real
-/// logic lives in each variant struct below.
 pub(crate) enum TopicInner<T: Send + Sync + 'static> {
     BalancedOnly(BalancedOnlyTopic<T>),
     BroadcastOnly(BroadcastOnlyTopic<T>),
@@ -424,56 +326,71 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
             )),
         }
     }
-
-    fn registry(&self) -> &Arc<PublisherRegistry> {
-        match self {
-            TopicInner::BalancedOnly(t) => &t.registry,
-            TopicInner::BroadcastOnly(t) => &t.registry,
-            TopicInner::Mixed(t) => &t.registry,
-        }
-    }
 }
 
 impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
     fn name(&self) -> &TopicName {
         match self {
-            TopicInner::BalancedOnly(t) => &t.name,
-            TopicInner::BroadcastOnly(t) => &t.name,
-            TopicInner::Mixed(t) => &t.name,
+            TopicInner::BalancedOnly(topic) => &topic.name,
+            TopicInner::BroadcastOnly(topic) => &topic.name,
+            TopicInner::Mixed(topic) => &topic.name,
         }
     }
 
-    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> PublishFuture<'_> {
-        Box::pin(async move {
-            _ = self.publish_with_id(publisher_id, msg).await?;
-            Ok(())
-        })
-    }
-
-    fn publish_with_id(&self, publisher_id: u16, msg: Arc<T>) -> PublishWithIdFuture<'_> {
+    fn publish(&self, msg: Arc<T>) -> PublishFuture<'_> {
         Box::pin(async move {
             match self {
-                TopicInner::BalancedOnly(t) => t.publish(publisher_id, msg).await,
-                TopicInner::BroadcastOnly(t) => t.publish(publisher_id, msg),
-                TopicInner::Mixed(t) => t.publish(publisher_id, msg).await,
+                TopicInner::BalancedOnly(topic) => {
+                    let _id = topic.publish(msg).await?;
+                    Ok(())
+                }
+                TopicInner::BroadcastOnly(topic) => {
+                    let _id = topic.publish(msg)?;
+                    Ok(())
+                }
+                TopicInner::Mixed(topic) => {
+                    let _id = topic.publish(msg).await?;
+                    Ok(())
+                }
             }
         })
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<PublishOutcome, Error> {
-        self.try_publish_with_id(publisher_id, msg)
-            .map(|(outcome, _)| outcome)
+    fn publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> PublishTrackedFuture<'_> {
+        Box::pin(async move {
+            match self {
+                TopicInner::BalancedOnly(topic) => {
+                    topic.publish_tracked(msg, timeout, permit).await
+                }
+                TopicInner::BroadcastOnly(topic) => topic.publish_tracked(msg, timeout, permit),
+                TopicInner::Mixed(topic) => topic.publish_tracked(msg, timeout, permit).await,
+            }
+        })
     }
 
-    fn try_publish_with_id(
-        &self,
-        publisher_id: u16,
-        msg: Arc<T>,
-    ) -> Result<(PublishOutcome, u64), Error> {
+    fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error> {
         match self {
-            TopicInner::BalancedOnly(t) => t.try_publish(publisher_id, msg),
-            TopicInner::BroadcastOnly(t) => t.try_publish(publisher_id, msg),
-            TopicInner::Mixed(t) => t.try_publish(publisher_id, msg),
+            TopicInner::BalancedOnly(topic) => topic.try_publish(msg).map(|(outcome, _)| outcome),
+            TopicInner::BroadcastOnly(topic) => topic.try_publish(msg).map(|(outcome, _)| outcome),
+            TopicInner::Mixed(topic) => topic.try_publish(msg).map(|(outcome, _)| outcome),
+        }
+    }
+
+    fn try_publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        match self {
+            TopicInner::BalancedOnly(topic) => topic.try_publish_tracked(msg, timeout, permit),
+            TopicInner::BroadcastOnly(topic) => topic.try_publish_tracked(msg, timeout, permit),
+            TopicInner::Mixed(topic) => topic.try_publish_tracked(msg, timeout, permit),
         }
     }
 
@@ -483,11 +400,11 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error> {
         match self {
-            TopicInner::BalancedOnly(t) => t
+            TopicInner::BalancedOnly(topic) => topic
                 .subscribe_balanced(group, opts)
                 .map(|sub| Box::new(sub) as Box<dyn SubscriptionBackend<T>>),
             TopicInner::BroadcastOnly(_) => Err(SubscribeBalancedNotSupported),
-            TopicInner::Mixed(t) => t
+            TopicInner::Mixed(topic) => topic
                 .subscribe_balanced(group, opts)
                 .map(|sub| Box::new(sub) as Box<dyn SubscriptionBackend<T>>),
         }
@@ -499,103 +416,114 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error> {
         match self {
             TopicInner::BalancedOnly(_) => Err(SubscribeBroadcastNotSupported),
-            TopicInner::BroadcastOnly(t) => {
-                Ok(Box::new(t.subscribe_broadcast(opts)) as Box<dyn SubscriptionBackend<T>>)
+            TopicInner::BroadcastOnly(topic) => {
+                Ok(Box::new(topic.subscribe_broadcast(opts)) as Box<dyn SubscriptionBackend<T>>)
             }
-            TopicInner::Mixed(t) => {
-                Ok(Box::new(t.subscribe_broadcast(opts)) as Box<dyn SubscriptionBackend<T>>)
+            TopicInner::Mixed(topic) => {
+                Ok(Box::new(topic.subscribe_broadcast(opts)) as Box<dyn SubscriptionBackend<T>>)
             }
         }
-    }
-
-    fn register_publisher(&self, sender: mpsc::Sender<AckEvent>) -> u16 {
-        self.registry().register(sender)
     }
 
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {
         match self {
             TopicInner::BalancedOnly(_) => TopicBroadcastOnLagPolicy::DropOldest,
-            TopicInner::BroadcastOnly(t) => t.broadcast_on_lag,
-            TopicInner::Mixed(t) => t.broadcast_on_lag,
+            TopicInner::BroadcastOnly(topic) => topic.broadcast_on_lag,
+            TopicInner::Mixed(topic) => topic.broadcast_on_lag,
         }
     }
 
     fn close(&self) {
         match self {
-            TopicInner::BalancedOnly(t) => t.close(),
-            TopicInner::BroadcastOnly(t) => t.close(),
-            TopicInner::Mixed(t) => t.close(),
+            TopicInner::BalancedOnly(topic) => topic.close(),
+            TopicInner::BroadcastOnly(topic) => topic.close(),
+            TopicInner::Mixed(topic) => topic.close(),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// BalancedOnlyTopic
-// ---------------------------------------------------------------------------
-
-/// Optimized for the single-consumer-group, no-broadcast case.
-///
-/// Uses `OnceLock<SingleGroup>` for lazy initialization: the channel pair is
-/// created on the first subscribe call and never changes. `OnceLock` makes
-/// subsequent subscribes and publishes lock-free (just `.get()`). A second
-/// consumer group name is rejected with `SingleGroupViolation`.
-///
-/// Messages published before any subscriber exists are silently dropped
-/// (consistent with MixedTopic behavior).
 pub(crate) struct BalancedOnlyTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
     group: OnceLock<SingleGroup<T>>,
     balanced_capacity: usize,
-    registry: Arc<PublisherRegistry>,
+    outcomes: Arc<OutcomeRegistry>,
     closed: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
     fn new(name: TopicName, balanced_capacity: usize) -> Self {
-        let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
             next_id: AtomicU64::new(1),
             group: OnceLock::new(),
             balanced_capacity: balanced_capacity.max(1),
-            registry,
+            outcomes: Arc::new(OutcomeRegistry::new()),
             closed: AtomicBool::new(false),
         }
     }
 
     #[inline]
-    fn next_message_id(&self, publisher_id: u16) -> u64 {
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        message_id::encode(publisher_id, seq)
+    fn next_message_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
+    async fn publish(&self, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let id = self.next_message_id(publisher_id);
-
-        if let Some(sg) = self.group.get() {
-            let envelope = Envelope { id, payload: msg };
-            sg.tx.send(envelope).await.map_err(|_| TopicClosed)?;
+        let id = self.next_message_id();
+        if let Some(group) = self.group.get() {
+            let envelope = Envelope {
+                id,
+                tracked: false,
+                payload: msg,
+            };
+            group.tx.send(envelope).await.map_err(|_| TopicClosed)?;
         }
-        // No subscribers yet → message silently dropped (consistent with Mixed mode).
-
         Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+    async fn publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedPublishReceipt, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let id = self.next_message_id(publisher_id);
+        let id = self.next_message_id();
+        let receipt = self.outcomes.register(id, timeout, permit);
+        if let Some(group) = self.group.get() {
+            let envelope = Envelope {
+                id,
+                tracked: true,
+                payload: msg,
+            };
+            if group.tx.send(envelope).await.is_err() {
+                self.outcomes.discard(id);
+                return Err(TopicClosed);
+            }
+        }
+        Ok(receipt)
+    }
 
-        if let Some(sg) = self.group.get() {
-            let envelope = Envelope { id, payload: msg };
-            match sg.tx.try_send(envelope) {
+    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id();
+        if let Some(group) = self.group.get() {
+            let envelope = Envelope {
+                id,
+                tracked: false,
+                payload: msg,
+            };
+            match group.tx.try_send(envelope) {
                 Ok(()) => {}
                 Err(async_channel::TrySendError::Full(_)) => {
                     return Ok((PublishOutcome::DroppedOnFull, id));
@@ -603,8 +531,40 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
                 Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
             }
         }
-
         Ok((PublishOutcome::Published, id))
+    }
+
+    fn try_publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id();
+        let receipt = self.outcomes.register(id, timeout, permit);
+        if let Some(group) = self.group.get() {
+            let envelope = Envelope {
+                id,
+                tracked: true,
+                payload: msg,
+            };
+            match group.tx.try_send(envelope) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Full(_)) => {
+                    self.outcomes.discard(id);
+                    return Ok(TrackedTryPublishOutcome::DroppedOnFull);
+                }
+                Err(async_channel::TrySendError::Closed(_)) => {
+                    self.outcomes.discard(id);
+                    return Err(TopicClosed);
+                }
+            }
+        }
+        Ok(TrackedTryPublishOutcome::Published(receipt))
     }
 
     fn subscribe_balanced(
@@ -616,7 +576,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             return Err(TopicClosed);
         }
 
-        let sg = self.group.get_or_init(|| {
+        let single_group = self.group.get_or_init(|| {
             let (tx, rx) = async_channel::bounded(self.balanced_capacity);
             SingleGroup {
                 group_name: group.clone(),
@@ -625,44 +585,33 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             }
         });
 
-        if sg.group_name != group {
+        if single_group.group_name != group {
             return Err(SubscribeSingleGroupViolation);
         }
 
-        let ack_state = AckState {
-            registry: Arc::clone(&self.registry),
-        };
-
         Ok(BalancedSub {
-            rx: Box::pin(sg.rx.clone()),
-            ack_state,
+            rx: Box::pin(single_group.rx.clone()),
+            ack_state: AckState {
+                outcomes: Arc::clone(&self.outcomes),
+            },
         })
     }
 
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        if let Some(sg) = self.group.get() {
-            // Closing the async_channel by dropping the sender.
-            // Subscribers will get RecvError::Closed.
-            _ = sg.tx.close();
+        self.outcomes.close_all();
+        if let Some(group) = self.group.get() {
+            let _ = group.tx.close();
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// BroadcastOnlyTopic
-// ---------------------------------------------------------------------------
-
-/// Optimized for broadcast-only delivery. No `async_channel` is allocated.
-///
-/// `publish()` is synchronous -- it writes to the ring buffer and returns
-/// immediately. This is the fastest variant since there is no `.await` point
-/// and no per-group channel overhead.
 pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     name: TopicName,
+    next_id: AtomicU64,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
-    registry: Arc<PublisherRegistry>,
+    outcomes: Arc<OutcomeRegistry>,
     closed: AtomicBool,
 }
 
@@ -672,78 +621,101 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         broadcast_capacity: usize,
         broadcast_on_lag: TopicBroadcastOnLagPolicy,
     ) -> Self {
-        let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
+            next_id: AtomicU64::new(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             broadcast_on_lag,
-            registry,
+            outcomes: Arc::new(OutcomeRegistry::new()),
             closed: AtomicBool::new(false),
         }
     }
 
-    fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
+    #[inline]
+    fn next_message_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn publish(&self, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let id = self.broadcast_ring.publish_and_encode_id(publisher_id, msg);
-
+        let id = self.next_message_id();
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: false,
+            payload: msg,
+        });
         Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
-        let id = self.publish(publisher_id, msg)?;
+    fn publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedPublishReceipt, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id();
+        let receipt = self.outcomes.register(id, timeout, permit);
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: true,
+            payload: msg,
+        });
+        Ok(receipt)
+    }
+
+    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+        let id = self.publish(msg)?;
         Ok((PublishOutcome::Published, id))
+    }
+
+    fn try_publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        let receipt = self.publish_tracked(msg, timeout, permit)?;
+        Ok(TrackedTryPublishOutcome::Published(receipt))
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
         let start_seq = self.broadcast_ring.current_seq() + 1;
-
-        let ack_state = AckState {
-            registry: Arc::clone(&self.registry),
-        };
-
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
             read_seq: start_seq,
             on_lag: self.broadcast_on_lag,
             disconnected_on_lag: false,
             spun: false,
-            ack_state,
+            ack_state: AckState {
+                outcomes: Arc::clone(&self.outcomes),
+            },
         }
     }
 
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
+        self.outcomes.close_all();
         self.broadcast_ring.close();
     }
 }
 
-// ---------------------------------------------------------------------------
-// MixedTopic — supports both balanced and broadcast subscriptions
-// ---------------------------------------------------------------------------
-
-/// Full-featured topic supporting any combination of balanced groups and
-/// broadcast subscribers. Every publish writes to ALL balanced groups AND
-/// the broadcast ring.
-///
-/// The consumer groups list is `RwLock<Vec<(name, ConsumerGroup)>>`.
-/// To avoid per-publish sender-list allocation, `group_senders` caches an
-/// `Arc<[Sender]>` snapshot that is rebuilt only when the set of groups
-/// changes (subscribe path). `publish()` clones that Arc under a short lock,
-/// then drops the guard before any `.await` so the future remains `Send`.
 pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
     groups: RwLock<Vec<(SubscriptionGroupName, ConsumerGroup<T>)>>,
-    // Cached sender snapshot rebuilt only when groups change, avoiding per-publish Vec alloc/clones.
     group_senders: RwLock<Arc<[async_channel::Sender<Envelope<T>>]>>,
     has_balanced_groups: AtomicBool,
     balanced_capacity: usize,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
-    registry: Arc<PublisherRegistry>,
+    outcomes: Arc<OutcomeRegistry>,
     closed: AtomicBool,
 }
 
@@ -754,7 +726,6 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         broadcast_capacity: usize,
         broadcast_on_lag: TopicBroadcastOnLagPolicy,
     ) -> Self {
-        let registry = Arc::new(PublisherRegistry::new(name.clone()));
         Self {
             name,
             next_id: AtomicU64::new(1),
@@ -764,56 +735,94 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             balanced_capacity: balanced_capacity.max(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             broadcast_on_lag,
-            registry,
+            outcomes: Arc::new(OutcomeRegistry::new()),
             closed: AtomicBool::new(false),
         }
     }
 
     #[inline]
-    fn next_message_id(&self, publisher_id: u16) -> u64 {
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        message_id::encode(publisher_id, seq)
+    fn next_message_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<u64, Error> {
+    async fn publish(&self, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let id = self.next_message_id(publisher_id);
+        let id = self.next_message_id();
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: false,
+            payload: Arc::clone(&msg),
+        });
 
-        // 1) Write to broadcast ring buffer first (non-blocking, overwrites oldest).
-        //    This keeps broadcast delivery independent from balanced backpressure.
-        self.broadcast_ring
-            .publish_with_preencoded_id(id, Arc::clone(&msg));
-
-        // 2) Deliver to balanced consumer groups only if any exist.
-        //    Clone a cached sender snapshot (`Arc<[Sender]>`) under a short lock,
-        //    then drop the guard before any .await so the future stays Send.
         if self.has_balanced_groups.load(Ordering::Acquire) {
             let senders = self.group_senders.read().clone();
             let envelope = Envelope {
                 id,
+                tracked: false,
                 payload: Arc::clone(&msg),
             };
-            for tx in senders.as_ref() {
-                tx.send(envelope.clone()).await.map_err(|_| TopicClosed)?;
+            for sender in senders.as_ref() {
+                sender
+                    .send(envelope.clone())
+                    .await
+                    .map_err(|_| TopicClosed)?;
             }
         }
 
         Ok(id)
     }
 
-    fn try_publish(&self, publisher_id: u16, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+    async fn publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedPublishReceipt, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
-        let id = self.next_message_id(publisher_id);
+        let id = self.next_message_id();
+        let receipt = self.outcomes.register(id, timeout, permit);
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: true,
+            payload: Arc::clone(&msg),
+        });
 
-        // Keep broadcast fully non-blocking.
-        self.broadcast_ring
-            .publish_with_preencoded_id(id, Arc::clone(&msg));
+        if self.has_balanced_groups.load(Ordering::Acquire) {
+            let senders = self.group_senders.read().clone();
+            let envelope = Envelope {
+                id,
+                tracked: true,
+                payload: Arc::clone(&msg),
+            };
+            for sender in senders.as_ref() {
+                if sender.send(envelope.clone()).await.is_err() {
+                    self.outcomes
+                        .resolve(id, TrackedPublishOutcome::TopicClosed)?;
+                    return Err(TopicClosed);
+                }
+            }
+        }
+
+        Ok(receipt)
+    }
+
+    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id();
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: false,
+            payload: Arc::clone(&msg),
+        });
 
         if !self.has_balanced_groups.load(Ordering::Acquire) {
             return Ok((PublishOutcome::Published, id));
@@ -822,11 +831,12 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         let senders = self.group_senders.read().clone();
         let envelope = Envelope {
             id,
+            tracked: false,
             payload: Arc::clone(&msg),
         };
         let mut dropped_on_full = false;
-        for tx in senders.as_ref() {
-            match tx.try_send(envelope.clone()) {
+        for sender in senders.as_ref() {
+            match sender.try_send(envelope.clone()) {
                 Ok(()) => {}
                 Err(async_channel::TrySendError::Full(_)) => dropped_on_full = true,
                 Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
@@ -840,6 +850,49 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
     }
 
+    fn try_publish_tracked(
+        &self,
+        msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
+        let id = self.next_message_id();
+        let receipt = self.outcomes.register(id, timeout, permit);
+
+        if self.has_balanced_groups.load(Ordering::Acquire) {
+            let senders = self.group_senders.read().clone();
+            let envelope = Envelope {
+                id,
+                tracked: true,
+                payload: Arc::clone(&msg),
+            };
+            for sender in senders.as_ref() {
+                match sender.try_send(envelope.clone()) {
+                    Ok(()) => {}
+                    Err(async_channel::TrySendError::Full(_)) => {
+                        self.outcomes.discard(id);
+                        return Ok(TrackedTryPublishOutcome::DroppedOnFull);
+                    }
+                    Err(async_channel::TrySendError::Closed(_)) => {
+                        self.outcomes.discard(id);
+                        return Err(TopicClosed);
+                    }
+                }
+            }
+        }
+
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: true,
+            payload: msg,
+        });
+        Ok(TrackedTryPublishOutcome::Published(receipt))
+    }
+
     fn subscribe_balanced(
         &self,
         group: SubscriptionGroupName,
@@ -851,16 +904,14 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
         let rx = {
             let mut groups = self.groups.write();
-            if let Some((_name, g)) = groups.iter().find(|(n, _)| *n == group) {
-                g.rx.clone()
+            if let Some((_name, group_entry)) = groups.iter().find(|(name, _)| *name == group) {
+                group_entry.rx.clone()
             } else {
                 let (tx, rx) = async_channel::bounded(self.balanced_capacity);
                 groups.push((group.clone(), ConsumerGroup { tx, rx: rx.clone() }));
-
-                // Rebuild sender snapshot once per structural group change.
                 let snapshot: Arc<[async_channel::Sender<Envelope<T>>]> = groups
                     .iter()
-                    .map(|(_, g)| g.tx.clone())
+                    .map(|(_, group_entry)| group_entry.tx.clone())
                     .collect::<Vec<_>>()
                     .into();
                 *self.group_senders.write() = snapshot;
@@ -869,55 +920,40 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             }
         };
 
-        let ack_state = AckState {
-            registry: Arc::clone(&self.registry),
-        };
-
         Ok(BalancedSub {
             rx: Box::pin(rx),
-            ack_state,
+            ack_state: AckState {
+                outcomes: Arc::clone(&self.outcomes),
+            },
         })
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
         let start_seq = self.broadcast_ring.current_seq() + 1;
-
-        let ack_state = AckState {
-            registry: Arc::clone(&self.registry),
-        };
-
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
             read_seq: start_seq,
             on_lag: self.broadcast_on_lag,
             disconnected_on_lag: false,
             spun: false,
-            ack_state,
+            ack_state: AckState {
+                outcomes: Arc::clone(&self.outcomes),
+            },
         }
     }
 
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
+        self.outcomes.close_all();
         let senders = self.group_senders.read().clone();
-        for tx in senders.as_ref() {
-            // Closing the async_channel by dropping the sender.
-            // Subscribers will get RecvError::Closed.
-            _ = tx.close();
+        for sender in senders.as_ref() {
+            let _ = sender.close();
         }
         self.has_balanced_groups.store(false, Ordering::Release);
         self.broadcast_ring.close();
     }
 }
 
-// ---------------------------------------------------------------------------
-// BalancedSub — per-subscription backend for balanced mode
-// ---------------------------------------------------------------------------
-
-/// Subscription backend for balanced (consumer-group) mode.
-///
-/// Holds an `async_channel::Receiver` and delegates `poll_recv` to
-/// `futures_core::Stream::poll_next`. The channel handles MPMC fan-out
-/// internally.
 pub(crate) struct BalancedSub<T: Send + Sync + 'static> {
     rx: Pin<Box<async_channel::Receiver<Envelope<T>>>>,
     ack_state: AckState,
@@ -941,17 +977,6 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BalancedSub<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BroadcastSub — per-subscription backend for broadcast mode
-// ---------------------------------------------------------------------------
-
-/// Subscription backend for broadcast mode.
-///
-/// Implements the three-tier latency strategy:
-/// 1. **Fast path**: `ring.try_read(read_seq)` — one atomic load + one Mutex lock.
-/// 2. **Spin loop**: 32 iterations (only on first poll, `spun` flag prevents
-///    re-spinning on re-polls after wakeup).
-/// 3. **Slow path**: register waker in the ring's `WakerSet`, then re-check data.
 pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     ring: Arc<FastBroadcastRing<T>>,
     read_seq: u64,
@@ -967,7 +992,6 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
             return Poll::Ready(Err(SubscriptionClosed));
         }
 
-        // Fast path: check without any registration overhead.
         match self.ring.try_read(self.read_seq) {
             BroadcastReadResult::Ready(envelope) => {
                 self.read_seq += 1;
@@ -977,14 +1001,10 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
             BroadcastReadResult::Lagged {
                 missed,
                 new_read_seq,
-            } => {
-                return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq)));
-            }
+            } => return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
             BroadcastReadResult::NotReady => {}
         }
 
-        // Spin loop: brief spin on write_seq (~100 ns) before registering waker.
-        // Only spin on first poll; skip on re-polls after wakeup.
         if !self.spun {
             self.spun = true;
             for _ in 0..32 {
@@ -999,16 +1019,13 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
                         BroadcastReadResult::Lagged {
                             missed,
                             new_read_seq,
-                        } => {
-                            return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq)));
-                        }
+                        } => return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
                         BroadcastReadResult::NotReady => {}
                     }
                 }
             }
         }
 
-        // Slow path: register waker BEFORE re-checking data to prevent missed wakeups.
         self.ring.register_waker(cx.waker());
 
         match self.ring.try_read(self.read_seq) {
@@ -1048,20 +1065,14 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AckState — subscription-side ack/nack dispatch
-// ---------------------------------------------------------------------------
-
-/// Held by each `Subscription`. Wraps a shared `PublisherRegistry` and
-/// provides a clean `send_ack` / `send_nack` API that hides the routing
-/// logic from the subscription receive path.
 pub(crate) struct AckState {
-    pub(crate) registry: Arc<PublisherRegistry>,
+    pub(crate) outcomes: Arc<OutcomeRegistry>,
 }
 
 impl AckState {
     pub(crate) fn send_ack(&self, message_id: u64) -> Result<(), Error> {
-        self.registry.route_ack(message_id, AckStatus::Ack, None)
+        self.outcomes
+            .resolve(message_id, TrackedPublishOutcome::Ack)
     }
 
     pub(crate) fn send_nack(
@@ -1069,7 +1080,11 @@ impl AckState {
         message_id: u64,
         reason: impl Into<Arc<str>>,
     ) -> Result<(), Error> {
-        self.registry
-            .route_ack(message_id, AckStatus::Nack, Some(reason.into()))
+        self.outcomes.resolve(
+            message_id,
+            TrackedPublishOutcome::Nack {
+                reason: reason.into(),
+            },
+        )
     }
 }

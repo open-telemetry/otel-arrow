@@ -70,7 +70,8 @@ groups:
             on_full: block
           broadcast:
             queue_capacity: 4096
-          ack_propagation: disabled
+          ack_propagation:
+            mode: disabled
       backend_logs:
         description: "SUT logs output -> backend ingest"
         policies:
@@ -79,7 +80,8 @@ groups:
             on_full: block
           broadcast:
             queue_capacity: 4096
-          ack_propagation: disabled
+          ack_propagation:
+            mode: disabled
 
     pipelines:
       # ======================================================================

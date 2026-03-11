@@ -290,7 +290,10 @@ topics:
       broadcast:
         queue_capacity: 1000
         on_lag: drop_oldest
-      ack_propagation: auto
+      ack_propagation:
+        mode: auto
+        max_in_flight: 1024
+        timeout: 30s
 ```
 
 Supported `backend` values:
@@ -316,17 +319,22 @@ Supported `broadcast.on_lag` values:
 - `drop_oldest`
 - `disconnect`
 
-Supported `ack_propagation` values:
+Supported `ack_propagation` fields:
 
-- `disabled`
-- `auto`
+- `mode`:
+  - `disabled`
+  - `auto`
+- `max_in_flight` (default: `1024`, must be > 0)
+- `timeout` (default: `30s`)
 
 `balanced.on_full` applies to balanced delivery paths. `broadcast.on_lag`
-applies to broadcast delivery paths.
-`ack_propagation` applies to the topic hop as a whole and controls whether
-Ack/Nack can be bridged across pipelines.
+applies to broadcast delivery paths. `ack_propagation.mode` applies to the
+topic hop as a whole and controls whether Ack/Nack can be bridged across
+pipelines. `ack_propagation.max_in_flight` and `ack_propagation.timeout`
+govern tracked publish outcomes per publisher handle when Ack/Nack propagation
+is enabled.
 
-Current limitation: in broadcast mode, `ack_propagation: auto` does not
+Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast
 subscriber Ack/Nack resolves the upstream message, so upstream completion does
 not mean all broadcast subscribers processed the message. This matters
@@ -342,7 +350,9 @@ Topic defaults:
 - `policies.balanced.on_full = block`
 - `policies.broadcast.queue_capacity = 128`
 - `policies.broadcast.on_lag = drop_oldest`
-- `policies.ack_propagation = disabled`
+- `policies.ack_propagation.mode = disabled`
+- `policies.ack_propagation.max_in_flight = 1024`
+- `policies.ack_propagation.timeout = 30s`
 
 `exporter:topic` may locally override full-queue behavior:
 
@@ -363,6 +373,8 @@ Exporter-local `queue_on_full` behavior:
 - queue capacities remain topic-declaration-only (no exporter-local override)
 - broadcast lag handling remains topic-declaration-only via
   `policies.broadcast.on_lag`
+- Ack/Nack tracking limits remain topic-declaration-only via
+  `policies.ack_propagation`
 
 ## Output Ports
 

@@ -15,26 +15,26 @@
 //!   subscribers, slow subscribers don't block fast ones.
 //! - **Mode enforcement**: `BalancedOnly` rejects broadcast (and vice versa),
 //!   `BalancedOnly` enforces single consumer group.
-//! - **Ack/nack**: correct per-publisher routing, channel-full handling,
-//!   disabled-when-not-configured.
+//! - **Ack/nack**: tracked publish outcomes, per-publisher independence,
+//!   bounded in-flight tracking, disabled-when-not-tracked.
 //! - **Lifecycle**: `remove_topic` closes the topic (publish fails, recv gets
 //!   Closed), removed topics can be recreated independently, `close_all` shuts
 //!   everything down.
 //! - **TopicSet**: insert/get/remove semantics, overwrite returns previous,
-//!   remove-does-not-close, per-set ack routing, clone-shares-state.
+//!   remove-does-not-close, clone-shares-state.
 
 use crate::error::Error;
 use crate::topic::backend::InMemoryBackend;
 use crate::topic::types::{
-    AckEvent, AckStatus, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode,
-    TopicOptions,
+    PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedTryPublishOutcome,
 };
 use crate::topic::{TopicBroker, TopicSet};
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::time::Duration;
 
 // =========================================================================
 // Balanced mode – single group
@@ -501,7 +501,7 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
     }
 
     // Second message should arrive before balanced queue is drained.
-    let second = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+    let second = tokio::time::timeout(Duration::from_millis(200), async {
         loop {
             match broadcast.recv().await {
                 Ok(RecvItem::Message(env)) => break *env.payload,
@@ -626,18 +626,15 @@ async fn publisher_api_identical_for_all_subscriber_modes() {
 // Ack/Nack
 // =========================================================================
 
-// Publishing via a handle created with `with_ack_sender` routes ack and nack
-// events to the registered channel with correct status, message ID, and topic.
+// Tracked publishes resolve to the ack/nack reported by downstream subscribers.
 #[tokio::test]
-async fn ack_nack_events_received_when_enabled() {
-    let (ack_tx, mut ack_rx) = mpsc::channel::<AckEvent>(64);
-
+async fn tracked_publish_outcomes_received_when_enabled() {
     let broker = TopicBroker::new();
     let base = broker
         .create_topic("ack-test", TopicOptions::default(), InMemoryBackend)
         .unwrap();
 
-    let topic = base.with_ack_sender(ack_tx);
+    let topic = base.tracked_publisher();
 
     let mut sub = base
         .subscribe(
@@ -648,8 +645,8 @@ async fn ack_nack_events_received_when_enabled() {
         )
         .unwrap();
 
-    topic.publish(Arc::new(42)).await.unwrap();
-    topic.publish(Arc::new(43)).await.unwrap();
+    let receipt1 = topic.publish(Arc::new(42u64)).await.unwrap();
+    let receipt2 = topic.publish(Arc::new(43u64)).await.unwrap();
 
     let env1 = match sub.recv().await.unwrap() {
         RecvItem::Message(e) => e,
@@ -663,30 +660,26 @@ async fn ack_nack_events_received_when_enabled() {
     sub.ack(env1.id).unwrap();
     sub.nack(env2.id, "bad data").unwrap();
 
-    let evt1 = ack_rx.recv().await.unwrap();
-    assert_eq!(evt1.message_id, env1.id);
-    assert_eq!(evt1.status, AckStatus::Ack);
-    assert!(evt1.reason.is_none());
-    assert_eq!(evt1.topic.as_ref(), "ack-test");
-    assert_ne!(evt1.publisher_id, 0); // per-publisher
-
-    let evt2 = ack_rx.recv().await.unwrap();
-    assert_eq!(evt2.message_id, env2.id);
-    assert_eq!(evt2.status, AckStatus::Nack);
-    assert_eq!(&*evt2.reason.unwrap(), "bad data");
-    assert_ne!(evt2.publisher_id, 0); // per-publisher
+    assert_eq!(
+        receipt1.wait_for_outcome().await,
+        TrackedPublishOutcome::Ack
+    );
+    assert_eq!(
+        receipt2.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack {
+            reason: Arc::from("bad data"),
+        }
+    );
 }
 
-// Publishing without with_ack_sender (publisher_id=0) means ack() returns
-// AckError::NotEnabled.
+// Publishing without the tracked publisher means ack/nack returns MessageNotTracked.
 #[tokio::test]
-async fn ack_nack_disabled_when_no_ack_sender() {
+async fn ack_nack_fail_when_message_is_not_tracked() {
     let broker = TopicBroker::new();
     let topic = broker
         .create_topic("no-ack", TopicOptions::default(), InMemoryBackend)
         .unwrap();
 
-    // No with_ack_sender() call → publisher_id=0 → NotEnabled.
     let mut sub = topic
         .subscribe(
             SubscriptionMode::Balanced {
@@ -704,24 +697,23 @@ async fn ack_nack_disabled_when_no_ack_sender() {
     };
 
     match sub.ack(env.id) {
-        Err(Error::AckNotEnabled) => {}
-        other => panic!("expected NotEnabled, got {:?}", other),
+        Err(Error::MessageNotTracked) => {}
+        other => panic!("expected MessageNotTracked, got {:?}", other),
     }
 }
 
-// When the ack channel (capacity=1) is full, subsequent ack() calls return
-// AckChannelFull instead of blocking.
+// Tracked publishers expose a bounded in-flight limit on try_publish.
 #[tokio::test]
-async fn ack_channel_full_returns_error() {
-    // Tiny ack channel to force overflow.
-    let (ack_tx, _ack_rx) = mpsc::channel::<AckEvent>(1);
-
+async fn tracked_try_publish_respects_max_in_flight() {
     let broker = TopicBroker::new();
     let base = broker
         .create_topic("ack-full", TopicOptions::default(), InMemoryBackend)
         .unwrap();
 
-    let topic = base.with_ack_sender(ack_tx);
+    let topic = base.tracked_publisher_with_config(TopicPublishOutcomeConfig {
+        max_in_flight: 1,
+        timeout: Duration::from_secs(30),
+    });
 
     let mut sub = base
         .subscribe(
@@ -732,24 +724,19 @@ async fn ack_channel_full_returns_error() {
         )
         .unwrap();
 
-    for i in 0..10u64 {
-        topic.publish(Arc::new(i)).await.unwrap();
-    }
+    let receipt = topic.publish(Arc::new(1u64)).await.unwrap();
+    assert!(matches!(
+        topic.try_publish(Arc::new(2u64)).unwrap(),
+        TrackedTryPublishOutcome::MaxInFlightReached
+    ));
 
-    // Consume and ack all without draining ack channel.
-    let mut full_count = 0;
-    for _ in 0..10 {
-        let env = match sub.recv().await.unwrap() {
-            RecvItem::Message(e) => e,
-            _ => panic!(),
-        };
-        if sub.ack(env.id).is_err() {
-            full_count += 1;
-        }
-    }
+    let env = match sub.recv().await.unwrap() {
+        RecvItem::Message(e) => e,
+        _ => panic!(),
+    };
+    sub.ack(env.id).unwrap();
 
-    // At least some should have been dropped due to channel full.
-    assert!(full_count > 0, "expected some ack events to be dropped");
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
 // =========================================================================
@@ -793,14 +780,14 @@ async fn balanced_backpressure_blocks_publisher() {
     });
 
     // Give the publisher task a moment to block.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!handle.is_finished(), "publish should be blocked");
 
     // Consume one message to unblock.
     let _ = sub.recv().await.unwrap();
 
     // Now the publisher should complete.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(handle.is_finished(), "publish should have completed");
 }
 
@@ -1338,20 +1325,16 @@ async fn broadcast_only_lag_reported() {
 // Per-publisher ack routing
 // =========================================================================
 
-// Two publisher handles with separate ack channels publish one message each,
-// acks are routed to the correct per-publisher channel.
+// Two tracked publishers can publish independently and receive separate outcomes.
 #[tokio::test]
-async fn per_publisher_ack_routing() {
+async fn tracked_publishers_resolve_independently() {
     let broker = TopicBroker::new();
     let base = broker
         .create_topic("per-pub-ack", TopicOptions::default(), InMemoryBackend)
         .unwrap();
 
-    let (ack_tx_a, mut ack_rx_a) = mpsc::channel::<AckEvent>(64);
-    let (ack_tx_b, mut ack_rx_b) = mpsc::channel::<AckEvent>(64);
-
-    let handle_a = base.with_ack_sender(ack_tx_a);
-    let handle_b = base.with_ack_sender(ack_tx_b);
+    let handle_a = base.tracked_publisher();
+    let handle_b = base.tracked_publisher();
 
     let mut sub = base
         .subscribe(
@@ -1362,10 +1345,8 @@ async fn per_publisher_ack_routing() {
         )
         .unwrap();
 
-    // Publisher A sends a message.
-    handle_a.publish(Arc::new(100u64)).await.unwrap();
-    // Publisher B sends a message.
-    handle_b.publish(Arc::new(200u64)).await.unwrap();
+    let receipt_a = handle_a.publish(Arc::new(100u64)).await.unwrap();
+    let receipt_b = handle_b.publish(Arc::new(200u64)).await.unwrap();
 
     let env1 = match sub.recv().await.unwrap() {
         RecvItem::Message(e) => e,
@@ -1380,25 +1361,19 @@ async fn per_publisher_ack_routing() {
     sub.ack(env1.id).unwrap();
     sub.ack(env2.id).unwrap();
 
-    // Ack for publisher A's message goes to ack_rx_a.
-    let evt_a = ack_rx_a.recv().await.unwrap();
-    assert_eq!(evt_a.status, AckStatus::Ack);
-    assert_eq!(*env1.payload, 100);
-
-    // Ack for publisher B's message goes to ack_rx_b.
-    let evt_b = ack_rx_b.recv().await.unwrap();
-    assert_eq!(evt_b.status, AckStatus::Ack);
-    assert_eq!(*env2.payload, 200);
-
-    // Neither channel has extra events.
-    assert!(ack_rx_a.try_recv().is_err());
-    assert!(ack_rx_b.try_recv().is_err());
+    assert_eq!(
+        receipt_a.wait_for_outcome().await,
+        TrackedPublishOutcome::Ack
+    );
+    assert_eq!(
+        receipt_b.wait_for_outcome().await,
+        TrackedPublishOutcome::Ack
+    );
 }
 
-// Per-publisher ack routing works with BroadcastOnly topics: a message
-// published via with_ack_sender is acked back to the correct channel.
+// Broadcast subscribers can acknowledge tracked publishes too.
 #[tokio::test]
-async fn per_publisher_ack_broadcast_mode() {
+async fn tracked_publish_broadcast_mode() {
     let broker = TopicBroker::new();
     let base = broker
         .create_topic(
@@ -1411,14 +1386,13 @@ async fn per_publisher_ack_broadcast_mode() {
         )
         .unwrap();
 
-    let (ack_tx, mut ack_rx) = mpsc::channel::<AckEvent>(64);
-    let handle = base.with_ack_sender(ack_tx);
+    let handle = base.tracked_publisher();
 
     let mut sub = base
         .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
         .unwrap();
 
-    handle.publish(Arc::new(42u64)).await.unwrap();
+    let receipt = handle.publish(Arc::new(42u64)).await.unwrap();
 
     let env = match sub.recv().await.unwrap() {
         RecvItem::Message(e) => e,
@@ -1427,10 +1401,7 @@ async fn per_publisher_ack_broadcast_mode() {
 
     sub.ack(env.id).unwrap();
 
-    let evt = ack_rx.recv().await.unwrap();
-    assert_eq!(evt.status, AckStatus::Ack);
-    assert_eq!(evt.message_id, env.id);
-    assert_ne!(evt.publisher_id, 0); // per-publisher, not default
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
 // =========================================================================
@@ -1545,8 +1516,8 @@ async fn get_topic_returns_none_for_missing() {
 #[tokio::test]
 async fn get_topic_required_returns_error_for_missing() {
     let broker = TopicBroker::<u64>::new();
-    let missing = TopicName::parse("missing").unwrap();
-    match broker.get_topic_required(&missing) {
+    let missing = "missing";
+    match broker.get_topic_required(missing) {
         Err(Error::UnknownTopic { topic }) => assert_eq!(topic, missing),
         _ => panic!("expected UnknownTopic"),
     }
@@ -1759,8 +1730,8 @@ async fn topic_set_get_missing_returns_none() {
 #[tokio::test]
 async fn topic_set_get_required_returns_error_for_missing() {
     let set = TopicSet::<u64>::new("empty-set");
-    let missing = TopicName::parse("missing-local").unwrap();
-    match set.get_required(&missing) {
+    let missing = "missing-local";
+    match set.get_required(missing) {
         Err(Error::UnknownTopic { topic }) => assert_eq!(topic, missing),
         _ => panic!("expected UnknownTopic"),
     }
@@ -1851,22 +1822,21 @@ async fn topic_set_topic_names() {
     assert_eq!(names, vec!["alpha", "beta"]);
 }
 
-// A TopicSet created with an ack sender automatically wraps inserted handles
-// so that ack events are routed to the set-level channel.
+// Handles fetched from a TopicSet can still create tracked publishers.
 #[tokio::test]
-async fn topic_set_with_ack_sender() {
+async fn topic_set_tracked_publisher() {
     let broker = TopicBroker::<u64>::new();
     let handle = broker
         .create_topic("t1", TopicOptions::default(), InMemoryBackend)
         .unwrap();
 
-    let (ack_tx, mut ack_rx) = mpsc::channel::<AckEvent>(64);
-    let set = TopicSet::with_ack_sender("p1", ack_tx);
+    let set = TopicSet::new("p1");
     _ = set.insert("output", handle);
 
-    let pub_handle = set.get("output").unwrap();
+    let handle = set.get("output").unwrap();
+    let pub_handle = handle.tracked_publisher();
 
-    let mut sub = pub_handle
+    let mut sub = handle
         .subscribe(
             SubscriptionMode::Balanced {
                 group: SubscriptionGroupName::from("g1"),
@@ -1875,7 +1845,7 @@ async fn topic_set_with_ack_sender() {
         )
         .unwrap();
 
-    pub_handle.publish(Arc::new(99)).await.unwrap();
+    let receipt = pub_handle.publish(Arc::new(99u64)).await.unwrap();
 
     let env = match sub.recv().await.unwrap() {
         RecvItem::Message(e) => e,
@@ -1884,10 +1854,7 @@ async fn topic_set_with_ack_sender() {
 
     sub.ack(env.id).unwrap();
 
-    let evt = ack_rx.recv().await.unwrap();
-    assert_eq!(evt.status, AckStatus::Ack);
-    assert_eq!(evt.message_id, env.id);
-    assert_ne!(evt.publisher_id, 0); // per-publisher ack routing via set
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
 // A TopicSet's name matches the value provided at construction.

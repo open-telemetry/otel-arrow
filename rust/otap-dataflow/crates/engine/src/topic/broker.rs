@@ -111,36 +111,34 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
     }
 
     /// Look up a topic by name without creating it.
-    pub fn get_topic(&self, name: impl Into<TopicName>) -> Option<TopicHandle<T>> {
-        let name: TopicName = name.into();
+    pub fn get_topic(&self, name: impl AsRef<str>) -> Option<TopicHandle<T>> {
+        let name = name.as_ref();
         let topics = self.inner.topics.read();
-        topics
-            .get(&name)
-            .map(|inner| TopicHandle::new(inner.clone()))
+        topics.get(name).map(|inner| TopicHandle::new(inner.clone()))
     }
 
     /// Look up a topic by name and return an explicit error when missing.
-    pub fn get_topic_required(&self, name: &TopicName) -> Result<TopicHandle<T>, Error> {
-        self.get_topic(name.clone())
-            .ok_or_else(|| Error::UnknownTopic {
-                topic: name.clone(),
-            })
+    pub fn get_topic_required(&self, name: impl AsRef<str>) -> Result<TopicHandle<T>, Error> {
+        let name = name.as_ref();
+        self.get_topic(name).ok_or_else(|| Error::UnknownTopic {
+            topic: name.to_owned(),
+        })
     }
 
     /// Check whether a topic exists.
-    pub fn has_topic(&self, name: impl Into<TopicName>) -> bool {
-        let name: TopicName = name.into();
+    pub fn has_topic(&self, name: impl AsRef<str>) -> bool {
+        let name = name.as_ref();
         let topics = self.inner.topics.read();
-        topics.contains_key(&name)
+        topics.contains_key(name)
     }
 
     /// Close and remove a topic. Subscribers eventually get
     /// `Error::SubscriptionClosed`, publishers get `Error::TopicClosed`.
     /// Returns `true` if the topic was found (and closed + removed).
-    pub fn remove_topic(&self, name: impl Into<TopicName>) -> bool {
-        let name: TopicName = name.into();
+    pub fn remove_topic(&self, name: impl AsRef<str>) -> bool {
+        let name = name.as_ref();
         let mut topics = self.inner.topics.write();
-        if let Some(inner) = topics.remove(&name) {
+        if let Some(inner) = topics.remove(name) {
             inner.close();
             true
         } else {

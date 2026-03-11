@@ -70,7 +70,8 @@ groups:
             on_full: block
           broadcast:
             queue_capacity: 4096
-          ack_propagation: auto
+          ack_propagation:
+            mode: auto
       backend_logs:
         description: "SUT logs output -> backend ingest"
         policies:
@@ -79,7 +80,8 @@ groups:
             on_full: block
           broadcast:
             queue_capacity: 4096
-          ack_propagation: auto
+          ack_propagation:
+            mode: auto
 
     pipelines:
       # ======================================================================
@@ -104,7 +106,7 @@ groups:
               data_source: static
               generation_strategy: pre_generated
               traffic_config:
-                signals_per_second: 100000
+                signals_per_second: 200000
                 max_batch_size: 1000
                 max_signal_count: null
                 metric_weight: 0
@@ -135,7 +137,7 @@ groups:
             config:
               enable_ack_nack: true
               traffic_config:
-                signals_per_second: 100000
+                signals_per_second: 200000
                 max_batch_size: 1000
                 max_signal_count: null
                 metric_weight: 0

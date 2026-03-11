@@ -17,11 +17,15 @@ mod tests;
 
 pub use backend::{InMemoryBackend, SubscriptionBackend, TopicBackend, TopicState};
 pub use broker::TopicBroker;
-pub use handle::TopicHandle;
-pub use otap_df_config::topic::TopicBroadcastOnLagPolicy;
+pub use handle::{TopicHandle, TrackedTopicPublisher};
+pub use otap_df_config::topic::{
+    TopicAckPropagationMode, TopicBroadcastOnLagPolicy, TopicQueueOnFullPolicy,
+};
+pub use otap_df_config::{SubscriptionGroupName, TopicName};
 pub use subscription::Subscription;
 pub use topic_set::TopicSet;
 pub use types::{
-    AckEvent, AckStatus, Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode,
-    TopicOptions, message_has_publisher_ack, message_publisher_id,
+    Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt,
+    TrackedPublishResolver, TrackedTryPublishOutcome,
 };

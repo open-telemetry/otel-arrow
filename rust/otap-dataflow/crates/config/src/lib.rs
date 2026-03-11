@@ -35,8 +35,8 @@ pub mod settings;
 pub mod tls;
 pub mod topic;
 pub use topic::{
-    SubscriptionGroupName, TopicAckPropagationPolicy, TopicBackendKind, TopicBroadcastOnLagPolicy,
-    TopicImplSelectionPolicy, TopicName,
+    SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
+    TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,
 };
 /// Validation helpers for node configuration.
 pub mod validation;

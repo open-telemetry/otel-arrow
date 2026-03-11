@@ -48,14 +48,16 @@ impl<T: Send + Sync + 'static> Subscription<T> {
 
     /// Acknowledge successful processing of a message.
     ///
-    /// Returns `Error::AckNotEnabled` if the message's publisher has no ack sender registered.
+    /// Returns `Error::MessageNotTracked` if the message was not published
+    /// through the tracked publish path.
     pub fn ack(&self, id: u64) -> Result<(), Error> {
         self.inner.ack(id)
     }
 
     /// Negatively acknowledge a message.
     ///
-    /// Returns `Error::AckNotEnabled` if the message's publisher has no ack sender registered.
+    /// Returns `Error::MessageNotTracked` if the message was not published
+    /// through the tracked publish path.
     pub fn nack(&self, id: u64, reason: impl Into<Arc<str>>) -> Result<(), Error> {
         self.inner.nack(id, reason.into())
     }
