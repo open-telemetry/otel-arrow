@@ -1653,9 +1653,7 @@ mod telemetry_tests {
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
                 Config {
-                    protocol: Protocol::Udp(UdpConfig {
-                        listening_addr,
-                    }),
+                    protocol: Protocol::Udp(UdpConfig { listening_addr }),
                     batch: Some(BatchConfig {
                         flush_timeout_ms: None,
                         max_size: NonZeroU16::new(1),
