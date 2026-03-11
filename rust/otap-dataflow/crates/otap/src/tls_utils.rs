@@ -1311,8 +1311,7 @@ fn parse_certified_key(
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let provider = rustls::crypto::CryptoProvider::get_default().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             "no rustls CryptoProvider installed — call install_crypto_provider() first",
         )
     })?;
