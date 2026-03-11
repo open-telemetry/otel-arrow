@@ -528,7 +528,10 @@ mod tests {
         .expect("config should parse");
         let attrs = cfg.resource_attributes();
         assert_eq!(attrs.len(), 1);
-        assert_eq!(attrs[0].attrs.get("tenant.id").map(String::as_str), Some("prod"));
+        assert_eq!(
+            attrs[0].attrs.get("tenant.id").map(String::as_str),
+            Some("prod")
+        );
         assert_eq!(attrs[0].weight.get(), 1);
         assert_eq!(build_rotation_table(attrs), vec![0]);
     }
@@ -595,13 +598,19 @@ mod tests {
 
     #[test]
     fn build_rotation_table_correct_order() {
-        use std::num::NonZeroU32;
-        use std::collections::HashMap;
         use super::ResourceAttributeSet;
+        use std::collections::HashMap;
+        use std::num::NonZeroU32;
 
         let entries = vec![
-            ResourceAttributeSet { attrs: HashMap::new(), weight: NonZeroU32::new(2).unwrap() },
-            ResourceAttributeSet { attrs: HashMap::new(), weight: NonZeroU32::new(3).unwrap() },
+            ResourceAttributeSet {
+                attrs: HashMap::new(),
+                weight: NonZeroU32::new(2).unwrap(),
+            },
+            ResourceAttributeSet {
+                attrs: HashMap::new(),
+                weight: NonZeroU32::new(3).unwrap(),
+            },
         ];
         assert_eq!(build_rotation_table(&entries), vec![0, 0, 1, 1, 1]);
     }
