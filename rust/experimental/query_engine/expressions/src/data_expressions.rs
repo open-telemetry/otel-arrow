@@ -177,24 +177,50 @@ impl ConditionalDataExpression {
         self.default_branch.as_deref()
     }
 
+    /// The try_fold implementation for this type of expression will recursively call the relevant
+    /// optimization methods on each branch's conditions and the expressions within each branch. It
+    /// also will remove branches if it determines that they would not evaluate on any rows.
     pub(crate) fn try_fold(
         &mut self,
-        _scope: &PipelineResolutionScope,
+        scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
-        // TODO support folding. What this should do is:
-        //
-        // 1) for each branch, check if's condition can be folded into a boolean literal using
-        // `LogicalExpression::try_resolve_static`. If so:
-        // - if the result is false, discard the branch because it would evaluate on zero rows
-        // - if the result is true, discard all the subsequent branches and the default branch
-        //   because no rows would be evaluated by them
-        //
-        // 2) recursively call try_fold on all the expressions in every remaining branch and the
-        // default branch if still present.
-        //
-        // Before doing this, we should support filtering by static literals so we can write unit
-        // tests that will evaluate the folded expr. Without this, we won't be able to evaluate the
-        // resolved static as a filter. https://github.com/open-telemetry/otel-arrow/issues/1508
+        let mut i = 0;
+        while i < self.branches.len() {
+            let static_logical_expr = {
+                let branch = &mut self.branches[i];
+                branch.condition.try_resolve_static(scope)?
+            };
+
+            if let Some(static_logical_expr) = static_logical_expr {
+                if static_logical_expr {
+                    // here everything will pass the filter. That means we can drop the test of the
+                    // branches because all remaining rows will be evaluated by this branch
+                    _ = self.branches.split_off(i + 1);
+
+                    // drop the default branch - no need to keep it as there will be now rows for
+                    // for it to evaluate
+                    self.default_branch = None;
+                } else {
+                    // here nothing will pass the filter, so we can basically discard this branch
+                    self.branches.remove(i);
+                    continue;
+                }
+            }
+
+            // optimize the expressions inside the branch
+            for expression in &mut self.branches[i].expressions {
+                expression.try_fold(scope)?;
+            }
+
+            i += 1;
+        }
+
+        if let Some(default_branch) = self.default_branch.as_mut() {
+            // optimize the expressions inside the branch
+            for expression in default_branch {
+                expression.try_fold(scope)?;
+            }
+        }
 
         Ok(())
     }
@@ -386,5 +412,326 @@ mod test {
                 └── {string_expr:?}\n"
             )
         );
+    }
+
+    #[test]
+    fn test_fold_conditional_expr_removes_everything_after_all_true_condition() {
+        let mut expr = ConditionalDataExpression::new(QueryLocation::new_fake())
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "x",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    // this should get folded into a static false
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                            )),
+                            false,
+                        )),
+                    ),
+                )],
+            ))
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                // this should also get folded to static true, meaning this branch will get the rest of the rows
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Output(OutputDataExpression::new(
+                    QueryLocation::new_fake(),
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out",
+                    )),
+                ))],
+            ))
+            // this should get removed
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Output(OutputDataExpression::new(
+                    QueryLocation::new_fake(),
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out2",
+                    )),
+                ))],
+            ))
+            // this should also get removed
+            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+                QueryLocation::new_fake(),
+                OutputExpression::NamedSink(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "out2",
+                )),
+            ))]);
+
+        let constants = Vec::new();
+        let functions = Vec::new();
+        let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
+        expr.try_fold(&scope).unwrap();
+
+        let expected = ConditionalDataExpression::new(QueryLocation::new_fake())
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "x",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                    ),
+                )],
+            ))
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        true,
+                    )),
+                )),
+                vec![DataExpression::Output(OutputDataExpression::new(
+                    QueryLocation::new_fake(),
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out",
+                    )),
+                ))],
+            ));
+
+        assert_eq!(expr, expected);
+    }
+
+    #[test]
+    fn test_fold_conditional_expr_removes_branch_for_all_false_condition() {
+        let mut expr = ConditionalDataExpression::new(QueryLocation::new_fake())
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "x",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    // this should get folded into a static false
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                            )),
+                            false,
+                        )),
+                    ),
+                )],
+            ))
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                // this will evaluate to all false, which means this branch should get removed
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Output(OutputDataExpression::new(
+                    QueryLocation::new_fake(),
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out",
+                    )),
+                ))],
+            ))
+            // this should be kept
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "y",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    // this should get folded into a static false as well
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "b"),
+                            )),
+                            false,
+                        )),
+                    ),
+                )],
+            ))
+            // this should be kept
+            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+                QueryLocation::new_fake(),
+                OutputExpression::NamedSink(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "out2",
+                )),
+            ))]);
+
+        let constants = Vec::new();
+        let functions = Vec::new();
+        let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
+        expr.try_fold(&scope).unwrap();
+
+        let expected = ConditionalDataExpression::new(QueryLocation::new_fake())
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "x",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                    ),
+                )],
+            ))
+            .with_branch(ConditionalDataExpressionBranch::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "y",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(
+                        BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                    )),
+                    false,
+                )),
+                vec![DataExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                false,
+                            )),
+                        )),
+                    ),
+                )],
+            ))
+            // this should be kept because
+            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+                QueryLocation::new_fake(),
+                OutputExpression::NamedSink(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "out2",
+                )),
+            ))]);
+
+        assert_eq!(expr, expected);
     }
 }

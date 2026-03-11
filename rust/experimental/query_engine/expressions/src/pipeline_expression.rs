@@ -207,6 +207,19 @@ impl<'a> PipelineResolutionScope<'a> {
     pub fn get_function(&self, function_id: usize) -> Option<&'a PipelineFunction> {
         self.functions.get(function_id)
     }
+
+    /// create a new empty pipeline resolution scope. Can be used in tests for verifying
+    /// folding/optimization logic
+    #[cfg(test)]
+    pub fn new_for_test(
+        constants: &'a Vec<StaticScalarExpression>,
+        functions: &'a Vec<PipelineFunction>,
+    ) -> Self {
+        Self {
+            constants,
+            functions,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
