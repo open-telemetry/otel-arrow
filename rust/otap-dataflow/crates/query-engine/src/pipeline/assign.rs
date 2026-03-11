@@ -305,8 +305,39 @@ impl PipelineStage for AssignPipelineStage {
         }
     }
 
-    /// TODO comment on the implementation here, specifically around how only "values" column
-    /// is supported
+    /// Assigns the result of this pipeline stage's source expression to a column on the attributes
+    /// record batch.
+    ///
+    /// This will be called to evaluate the `set` operator call in the context of a nested pipeline
+    /// applied to attributes. For example:
+    /// ```text
+    /// logs | apply attributes { set value = "hello" }
+    /// ```
+    ///
+    /// ## Limitations:
+    ///
+    /// Currently there are some limitations on the types of expressions which can be evaluated:
+    ///
+    /// 1. assignment destination can only be the attribute "value". Updating attribute key/type
+    /// using this pipeline expression is not yet supported. This means it will not evaluate
+    /// expressions such as:
+    /// ```text
+    /// logs | apply attributes { set key = "hello" } // not yet supported!
+    /// logs | apply attributes { set type = 1 } // not yet supported!
+    /// ```
+    ///
+    /// 2. both source/destination cannot reference specific values columns. Although attributes
+    /// `RecordBatch`s may contain additional columns such as `type`, `int`, `float`, `str`, etc.
+    /// it is not yet supported use these columns as the assignment destination, not is it yet
+    /// supported to reference these columns in the source expression. This means it will not
+    /// evaluate expressions such as:
+    /// ```text
+    /// logs | apply attributes { set str = "hello" } // not yet supported!
+    /// logs | apply attributes { set value = int * 2 } // not yet supported!
+    /// ```
+    ///
+    /// Effectively what this means is the only types of expressions that will be evaluated are
+    /// those which reference the virtual "value" column and/or static literals.
     async fn execute_on_attributes(
         &mut self,
         attrs_record_batch: RecordBatch,
@@ -361,34 +392,49 @@ impl PipelineStage for AssignPipelineStage {
             .next()
             .expect("non-empty batch");
 
-        // check if every value is the same type - if not, we may have problems evaluating the
-        // expression (if the value is used in the expression).
-
-        let all_rows_same_attr_type =
-            neq(type_column, &UInt8Array::new_scalar(input_attr_type))?.true_count() == 0;
-
         let input_attr_type =
             AttributeValueType::try_from(input_attr_type).map_err(|e| Error::ExecutionError {
                 cause: format!("invalid attribute type {input_attr_type}: {e}"),
             })?;
 
-        // TODO comment on what we're doing here wrt to projection
+        // check if every value is the same type - if not, we may have problems evaluating the
+        // expression (if the value is used in the expression).
+        let all_rows_same_attr_type =
+            neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
+
+        // create the record batch that will be the input to the datafusion physical expression..
+        // if the expression involves the attribute value (e.g. `value + 2`), we produce a record
+        // batch with a single column which is the "value", otherwise, the input is an empty record
+        // batch. We do this because we are currently assuming the only types of expressions we
+        // support are those involving the attribute values (referenced as the virtual "value")
+        // column, or expressions involving static constants which don't need input columns.
         let projected_rb = if self.projection_contains_value_column {
             if !all_rows_same_attr_type {
+                // if not all the attribute types are the same, we can't determine a single value
+                // column to use in the projection, so return an error. In practice, the batch
+                // should be split apart before this pipeline stage using other operators to ensure
+                // we only have one value type.
                 return Err(Error::ExecutionError {
                     cause: "All input rows for attribute assignment must have the same type \
                         if value used in expression"
                         .into(),
                 });
             }
+
+            // try to access the values column
             let values_column_name = match input_attr_type {
                 AttributeValueType::Bool => Some(consts::ATTRIBUTE_BOOL),
                 AttributeValueType::Double => Some(consts::ATTRIBUTE_DOUBLE),
                 AttributeValueType::Int => Some(consts::ATTRIBUTE_INT),
                 AttributeValueType::Str => Some(consts::ATTRIBUTE_STR),
                 AttributeValueType::Empty => None,
-                _ => {
-                    todo!("other values types")
+                other => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "Setting attributes of type {:?} in nested pipeline not yet supported",
+                            other
+                        ),
+                    });
                 }
             };
 
@@ -414,13 +460,19 @@ impl PipelineStage for AssignPipelineStage {
                         AttributeValueType::Int => Arc::new(Int64Array::new_null(len)),
                         AttributeValueType::Str => Arc::new(StringArray::new_null(len)),
                         AttributeValueType::Empty => Arc::new(NullArray::new(len)),
-                        _ => {
-                            todo!("other value types")
+                        other => {
+                            return Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "Setting attributes of type {:?} in nested pipeline not yet supported",
+                                    other
+                                ),
+                            });
                         }
                     }
                 }
             };
 
+            // create the input record batch
             let mut fields = vec![Arc::new(Field::new(
                 VALUE_COLUMN_NAME,
                 values_column.data_type().clone(),
@@ -428,32 +480,37 @@ impl PipelineStage for AssignPipelineStage {
             ))];
             let mut columns = vec![values_column];
 
+            // remove dict encoding if necessary. This would be needed for certain expressions such
+            // as arithmetic
             if self.source.projection_opts.downcast_dicts {
                 Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
 
             Cow::Owned(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
         } else {
-            // TODO assert that the projection has no columns
-            // TODO comment on why this is allowed
+            // since the expression does not require the "value" column, we assume that it is an
+            // expression involving only static literals, in which case the input can just be an
+            // empty record batch
             Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())
         };
 
+        // evaluate the expression
         let mut result = self
             .source
             .evaluate_on_batch(session_context, &projected_rb)?
             .to_array(attrs_record_batch.num_rows())?;
 
-        // TODO - clone avoid?
-        let mut result_type = result.data_type().clone();
-        if let DataType::Dictionary(_, v) = result_type {
-            result_type = *v.clone()
+        // determine the "logical" type of the result (e.g. the array type, or the values if the
+        // result happens to be dictionary encoded.
+        let mut result_logical_type = result.data_type();
+        if let DataType::Dictionary(_, v) = result_logical_type {
+            result_logical_type = v.as_ref();
         }
 
-        // TODO - need some better logic around what we're replacing here ...
-        // e.g. is it the key, is it the value, is it some specific column ...
-
-        let (field_name, supports_dict, result_attr_type) = match result_type {
+        // prepare insert the result into the record batch by determining the column name and
+        // tye result attribute type (e.g. value in "type" column) and whether to support dict
+        // encoding for the result column
+        let (field_name, supports_dict, result_attr_type) = match result_logical_type {
             DataType::Utf8 => (Some(consts::ATTRIBUTE_STR), true, AttributeValueType::Str),
             DataType::Int64 => (Some(consts::ATTRIBUTE_INT), true, AttributeValueType::Int),
             DataType::Float64 => (
@@ -467,12 +524,17 @@ impl PipelineStage for AssignPipelineStage {
                 AttributeValueType::Bool,
             ),
             DataType::Null => (None, false, AttributeValueType::Empty),
-            _ => {
-                todo!("support more result types when assigning back to value column")
+            other => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "Setting attributes of from arrow type {:?} in nested pipeline not yet supported",
+                        other
+                    ),
+                });
             }
         };
 
-        // TODO - need downcast result to dict if supported
+        // possibly cast the result into a dict if the type column supports it and if it will fit
         if supports_dict {
             match result.data_type() {
                 DataType::Dictionary(k, _) => {
@@ -496,6 +558,8 @@ impl PipelineStage for AssignPipelineStage {
             }
         }
 
+        // create a new record batch including the result column ...
+
         let field_index = field_name
             .map(|field_name| {
                 attrs_record_batch
@@ -506,12 +570,11 @@ impl PipelineStage for AssignPipelineStage {
             })
             .flatten();
 
-        // TODO - any opportunity to reuse arrays
         let mut fields = attrs_record_batch.schema_ref().fields.to_vec();
         let mut columns = attrs_record_batch.columns().to_vec();
 
-        // generally in OTAP if a column is all null, we don't include it in the batch, so this
-        // flag will be used to determine whether the result column is included in the result batch
+        // In OTAP if a column is all null, we don't include it in the batch, so this flag will
+        // be used to determine whether the result column is included in the result batch
         let all_nulls = result.null_count() == attrs_record_batch.num_rows();
 
         if let Some(field_index) = field_index {
