@@ -599,6 +599,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients() {
+        let _ = otap_df_otap::crypto::install_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(4);
@@ -610,6 +611,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients_zero() {
+        let _ = otap_df_otap::crypto::install_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(0);
