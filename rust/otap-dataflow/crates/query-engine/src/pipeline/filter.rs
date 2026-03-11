@@ -450,11 +450,11 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
                 Ok(Self::from(FilterPlan::try_from(matches_expr)?))
             }
 
-            // TODO add support for these expressions eventually
             LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
                 ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
                     Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
                 }
+                // TODO add support for these expressions eventually
                 _ => Err(Error::NotYetSupportedError {
                     message: format!("Logical expression not yet supported {logical_expr:?}"),
                 }),
