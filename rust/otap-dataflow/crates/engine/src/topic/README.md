@@ -3,6 +3,9 @@
 This module provides the engine-facing topic abstraction used to decouple
 pipeline nodes through named topics.
 
+For a higher-level design view with architecture diagrams, see
+[`docs/topic-architecture.md`](../../../../docs/topic-architecture.md).
+
 ## Goals
 
 - Backend-agnostic API for topic publish/subscribe.
