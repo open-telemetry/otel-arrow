@@ -6,7 +6,7 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::fake_data_generator::config::{Config, DataSource, GenerationStrategy};
+use crate::fake_data_generator::config::{Config, DataSource, GenerationStrategy, ResourceAttributeSet, build_rotation_table};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -110,17 +110,28 @@ impl FakeGeneratorReceiver {
 enum SignalGenerator {
     /// Uses semantic conventions registry via weaver
     SemanticConventions(ResolvedRegistry),
-    /// Uses static hardcoded signals with per-batch resource attribute rotation.
-    Static(Vec<HashMap<String, String>>),
+    /// Uses static hardcoded signals with weighted per-batch resource attribute
+    /// rotation.  `entries` holds the typed attribute sets; `rotation` is a
+    /// precomputed index table built from the entry weights so the hot path is
+    /// a single modulo lookup.  Both are empty when no custom attributes are
+    /// configured.
+    Static {
+        entries: Vec<ResourceAttributeSet>,
+        rotation: Vec<usize>,
+    },
 }
 
 impl SignalGenerator {
-    /// Get the resource attributes for the given batch index, rotating through
-    /// configured attribute sets. Returns `None` when no extras are configured.
+    /// Return the resource attributes for the current batch, or `None` when no
+    /// custom attributes are configured.
+    ///
+    /// The slot is selected as `rotation[batch_index % rotation.len()]`, which
+    /// gives each entry a share of batches proportional to its weight.
     fn attrs_for_batch(&self, batch_index: u64) -> Option<&HashMap<String, String>> {
         match self {
-            SignalGenerator::Static(sets) if !sets.is_empty() => {
-                Some(&sets[batch_index as usize % sets.len()])
+            SignalGenerator::Static { entries, rotation } if !rotation.is_empty() => {
+                let slot = rotation[batch_index as usize % rotation.len()];
+                Some(&entries[slot].attrs)
             }
             _ => None,
         }
@@ -132,7 +143,7 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Traces(semconv_signal::semconv_otlp_traces(count, registry))
             }
-            SignalGenerator::Static(_) => {
+            SignalGenerator::Static { .. } => {
                 OtlpProtoMessage::Traces(static_signal::static_otlp_traces(
                     count,
                     self.attrs_for_batch(batch_index),
@@ -147,7 +158,7 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
             }
-            SignalGenerator::Static(_) => {
+            SignalGenerator::Static { .. } => {
                 OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics(
                     count,
                     self.attrs_for_batch(batch_index),
@@ -162,7 +173,7 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, registry))
             }
-            SignalGenerator::Static(_) => {
+            SignalGenerator::Static { .. } => {
                 OtlpProtoMessage::Logs(static_signal::static_otlp_logs(
                     count,
                     self.attrs_for_batch(batch_index),
@@ -277,7 +288,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     .expect("SemanticConventions data source should return Some registry");
                 SignalGenerator::SemanticConventions(registry)
             }
-            DataSource::Static => SignalGenerator::Static(self.config.resource_attributes().to_vec()),
+            DataSource::Static => {
+                let entries = self.config.resource_attributes().to_vec();
+                let rotation = build_rotation_table(&entries);
+                SignalGenerator::Static { entries, rotation }
+            }
         };
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -1331,14 +1346,16 @@ mod tests {
     #[test]
     fn test_resource_attribute_rotation_across_batches() {
         use std::collections::HashMap;
+        use std::num::NonZeroU32;
+        use crate::fake_data_generator::config::ResourceAttributeSet;
 
-        let attrs_a = HashMap::from([
-            ("tenant.id".to_string(), "prod".to_string()),
-        ]);
-        let attrs_b = HashMap::from([
-            ("tenant.id".to_string(), "staging".to_string()),
-        ]);
-        let generator = SignalGenerator::Static(vec![attrs_a, attrs_b]);
+        let make_entry = |tenant: &str| ResourceAttributeSet {
+            attrs: HashMap::from([("tenant.id".to_string(), tenant.to_string())]),
+            weight: NonZeroU32::new(1).unwrap(),
+        };
+        let entries = vec![make_entry("prod"), make_entry("staging")];
+        let rotation = build_rotation_table(&entries);
+        let generator = SignalGenerator::Static { entries, rotation };
 
         // attrs_for_batch should rotate through the two sets
         assert_eq!(
@@ -1392,7 +1409,7 @@ mod tests {
 
     #[test]
     fn test_resource_attribute_rotation_empty_attrs() {
-        let generator = SignalGenerator::Static(vec![]);
+        let generator = SignalGenerator::Static { entries: vec![], rotation: vec![] };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());
     }
