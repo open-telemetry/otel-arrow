@@ -1,0 +1,234 @@
+version: otel_dataflow/v1
+
+# Topic-based variant of continuous_benchmark.yaml.
+# This configuration keeps the same high-level benchmark shape (traffic
+# generators -> SUT -> backend) but replaces OTLP/gRPC inter-pipeline transport
+# with in-memory topics for direct performance comparison.
+#
+# Runtime CLI overrides:
+# - --num-cores / --core-id-range override top-level
+#   `policies.resources.core_allocation`.
+# - Pipeline/group-level `policies.resources` still take precedence over that
+#   top-level value.
+# - --http-admin-bind overrides `engine.http_admin.bind_address`.
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 4096
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  continuous_benchmark_topics:
+    policies:
+      channel_capacity:
+        control:
+          node: 256
+          pipeline: 256
+        pdata: 4096
+
+    # Topic declarations shared by all pipelines in this benchmark group.
+    # These two topics replace the ingress and backend gRPC sockets used in
+    # continuous_benchmark.yaml.
+    topics:
+      ingress:
+        description: "Traffic generators -> SUT ingress"
+        policies:
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
+      backend_logs:
+        description: "SUT logs output -> backend ingest"
+        policies:
+          balanced:
+            queue_capacity: 4096
+            on_full: block
+          broadcast:
+            queue_capacity: 4096
+
+    pipelines:
+      # ======================================================================
+      # Traffic generation pipelines
+      # ======================================================================
+
+      traffic_gen1:
+        policies:
+          resources:
+            core_allocation:
+              # Keep traffic generation off SUT/backend cores to avoid starvation.
+              type: core_set
+              set:
+                - start: 2
+                  end: 16
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100000
+                max_batch_size: 1000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: ingress_exporter
+
+      traffic_gen2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 21
+                  end: 35
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                signals_per_second: 100000
+                max_batch_size: 1000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: traffic_gen
+            to: ingress_exporter
+
+      # ======================================================================
+      # System Under Test pipeline
+      # ======================================================================
+      sut_pipeline:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+
+        nodes:
+          ingress_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: sut_pipeline
+
+          signal_router:
+            type: processor:type_router
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+          logs_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          backend_logs_exporter:
+            type: exporter:topic
+            config:
+              topic: backend_logs
+              queue_on_full: block
+
+          metrics_exporter:
+            type: exporter:noop
+            config: null
+
+          traces_exporter:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: ingress_receiver
+            to: signal_router
+          - from: signal_router["logs"]
+            to: logs_retry
+          - from: signal_router["metrics"]
+            to: metrics_exporter
+          - from: signal_router["traces"]
+            to: traces_exporter
+          - from: logs_retry
+            to: backend_logs_exporter
+
+      # ======================================================================
+      # Backend pipeline
+      # ======================================================================
+      backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                # Dedicated backend core (separate from SUT and generators).
+                - start: 17
+                  end: 17
+
+        nodes:
+          backend_logs_receiver:
+            type: receiver:topic
+            config:
+              topic: backend_logs
+              subscription:
+                mode: balanced
+                group: backend_workers
+
+          backend_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: backend_logs_receiver
+            to: backend_sink
