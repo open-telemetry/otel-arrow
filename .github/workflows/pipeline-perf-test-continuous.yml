@@ -3,217 +3,216 @@ permissions:
   contents: read
 
 on:
-    push:
-        branches: [ main ]
-    workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-    pipeline-perf-test:
-        runs-on: oracle-bare-metal-64cpu-512gb-x86-64
-        steps:
-        - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
-          with:
-            egress-policy: audit
+  pipeline-perf-test:
+    runs-on: oracle-bare-metal-64cpu-512gb-x86-64
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
 
-        - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-        - id: detect_os
-          name: Detect OS (self-hosted)
-          shell: bash
-          run: |
-            . /etc/os-release
-            echo "id=$ID" >> "$GITHUB_OUTPUT"
-            echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+      - id: detect_os
+        name: Detect OS (self-hosted)
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
 
-        - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
-          if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
-          shell: bash
-          run: |
-            set -euxo pipefail
+      - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
+        if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            # Run disk cleanup script
-            bash ./.github/workflows/scripts/disk-cleanup.sh
+          # Run disk cleanup script
+          bash ./.github/workflows/scripts/disk-cleanup.sh
 
-            # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
-            if rpm -q python3.11 python3.11-devel &>/dev/null; then
-              echo "Python 3.11 packages already installed, skipping repository setup and package installation"
-            else
-              # Enable repos and refresh metadata (only runs if Python not installed)
-              sudo dnf -y install oracle-epel-release-el8 || true
-              sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-              sudo dnf -y makecache --timer
+          # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
+          if rpm -q python3.11 python3.11-devel &>/dev/null; then
+            echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+          else
+            # Enable repos and refresh metadata (only runs if Python not installed)
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache --timer
 
-              # Install core packages (ignore subpackages that don't exist on OL8)
-              sudo dnf -y install python3.11 python3.11-devel || true
-            fi
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+          fi
 
-            # pip may be packaged as part of python3.11 or available via ensurepip;
-            # fall back to ensurepip if needed.
-            if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
-              /usr/bin/python3.11 -m ensurepip --upgrade || true
-            fi
+          # pip may be packaged as part of python3.11 or available via ensurepip;
+          # fall back to ensurepip if needed.
+          if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
+            /usr/bin/python3.11 -m ensurepip --upgrade || true
+          fi
 
-            # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
-            /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
+          # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
+          /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
 
-            # Add a 'python' shim so subsequent steps can call `python ...`
-            mkdir -p "$HOME/.local/bin"
-            ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Add a 'python' shim so subsequent steps can call `python ...`
+          mkdir -p "$HOME/.local/bin"
+          ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-            # Smoke test
-            python --version
-            python -m pip --version
+          # Smoke test
+          python --version
+          python -m pip --version
 
-        - name: Build dataflow_engine
-          run: |
-            git submodule init
-            git submodule update
-            cd rust/otap-dataflow
-            docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-            cd ../..
+      - name: Build dataflow_engine
+        run: |
+          git submodule init
+          git submodule update
+          cd rust/otap-dataflow
+          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          cd ../..
 
-        - name: Install dependencies
-          run: |
-            python -m pip install --user --upgrade pip
-            pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-            pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-        - name: Run pipeline performance test log suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+      - name: Run pipeline performance test log suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-        - name: Run idle state performance tests
-          run: |
-            cd tools/pipeline_perf_test
-            ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
-              | tee idle-memory-scaling-report.txt
-            # Add memory scaling report to job summary
-            echo "### Idle State Memory Scaling Analysis" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            # Extract just the analysis section from the report
-            sed -n '/^=.*MEMORY SCALING/,/^=\{10,\}$/p' idle-memory-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Run idle state performance tests
+        run: |
+          cd tools/pipeline_perf_test
+          ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
+            | tee idle-memory-scaling-report.txt
+          # Add memory scaling report to job summary
+          echo "### Idle State Memory Scaling Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract just the analysis section from the report
+          sed -n '/^=.*MEMORY SCALING/,/^=\{10,\}$/p' idle-memory-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
-        - name: Run passthrough performance test
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
+      - name: Run passthrough performance test
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
 
-        - name: Upload benchmark results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: benchmark-results-pipeline
-            path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
+      - name: Upload benchmark results for processing
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: benchmark-results-pipeline
+          path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
 
-        - name: Upload benchmark results for processing (Idle State)
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: benchmark-results-idle-state
-            path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
+      - name: Upload benchmark results for processing (Idle State)
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: benchmark-results-idle-state
+          path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
 
-        - name: Upload idle state memory scaling metrics
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: benchmark-results-idle-memory-scaling
-            path: tools/pipeline_perf_test/results/idle-memory-scaling.json
+      - name: Upload idle state memory scaling metrics
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: benchmark-results-idle-memory-scaling
+          path: tools/pipeline_perf_test/results/idle-memory-scaling.json
 
-        - name: Upload benchmark results for processing (Passthrough)
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: benchmark-results-passthrough
-            path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
+      - name: Upload benchmark results for processing (Passthrough)
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: benchmark-results-passthrough
+          path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
 
-        - name: Add benchmark link to job summary
-          run: |
-            echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+      - name: Add benchmark link to job summary
+        run: |
+          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
 
-    update-benchmarks:
-        runs-on: ubuntu-24.04
-        needs: [pipeline-perf-test]
-        permissions:
-          # deployments permission to deploy GitHub pages website
-          deployments: write
-          # contents permission to update benchmark contents in gh-pages branch
-          contents: write
-        steps:
-          - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  update-benchmarks:
+    runs-on: ubuntu-24.04
+    needs: [pipeline-perf-test]
+    permissions:
+      # deployments permission to deploy GitHub pages website
+      deployments: write
+      # contents permission to update benchmark contents in gh-pages branch
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-          - name: Download benchmark artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: benchmark-results-pipeline*
-              merge-multiple: true
-              path: results-pipeline
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: benchmark-results-pipeline*
+          merge-multiple: true
+          path: results-pipeline
 
-          - name: Download benchmark artifacts (Idle State)
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: benchmark-results-idle-state*
-              merge-multiple: true
-              path: results-idle-state
+      - name: Download benchmark artifacts (Idle State)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: benchmark-results-idle-state*
+          merge-multiple: true
+          path: results-idle-state
 
-          - name: Download benchmark artifacts (Passthrough)
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: benchmark-results-passthrough*
-              merge-multiple: true
-              path: results-passthrough
+      - name: Download benchmark artifacts (Passthrough)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: benchmark-results-passthrough*
+          merge-multiple: true
+          path: results-passthrough
 
-          - name: Consolidate pipeline benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
+      - name: Consolidate pipeline benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
 
-          - name: Consolidate idle state benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-idle-state output-idle-state.json
+      - name: Consolidate idle state benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-idle-state output-idle-state.json
 
-          - name: Consolidate passthrough benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-passthrough output-passthrough.json
+      - name: Consolidate passthrough benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-passthrough output-passthrough.json
 
-          - name: Update pipeline benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: output-pipeline.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous"
-              auto-push: true
-              save-data-file: true
+      - name: Update pipeline benchmark data and deploy to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: output-pipeline.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/continuous"
+          auto-push: true
+          save-data-file: true
 
-          - name: Update idle state benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: output-idle-state.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous-idle-state"
-              auto-push: true
-              save-data-file: true
+      - name: Update idle state benchmark data and deploy to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: output-idle-state.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/continuous-idle-state"
+          auto-push: true
+          save-data-file: true
 
-          - name: Update passthrough benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: output-passthrough.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous-passthrough"
-              auto-push: true
-              save-data-file: true
+      - name: Update passthrough benchmark data and deploy to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: output-passthrough.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/continuous-passthrough"
+          auto-push: true
+          save-data-file: true
 
-          - name: Add benchmark link to job summary
-            run: |
-              echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-              echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
-              echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
-              echo "[View the passthrough benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/)" >> $GITHUB_STEP_SUMMARY
+      - name: Add benchmark link to job summary
+        run: |
+          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+          echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
+          echo "[View the passthrough benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/)" >> $GITHUB_STEP_SUMMARY
