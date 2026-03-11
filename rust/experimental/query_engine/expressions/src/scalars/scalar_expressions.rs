@@ -1592,7 +1592,9 @@ impl InvokeFunctionScalarExpression {
 
             if return_count == 1
                 && discard_count == 0
-                && let ScalarExpression::Static(s) = return_statement.unwrap()
+                // safety: we can "expect" on return_statement here because if return_count is 
+                // non-zero, then we've set this variable to `Some` in the loop above
+                && let ScalarExpression::Static(s) = return_statement.expect("return_statement not None")
             {
                 return Ok(Some(if s.foldable() {
                     ResolvedStaticScalarExpression::FoldEligibleReference(s)
@@ -3539,6 +3541,48 @@ mod tests {
                         )),
                     )),
                 ],
+            ),
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "x",
+                        )),
+                    )]),
+                ),
+            ))],
+            None,
+        );
+
+        // Note: we're ensuring here that successfully evaluates whether it skips folding if there
+        //  is a discard statement, even if there is no return statement
+        run_test_success(
+            PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    PipelineFunctionParameterType::Scalar(None),
+                )],
+                None,
+                vec![PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Some(ValueType::String),
+                                0,
+                                ValueAccessor::new(),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                            )),
+                            true,
+                        )),
+                    ),
+                )],
             ),
             vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
                 SourceScalarExpression::new(
