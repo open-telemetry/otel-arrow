@@ -324,6 +324,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         };
 
         let mut signal_count: u64 = 0;
+        let mut batch_rotation_index: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
 
         let _ = effect_handler
@@ -361,6 +362,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     effect_handler.clone(),
                     max_signal_count,
                     &mut signal_count,
+                    &mut batch_rotation_index,
                     max_batch_size,
                     metric_count,
                     trace_count,
@@ -417,6 +419,7 @@ async fn send_signals(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
+    batch_rotation_index: &mut u64,
     max_batch_size: usize,
     metric_count: usize,
     trace_count: usize,
@@ -444,6 +447,7 @@ async fn send_signals(
                 effect_handler,
                 max_signal_count,
                 signal_count,
+                batch_rotation_index,
                 max_batch_size,
                 metric_count,
                 trace_count,
@@ -533,6 +537,7 @@ async fn generate_signal_fresh(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
+    batch_rotation_index: &mut u64,
     max_batch_size: usize,
     metric_count: usize,
     trace_count: usize,
@@ -564,10 +569,11 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(max_batch_size, *signal_count).try_into()?,
+                    generator.generate_metrics(max_batch_size, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 // generate last remaining signals
@@ -582,10 +588,11 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(remaining_count, *signal_count).try_into()?,
+                    generator.generate_metrics(remaining_count, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
 
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -597,11 +604,12 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder, *signal_count)
+                    .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += metric_count_remainder as u64;
         }
 
@@ -610,10 +618,11 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(max_batch_size, *signal_count).try_into()?,
+                    generator.generate_traces(max_batch_size, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -627,10 +636,11 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(remaining_count, *signal_count).try_into()?,
+                    generator.generate_traces(remaining_count, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
@@ -640,11 +650,12 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder, *signal_count)
+                    .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += trace_count_remainder as u64;
         }
 
@@ -653,10 +664,11 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(max_batch_size, *signal_count).try_into()?,
+                    generator.generate_logs(max_batch_size, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -670,10 +682,11 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(remaining_count, *signal_count).try_into()?,
+                    generator.generate_logs(remaining_count, *batch_rotation_index).try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
@@ -682,10 +695,11 @@ async fn generate_signal_fresh(
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder, *signal_count).try_into()?,
+                generator.generate_logs(log_count_remainder, *batch_rotation_index).try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += log_count_remainder as u64;
         }
 
@@ -695,58 +709,70 @@ async fn generate_signal_fresh(
         for _ in 0..metric_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_metrics(max_batch_size, *signal_count).try_into()?,
+                generator.generate_metrics(max_batch_size, *batch_rotation_index).try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if metric_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder, *signal_count)
+                    .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += metric_count_remainder as u64;
         }
 
         // generate and send traces
         for _ in 0..trace_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_traces(max_batch_size, *signal_count).try_into()?,
+                generator.generate_traces(max_batch_size, *batch_rotation_index).try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if trace_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder, *signal_count)
+                    .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += trace_count_remainder as u64;
         }
 
         // generate and send logs
         for _ in 0..log_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(max_batch_size, *signal_count).try_into()?,
+                generator.generate_logs(max_batch_size, *batch_rotation_index).try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if log_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder, *signal_count).try_into()?,
+                generator.generate_logs(log_count_remainder, *batch_rotation_index).try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += log_count_remainder as u64;
         }
     }
 
