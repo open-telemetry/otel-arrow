@@ -6,10 +6,12 @@
 use otap_df_config::SubscriptionGroupName;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep_until};
 
 /// A delivered message envelope carrying a broker-assigned id and the payload.
 #[derive(Debug)]
@@ -109,6 +111,187 @@ impl Drop for TrackedPublishPermit {
     }
 }
 
+/// Shared tracker for tracked publish receipts and timeout handling.
+///
+/// Backends can register tracked publishes in this tracker, then resolve or
+/// discard them later by message id. The tracker runs one shared timeout worker
+/// for all pending tracked publishes.
+#[derive(Clone)]
+pub struct TrackedPublishTracker {
+    inner: Arc<TrackedPublishTrackerInner>,
+}
+
+struct TrackedPublishTrackerInner {
+    entries: Mutex<HashMap<u64, Arc<TrackedPublishEntry>>>,
+    closed: AtomicBool,
+    wakeups: Notify,
+    timeout_worker_started: AtomicBool,
+}
+
+impl std::fmt::Debug for TrackedPublishTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pending = self.inner.entries.lock().len();
+        f.debug_struct("TrackedPublishTracker")
+            .field("pending", &pending)
+            .finish()
+    }
+}
+
+impl Default for TrackedPublishTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TrackedPublishTracker {
+    /// Create a new empty tracked publish tracker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(TrackedPublishTrackerInner {
+                entries: Mutex::new(HashMap::new()),
+                closed: AtomicBool::new(false),
+                wakeups: Notify::new(),
+                timeout_worker_started: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Register one tracked publish and return its receipt.
+    ///
+    /// `timeout` starts once this method admits the tracked publish into the
+    /// tracker. If no terminal outcome is resolved before that deadline, the
+    /// receipt resolves as [`TrackedPublishOutcome::TimedOut`].
+    ///
+    /// If the tracker was already closed, the returned receipt resolves
+    /// immediately as [`TrackedPublishOutcome::TopicClosed`].
+    pub fn register(
+        &self,
+        message_id: u64,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> TrackedPublishReceipt {
+        if self.inner.closed.load(Ordering::Acquire) {
+            let entry = Arc::new(TrackedPublishEntry::new(Instant::now(), permit));
+            let _resolved = entry.resolve(TrackedPublishOutcome::TopicClosed);
+            return TrackedPublishReceipt::new(message_id, entry);
+        }
+
+        self.ensure_timeout_worker();
+        let entry = Arc::new(TrackedPublishEntry::new(Instant::now() + timeout, permit));
+        _ = self
+            .inner
+            .entries
+            .lock()
+            .insert(message_id, Arc::clone(&entry));
+        self.inner.wakeups.notify_one();
+        TrackedPublishReceipt::new(message_id, entry)
+    }
+
+    /// Resolve one tracked publish by message id.
+    ///
+    /// Returns `true` if this call resolved a pending publish. Returns `false`
+    /// if the message id was not tracked or had already been resolved.
+    pub fn resolve(&self, message_id: u64, outcome: TrackedPublishOutcome) -> bool {
+        let Some(entry) = self.inner.entries.lock().remove(&message_id) else {
+            return false;
+        };
+        let resolved = entry.resolve(outcome);
+        self.inner.wakeups.notify_one();
+        resolved
+    }
+
+    /// Discard one tracked publish without producing an outcome.
+    ///
+    /// This releases the in-flight slot associated with the publish.
+    pub fn discard(&self, message_id: u64) -> bool {
+        let removed = self.inner.entries.lock().remove(&message_id).is_some();
+        if removed {
+            self.inner.wakeups.notify_one();
+        }
+        removed
+    }
+
+    /// Resolve all pending tracked publishes as
+    /// [`TrackedPublishOutcome::TopicClosed`].
+    pub fn close_all(&self) {
+        self.inner.closed.store(true, Ordering::Release);
+        let drained = {
+            let mut entries = self.inner.entries.lock();
+            entries.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
+        };
+        for entry in drained {
+            let _resolved = entry.resolve(TrackedPublishOutcome::TopicClosed);
+        }
+        self.inner.wakeups.notify_waiters();
+    }
+
+    fn ensure_timeout_worker(&self) {
+        if self
+            .inner
+            .timeout_worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let tracker = self.clone();
+            _ = tokio::spawn(async move {
+                tracker.timeout_worker().await;
+            });
+        }
+    }
+
+    async fn timeout_worker(self) {
+        loop {
+            if self.inner.closed.load(Ordering::Acquire) && self.inner.entries.lock().is_empty() {
+                break;
+            }
+
+            let next_deadline = self.next_deadline();
+            match next_deadline {
+                Some(deadline) => {
+                    tokio::select! {
+                        _ = sleep_until(deadline) => self.resolve_expired(deadline),
+                        _ = self.inner.wakeups.notified() => {}
+                    }
+                }
+                None => {
+                    self.inner.wakeups.notified().await;
+                }
+            }
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.inner
+            .entries
+            .lock()
+            .values()
+            .filter(|entry| entry.is_pending())
+            .map(|entry| entry.deadline())
+            .min()
+    }
+
+    fn resolve_expired(&self, now: Instant) {
+        let expired = {
+            let mut entries = self.inner.entries.lock();
+            let expired_ids = entries
+                .iter()
+                .filter_map(|(id, entry)| {
+                    (entry.is_pending() && entry.deadline() <= now).then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            expired_ids
+                .into_iter()
+                .filter_map(|id| entries.remove(&id))
+                .collect::<Vec<_>>()
+        };
+
+        for entry in expired {
+            let _resolved = entry.resolve(TrackedPublishOutcome::TimedOut);
+        }
+    }
+}
+
 /// Default configuration used when creating a tracked publisher from a topic handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TopicPublishOutcomeConfig {
@@ -144,16 +327,6 @@ pub struct TrackedPublishReceipt {
     entry: Arc<TrackedPublishEntry>,
 }
 
-/// Resolver for a tracked publish created through
-/// [`TrackedPublishReceipt::pending`].
-///
-/// Backends can store this handle and call [`TrackedPublishResolver::resolve`]
-/// once they observe the terminal outcome for the published message.
-#[derive(Clone)]
-pub struct TrackedPublishResolver {
-    entry: Arc<TrackedPublishEntry>,
-}
-
 impl std::fmt::Debug for TrackedPublishReceipt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrackedPublishReceipt")
@@ -163,36 +336,6 @@ impl std::fmt::Debug for TrackedPublishReceipt {
 }
 
 impl TrackedPublishReceipt {
-    /// Create a new pending tracked receipt together with its resolver.
-    ///
-    /// `timeout` starts when this constructor is called. If the resolver does
-    /// not produce a terminal outcome before that deadline, the receipt
-    /// resolves as [`TrackedPublishOutcome::TimedOut`].
-    ///
-    /// Dropping the returned receipt does not cancel tracking. The in-flight
-    /// slot represented by `permit` remains held until the resolver produces a
-    /// terminal outcome or the timeout fires.
-    #[must_use]
-    pub fn pending(
-        message_id: u64,
-        timeout: Duration,
-        permit: TrackedPublishPermit,
-    ) -> (Self, TrackedPublishResolver) {
-        let entry = Arc::new(TrackedPublishEntry::new(Instant::now() + timeout, permit));
-        let timeout_entry = Arc::clone(&entry);
-        _ = tokio::spawn(async move {
-            tokio::time::sleep_until(timeout_entry.deadline()).await;
-            let _ = timeout_entry.resolve(TrackedPublishOutcome::TimedOut);
-        });
-        (
-            Self {
-                message_id,
-                entry: Arc::clone(&entry),
-            },
-            TrackedPublishResolver { entry },
-        )
-    }
-
     pub(crate) fn new(message_id: u64, entry: Arc<TrackedPublishEntry>) -> Self {
         Self { message_id, entry }
     }
@@ -210,22 +353,6 @@ impl TrackedPublishReceipt {
     /// before awaiting does not cancel tracking.
     pub async fn wait_for_outcome(self) -> TrackedPublishOutcome {
         self.entry.wait_for_outcome().await
-    }
-}
-
-impl std::fmt::Debug for TrackedPublishResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TrackedPublishResolver(..)")
-    }
-}
-
-impl TrackedPublishResolver {
-    /// Resolve the tracked publish with a terminal outcome.
-    ///
-    /// Returns `true` if this call won the race to resolve the publish, or
-    /// `false` if it had already been resolved or timed out.
-    pub fn resolve(&self, outcome: TrackedPublishOutcome) -> bool {
-        self.entry.resolve(outcome)
     }
 }
 

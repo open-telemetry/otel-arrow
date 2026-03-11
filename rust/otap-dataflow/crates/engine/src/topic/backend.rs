@@ -78,10 +78,9 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     /// only when the tracked outcome reaches a terminal state or the publish is
     /// rejected before admission.
     ///
-    /// External backend implementations can construct the returned receipt with
-    /// [`TrackedPublishReceipt::pending`](crate::topic::TrackedPublishReceipt::pending)
-    /// and resolve it later through the paired
-    /// [`TrackedPublishResolver`](crate::topic::TrackedPublishResolver).
+    /// External backend implementations are expected to use a
+    /// [`TrackedPublishTracker`] to construct and resolve tracked receipts with
+    /// one shared timeout worker rather than per-message timeout tasks.
     fn publish_tracked(
         &self,
         msg: Arc<T>,

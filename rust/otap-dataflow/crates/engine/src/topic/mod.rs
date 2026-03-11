@@ -27,5 +27,5 @@ pub use topic_set::TopicSet;
 pub use types::{
     Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
     TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt,
-    TrackedPublishResolver, TrackedTryPublishOutcome,
+    TrackedPublishTracker, TrackedTryPublishOutcome,
 };

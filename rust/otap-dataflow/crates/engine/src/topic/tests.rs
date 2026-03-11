@@ -27,7 +27,8 @@ use crate::error::Error;
 use crate::topic::backend::InMemoryBackend;
 use crate::topic::types::{
     PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
-    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedTryPublishOutcome,
+    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker,
+    TrackedTryPublishOutcome,
 };
 use crate::topic::{TopicBroker, TopicSet};
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
@@ -35,6 +36,7 @@ use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 // =========================================================================
 // Balanced mode – single group
@@ -1696,6 +1698,29 @@ async fn close_all_closes_every_topic() {
 
     // Broker should be empty.
     assert!(broker.topic_names().is_empty());
+}
+
+// Registering with a closed tracker resolves immediately as TopicClosed
+// instead of leaving a pending entry behind without a timeout worker.
+#[tokio::test]
+async fn tracked_publish_tracker_register_after_close_resolves_immediately() {
+    let tracker = TrackedPublishTracker::new();
+    tracker.close_all();
+
+    let permit = TrackedPublishPermit::from_tokio_owned(
+        Arc::new(Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .expect("semaphore should not be closed"),
+    );
+
+    let receipt = tracker.register(1, Duration::from_secs(30), permit);
+
+    assert_eq!(receipt.message_id(), 1);
+    assert_eq!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::TopicClosed
+    );
 }
 
 // =========================================================================

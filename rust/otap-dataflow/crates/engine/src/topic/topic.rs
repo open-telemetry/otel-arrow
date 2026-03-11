@@ -3,7 +3,6 @@
 
 //! Topic internals, nothing here is directly exposed to users.
 
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -17,15 +16,13 @@ use crate::error::Error::{
 };
 use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
 use crate::topic::types::{
-    Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishEntry,
-    TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt, TrackedTryPublishOutcome,
+    Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishOutcome,
+    TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::Notify;
-use tokio::time::{Instant, sleep_until};
 
 struct ConsumerGroup<T> {
     tx: async_channel::Sender<Envelope<T>>,
@@ -81,128 +78,6 @@ impl WakerSet {
         };
         for waker in wakers {
             waker.wake();
-        }
-    }
-}
-
-pub(crate) struct OutcomeRegistry {
-    entries: Mutex<HashMap<u64, Arc<TrackedPublishEntry>>>,
-    closed: AtomicBool,
-    wakeups: Notify,
-    timeout_worker_started: AtomicBool,
-}
-
-impl OutcomeRegistry {
-    fn new() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-            closed: AtomicBool::new(false),
-            wakeups: Notify::new(),
-            timeout_worker_started: AtomicBool::new(false),
-        }
-    }
-
-    fn register(
-        self: &Arc<Self>,
-        message_id: u64,
-        timeout: Duration,
-        permit: TrackedPublishPermit,
-    ) -> TrackedPublishReceipt {
-        self.ensure_timeout_worker();
-        let entry = Arc::new(TrackedPublishEntry::new(Instant::now() + timeout, permit));
-        _ = self.entries.lock().insert(message_id, Arc::clone(&entry));
-        self.wakeups.notify_one();
-        TrackedPublishReceipt::new(message_id, entry)
-    }
-
-    fn resolve(&self, message_id: u64, outcome: TrackedPublishOutcome) -> Result<(), Error> {
-        let entry = self
-            .entries
-            .lock()
-            .remove(&message_id)
-            .ok_or(MessageNotTracked)?;
-        let _resolved = entry.resolve(outcome);
-        self.wakeups.notify_one();
-        Ok(())
-    }
-
-    fn discard(&self, message_id: u64) {
-        let _ = self.entries.lock().remove(&message_id);
-        self.wakeups.notify_one();
-    }
-
-    fn close_all(&self) {
-        self.closed.store(true, Ordering::Release);
-        let drained = {
-            let mut entries = self.entries.lock();
-            entries.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
-        };
-        for entry in drained {
-            let _resolved = entry.resolve(TrackedPublishOutcome::TopicClosed);
-        }
-        self.wakeups.notify_waiters();
-    }
-
-    fn ensure_timeout_worker(self: &Arc<Self>) {
-        if self
-            .timeout_worker_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let registry = Arc::clone(self);
-            _ = tokio::spawn(async move {
-                registry.timeout_worker().await;
-            });
-        }
-    }
-
-    async fn timeout_worker(self: Arc<Self>) {
-        loop {
-            if self.closed.load(Ordering::Acquire) && self.entries.lock().is_empty() {
-                break;
-            }
-
-            let next_deadline = self.next_deadline();
-            match next_deadline {
-                Some(deadline) => {
-                    tokio::select! {
-                        _ = sleep_until(deadline) => self.resolve_expired(deadline),
-                        _ = self.wakeups.notified() => {}
-                    }
-                }
-                None => {
-                    self.wakeups.notified().await;
-                }
-            }
-        }
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        self.entries
-            .lock()
-            .values()
-            .filter(|entry| entry.is_pending())
-            .map(|entry| entry.deadline())
-            .min()
-    }
-
-    fn resolve_expired(&self, now: Instant) {
-        let expired = {
-            let mut entries = self.entries.lock();
-            let expired_ids = entries
-                .iter()
-                .filter_map(|(id, entry)| {
-                    (entry.is_pending() && entry.deadline() <= now).then_some(*id)
-                })
-                .collect::<Vec<_>>();
-            expired_ids
-                .into_iter()
-                .filter_map(|id| entries.remove(&id))
-                .collect::<Vec<_>>()
-        };
-
-        for entry in expired {
-            let _resolved = entry.resolve(TrackedPublishOutcome::TimedOut);
         }
     }
 }
@@ -447,7 +322,7 @@ pub(crate) struct BalancedOnlyTopic<T: Send + Sync + 'static> {
     next_id: AtomicU64,
     group: OnceLock<SingleGroup<T>>,
     balanced_capacity: usize,
-    outcomes: Arc<OutcomeRegistry>,
+    outcomes: TrackedPublishTracker,
     closed: AtomicBool,
 }
 
@@ -458,7 +333,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             next_id: AtomicU64::new(1),
             group: OnceLock::new(),
             balanced_capacity: balanced_capacity.max(1),
-            outcomes: Arc::new(OutcomeRegistry::new()),
+            outcomes: TrackedPublishTracker::new(),
             closed: AtomicBool::new(false),
         }
     }
@@ -504,7 +379,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
                 payload: msg,
             };
             if group.tx.send(envelope).await.is_err() {
-                self.outcomes.discard(id);
+                let _discarded = self.outcomes.discard(id);
                 return Err(TopicClosed);
             }
         }
@@ -555,11 +430,11 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             match group.tx.try_send(envelope) {
                 Ok(()) => {}
                 Err(async_channel::TrySendError::Full(_)) => {
-                    self.outcomes.discard(id);
+                    let _discarded = self.outcomes.discard(id);
                     return Ok(TrackedTryPublishOutcome::DroppedOnFull);
                 }
                 Err(async_channel::TrySendError::Closed(_)) => {
-                    self.outcomes.discard(id);
+                    let _discarded = self.outcomes.discard(id);
                     return Err(TopicClosed);
                 }
             }
@@ -592,7 +467,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         Ok(BalancedSub {
             rx: Box::pin(single_group.rx.clone()),
             ack_state: AckState {
-                outcomes: Arc::clone(&self.outcomes),
+                outcomes: self.outcomes.clone(),
             },
         })
     }
@@ -611,7 +486,7 @@ pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     next_id: AtomicU64,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
-    outcomes: Arc<OutcomeRegistry>,
+    outcomes: TrackedPublishTracker,
     closed: AtomicBool,
 }
 
@@ -626,7 +501,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             next_id: AtomicU64::new(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             broadcast_on_lag,
-            outcomes: Arc::new(OutcomeRegistry::new()),
+            outcomes: TrackedPublishTracker::new(),
             closed: AtomicBool::new(false),
         }
     }
@@ -694,7 +569,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             disconnected_on_lag: false,
             spun: false,
             ack_state: AckState {
-                outcomes: Arc::clone(&self.outcomes),
+                outcomes: self.outcomes.clone(),
             },
         }
     }
@@ -715,7 +590,7 @@ pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     balanced_capacity: usize,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
-    outcomes: Arc<OutcomeRegistry>,
+    outcomes: TrackedPublishTracker,
     closed: AtomicBool,
 }
 
@@ -735,7 +610,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             balanced_capacity: balanced_capacity.max(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
             broadcast_on_lag,
-            outcomes: Arc::new(OutcomeRegistry::new()),
+            outcomes: TrackedPublishTracker::new(),
             closed: AtomicBool::new(false),
         }
     }
@@ -802,8 +677,9 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             };
             for sender in senders.as_ref() {
                 if sender.send(envelope.clone()).await.is_err() {
-                    self.outcomes
-                        .resolve(id, TrackedPublishOutcome::TopicClosed)?;
+                    let _resolved = self
+                        .outcomes
+                        .resolve(id, TrackedPublishOutcome::TopicClosed);
                     return Err(TopicClosed);
                 }
             }
@@ -874,11 +750,11 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 match sender.try_send(envelope.clone()) {
                     Ok(()) => {}
                     Err(async_channel::TrySendError::Full(_)) => {
-                        self.outcomes.discard(id);
+                        let _discarded = self.outcomes.discard(id);
                         return Ok(TrackedTryPublishOutcome::DroppedOnFull);
                     }
                     Err(async_channel::TrySendError::Closed(_)) => {
-                        self.outcomes.discard(id);
+                        let _discarded = self.outcomes.discard(id);
                         return Err(TopicClosed);
                     }
                 }
@@ -923,7 +799,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         Ok(BalancedSub {
             rx: Box::pin(rx),
             ack_state: AckState {
-                outcomes: Arc::clone(&self.outcomes),
+                outcomes: self.outcomes.clone(),
             },
         })
     }
@@ -937,7 +813,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             disconnected_on_lag: false,
             spun: false,
             ack_state: AckState {
-                outcomes: Arc::clone(&self.outcomes),
+                outcomes: self.outcomes.clone(),
             },
         }
     }
@@ -1066,13 +942,19 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
 }
 
 pub(crate) struct AckState {
-    pub(crate) outcomes: Arc<OutcomeRegistry>,
+    pub(crate) outcomes: TrackedPublishTracker,
 }
 
 impl AckState {
     pub(crate) fn send_ack(&self, message_id: u64) -> Result<(), Error> {
-        self.outcomes
+        if self
+            .outcomes
             .resolve(message_id, TrackedPublishOutcome::Ack)
+        {
+            Ok(())
+        } else {
+            Err(MessageNotTracked)
+        }
     }
 
     pub(crate) fn send_nack(
@@ -1080,11 +962,15 @@ impl AckState {
         message_id: u64,
         reason: impl Into<Arc<str>>,
     ) -> Result<(), Error> {
-        self.outcomes.resolve(
+        if self.outcomes.resolve(
             message_id,
             TrackedPublishOutcome::Nack {
                 reason: reason.into(),
             },
-        )
+        ) {
+            Ok(())
+        } else {
+            Err(MessageNotTracked)
+        }
     }
 }

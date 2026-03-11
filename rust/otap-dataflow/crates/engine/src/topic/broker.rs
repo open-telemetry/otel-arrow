@@ -114,7 +114,9 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
     pub fn get_topic(&self, name: impl AsRef<str>) -> Option<TopicHandle<T>> {
         let name = name.as_ref();
         let topics = self.inner.topics.read();
-        topics.get(name).map(|inner| TopicHandle::new(inner.clone()))
+        topics
+            .get(name)
+            .map(|inner| TopicHandle::new(inner.clone()))
     }
 
     /// Look up a topic by name and return an explicit error when missing.
