@@ -84,6 +84,20 @@ recordset-kql-processor = [
 ]
 resource-validator-processor = []
 
+contrib-extensions = [
+    "bearer-auth-extension",
+    "azure-identity-auth-extension",
+]
+bearer-auth-extension = [
+    "dep:http",
+]
+azure-identity-auth-extension = [
+    "dep:azure_core",
+    "dep:azure_identity",
+    "dep:http",
+    "dep:rand",
+]
+
 [dev-dependencies]
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }

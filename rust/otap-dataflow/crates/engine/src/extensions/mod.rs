@@ -29,11 +29,15 @@
 //!    `effect_handler.get_extension_handle::<MyHandle>("extension_name")`.
 
 pub mod auth;
+pub mod bearer_token;
 pub mod registry;
 
 pub use auth::{
     AuthError, ClientAuthenticator, ClientAuthenticatorHandle, ServerAuthenticator,
     ServerAuthenticatorHandle,
+};
+pub use bearer_token::{
+    BearerToken, BearerTokenError, BearerTokenProvider, BearerTokenProviderHandle, Secret,
 };
 pub(crate) use registry::ExtensionRegistryBuilder;
 pub use registry::{ExtensionHandles, ExtensionRegistry};
