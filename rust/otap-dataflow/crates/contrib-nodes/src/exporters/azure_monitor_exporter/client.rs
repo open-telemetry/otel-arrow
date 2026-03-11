@@ -321,6 +321,7 @@ mod tests {
     }
 
     fn create_test_http_client() -> Client {
+        let _ = otap_df_otap::crypto::install_crypto_provider();
         Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
