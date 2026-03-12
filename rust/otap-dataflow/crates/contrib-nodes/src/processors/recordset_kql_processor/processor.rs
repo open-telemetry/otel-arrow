@@ -131,7 +131,7 @@ impl RecordsetKqlProcessor {
         let (ctx, payload) = data.into_parts();
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
-        let timing = ProcessDuration::start(effect_handler.node_interests());
+        let _timing = self.process_duration.start(effect_handler.node_interests());
 
         // Process based on signal type
         let result = match otlp_bytes {
@@ -149,8 +149,6 @@ impl RecordsetKqlProcessor {
                 message: "Traces processing not yet implemented in KQL bridge".to_string(),
             }),
         };
-
-        timing.stop(&mut self.process_duration);
 
         match result {
             Ok(processed_bytes) => {

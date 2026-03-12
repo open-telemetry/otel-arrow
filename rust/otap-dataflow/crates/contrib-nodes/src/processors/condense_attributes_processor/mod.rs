@@ -640,7 +640,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let timing = ProcessDuration::start(effect_handler.node_interests());
+                let _timing = self.process_duration.start(effect_handler.node_interests());
 
                 let result = match signal {
                     SignalType::Logs => self.condense(&mut records),
@@ -649,8 +649,6 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                             .to_string(),
                     }),
                 };
-
-                timing.stop(&mut self.process_duration);
 
                 match result {
                     Ok(condensed) => {

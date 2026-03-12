@@ -549,7 +549,23 @@ impl Mmsc {
     /// in nanoseconds as an observation.
     #[inline]
     pub fn record_timer(&mut self, timer: Timer) {
-        self.record(timer.start.elapsed().as_nanos() as f64);
+        self.record(timer.elapsed_nanos());
+    }
+
+    /// Merge another `Mmsc` into this one, combining min/max/sum/count.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        if other.count == 0 {
+            return;
+        }
+        if other.min < self.min {
+            self.min = other.min;
+        }
+        if other.max > self.max {
+            self.max = other.max;
+        }
+        self.sum += other.sum;
+        self.count += other.count;
     }
 }
 
@@ -570,6 +586,13 @@ impl Timer {
         Self {
             start: Instant::now(),
         }
+    }
+
+    /// Consume the timer and return the elapsed wall-clock duration
+    /// in nanoseconds as an `f64`.
+    #[inline]
+    pub fn elapsed_nanos(self) -> f64 {
+        self.start.elapsed().as_nanos() as f64
     }
 }
 

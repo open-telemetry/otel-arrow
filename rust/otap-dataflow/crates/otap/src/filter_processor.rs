@@ -132,7 +132,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let timing = ProcessDuration::start(effect_handler.node_interests());
+                let _timing = self.process_duration.start(effect_handler.node_interests());
 
                 let result: Result<OtapArrowRecords, Error> = match signal {
                     SignalType::Metrics => {
@@ -196,8 +196,6 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                             })
                     }
                 };
-
-                timing.stop(&mut self.process_duration);
 
                 let filtered_arrow_records = result?;
 

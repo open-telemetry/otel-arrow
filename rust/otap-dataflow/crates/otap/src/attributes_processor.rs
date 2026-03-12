@@ -354,7 +354,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
                 // Apply transform across selected domains and collect exact stats
-                let timing = ProcessDuration::start(effect_handler.node_interests());
+                let _timing = self
+                    .process_duration
+                    .as_ref()
+                    .map(|pd| pd.start(effect_handler.node_interests()));
                 match self.apply_transform_with_stats(&mut records, signal) {
                     Ok((deleted_total, renamed_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
@@ -372,10 +375,6 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         }
                         return Err(e);
                     }
-                }
-
-                if let Some(pd) = self.process_duration.as_mut() {
-                    timing.stop(pd);
                 }
 
                 effect_handler
