@@ -4,8 +4,8 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
-    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    BooleanScalarExpression, BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression,
+    IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
     PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
@@ -129,6 +129,39 @@ impl PipelinePlanner {
                 // build the filter.
                 Some(LogicalExpression::Not(not_expr)) => {
                     self.plan_filter(not_expr.get_inner_expression(), session_ctx, otap_batch)
+                }
+
+                // the discard expression's `not` statement may get folded into a static constant
+                // filter in which case we don't produce logical expression as `not(true)`, instead
+                // it just gets folded into `false`. In this case, we just invert the static bool
+                Some(LogicalExpression::Scalar(scalar_expr)) => match scalar_expr {
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(bool_expr)) => {
+                        let keep_plan = LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                bool_expr.get_query_location().clone(),
+                                !bool_expr.get_value(),
+                            )),
+                        ));
+                        self.plan_filter(&keep_plan, session_ctx, otap_batch)
+                    }
+                    invalid => Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "unsupported Static for discard expression. Expected boolean, found {invalid:?}"
+                        ),
+                        query_location: Some(discard_expr.get_query_location().clone()),
+                    }),
+                },
+                // discard expression with `None` predicate indicates the default behaviour which
+                // discards everything. In this case, what we want is a static filter that rejects
+                // all rows
+                None => {
+                    let predicate = LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            discard_expr.get_query_location().clone(),
+                            false,
+                        )),
+                    ));
+                    self.plan_filter(&predicate, session_ctx, otap_batch)
                 }
                 invalid => Err(Error::InvalidPipelineError {
                     cause: format!(
