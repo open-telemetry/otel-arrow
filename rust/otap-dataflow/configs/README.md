@@ -81,7 +81,7 @@ Generates mixed-tenant traffic using weighted resource attribute rotation:
 The `resource_attributes` field accepts three forms:
 
 | Form | Description |
-|------|-------------|
+| ---- | ----------- |
 | Single map | All batches carry the same attributes (weight 1) |
 | List of maps | Equal round-robin rotation across entries (weight 1 each) |
 | List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
