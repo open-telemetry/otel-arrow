@@ -552,7 +552,7 @@ impl Mmsc {
         self.record(timer.elapsed_nanos());
     }
 
-    /// Merge another `Mmsc` into this one, combining min/max/sum/count.
+    /// Merge another Mmsc into this.
     #[inline]
     pub fn merge(&mut self, other: Self) {
         if other.count == 0 {
@@ -571,9 +571,8 @@ impl Mmsc {
 
 /// A lightweight wall-clock timer.
 ///
-/// Call [`Timer::start`] to capture the current instant, then pass
-/// the timer to [`Mmsc::record_timer`] to record the elapsed
-/// duration.
+/// Call Timer::start to capture the current instant, then pass the
+/// timer to Mmsc::record_timer to record the elapsed duration.
 #[must_use]
 pub struct Timer {
     start: Instant,
@@ -589,7 +588,7 @@ impl Timer {
     }
 
     /// Consume the timer and return the elapsed wall-clock duration
-    /// in nanoseconds as an `f64`.
+    /// in nanoseconds as an f64.
     #[inline]
     pub fn elapsed_nanos(self) -> f64 {
         self.start.elapsed().as_nanos() as f64

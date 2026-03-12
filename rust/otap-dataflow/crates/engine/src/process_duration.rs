@@ -4,21 +4,15 @@
 //! Opt-in process-duration timing for processors.
 //!
 //! Processors that perform meaningful compute can add a
-//! [`ProcessDuration`] field.  Calling [`ProcessDuration::start`]
-//! returns a [`TimingGuard`] that automatically records the elapsed
-//! wall-clock duration when it is dropped (RAII).
+//! ProcessDuration field.  Calling start() returns a TimingGuard that
+//! automatically records the elapsed time when dropped.  Timing is
+//! gated on the PROCESS_DURATION interest at the normal metric level.
 //!
 //! ```ignore
 //! let _timing = self.process_duration.start(interests);
-//! // … processing code …
-//! // duration is recorded when `_timing` drops at scope exit
+//! // ...
+//! // duration is recorded when _timing drops
 //! ```
-//!
-//! Timing is gated on [`Interests::PROCESS_DURATION`] (MetricLevel ≥ Normal).
-//!
-//! The guard is `#[must_use]`; combined with the workspace-level
-//! `unused_results = "deny"` lint this makes forgetting to bind the
-//! return value a **compile error**.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -57,26 +51,12 @@ impl ProcessDuration {
         }
     }
 
-    /// Start timing if `interests` includes [`Interests::PROCESS_DURATION`].
+    /// Start timing if interests includes PROCESS_DURATION.
     ///
-    /// Returns a [`TimingGuard`] that records the elapsed duration
-    /// into this [`ProcessDuration`] when it is dropped.  If interests
-    /// do not include [`Interests::PROCESS_DURATION`], the returned
-    /// guard is inert (no overhead).
-    ///
-    /// # Compile-time safety
-    ///
-    /// The guard is `#[must_use]`.  With the workspace lint
-    /// `unused_results = "deny"`, failing to bind the return value is
-    /// a compile error.  Because recording happens on [`Drop`], there
-    /// is no `stop()` method to forget.
-    ///
-    /// ```ignore
-    /// let _timing = self.process_duration.start(effect_handler.node_interests());
-    /// // … existing processing code unchanged …
-    /// // duration recorded automatically when _timing drops
-    /// ```
-    #[must_use = "the timing guard records on drop; bind it with `let _timing = …`"]
+    /// Returns a TimingGuard that records the elapsed time into a
+    /// ProcessDuration when dropped.  If interests do not include
+    /// PROCESS_DURATION, the guard has no effect.
+    #[must_use]
     pub fn start(&self, interests: Interests) -> TimingGuard {
         let timer = if interests.contains(Interests::PROCESS_DURATION) {
             Some(Timer::start())
@@ -101,8 +81,8 @@ impl ProcessDuration {
     }
 }
 
-/// RAII timing guard.  Records the elapsed duration into the
-/// originating [`ProcessDuration`] when dropped.
+/// Records the elapsed duration into the originating
+/// ProcessDuration when dropped.
 #[must_use = "the timing guard records on drop; bind it with `let _timing = …`"]
 pub struct TimingGuard {
     timer: Option<Timer>,
