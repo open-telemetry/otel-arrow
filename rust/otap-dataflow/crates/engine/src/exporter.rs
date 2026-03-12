@@ -876,15 +876,53 @@ mod tests {
         assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
     }
 
-    /// During shutdown draining, recv_when(false) still drains pdata
-    /// because the guard is ignored in draining mode.
+    /// During shutdown draining, recv_when(true) drains pdata.
+    /// When accept_pdata=false, only control messages are delivered during
+    /// draining so processors can resolve backpressure via ack/nack.
     #[tokio::test]
-    async fn test_recv_when_false_drains_during_shutdown() {
-        let (control_tx, pdata_tx, mut channel) = make_chan();
+    async fn test_recv_when_true_drains_during_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
 
         // Pre-load pdata
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         pdata_tx.send_async("pdata2".to_owned()).await.unwrap();
+
+        // Send shutdown with deadline
+        _control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now().add(Duration::from_millis(200)),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        // With accept_pdata=true, pdata should be drained during shutdown
+        let msg1 = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg1, Message::PData(ref s) if s == "pdata1"));
+
+        let msg2 = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg2, Message::PData(ref s) if s == "pdata2"));
+
+        // Close pdata channel to end draining
+        drop(pdata_tx);
+
+        // Should get shutdown message
+        let msg3 = channel.recv_when(true).await.unwrap();
+        assert!(matches!(
+            msg3,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// During shutdown draining with accept_pdata=false, pdata is NOT drained.
+    /// Instead, control messages are delivered so processors can reduce in-flight
+    /// state and reopen capacity.
+    #[tokio::test]
+    async fn test_recv_when_false_delivers_control_during_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Pre-load pdata
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
 
         // Send shutdown with deadline
         control_tx
@@ -895,20 +933,30 @@ mod tests {
             .await
             .unwrap();
 
-        // Even with accept_pdata=false, pdata should be drained during shutdown
-        let msg1 = channel.recv_when(false).await.unwrap();
-        assert!(matches!(msg1, Message::PData(ref s) if s == "pdata1"));
+        // Send a control message (simulating an ack/timer that resolves backpressure)
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
 
-        let msg2 = channel.recv_when(false).await.unwrap();
-        assert!(matches!(msg2, Message::PData(ref s) if s == "pdata2"));
+        // recv_when(false) during draining should deliver the control message, not pdata
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::TimerTick {})),
+            "should deliver control message during draining when accept_pdata=false"
+        );
 
-        // Close pdata channel to end draining
+        // Now call with accept_pdata=true — should drain the buffered pdata
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+
+        // Close pdata channel
         drop(pdata_tx);
 
-        // Should get shutdown message
-        let msg3 = channel.recv_when(false).await.unwrap();
+        // Should get shutdown
+        let msg = channel.recv_when(true).await.unwrap();
         assert!(matches!(
-            msg3,
+            msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
     }
