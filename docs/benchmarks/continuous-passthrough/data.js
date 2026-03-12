@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773342976529,
+  "lastUpdate": 1773345873055,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "66651184+utpilla@users.noreply.github.com",
-            "name": "Utkarsh Umesan Pillai",
-            "username": "utpilla"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6dfebcc089a02f3b2f2c59ce6bdb634d0bdaaf23",
-          "message": "[otap-df-otap] Restructure Syslog CEF Receiver config to scope settings per protocol (#2064)\n\n# Change Summary\n\nRestructures the Syslog CEF Receiver configuration so that endpoint and\nTLS settings are scoped under their respective protocol, rather than\nbeing flat top-level fields. This aligns with the OTLP Receiver's config\npattern and makes the config model extensible for future protocol\nadditions (e.g., Unix Domain Sockets).\n\n### Motivation\n\nThe previous config had listening_addr, protocol, and tls as sibling\nfields:\n- TLS is inherently TCP-specific, but nothing in the config structure\nenforced that\n- A flat `listening_addr` (`SocketAddr`) wouldn't generalize to\nprotocols which might be added in future such as Unix Domain Sockets\nthat use a path instead\n- Adding new protocols would require awkward conditional validation\n\n### Config change\n\n**Before**\n```\nConfig\n├── listening_addr: SocketAddr\n├── protocol: \"tcp\" | \"udp\"\n└── tls: Option<TlsServerConfig>     ← TCP-only, but not enforced by structure\n```\n\n**After**\n```\nConfig\n└── protocol: Protocol                ← tagged enum, exactly one variant\n    ├── tcp: TcpConfig\n    │   ├── listening_addr: SocketAddr\n    │   └── tls: Option<TlsServerConfig>\n    └── udp: UdpConfig\n        └── listening_addr: SocketAddr\n```\n\n### YAML example\n\n**Before**\n```yaml\nconfig:\n  listening_addr: \"0.0.0.0:5140\"\n  protocol: udp\n```\n\n**After**\n```yaml\nconfig:\n  protocol:\n    udp:\n      listening_addr: \"0.0.0.0:5140\"\n```\n\n### Key design decisions\n- **Tagged enum instead of struct with optional fields**: Unlike the\nOTLP Receiver (which supports running gRPC + HTTP simultaneously), the\nSyslog CEF Receiver supports exactly one protocol per instance. A serde\nexternally-tagged enum enforces this at deserialization time with no\nruntime validation needed.\n- `protocol` (singular): Reflects the one-protocol-per-instance\nconstraint.\n- TLS scoped to `TcpConfig`: UDP's `deny_unknown_fields` rejects any\n`tls` field, enforcing the constraint structurally.\n\n## How are these changes tested?\n\nAdded unit tests\n\n## Are there any user-facing changes?\n\nYes\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
-          "timestamp": "2026-02-19T20:39:11Z",
-          "tree_id": "b91a637191b2014a6e9801b2a53e6c7dff20e137",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/6dfebcc089a02f3b2f2c59ce6bdb634d0bdaaf23"
-        },
-        "date": 1771536508617,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.0932862758636475,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.21971276114571,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.79692334365325,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 48.15026041666667,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.98046875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 505433.6121755175,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 516013.78468759,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006583,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11334956.865168985,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11273348.352229977,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10826070.118339922,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "63a4ec5909141aff852a07faf63dc6ad1254eaa6",
+          "message": "fix: repair arm64 Docker build by switching to musl.cc toolchain   (#2214)\n\n## Problem\n                                                    \nThe `aarch64-unknown-linux-musl` build was silently compiling C code\nagainst\n  glibc headers while linking against musl libc.                       \n  `rust:1.94` ships Debian 13 / glibc 2.40+, where `_GNU_SOURCE` implies\n  `_ISOC23_SOURCE`, redirecting `strtol` and `sscanf` to C23 variants.\n`aws-lc-sys/bcm.c` defines `_GNU_SOURCE`, so its object files reference\n`__isoc23_strtol` and `__isoc23_sscanf` — symbols that only exist in\nglibc,\n  not musl. Linker explodes:\n\nundefined reference to __isoc23_strtol' undefined reference to\n__isoc23_sscanf'\n\n  The culprits:\n- **Native arm64 builds** (macOS M1, Linux arm64 runners): no C compiler\nwas\nexplicitly set, Cargo fell back to the system `gcc` which uses glibc\nheaders\n- **Cross amd64 -> arm64 builds**: `gcc-aarch64-linux-gnu` (Debian's\nglibc-based\ncross-compiler) brings glibc system headers into what is supposed to be\na\n    musl build\n\n  ## Fix\n\n  Split the arm64 path on `BUILDPLATFORM`:\n\n  - **Native arm64** (`BUILDPLATFORM=linux/arm64`): use the musl.cc\n`aarch64-linux-musl-native.tgz` toolchain — an arm64-hosted compiler\nwith\nits own musl headers. `musl-tools` from apt was considered but rejected\n    because its unprefixed `musl-gcc` confuses jemalloc's configure into\n    misdetecting atomics support. Also adds a symlink\n`aarch64-linux-musl-ar -> aarch64-linux-musl-gcc-ar` since the native\ntarball\n    only ships the latter but cmake-based crates expect the former.\n\n- **Cross amd64 -> arm64** (`BUILDPLATFORM=linux/amd64`): use the\nmusl.cc\n`aarch64-linux-musl-cross.tgz` toolchain - an x86_64-hosted\ncross-compiler\nwith its own musl headers, replacing `gcc-aarch64-linux-gnu`. Tarball\n    integrity verified with `sha256sum`.\n\nBoth toolchains avoid glibc headers entirely, eliminating the C23\nredirect.\n\n## Testing\n                                                                       \n| Scenario | BUILDPLATFORM | TARGETPLATFORM | Tested on |\n  |---|---|---|---|                                                    \n| Native arm64 | `linux/arm64` | `linux/arm64` | macOS Apple Silicon\n(Docker Desktop) - `docker buildx build --platform linux/arm64` |\n| Cross amd64→arm64 | `linux/amd64` | `linux/arm64` | macOS Apple\nSilicon (Docker Desktop) - `docker buildx build --platform linux/arm64\n--build-arg BUILDPLATFORM=linux/amd64` |\n| Native amd64 | `linux/amd64` | `linux/amd64` | Not tested locally -\nunchanged code path, covered by CI `ubuntu-24.04` runner |\n\nNote: Scenario 3 was simulated on macOS by overriding BUILDPLATFORM via\n--build-arg. The x86_64 cross-compiler binaries ran under Docker\nDesktop's binfmt support. The true cross-compile path will be exercised\nby CI on an amd64 runner",
+          "timestamp": "2026-03-12T19:28:25Z",
+          "tree_id": "fedcac2be6a4ffb4ab5a0274936e97c64fea9873",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/63a4ec5909141aff852a07faf63dc6ad1254eaa6"
+        },
+        "date": 1773345872441,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.8790891766548157,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.71315350731182,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.14849380470332,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 53.00703125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 56.1640625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 473687.5420007659,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 477851.6780523651,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001882,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10913094.076692436,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10851390.169664245,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
