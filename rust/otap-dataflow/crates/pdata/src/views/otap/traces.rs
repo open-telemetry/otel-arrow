@@ -21,19 +21,19 @@
 use std::collections::BTreeMap;
 
 use arrow::array::{
-    Array, Int32Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
+    Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
 };
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, ByteArrayAccessor, StringArrayAccessor, Int32ArrayAccessor};
+use crate::arrays::{
+    ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
+};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
-use otap_df_pdata_views::views::common::{
-    InstrumentationScopeView, Str,
-};
+use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
@@ -154,6 +154,7 @@ impl<'a> SpanColumns<'a> {
 
 /// Cached column references for the events record batch.
 struct EventColumns<'a> {
+    #[allow(dead_code)]
     parent_id: Option<&'a UInt16Array>,
     time_unix_nano: Option<&'a TimestampNanosecondArray>,
     name: Option<StringArrayAccessor<'a>>,
@@ -189,6 +190,7 @@ impl<'a> EventColumns<'a> {
 
 /// Cached column references for the links record batch.
 struct LinkColumns<'a> {
+    #[allow(dead_code)]
     parent_id: Option<&'a UInt16Array>,
     trace_id: Option<ByteArrayAccessor<'a>>,
     span_id: Option<ByteArrayAccessor<'a>>,
@@ -260,6 +262,7 @@ pub struct OtapTracesView<'a> {
     scope_attrs_map: BTreeMap<u16, Vec<usize>>,
     span_attrs_map: BTreeMap<u16, Vec<usize>>,
     event_attrs_map: BTreeMap<u16, Vec<usize>>,
+    #[allow(dead_code)]
     link_attrs_map: BTreeMap<u16, Vec<usize>>,
 
     // Pre-computed event/link index maps (parent span id -> list of event/link row indices)
@@ -838,20 +841,15 @@ impl<'a> OtapSpanView<'a> {
     #[inline]
     fn get_duration_nanos(&self) -> Option<i64> {
         let col = self.view.columns.duration_time_unix_nano?;
-        if !col.is_valid(self.row_idx) {
-            return None;
-        }
-        // Duration column may be stored as Duration(Nanosecond) or dictionary-encoded
-        // Try to read the raw i64 value
-        if let Some(dur_array) = col
-            .as_any()
+        col.as_any()
             .downcast_ref::<arrow::array::DurationNanosecondArray>()
-        {
-            Some(dur_array.value(self.row_idx))
-        } else {
-            // Try dictionary-encoded duration
-            None
-        }
+            .and_then(|dur_array| {
+                if dur_array.is_valid(self.row_idx) {
+                    Some(dur_array.value(self.row_idx))
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -1259,7 +1257,9 @@ fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
 
     let mut index: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
 
-    if let Ok(accessor) = crate::arrays::MaybeDictArrayAccessor::<UInt16Array>::try_new(parent_id_col) {
+    if let Ok(accessor) =
+        crate::arrays::MaybeDictArrayAccessor::<UInt16Array>::try_new(parent_id_col)
+    {
         for i in 0..batch.num_rows() {
             if let Some(pid) = accessor.value_at(i) {
                 index.entry(pid).or_default().push(i);
@@ -1696,7 +1696,7 @@ mod tests {
                     // Check first span's properties
                     let name = span.name().unwrap();
                     assert_eq!(std::str::from_utf8(name).unwrap(), "span-1");
-                    
+
                     // Check kind
                     assert_eq!(span.kind(), 1); // INTERNAL
 
@@ -1704,10 +1704,7 @@ mod tests {
                     assert_eq!(span.start_time_unix_nano(), Some(1_000_000_000));
 
                     // Check end time = start + duration
-                    assert_eq!(
-                        span.end_time_unix_nano(),
-                        Some(1_000_000_000 + 100_000)
-                    );
+                    assert_eq!(span.end_time_unix_nano(), Some(1_000_000_000 + 100_000));
                 }
                 span_count += 1;
             }
