@@ -72,8 +72,9 @@ Generates fake data with performance metrics:
 
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
-- Uses `data_source: static` with two resource attribute sets (`tenant.id: prod` and
-  `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split per pipeline.
+- Uses `data_source: static` with two resource attribute sets (`tenant.id: 
+  prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
+  per  pipeline.
 - Generates fake data -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
