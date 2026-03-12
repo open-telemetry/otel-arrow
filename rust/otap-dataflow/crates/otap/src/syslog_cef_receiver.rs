@@ -1646,9 +1646,20 @@ mod telemetry_tests {
             let listening_port = portpicker::pick_unused_port().expect("No free ports");
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-            // Receiver with metrics enabled via pipeline
-            let receiver =
-                SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(listening_addr));
+            // Receiver with metrics enabled via pipeline.
+            // Use max_batch_size=1 so that the single record is flushed
+            // immediately in the recv_from handler instead of waiting for
+            // the interval tick, which avoids timing-dependent flakiness.
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Udp(UdpConfig { listening_addr }),
+                    batch: Some(BatchConfig {
+                        flush_timeout_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
 
             // Keep downstream open to avoid refused
             let (out_tx, mut _out_rx) = otap_df_channel::mpsc::Channel::new(8);
@@ -1693,7 +1704,7 @@ mod telemetry_tests {
             // To exercise the "invalid" path, send an empty datagram which is rejected by the parser.
             let _ = sock.send_to(b"", listening_addr).await.unwrap();
 
-            // Allow interval to tick
+            // Allow the receiver task to process the incoming messages.
             tokio::time::sleep(Duration::from_millis(150)).await;
 
             // Trigger telemetry collection
@@ -1738,8 +1749,22 @@ mod telemetry_tests {
             let port = portpicker::pick_unused_port().expect("No free ports");
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
-            // Receiver with pipeline metrics
-            let receiver = SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(addr));
+            // Receiver with pipeline metrics.
+            // Use max_batch_size=1 so that the single record is flushed
+            // immediately in the recv_from handler instead of waiting for
+            // the interval tick, which avoids timing-dependent flakiness.
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Udp(UdpConfig {
+                        listening_addr: addr,
+                    }),
+                    batch: Some(BatchConfig {
+                        flush_timeout_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
 
             // Wire a closed downstream to force refused
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(1);

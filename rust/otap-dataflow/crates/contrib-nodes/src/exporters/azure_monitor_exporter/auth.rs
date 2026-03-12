@@ -82,7 +82,10 @@ impl Auth {
                     return Ok(token);
                 }
                 Err(e) => {
-                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
+                    let error_msg = e.to_string();
+                    let first_line = error_msg.lines().next().unwrap_or(&error_msg);
+                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %first_line);
+                    otel_debug!("azure_monitor_exporter.auth.get_token_failed.details", attempt = attempt, error = %e);
                     self.metrics.borrow_mut().add_auth_failure();
                 }
             }
