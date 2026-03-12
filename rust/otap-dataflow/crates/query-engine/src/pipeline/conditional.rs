@@ -16,7 +16,7 @@ use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
@@ -219,6 +219,7 @@ impl PipelineStage for ConditionalPipelineStage {
         task_context: Arc<TaskContext>,
         exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        // keep track of the rows that were selected by previous branches
         let mut already_selected_vec = BooleanArray::new(
             BooleanBuffer::new_unset(attrs_record_batch.num_rows()),
             None,
@@ -235,18 +236,32 @@ impl PipelineStage for ConditionalPipelineStage {
                 break;
             }
 
+            // extract the base filter predicate from the branch condition
+            // extract the base filter predicate from the branch condition
             let filter_exec = match &mut branch.condition {
                 Composite::Base(filter) => filter,
                 _ => {
-                    todo!("return planning error")
+                    return Err(Error::InvalidPipelineError {
+                        cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                        query_location: None,
+                    });
                 }
             };
+
+            // determine which rows are selected by this branch's predicate
             let predicate = filter_exec.predicate.as_mut().unwrap();
             let predicate_selection_vec =
                 predicate.evaluate_filter(&attrs_record_batch, session_ctx)?;
+
+            // select only the rows that match this branch AND were not already selected
+            // by a previous branch
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+
+            // update the list of rows that were already selected by branches
             already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
 
+            // create a record batch with only the rows that match the condition and execute
+            // the branch's pipeline stages on it
             let mut branch_record_batch =
                 filter_record_batch(&attrs_record_batch, &branch_selection_vec)?;
             for stage in &mut branch.pipeline_stages {
@@ -264,6 +279,8 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(branch_record_batch)
         }
 
+        // handle the default branch - e.g. the rows that did not match the condition from any of
+        // the previous branches
         if already_selected_vec.true_count() != attrs_record_batch.num_rows() {
             let mut default_branch_batch =
                 filter_record_batch(&attrs_record_batch, &not(&already_selected_vec)?)?;
@@ -284,6 +301,7 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(default_branch_batch);
         }
 
+        // reconstruct the result by concatenating the record batches from all branches
         let batch_refs = branch_results.iter().collect::<Vec<_>>();
         let final_result = concat_batches(branch_results[0].schema_ref(), batch_refs)?;
 
