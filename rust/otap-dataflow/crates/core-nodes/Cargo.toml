@@ -11,3 +11,33 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+otap-df-config = { path = "../config" }
+otap-df-engine = { path = "../engine" }
+otap-df-otap = { path = "../otap" }
+otap-df-pdata = { path = "../pdata" }
+otap-df-pdata-views = { workspace = true }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
+
+async-trait.workspace = true
+bytes.workspace = true
+humantime-serde.workspace = true
+linkme.workspace = true
+prost.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+tokio.workspace = true
+weaver_common.workspace = true
+weaver_forge.workspace = true
+weaver_resolved_schema.workspace = true
+weaver_resolver.workspace = true
+weaver_semconv.workspace = true
+
+[dev-dependencies]
+otap-df-engine = { path = "../engine", features = ["test-utils"] }
+otap-df-otap = { path = "../otap", features = ["test-utils"] }
+otap-df-telemetry = { path = "../telemetry" }

@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -16,15 +14,17 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
-/// The URN for the noop exporter
+/// The URN for the noop exporter.
 pub const NOOP_EXPORTER_URN: &str = "urn:otel:exporter:noop";
 
-/// Exporter that does nothing
+/// Exporter that does nothing.
 pub struct NoopExporter;
 
-/// Declare the Noop Exporter as a local exporter factory
+/// Declare the Noop Exporter as a local exporter factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
@@ -70,8 +70,8 @@ impl Exporter<OtapPdata> for NoopExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
     use otap_df_engine::Interests;
+    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
     use serde_json::json;
 
     #[test]
