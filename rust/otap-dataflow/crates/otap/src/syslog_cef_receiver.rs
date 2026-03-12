@@ -1658,7 +1658,7 @@ mod telemetry_tests {
                 Config {
                     protocol: Protocol::Udp(UdpConfig { listening_addr }),
                     batch: Some(BatchConfig {
-                        flush_timeout_ms: None,
+                        max_batch_duration_ms: None,
                         max_size: NonZeroU16::new(1),
                     }),
                 },
@@ -1763,7 +1763,7 @@ mod telemetry_tests {
                         listening_addr: addr,
                     }),
                     batch: Some(BatchConfig {
-                        flush_timeout_ms: None,
+                        max_batch_duration_ms: None,
                         max_size: NonZeroU16::new(1),
                     }),
                 },
