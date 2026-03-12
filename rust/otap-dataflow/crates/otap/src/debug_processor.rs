@@ -26,6 +26,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::process_duration::ProcessDuration;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_pdata::OtlpProtoBytes;
@@ -57,6 +58,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 pub struct DebugProcessor {
     config: Config,
     metrics: MetricSet<DebugPdataMetrics>,
+    process_duration: ProcessDuration,
     sampler: Sampler,
 }
 
@@ -99,10 +101,12 @@ impl DebugProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
         let sampler = Sampler::new(config.sampling());
         DebugProcessor {
             config,
             metrics,
+            process_duration,
             sampler,
         }
     }
@@ -110,6 +114,7 @@ impl DebugProcessor {
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let process_duration = ProcessDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -118,6 +123,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             metrics,
+            process_duration,
             sampler,
         })
     }
@@ -295,12 +301,16 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         mut metrics_reporter,
                     } => {
                         _ = metrics_reporter.report(&mut self.metrics);
+                        self.process_duration.report(&mut metrics_reporter);
                     }
                     _ => {}
                 }
                 Ok(())
             }
             Message::PData(mut pdata) => {
+                let _timing =
+                    self.process_duration.start(effect_handler.node_interests());
+
                 if self.config.verbosity() == Verbosity::Detailed {
                     // Print ACK/NACK detail only in Detailed mode.
                     effect_handler.subscribe_to(
