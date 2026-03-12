@@ -36,6 +36,42 @@ compile_error!(
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
 );
 
+// Crypto provider features are mutually exclusive.
+// The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
+// pattern so that `cargo test --all-features` (used in CI) does not fail.
+// When all features are enabled (e.g. --all-features), crypto.rs uses a
+// priority order (ring > aws-lc > openssl) so the binary still works.
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-aws-lc",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-aws-lc` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-aws-lc",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
@@ -253,12 +289,10 @@ fn validate_engine_components(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize rustls crypto provider (required for rustls 0.23+)
-    // We use ring as the default provider
-    #[cfg(feature = "experimental-tls")]
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+    // Install the rustls crypto provider selected by the crypto-* feature flag.
+    // This must happen before any TLS connections (reqwest, tonic, etc.).
+    otap_df_otap::crypto::install_crypto_provider()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let Args {
         config,
