@@ -26,7 +26,7 @@ groups:
               otap:
                 min_size: 8192
                 sizer: items
-              flush_timeout: 200ms
+              max_batch_duration: 200ms
           exporter:
             type: urn:otel:exporter:otap
             config:

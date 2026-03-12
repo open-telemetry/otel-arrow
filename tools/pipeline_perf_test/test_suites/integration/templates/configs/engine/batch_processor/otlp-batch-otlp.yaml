@@ -28,7 +28,7 @@ groups:
               otlp:
                 min_size: 262144
                 sizer: bytes
-              flush_timeout: 200ms
+              max_batch_duration: 200ms
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:
