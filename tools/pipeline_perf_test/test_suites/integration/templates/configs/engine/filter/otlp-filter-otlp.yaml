@@ -31,7 +31,7 @@ groups:
                   - key: ios.app.state
                     value: active
           exporter:
-            type: urn:otel:exporter:otlp
+            type: urn:otel:exporter:otlp_grpc
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: gzip

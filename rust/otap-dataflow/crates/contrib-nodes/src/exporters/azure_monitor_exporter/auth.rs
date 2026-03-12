@@ -6,7 +6,7 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
@@ -82,7 +82,10 @@ impl Auth {
                     return Ok(token);
                 }
                 Err(e) => {
-                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
+                    let error_msg = e.to_string();
+                    let first_line = error_msg.lines().next().unwrap_or(&error_msg);
+                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %first_line);
+                    otel_debug!("azure_monitor_exporter.auth.get_token_failed.details", attempt = attempt, error = %e);
                     self.metrics.borrow_mut().add_auth_failure();
                 }
             }
@@ -117,28 +120,16 @@ impl Auth {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
                 if let Some(client_id) = &auth_config.client_id {
-                    otel_info!("azure_monitor_exporter.auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
-                } else {
-                    otel_info!(
-                        "azure_monitor_exporter.auth.credential_type",
-                        method = "system_assigned_managed_identity"
-                    );
                 }
 
                 Ok(ManagedIdentityCredential::new(Some(options))
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
-            AuthMethod::Development => {
-                otel_info!(
-                    "azure_monitor_exporter.auth.credential_type",
-                    method = "developer_tools"
-                );
-                Ok(
-                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
-                )
-            }
+            AuthMethod::Development => Ok(DeveloperToolsCredential::new(Some(
+                DeveloperToolsCredentialOptions::default(),
+            ))
+            .map_err(|e| Error::create_credential(AuthMethod::Development, e))?),
         }
     }
 }

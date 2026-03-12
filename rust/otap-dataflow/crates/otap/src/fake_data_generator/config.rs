@@ -74,6 +74,12 @@ pub struct Config {
     /// Strategy for generating telemetry batches
     #[serde(default)]
     generation_strategy: GenerationStrategy,
+
+    /// When enabled, generated pdata subscribes to Ack/Nack notifications.
+    ///
+    /// This is useful for end-to-end Ack/Nack measurements across topic hops.
+    #[serde(default = "default_enable_ack_nack")]
+    enable_ack_nack: bool,
 }
 
 /// Configuration to describe the traffic being sent
@@ -103,6 +109,7 @@ impl Config {
             registry_path,
             data_source: DataSource::default(),
             generation_strategy: GenerationStrategy::default(),
+            enable_ack_nack: default_enable_ack_nack(),
         }
     }
 
@@ -139,6 +146,12 @@ impl Config {
     #[must_use]
     pub const fn get_traffic_config(&self) -> &TrafficConfig {
         &self.traffic_config
+    }
+
+    /// Returns whether generated pdata should subscribe to Ack/Nack.
+    #[must_use]
+    pub const fn enable_ack_nack(&self) -> bool {
+        self.enable_ack_nack
     }
 
     /// Provide a reference to the ResolvedRegistry.
@@ -289,5 +302,56 @@ fn default_registry_path() -> VirtualDirectoryPath {
         url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
         sub_folder: Some("model".to_owned()),
         refspec: None,
+    }
+}
+
+const fn default_enable_ack_nack() -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, DataSource, GenerationStrategy};
+    use serde_json::json;
+
+    #[test]
+    fn parse_config_defaults_enable_ack_nack_to_false() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_signal_count": null,
+                "max_batch_size": 1000,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "static",
+            "generation_strategy": "pre_generated"
+        }))
+        .expect("config should parse");
+
+        assert!(!cfg.enable_ack_nack());
+        assert_eq!(cfg.data_source(), &DataSource::Static);
+        assert_eq!(cfg.generation_strategy(), &GenerationStrategy::PreGenerated);
+    }
+
+    #[test]
+    fn parse_config_accepts_enable_ack_nack_true() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_signal_count": null,
+                "max_batch_size": 1000,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "static",
+            "generation_strategy": "fresh",
+            "enable_ack_nack": true
+        }))
+        .expect("config should parse");
+
+        assert!(cfg.enable_ack_nack());
     }
 }

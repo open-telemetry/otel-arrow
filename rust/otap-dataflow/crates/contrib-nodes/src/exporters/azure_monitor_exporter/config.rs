@@ -49,6 +49,22 @@ pub struct AuthConfig {
     pub scope: String,
 }
 
+impl AuthConfig {
+    /// Returns a human-readable name for the configured authentication method.
+    pub fn auth_method_name(&self) -> &'static str {
+        match self.method {
+            AuthMethod::ManagedIdentity => {
+                if self.client_id.is_some() {
+                    "user_assigned_managed_identity"
+                } else {
+                    "system_assigned_managed_identity"
+                }
+            }
+            AuthMethod::Development => "developer_tools",
+        }
+    }
+}
+
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
