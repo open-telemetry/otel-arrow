@@ -71,5 +71,5 @@ pub use progress::{
 pub use registry::{
     BundleMetadata, RegistryCallback, RegistryConfig, SegmentProvider, SubscriberRegistry,
 };
-pub use state::SubscriberState;
+pub use state::{SegmentProgress, SubscriberState};
 pub use types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
