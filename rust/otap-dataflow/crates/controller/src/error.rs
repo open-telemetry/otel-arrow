@@ -4,7 +4,9 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
+use otap_df_config::TopicName;
 use otap_df_config::policy::CoreAllocation;
+use otap_df_config::topic::TopicBackendKind;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
@@ -35,6 +37,50 @@ pub enum Error {
         /// The underlying engine error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
+    },
+
+    /// A topic declaration requests a backend this runtime does not provide.
+    #[error("Unsupported topic backend `{backend}` for topic `{topic}`")]
+    #[diagnostic(code(data_plane::unsupported_topic_backend), url(docsrs))]
+    UnsupportedTopicBackend {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The configured backend.
+        backend: TopicBackendKind,
+    },
+
+    /// A topic declaration selects a mode unsupported by the chosen backend.
+    #[error("Unsupported topic mode `{mode}` for topic `{topic}` on backend `{backend}`")]
+    #[diagnostic(code(data_plane::unsupported_topic_mode), url(docsrs))]
+    UnsupportedTopicMode {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The configured backend.
+        backend: TopicBackendKind,
+        /// The selected runtime mode.
+        mode: String,
+    },
+
+    /// A topic declaration requests a policy not supported by the chosen backend.
+    #[error("Unsupported topic policy for `{topic}` on backend `{backend}`: `{policy}={value}`")]
+    #[diagnostic(code(data_plane::unsupported_topic_policy), url(docsrs))]
+    UnsupportedTopicPolicy {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The configured backend.
+        backend: TopicBackendKind,
+        /// The unsupported policy key.
+        policy: &'static str,
+        /// The configured policy value.
+        value: String,
+    },
+
+    /// A cycle was detected in the global topic wiring graph.
+    #[error("Topic wiring cycle detected: {cycle:?}")]
+    #[diagnostic(code(data_plane::topic_wiring_cycle_detected), url(docsrs))]
+    TopicWiringCycleDetected {
+        /// The cycle path, with the starting vertex repeated at the end.
+        cycle: Vec<String>,
     },
 
     /// Failed to spawn an OS thread.
