@@ -20,7 +20,7 @@ use crate::error::Error;
 use crate::otap::Result;
 use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
-use crate::schema::consts::{self, ID, PARENT_ID};
+use crate::schema::consts::{ID, PARENT_ID};
 
 /// These are one less than the maximum cardinality of the key type. We should be
 /// able to go up to 256/65536 without overflow, but there is a bug in arrow-rs
@@ -92,7 +92,7 @@ pub fn concatenate<const N: usize>(
             continue;
         }
 
-        let new_schema = Arc::from(enforce_otap_dict_keys(&select_schema(&index)?));
+        let new_schema = Arc::from(select_schema(&index)?);
         let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
         for payload in select_all_mut(items, i) {
             let Some(rb) = payload.take() else {
@@ -571,57 +571,6 @@ fn select_dictionary_type<'a>(info: &FieldInfo<'a>) -> Result<DataType> {
         )),
         Cardinality::GreaterThanU16 => Ok(value_type),
     }
-}
-
-// Attribute value columns that require Dict(u16) per the OTAP spec (section 5.4).
-const U16_ONLY_DICT_FIELDS: &[&str] = &[
-    consts::ATTRIBUTE_STR,
-    consts::ATTRIBUTE_INT,
-    consts::ATTRIBUTE_BYTES,
-    consts::ATTRIBUTE_SER,
-];
-
-fn requires_u16_key(field_name: &str) -> bool {
-    U16_ONLY_DICT_FIELDS.contains(&field_name)
-}
-
-/// Widen a dict field's key to UInt16 if the spec requires it. Returns None if no change needed.
-fn fix_field(field: &Field) -> Option<Field> {
-    match field.data_type() {
-        DataType::Dictionary(key, value) if requires_u16_key(field.name()) => {
-            if **key == DataType::UInt16 {
-                return None;
-            }
-            Some(
-                Field::new(
-                    field.name(),
-                    DataType::Dictionary(Box::new(DataType::UInt16), value.clone()),
-                    field.is_nullable(),
-                )
-                .with_metadata(field.metadata().clone()),
-            )
-        }
-        _ => None,
-    }
-}
-
-/// Post-process a unified schema to enforce OTAP dictionary key constraints.
-/// Only touches fields listed in U16_ONLY_DICT_FIELDS; others are left as-is.
-fn enforce_otap_dict_keys(schema: &Schema) -> Schema {
-    let any_changed = schema.fields().iter().any(|f| fix_field(f).is_some());
-    if !any_changed {
-        return schema.clone();
-    }
-
-    let fields: Fields = schema
-        .fields()
-        .iter()
-        .map(|f| match fix_field(f) {
-            Some(fixed) => Arc::new(fixed),
-            None => f.clone(),
-        })
-        .collect();
-    Schema::new_with_metadata(fields, schema.metadata().clone())
 }
 
 /// Estimate of the cardinality of a field
@@ -1150,9 +1099,6 @@ mod schema_tests {
 
         validate_schema(&actual_schema, &expected_schema);
 
-        // "data" is not an OTAP dict16 field so no key widening applies.
-        let enforced_field_type = expected_field_type.clone();
-
         // Test actual concatenation
         let mut batches_for_concat: Vec<[Option<RecordBatch>; 1]> =
             batches.into_iter().map(|batch| [Some(batch)]).collect();
@@ -1188,10 +1134,10 @@ mod schema_tests {
         );
         assert_eq!(
             output_field.data_type(),
-            &enforced_field_type,
+            &expected_field_type,
             "Output field type mismatch {}: expected {:?}, got {:?}",
             test_context,
-            enforced_field_type,
+            expected_field_type,
             output_field.data_type()
         );
 
@@ -1334,62 +1280,6 @@ mod schema_tests {
             }
             _ => panic!("Unsupported value type for test: {:?}", value_type),
         }
-    }
-
-    #[test]
-    fn regression_2204_str_dict_gets_u16_key() {
-        let values1: Arc<dyn Array> = Arc::new(arrow::array::StringArray::from(vec!["a", "b"]));
-        let values2: Arc<dyn Array> = Arc::new(arrow::array::StringArray::from(vec!["c", "d"]));
-
-        let batch1 = create_dict_batch(
-            consts::ATTRIBUTE_STR,
-            UInt8Array::from(vec![0u8, 1]),
-            values1,
-            DataType::Utf8,
-        );
-        let batch2 = create_dict_batch(
-            consts::ATTRIBUTE_STR,
-            UInt8Array::from(vec![0u8, 1]),
-            values2,
-            DataType::Utf8,
-        );
-
-        let mut items = vec![[Some(batch1)], [Some(batch2)]];
-        let result = concatenate::<1>(&mut items).expect("concat failed");
-        let out = result[0].as_ref().unwrap();
-
-        assert_eq!(
-            out.schema().field(0).data_type(),
-            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-        );
-    }
-
-    #[test]
-    fn non_otap_string_dict_keeps_u8_key() {
-        let values1: Arc<dyn Array> = Arc::new(arrow::array::StringArray::from(vec!["a", "b"]));
-        let values2: Arc<dyn Array> = Arc::new(arrow::array::StringArray::from(vec!["c", "d"]));
-
-        let batch1 = create_dict_batch(
-            "some_other_column",
-            UInt8Array::from(vec![0u8, 1]),
-            values1,
-            DataType::Utf8,
-        );
-        let batch2 = create_dict_batch(
-            "some_other_column",
-            UInt8Array::from(vec![0u8, 1]),
-            values2,
-            DataType::Utf8,
-        );
-
-        let mut items = vec![[Some(batch1)], [Some(batch2)]];
-        let result = concatenate::<1>(&mut items).expect("concat failed");
-        let out = result[0].as_ref().unwrap();
-
-        assert_eq!(
-            out.schema().field(0).data_type(),
-            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-        );
     }
 }
 
