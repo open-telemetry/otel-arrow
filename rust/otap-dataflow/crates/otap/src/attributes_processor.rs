@@ -10,10 +10,11 @@
 //! Supported actions (current subset):
 //! - `rename`: Renames an attribute key (non-standard deviation from the Go collector).
 //! - `delete`: Removes an attribute by key.
-//! - `insert`: Inserts a new attribute.
+//! - `insert`: Inserts a new attribute (only if the key doesn't already exist).
+//! - `upsert`: Inserts a new attribute, or updates the value if the key already exists.
 //!
 //! Unsupported actions are ignored if present in the config:
-//! `upsert`, `update` (value update), `hash`, `extract`, `convert`.
+//! `update` (value update), `hash`, `extract`, `convert`.
 //! We may add support for them later.
 //!
 //! Example configuration (YAML):
@@ -50,7 +51,7 @@ use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
         AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-        transform_attributes_with_stats,
+        UpsertTransform, transform_attributes_with_stats,
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -84,11 +85,19 @@ pub enum Action {
         key: String,
     },
 
-    /// Insert a new attribute.
+    /// Insert a new attribute (only if key doesn't already exist).
     Insert {
         /// The attribute key to insert.
         key: String,
         /// The value to insert.
+        value: LiteralValue,
+    },
+
+    /// Upsert an attribute: insert if key doesn't exist, or update value if it does.
+    Upsert {
+        /// The attribute key to upsert.
+        key: String,
+        /// The value to upsert.
         value: LiteralValue,
     },
 
@@ -102,7 +111,7 @@ pub enum Action {
 /// Configuration for the AttributesProcessor.
 ///
 /// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Supported actions: rename (deviation), delete, insert. Others are ignored.
+/// Supported actions: rename (deviation), delete, insert, upsert. Others are ignored.
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
@@ -152,6 +161,7 @@ impl AttributesProcessor {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
+        let mut upserts = BTreeMap::new();
 
         for action in config.actions {
             match action {
@@ -166,6 +176,9 @@ impl AttributesProcessor {
                 }
                 Action::Insert { key, value } => {
                     let _ = inserts.insert(key, value);
+                }
+                Action::Upsert { key, value } => {
+                    let _ = upserts.insert(key, value);
                 }
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
@@ -202,6 +215,11 @@ impl AttributesProcessor {
             } else {
                 Some(InsertTransform::new(inserts))
             },
+            upsert: if upserts.is_empty() {
+                None
+            } else {
+                Some(UpsertTransform::new(upserts))
+            },
         };
 
         transform
@@ -224,6 +242,7 @@ impl AttributesProcessor {
         self.transform.rename.is_none()
             && self.transform.delete.is_none()
             && self.transform.insert.is_none()
+            && self.transform.upsert.is_none()
     }
 
     #[inline]
@@ -275,9 +294,11 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64), EngineError> {
+    ) -> Result<(u64, u64, u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
+        let mut inserted_total: u64 = 0;
+        let mut upserted_total: u64 = 0;
 
         // Only apply if we have transforms to apply
         if !self.is_noop() {
@@ -288,6 +309,8 @@ impl AttributesProcessor {
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
+                    inserted_total += stats.inserted_entries;
+                    upserted_total += stats.upserted_entries;
                     if rb.num_rows() == 0 {
                         records.remove(payload_ty);
                     } else {
@@ -297,7 +320,7 @@ impl AttributesProcessor {
             }
         }
 
-        Ok((deleted_total, renamed_total))
+        Ok((deleted_total, renamed_total, inserted_total, upserted_total))
     }
 }
 
@@ -349,13 +372,19 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
                 // Apply transform across selected domains and collect exact stats
                 match self.apply_transform_with_stats(&mut records, signal) {
-                    Ok((deleted_total, renamed_total)) => {
+                    Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
                         if let Some(m) = self.metrics.as_mut() {
                             if deleted_total > 0 {
                                 m.deleted_entries.add(deleted_total);
                             }
                             if renamed_total > 0 {
                                 m.renamed_entries.add(renamed_total);
+                            }
+                            if inserted_total > 0 {
+                                m.inserted_entries.add(inserted_total);
+                            }
+                            if upserted_total > 0 {
+                                m.upserted_entries.add(upserted_total);
                             }
                         }
                     }
@@ -1512,6 +1541,245 @@ mod tests {
             })
             .validate(|_| async move {});
     }
+
+    #[test]
+    fn test_upsert_new_key_via_config() {
+        // Upsert should insert a new key if it doesn't exist
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new("existing", AnyValue::new_string("val"))],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "upsert", "key": "new_key", "value": "new_val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-upsert-new");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Should have both existing and new key
+                assert_eq!(log_attrs.len(), 2);
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "new_key"
+                        && kv.value == Some(AnyValue::new_string("new_val")))
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_upsert_overwrites_existing_key() {
+        // Upsert should overwrite an existing key's value (unlike insert which skips)
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new(
+                "target_key",
+                AnyValue::new_string("original_value"),
+            )],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "upsert", "key": "target_key", "value": "updated_value"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-upsert-overwrite");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Should have exactly one target_key with UPDATED value
+                let matching_attrs: Vec<_> = log_attrs
+                    .iter()
+                    .filter(|kv| kv.key == "target_key")
+                    .collect();
+                assert_eq!(matching_attrs.len(), 1);
+
+                // Value should be updated, NOT original
+                let value = matching_attrs[0]
+                    .value
+                    .as_ref()
+                    .expect("value")
+                    .value
+                    .as_ref()
+                    .expect("inner value");
+                match value {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                        s,
+                    ) => {
+                        assert_eq!(s, "updated_value");
+                    }
+                    _ => panic!("expected string value"),
+                }
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_upsert_scoped_to_resource_only() {
+        // Upsert scoped to resource should not affect scope or signal attributes
+        let input = build_logs_with_attrs(
+            vec![
+                KeyValue::new("a", AnyValue::new_string("rv")),
+                KeyValue::new("r", AnyValue::new_string("keep")),
+            ],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "upsert", "key": "a", "value": "updated"},
+            ],
+            "apply_to": ["resource"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-upsert-resource-scoped");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                // Resource "a" should be updated to "updated"
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(
+                    res_attrs.iter().any(
+                        |kv| kv.key == "a" && kv.value == Some(AnyValue::new_string("updated"))
+                    )
+                );
+
+                // Scope "a" should still be "sv" (unchanged)
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(
+                    scope_attrs
+                        .iter()
+                        .any(|kv| kv.key == "a" && kv.value == Some(AnyValue::new_string("sv")))
+                );
+
+                // Log "a" should still be "lv" (unchanged)
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(
+                    log_attrs
+                        .iter()
+                        .any(|kv| kv.key == "a" && kv.value == Some(AnyValue::new_string("lv")))
+                );
+            })
+            .validate(|_| async move {});
+    }
 }
 
 #[cfg(test)]
@@ -1540,11 +1808,12 @@ mod telemetry_tests {
         let controller = ControllerContext::new(rt.metrics_registry().clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
 
-        // 3) Build processor with simple rename+delete (applies to signal domain by default)
+        // 3) Build processor with rename+delete+upsert (applies to signal domain by default)
         let cfg = json!({
             "actions": [
                 {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
+                {"action": "delete", "key": "x"},
+                {"action": "upsert", "key": "u", "value": "upserted"}
             ]
         });
         let mut node_cfg = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
@@ -1628,6 +1897,7 @@ mod telemetry_tests {
                 // Inspect current metrics; fields with non-zero values should be present
                 let mut found_renamed_entries = false;
                 let mut found_deleted_entries = false;
+                let mut found_upserted_entries = false;
                 let mut found_domain_signal = false;
 
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
@@ -1636,6 +1906,7 @@ mod telemetry_tests {
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
+                                ("upserted.entries", x) if x >= 1 => found_upserted_entries = true,
                                 ("domains.signal", x) if x >= 1 => found_domain_signal = true,
                                 _ => {}
                             }
@@ -1645,6 +1916,7 @@ mod telemetry_tests {
 
                 assert!(found_renamed_entries, "renamed.entries should be >= 1");
                 assert!(found_deleted_entries, "deleted.entries should be >= 1");
+                assert!(found_upserted_entries, "upserted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");
             });
     }
