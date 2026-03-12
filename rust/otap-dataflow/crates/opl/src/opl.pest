@@ -199,6 +199,10 @@ route_to_operator_call = {
     "route_to" ~ string_literal
 }
 
+apply_operator_call = {
+    "apply" ~ member_expression ~ "{" ~ pipeline_stage ~ ("|" ~ pipeline_stage)* ~ "}"
+}
+
 operator_call = {
     set_operator_call
   | rename_operator_call
@@ -206,6 +210,7 @@ operator_call = {
   | if_else_operator_call
   | route_to_operator_call
   | where_operator_call
+  | apply_operator_call
 }
 
 pipeline_stage = {

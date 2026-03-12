@@ -63,6 +63,8 @@ class Scenario(FrameworkElement):
         self._run_hooks(HookableTestPhase.PRE_RUN, ctx)
 
         logger.info("Running %d test steps...", len(self.steps))
+        first_error = None
+        failed_step_name = None
         for step in self.steps:
             step_ctx = StepContext(name=step.name, step=step, parent_ctx=ctx)
             ctx.add_child_ctx(step_ctx)
@@ -74,7 +76,21 @@ class Scenario(FrameworkElement):
                 except Exception as e:
                     step_ctx.status = ExecutionStatus.ERROR
                     step_ctx.error = e
-                    logger.error("Error: Test Step: %s failed: %s", step.name, e)
-                    raise  # or continue, based on policy
+                    if first_error is None:
+                        first_error = e
+                        failed_step_name = step.name
+                        logger.error("Error: Test Step: %s failed: %s", step.name, e)
+                        logger.info(
+                            "Continuing remaining steps for diagnostics..."
+                        )
+                    else:
+                        logger.warning(
+                            "Test Step: %s also failed (after prior failure): %s",
+                            step.name,
+                            e,
+                        )
 
         self._run_hooks(HookableTestPhase.POST_RUN, ctx)
+
+        if first_error is not None:
+            raise first_error

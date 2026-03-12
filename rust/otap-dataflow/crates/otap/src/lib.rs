@@ -18,8 +18,8 @@ pub mod otap_receiver;
 /// produce for the pipeline OTAP PData
 pub mod otlp_receiver;
 
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
+/// Implementation of OTLP gRPC exporter that implements the exporter trait
+pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
@@ -37,25 +37,16 @@ pub mod accessory;
 
 pub mod pdata;
 
+mod pdata_conversions;
+
 pub mod parquet_exporter;
 
 pub mod perf_exporter;
 
-pub mod fake_data_generator;
-
-/// Implementation of debug processor that outputs received signals in a string format for user view
-pub mod debug_processor;
-
 pub mod filter_processor;
-
-/// Implementation of a noop exporter that acts as a exporter placeholder
-pub mod noop_exporter;
 
 /// Fan-out processor to clone data to multiple downstream outputs.
 pub mod fanout_processor;
-
-/// An error-exporter returns a static error.
-pub mod error_exporter;
 
 /// testing utilities
 #[cfg(test)]
@@ -112,9 +103,6 @@ pub mod object_store;
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
-
-/// Console exporter similar using built-in OTLP-bytes formatting.
-pub mod console_exporter;
 
 /// Durable buffer processor for crash-resilient buffering via Quiver
 pub mod durable_buffer_processor;

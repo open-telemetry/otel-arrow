@@ -17,7 +17,7 @@ pub struct GzipBatcher {
     remaining_size: usize,
     uncompressed_size: usize,
     total_uncompressed_size: usize,
-    row_count: f64,
+    row_count: u64,
     flush_count: usize,
     batch_id: u64,
     pending_batch: Option<GzipResult>,
@@ -37,7 +37,7 @@ pub enum FinalizeResult {
 pub struct GzipResult {
     pub batch_id: u64,
     pub compressed_data: Bytes,
-    pub row_count: f64,
+    pub row_count: u64,
 }
 
 impl GzipBatcher {
@@ -48,7 +48,7 @@ impl GzipBatcher {
             remaining_size: ONE_MB - GZIP_SAFETY_MARGIN,
             uncompressed_size: 0,
             total_uncompressed_size: 0,
-            row_count: 0.0,
+            row_count: 0,
             flush_count: 0,
             batch_id: 0,
             pending_batch: None,
@@ -133,7 +133,7 @@ impl GzipBatcher {
             self.buf.write_all(data).map_err(Error::BatchPushFailed)?;
             self.uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
-            self.row_count += 1.0;
+            self.row_count += 1;
 
             Ok(PushResult::Ok(self.batch_id))
         }
@@ -157,7 +157,7 @@ impl GzipBatcher {
         self.remaining_size = ONE_MB - GZIP_SAFETY_MARGIN;
         self.uncompressed_size = 0;
         self.total_uncompressed_size = 0;
-        self.row_count = 0.0;
+        self.row_count = 0;
         self.flush_count = 0;
 
         self.pending_batch = Some(GzipResult {
@@ -354,7 +354,7 @@ mod tests {
         match batcher.finalize().unwrap() {
             FinalizeResult::Ok => {
                 let batch = batcher.take_pending_batch().unwrap();
-                assert!(batch.row_count > 0.0);
+                assert!(batch.row_count > 0);
                 assert!(!batch.compressed_data.is_empty());
             }
             _ => panic!("Should be Ok"),
@@ -402,7 +402,7 @@ mod tests {
             let _ = batcher.push(&generate_1kb_data()).unwrap();
         }
         let _ = batcher.finalize().unwrap();
-        assert_eq!(batcher.take_pending_batch().unwrap().row_count, 42.0);
+        assert_eq!(batcher.take_pending_batch().unwrap().row_count, 42);
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod tests {
         let _ = batcher.finalize().unwrap();
         let b2 = batcher.take_pending_batch().unwrap();
 
-        assert_eq!(b2.row_count, 1.0);
+        assert_eq!(b2.row_count, 1);
     }
 
     // ==================== Comma Handling Regression Tests ====================

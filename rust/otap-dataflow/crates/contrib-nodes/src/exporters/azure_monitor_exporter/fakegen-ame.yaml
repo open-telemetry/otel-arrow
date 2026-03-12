@@ -1,0 +1,72 @@
+# Azure Monitor Exporter with Fake Data Generator
+#
+# Uses the built-in traffic generator for quick self-contained testing of the
+# Azure Monitor Exporter.
+#
+# Usage:
+#   cargo run -- --config fakegen-ame.yaml
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine:
+  telemetry:
+    logs:
+      level: "info,typespec_client_core=warn,otap-df-contrib-nodes=debug"
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          fake-data-generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: static
+              generation_strategy: fresh
+              traffic_config:
+                # Send 10 log records per second
+                signals_per_second: 10
+                # Stop after 100 signals total (remove for continuous)
+                max_signal_count: 100
+                max_batch_size: 10
+                # Logs only (no metrics/traces)
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+
+          azure-monitor-exporter:
+            type: "urn:microsoft:exporter:azure_monitor"
+            config:
+              api:
+                dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+                stream_name: "Custom-MyTable_CL"
+                dcr: "dcr-abc123"
+                schema:
+                  resource_mapping:
+                    "service.name": "ServiceName"
+                  scope_mapping:
+                    "otel.library.name": "InstrumentationLibrary"
+                  log_record_mapping:
+                    "body": "Message"
+                    "severity_text": "SeverityText"
+                    "severity_number": "SeverityNumber"
+                    "time_unix_nano": "TimeGenerated"
+                    "trace_id": "TraceId"
+                    "span_id": "SpanId"
+                    "attributes":
+                      "http.method": "HttpMethod"
+                      "http.status_code": "HttpStatusCode"
+
+              auth:
+                method: "dev"
+
+        connections:
+          - from: fake-data-generator
+            to: azure-monitor-exporter

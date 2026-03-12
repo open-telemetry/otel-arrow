@@ -108,9 +108,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --user --upgrade pip
-          pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-          pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run pipeline performance test suite
         run: |
@@ -133,7 +132,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.14'
+          python-version: "3.14"
 
       - name: Build dataflow_engine
         run: |
@@ -145,12 +144,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --user --upgrade pip
-          pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-          pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
-

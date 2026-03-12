@@ -255,11 +255,6 @@ The `otap-df-core-nodes` crate is the destination for core-node
 implementations as they are split out from `otap-df-otap` during the
 ongoing refactor.
 
-Current status:
-
-- The crate is currently a scaffold.
-- No core node implementations have been moved there yet.
-
 ### Contrib Nodes
 
 [See crate README.](./crates/contrib-nodes/README.md)
