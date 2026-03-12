@@ -720,7 +720,8 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    predicate: Option<AdaptivePhysicalExprExec>,
+    pub(crate) predicate: Option<AdaptivePhysicalExprExec>,
+
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
     /// determines how we treat rows that where there are no attributes. if false, this cause the
@@ -1148,7 +1149,7 @@ impl AdaptivePhysicalExprExec {
 
     /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
     /// vector for the rows that pass the predicate.
-    fn evaluate_filter(
+    pub(crate) fn evaluate_filter(
         &mut self,
         record_batch: &RecordBatch,
         session_ctx: &SessionContext,
