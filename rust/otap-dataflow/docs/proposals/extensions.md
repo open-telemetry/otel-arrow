@@ -7,71 +7,50 @@ This proposal introduces a **capability-based extension system** for the **OTel 
 Extensions allow receivers, processors, and exporters to access **non-pdata functionality**, such as:
 
 * authentication
-* policy lookup
 * token sources
+* external data sources (file, database, etc.)
 * enrichment services
-* connection management
-
-The design aims to provide:
-
-* **high performance** compatible with the engine’s thread-per-core architecture
-* **clear integration** into the existing configuration model
-* **good user and developer experience**
-* **flexible deployment scopes**
-* **future extensibility**, including hierarchical placement and WASM-based extensions
+* identity extraction
 
 The system is introduced incrementally in **three phases**.
 
----
-
-# Goals
+## Goals
 
 The extension system should:
 
-* allow nodes to access **capabilities** such as authentication or policy lookup
+* allow nodes to access **capabilities** exposed by extensions
 * allow **multiple implementations** of the same capability
 * allow **multiple configured instances** of providers in the same pipeline
 * integrate cleanly into the **existing configuration model**
-* provide a clear **user experience** for declaring and binding extensions
-* provide a clear **developer experience** for implementing extensions
-* preserve the engine’s performance model:
+* provide a **clear user experience** for configuring extensions
+* provide a **clear developer experience** for implementing extensions
+* preserve the engine's **performance model**:
 
-    * thread-per-core execution
-    * minimal synchronization
-    * local hot-path access
-* support future hierarchical placement at:
-
-    * pipeline
-    * group
-    * global
-    * potentially distributed
+  * thread-per-core execution
+  * minimal synchronization
+  * local hot-path access
+* support **future hierarchical scopes** (global, group, pipeline)
 * allow extensions to run **background tasks**
 
----
+## Non-Goals
 
-# Non-Goals
-
-The system is not intended to:
+The system is **not intended to**:
 
 * replace pdata processing nodes
 * introduce dynamic runtime loading in phase 1
 * allow arbitrary plugin execution initially
 
----
+## Core Concepts
 
-# Core Concepts
+### Capability
 
-## Capability
-
-A **capability** is a typed interface that a node can use.
+A **capability** is a typed interface that nodes can use.
 
 Examples:
 
 ```text
-AuthCheckV1
-AuthCheckV2
-BearerTokenSource
-PolicyLookup
+auth_check
+dataset_lookup
 ```
 
 Capabilities are **known by the engine version** and validated during configuration loading.
@@ -82,45 +61,40 @@ This ensures:
 * compatibility guarantees
 * clear error reporting
 
----
+### Extension Provider
 
-## Provider
+An **extension provider** is an extension implementation exposing one or more capabilities.
 
-A **provider** is an extension implementation exposing one or more capabilities.
+Example extension providers:
 
-Examples:
+| Extension Provider           | Capabilities   |
+| ---------------------------- | -------------- |
+| `basic_auth` provider        | auth_check     |
+| `bearer_token_auth` provider | auth_check     |
+| `oidc_auth` provider         | auth_check     |
+| `file_storage` provider      | dataset_lookup |
+| `db_storage` provider        | dataset_lookup |
 
-| Provider              | Capabilities                       |
-| --------------------- | ---------------------------------- |
-| OAuth2 auth provider  | `AuthCheckV1`, `BearerTokenSource` |
-| Static token provider | `AuthCheckV1`                      |
-| Policy service client | `PolicyLookup`                     |
+### Extension Instance
 
----
-
-## Provider Instance
-
-A **provider instance** is a configured extension declared in an `extensions` section.
+An **extension instance** is a configured extension provider declared in the `extensions` section.
 
 Example:
 
 ```yaml
 extensions:
   auth_main:
-    kind: auth
-    impl: oauth2_cc
+    provider: oidc_auth
     scope: pipeline
     config:
-      endpoint: https://auth.example.com
+      issuer: https://accounts.example.com
 ```
 
-Multiple instances may exist using different configurations or different implementations.
+Multiple instances may exist using different configurations or implementations.
 
----
+### Capability Binding
 
-## Capability Binding
-
-Nodes bind capabilities to provider instances.
+Nodes bind capabilities to extension instances.
 
 Example:
 
@@ -129,31 +103,28 @@ nodes:
   otlp_recv1:
     type: receiver:otlp
     capabilities:
-      AuthCheckV1: auth_main
+      auth_check: auth_main
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4327"
-          wait_for_result: true
 ```
 
-This creates an explicit mapping:
+This creates a mapping:
 
 ```text
-node capability -> provider instance
+node capability → extension instance
 ```
 
-This improves:
+This approach improves:
 
 * configuration clarity
 * validation
 * flexibility
 
----
+## Configuration Integration
 
-# Configuration Integration
-
-The extension system integrates directly into the existing configuration hierarchy.
+The extension system integrates directly into the engine’s configuration hierarchy.
 
 For phase 1, extensions are declared at the **pipeline level** and consumed by nodes within that pipeline.
 
@@ -163,71 +134,48 @@ Example:
 version: otel_dataflow/v1
 
 groups:
-  ingest_group:
+  continuous_benchmark:
     pipelines:
-      ingest:
-        policies:
-          resources:
-            core_allocation:
-              type: core_set
-              set:
-                - start: 0
-                  end: 3
+      sut:
 
         extensions:
-          auth_main:
-            kind: auth
-            impl: oauth2_cc
+
+          oidc_auth_main:
+            provider: oidc_auth
             scope: pipeline
             config:
-              endpoint: https://auth.example.com
-              client_id: ingest
-              client_secret: ${AUTH_SECRET}
+              issuer: https://accounts.example.com
 
-          auth_local:
-            kind: auth
-            impl: static_token
+          local_auth:
+            provider: basic_auth
             scope: shard
             config:
-              token: ${LOCAL_AUTH_TOKEN}
+              file: /etc/auth/tokens.yaml
 
         nodes:
+
           otlp_recv1:
             type: receiver:otlp
             capabilities:
-              AuthCheckV1: auth_main
+              auth_check: oidc_auth_main
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4327"
-                  wait_for_result: true
 
           otlp_recv2:
             type: receiver:otlp
             capabilities:
-              AuthCheckV1: auth_local
+              auth_check: local_auth
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4337"
-                  wait_for_result: true
-
-          logs_exporter:
-            type: exporter:noop
-            config: null
-
-        connections:
-          - from: otlp_recv1
-            to: logs_exporter
-          - from: otlp_recv2
-            to: logs_exporter
 ```
 
 This model keeps extension usage explicit and consistent with the existing `groups -> pipelines -> nodes` structure.
 
----
-
-# User Experience
+## User Experience
 
 From the user perspective, the extension system should be:
 
@@ -235,101 +183,82 @@ From the user perspective, the extension system should be:
 * predictable
 * discoverable
 
-A user workflow is expected to look like this:
+Users should be able to:
 
-### 1. Declare extension instances in the pipeline
+1. Declare extension instances in the configuration
+2. Bind node capabilities to those instances
+3. Select the appropriate sharing scope
 
-```yaml
+Example workflow:
+
+Define extensions:
+
+```text
 extensions:
-  auth_main:
-    kind: auth
-    impl: oauth2_cc
-    scope: pipeline
-    config:
-      endpoint: https://auth.example.com
+  oidc_auth_main:
+    provider: oidc_auth
 ```
 
-### 2. Bind node capabilities to those instances
+Bind capabilities:
 
-```yaml
+```text
 nodes:
-  otlp_recv1:
-    type: receiver:otlp
+  otlp_recv:
     capabilities:
-      AuthCheckV1: auth_main
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4327"
+      auth_check: oidc_auth_main
 ```
 
-This makes it easy to answer:
+## Developer Extension Experience
 
-* which extensions exist in this pipeline?
-* which node uses which capability?
-* which implementation is behind a given provider instance?
-* how broadly is that provider shared?
+Developers implementing extensions should have a **simple integration model**.
 
----
+An extension provider implementation should define:
 
-# Developer Extension Experience
-
-Developers implementing extensions should have a simple and structured model.
-
-An extension implementation should define:
-
-* provider kind
-* provider implementation name
+* provider name
 * supported capabilities
 * supported scopes
 * configuration schema
-* runtime behavior
+* runtime logic
 
-Extensions may also run background tasks.
+Extensions may also run **background tasks**.
 
 Example:
 
 ```text
-OAuth2 Auth Provider
-├─ capability: AuthCheckV1
-├─ capability: BearerTokenSource
-└─ background task: token refresh
+oidc_auth provider
+ ├─ capability: auth_check
+ └─ background task: JWKS refresh
 ```
 
-Extension developers should focus on the provider logic rather than on runtime plumbing or custom discovery mechanisms.
+Extension developers should focus on **provider logic**, not runtime plumbing.
 
----
-
-# Capability Discovery and Documentation
+## Capability Discovery and Documentation
 
 A key objective is to make extensions **self-descriptive and discoverable**.
 
-The engine should be able to generate a catalog of:
+Extension metadata should expose:
 
-* available extensions
-* supported capabilities
-* supported scopes
-* configuration schema summary
+| Field             | Description                |
+| ----------------- | -------------------------- |
+| name              | extension identifier       |
+| description       | human-readable description |
+| capabilities      | supported capabilities     |
+| supported_scopes  | shard/pipeline/etc         |
+| documentation_url | usage documentation        |
 
-This improves:
+This enables:
 
-* documentation
-* discoverability
-* tooling
-* validation UX
+* extension catalog generation
+* automatic documentation
+* CLI inspection
 
-## Registration and Discovery
+### Extension Registration
 
-For node implementation discovery, the engine already relies on the **`distributed_slice` crate**.
+Extensions register themselves using the same mechanism used for node discovery.
 
-The same mechanism can be adopted for extensions.
+The engine already relies on the **`distributed_slice` crate** for node implementation discovery.
 
-That would give us:
-
-* compile-time registration
-* automatic extension discovery
-* a uniform developer experience across nodes and extensions
-* the ability to build an extension/capability catalog automatically
+The same approach can be adopted for extensions.
 
 Conceptually:
 
@@ -343,32 +272,28 @@ distributed_slice registration
 extension registry
         │
         ▼
-capability catalog / documentation
+capability catalog
 ```
 
-This is a desirable objective of the extension system, even if the exact generated documentation format can be refined later.
-
----
-
-# Runtime Architecture
+## Runtime Architecture
 
 The runtime system consists of:
 
-* provider declarations from configuration
-* runtime units instantiated from those declarations
+* extension declarations (configuration)
+* runtime units (instantiated providers)
 * capability handles used by nodes
 
 ```text
 Config
    │
    ▼
-Provider declarations
+Extension declarations
    │
    ▼
-Runtime planner
+Extension Runtime Manager
    │
    ▼
-Provider runtime units
+Extension runtime units
    │
    ▼
 Capability handles
@@ -381,11 +306,9 @@ Nodes resolve capability handles **during initialization only**.
 
 There is **no registry lookup on the hot path**.
 
----
+## Thread-Per-Core Execution Model
 
-# Thread-Per-Core Execution Model
-
-The engine runs one pipeline shard per core.
+The engine runs **one pipeline shard per core**.
 
 ```text
 Core 0   Core 1   Core 2   Core 3
@@ -394,32 +317,29 @@ Pipeline  Pipeline  Pipeline  Pipeline
 Shard     Shard     Shard     Shard
 ```
 
-Providers may be instantiated:
+Extension providers may be instantiated:
 
 * once per shard
 * once per pipeline
-* in later phases, once per group
-* in later phases, once globally
-* potentially in the future as distributed providers shared across processes
+* once per group
+* once globally
 
----
+## Extension Scopes
 
-# Extension Scopes
+### Phase 1 Scopes
 
-## Phase 1 Scopes
+Two scopes are initially supported.
 
-Phase 1 supports two scopes at the **pipeline declaration level**:
-
-| Scope      | Description                                                    |
-| ---------- | -------------------------------------------------------------- |
-| `shard`    | one provider runtime unit per pipeline shard                   |
-| `pipeline` | one provider runtime unit shared by all shards of the pipeline |
+| Scope      | Description                       |
+| ---------- | --------------------------------- |
+| `shard`    | One instance per pipeline shard   |
+| `pipeline` | One instance shared by all shards |
 
 ```text
 Pipeline
-├── shard 0 -> provider runtime unit
-├── shard 1 -> provider runtime unit
-└── shard 2 -> provider runtime unit
+├── shard 0 ─ extension instance
+├── shard 1 ─ extension instance
+├── shard 2 ─ extension instance
 ```
 
 vs
@@ -427,317 +347,97 @@ vs
 ```text
 Pipeline
    │
-   └── shared provider runtime unit
+   └── shared extension instance
 ```
 
-## Why both scopes are useful
+### Shard Scope Implementation Advantages
 
-`shard` is a good fit for:
+Shard scope allows extension implementations to remain **thread-local**.
 
-* hot-path helpers
-* local caches
-* per-core runtime locality
-* avoiding cross-core synchronization
-
-`pipeline` is a good fit for:
-
-* shared refresh coordination
-* shared policy distribution
-* shared datasets reused across shards
-
----
-
-# Phase 2 Hierarchical Placement
-
-Phase 2 extends the system so that `extensions` may appear at different levels of the configuration hierarchy.
-
-Candidate placements:
-
-* top-level
-* group-level
-* pipeline-level
-
-A simple model is to derive the sharing domain from declaration placement:
-
-| Declaration placement                            | Sharing domain    |
-| ------------------------------------------------ | ----------------- |
-| top-level `extensions`                           | global            |
-| `groups.<group>.extensions`                      | group             |
-| `groups.<group>.pipelines.<pipeline>.extensions` | pipeline or shard |
-
-Under this model:
-
-* top-level declarations are implicitly global
-* group-level declarations are implicitly group-scoped
-* pipeline-level declarations may choose between `pipeline` and `shard`
-
-This keeps the configuration simpler than allowing every declaration to choose every possible scope.
-
----
-
-# Future Scope: Distributed
-
-In phase 2 or later, we may consider a **distributed** scope, or a similar concept, to represent providers shared across **multiple engine processes**.
-
-Example use cases:
-
-* distributed policy store
-* distributed quota manager
-* shared control-plane state
-* process-independent configuration service
-
-This scope is conceptually different from `global` because `global` is process-local, whereas `distributed` implies sharing beyond a single engine process.
-
----
-
-# Scope Examples
-
-## `shard`
-
-Good fit for:
-
-* bearer token snapshot cache used directly on the hot path
-* local rate limiter
-* local metadata cache
-* runtime-local helper task
-
-Benefits:
-
-* maximum locality
-* no cross-core synchronization
-* predictable latency
-
-## `pipeline`
-
-Good fit for:
-
-* token refresh coordinator
-* pipeline-wide policy provider
-* shared enrichment dictionary
-* shared connection/session manager
-
-Benefits:
-
-* avoids duplicated background work
-* still bounded to one pipeline
-
-## `group`
-
-Good fit for:
-
-* shared auth configuration for related pipelines
-* shared service discovery
-* shared reference data for one group
-
-## `global`
-
-Good fit for:
-
-* license manager
-* feature flag provider
-* trust anchor manager
-* engine-wide policy catalog
-
-## `distributed`
-
-Good fit for:
-
-* distributed policy provider
-* distributed quota management
-* control-plane coordinated state
-
----
-
-# Provider Background Tasks
-
-Providers may run background tasks on the runtime.
-
-Example:
+In many cases this allows implementations without:
 
 ```text
-Receiver
-   │
-   ▼
-AuthCheck capability
-   │
-   ▼
-local token snapshot
-   │
-   ▼
-background refresh task
+Arc
+Mutex
 ```
 
-The intended performance model is:
-
-* local fast-path reads when possible
-* background refresh / coordination off the hot path
-* minimal synchronization
-
----
-
-# Validation
-
-Configuration validation should ensure:
-
-* the capability trait exists
-* the provider instance exists
-* the provider exposes the requested capability
-* the implementation supports the requested scope
-
-Example error:
+and instead rely on:
 
 ```text
-extension `auth_main` uses implementation `oauth2_cc`,
-which only supports `shard` scope,
-but `pipeline` scope was requested
+Rc
+RefCell
+Cell
 ```
 
-For phase 2, validation should also ensure the declaration placement and requested scope are compatible.
+This avoids cross-core synchronization and preserves the engine’s performance characteristics.
 
----
+## Go Collector vs OTel Dataflow Engine Extensions
 
-# Example in the Current Configuration Style
+### Go Collector Extension Model
 
-Below is a more realistic example aligned with the current OTel Dataflow Engine configuration structure.
+Characteristics:
 
-```yaml
-version: otel_dataflow/v1
+* extensions are global components
+* typically singletons
+* accessed indirectly by receivers/processors/exporters
 
-policies:
-  channel_capacity:
-    control:
-      node: 256
-      pipeline: 256
-    pdata: 128
+Pros:
 
-engine:
-  http_admin:
-    bind_address: 127.0.0.1:8085
+* simple architecture
+* mature ecosystem
 
-groups:
-  continuous_benchmark:
-    pipelines:
-      sut:
-        policies:
-          resources:
-            core_allocation:
-              type: core_set
-              set:
-                - start: 0
-                  end: 1
+Cons:
 
-        extensions:
-          auth_shared:
-            kind: auth
-            impl: oauth2_cc
-            scope: pipeline
-            config:
-              endpoint: https://auth.example.com
-              client_id: sut
-              client_secret: ${AUTH_SECRET}
+* limited scoping flexibility
+* less explicit capability contracts
+* not optimized for thread-per-core execution
 
-          auth_per_shard:
-            kind: auth
-            impl: static_token
-            scope: shard
-            config:
-              token: ${STATIC_TOKEN}
+### OTel Dataflow Engine Extension Model
 
-        nodes:
-          otlp_recv1:
-            type: receiver:otlp
-            capabilities:
-              AuthCheckV1: auth_shared
-            config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4327"
-                  wait_for_result: true
+Characteristics:
 
-          otlp_recv2:
-            type: receiver:otlp
-            capabilities:
-              AuthCheckV1: auth_per_shard
-            config:
-              protocols:
-                grpc:
-                  listening_addr: "127.0.0.1:4337"
-                  wait_for_result: true
+* **capability-based**
+* explicit capability binding in nodes
+* multiple extension instances per pipeline
+* shard-aware architecture
 
-          router:
-            type: processor:type_router
-            outputs: ["logs", "metrics", "traces"]
-            config: {}
+Pros:
 
-          logs_exporter:
-            type: exporter:noop
-            config: null
+* explicit capability contracts
+* optimized for thread-per-core runtime
+* flexible extension scoping
+* clearer configuration semantics
 
-          metrics_exporter:
-            type: exporter:noop
-            config: null
+Cons:
 
-          spans_exporter:
-            type: exporter:noop
-            config: null
+* slightly more configuration
+* ecosystem still developing
 
-        connections:
-          - from: otlp_recv1
-            to: router
-          - from: otlp_recv2
-            to: router
-          - from: router["logs"]
-            to: logs_exporter
-          - from: router["metrics"]
-            to: metrics_exporter
-          - from: router["traces"]
-            to: spans_exporter
-```
+## Evolution Plan
 
----
-
-# Performance Characteristics
-
-The design preserves the engine’s performance model.
-
-Key properties:
-
-* capability resolution happens **only during initialization**
-* nodes use **typed capability handles**
-* no global locks on the hot path
-* `shard` scope provides full runtime locality
-* shared scopes can still expose local read views where useful
-
-The intent is to preserve:
-
-* fast execution
-* low memory overhead
-* minimal synchronization
-* predictable latency
-
----
-
-# Evolution Plan
-
-## Phase 1 — Basic Extension Support
+### Phase 1 — Basic Extension Support
 
 Features:
 
-* pipeline-level `extensions`
+* pipeline-level extensions
 * scopes: `shard`, `pipeline`
-* node-level `capabilities` binding
-* support for background tasks
-* clear validation of capability and scope compatibility
+* capability binding in nodes
+* background tasks supported
 
-## Phase 2 — Hierarchical Extensions
+### Phase 2 — Hierarchical Extensions
 
 Adds:
 
-* `extensions` at top-level, group-level, and pipeline-level
-* derived sharing semantics from declaration placement
-* optional future `distributed` scope or equivalent concept
+* extension declarations at
 
-## Phase 3 — WASM Extensions
+  * top-level
+  * group-level
+  * pipeline-level
+* derived sharing scopes
+
+Possible future distributed scope.
+
+### Phase 3 — WASM Extensions
 
 Adds:
 
@@ -745,48 +445,119 @@ Adds:
 * sandboxed execution
 * host capability ABI
 
-This phase builds on the provider/capability model introduced in phases 1 and 2 rather than redefining it.
+## Conclusion
 
----
+This proposal introduces a **capability-based extension architecture** aligned with the **OTel Dataflow Engine’s high-performance design** and configuration model.
 
-# Benefits
-
-## Performance
-
-Compatible with the engine’s thread-per-core design.
-
-## Flexibility
-
-Supports multiple implementations and multiple configured instances in the same pipeline.
-
-## Evolvability
-
-Provides a phased roadmap from native extensions to hierarchical placement and later WASM support.
-
-## Discoverability
-
-Enables extension and capability documentation to be generated from self-descriptive registrations.
-
-## Configuration Clarity
-
-Fits naturally into the existing `groups / pipelines / nodes` model and keeps extension usage explicit.
-
----
-
-# Open Questions
-
-Potential discussion topics:
-
-* final terminology for `shard` vs `instance`
-* exact semantics and naming of the future distributed scope
-* generated documentation format for extension and capability catalogs
-
----
-
-# Conclusion
-
-This proposal introduces a capability-based extension architecture for the **OTel Dataflow Engine** that aligns with the engine’s high-performance design and current configuration model.
-
-The phased rollout keeps the initial implementation focused while leaving room for hierarchical placement, stronger discoverability, and future WASM-based providers.
+The phased rollout allows the system to evolve gradually while keeping the initial implementation small and focused.
 
 The result is a flexible extension mechanism that preserves **performance, clarity, and long-term extensibility**.
+
+---
+
+# Appendix: Implementation Recommendations
+
+This appendix provides implementation guidance intended to help extension authors build something performant, aligned with the supported scopes, and compatible with the engine architecture.
+
+## 1. Capability handles should be lightweight
+
+Capability handles are expected to be used by nodes on hot paths. They should therefore be:
+
+* cheap to clone
+* cheap to pass around during initialization
+* inexpensive to call
+* free of runtime registry lookups
+
+In practice, the handle should behave like a thin reference to already-resolved extension state.
+
+## 2. Resolve once during initialization
+
+Capability binding should happen during node initialization only.
+
+Nodes should receive typed capability handles once and keep them for their lifetime. They should not perform dynamic capability lookups during runtime.
+
+## 3. Prefer shard-local implementations when the capability is hot-path
+
+If a capability is frequently used during request or batch processing, `shard` scope should generally be preferred.
+
+This gives:
+
+* better cache locality
+* more predictable latency
+* no cross-core synchronization on the hot path
+
+## 4. `shard` scope should enable lock-free local designs
+
+For `shard` scope, implementations should be designed so they can often rely on thread-local ownership and avoid `Arc<Mutex<...>>`.
+
+Typical building blocks for shard-local implementations include:
+
+* `Rc`
+* `RefCell`
+* `Cell`
+
+This is one of the main performance advantages of shard-scoped extensions in a thread-per-core engine.
+
+## 5. Use background tasks for slow-path work
+
+Extension providers may need to:
+
+* refresh external state
+* reload files
+* fetch JWKS data
+* query a remote service
+* update caches
+
+These activities should happen in background tasks rather than directly on the node hot path.
+
+A typical pattern is:
+
+* node uses a lightweight capability handle
+* handle reads local cached state
+* background task refreshes or reloads that state asynchronously
+
+## 6. Shared scopes should avoid making every call cross-core
+
+For `pipeline` scope and future broader scopes, implementations should avoid designs where every capability call requires cross-core communication.
+
+A better pattern is usually:
+
+* shared ownership for coordination or refresh
+* local read views or local cached snapshots for hot-path usage
+
+## 7. Scope support should be explicit per extension provider
+
+Not all extension providers should support all scopes.
+
+An implementation should declare which scopes it supports. During initialization, the runtime should validate that the requested scope is compatible and emit a clear error otherwise.
+
+## 8. Keep capability surfaces small and focused
+
+Capabilities should expose only what nodes need.
+
+Small capability interfaces are easier to:
+
+* validate
+* document
+* optimize
+* evolve over time
+
+## 9. Extension metadata should stay accurate
+
+Because extension metadata may be used to generate documentation and catalogs, it should remain up to date and include at least:
+
+* description
+* supported capabilities
+* supported scopes
+* documentation URL
+
+## 10. Prefer compatibility with the existing engine model
+
+Extensions should fit naturally into the existing architecture:
+
+* declared in configuration
+* discovered through `distributed_slice`
+* instantiated by the Extension Runtime Manager
+* consumed by receivers/processors/exporters via typed capability handles
+
+This keeps the extension system aligned with the rest of the engine and avoids introducing a separate plugin model.
