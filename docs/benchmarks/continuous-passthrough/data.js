@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773346750445,
+  "lastUpdate": 1773347612722,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "33842784+JakeDern@users.noreply.github.com",
-            "name": "Jake Dern",
-            "username": "JakeDern"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6f179cc9651d8f953a50abcf775b76f35232ae8c",
-          "message": "feat: Split implementation (#2079)\n\n# Change Summary\n\nThis is the initial implementation of the third major item batching\noperation, `split`, and is the last part of Phase 1 of the batch\nprocessor work. This also closes #1334 by enabling all of the remaining\nbatching tests.\n\nMajor pieces of work:\n\n- Split implementation\n- Pulled out shared utilities from the `transport_optimize` and\n`transform` modules into a `utils` module as they're shared across the\nbatching related transforms as well.\n- Pulled out shared testing utilities from the `reindex` module into a\ndedicated `testing` module as the `split` module also leverages these\nheavily\n- Fixed a bug in reindexing when redacting rows with dictionary arrays\n- Remove the old groups.rs implementation\n\n## What issue does this PR close?\n\n* Part of #1926 \n* Closes #1334 \n \n## How are these changes tested?\n\nA large unit testing suite was added, and the last disabled tests were\nenabled in the comprehensive batching tests.\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->",
-          "timestamp": "2026-02-24T20:50:45Z",
-          "tree_id": "0d1e92839b6bc6868fa7fd2152b1a44c50cd052e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/6f179cc9651d8f953a50abcf775b76f35232ae8c"
-        },
-        "date": 1771971068469,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.803253173828125,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.2553383664982,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.72669647964288,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.0515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.578125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 509873.6960556177,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 513969.27270951093,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006202,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11322155.785475813,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11269347.721665986,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10830973.54440772,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ea456765dbfd4b811c7e816a63ca844d8829d85f",
+          "message": "test: Update assertions in durable buffer NACK test for aggregate metrics (#2291)\n\nUpdate assertions in durable buffer NACK test for aggregate metrics.\nResolves test flakiness in\n`test_durable_buffer_permanent_nack_rejects_without_retry`.\n\n# Change Summary\n\nUpdate assertions in durable buffer NACK test for aggregate metrics.\n\n## What issue does this PR close?\n\n* Closes #2288\n\n## How are these changes tested?\n\n- Verified that the test passes when running in a loop locally.\n- Also inspected other assertions in the `durable_buffer_processor`\ntests for similar cases where statistical distributions could misalign\nwith assertions to ensure there aren't similar lurking test reliability\nissues. In other cases, the assertion is either logs-only or correctly\nasserting on an aggregate value.\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-03-12T19:40:44Z",
+          "tree_id": "74e90c209afda93e74bcd5354f4ce971880252c7",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ea456765dbfd4b811c7e816a63ca844d8829d85f"
+        },
+        "date": 1773347612182,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.5625,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.88113994731147,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.36599414150797,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 54.37578125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 55.2890625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 474023.67423151876,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 481430.2941413863,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002539,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10929670.164735358,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10876483.644487785,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
