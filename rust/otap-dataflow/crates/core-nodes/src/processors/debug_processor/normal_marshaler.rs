@@ -415,8 +415,8 @@ fn write_summary_datapoints_normal(
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_processor::marshaler::ViewMarshaler;
-    use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
+    use crate::processors::debug_processor::marshaler::ViewMarshaler;
+    use crate::processors::debug_processor::normal_marshaler::NormalViewMarshaler;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},

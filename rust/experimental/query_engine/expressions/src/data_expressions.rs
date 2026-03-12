@@ -17,7 +17,7 @@ pub enum DataExpression {
     /// Conditional data expression.
     Conditional(ConditionalDataExpression),
 
-    /// Output data expression
+    /// Output data expression.
     Output(OutputDataExpression),
 }
 
@@ -72,6 +72,12 @@ impl Expression for DataExpression {
 pub struct DiscardDataExpression {
     query_location: QueryLocation,
     predicate: Option<LogicalExpression>,
+
+    /// Target to which to apply the discard expression. The intention is that this will be used
+    /// if the discard expression is used in a location where the data to be discarded is not
+    /// obvious from context or needs to be explicitly configured, such as if this appears inside
+    /// a function implementation expression
+    target: Option<MutableValueExpression>,
 }
 
 impl DiscardDataExpression {
@@ -79,11 +85,18 @@ impl DiscardDataExpression {
         Self {
             query_location,
             predicate: None,
+            target: None,
         }
     }
 
     pub fn with_predicate(mut self, predicate: LogicalExpression) -> DiscardDataExpression {
         self.predicate = Some(predicate);
+
+        self
+    }
+
+    pub fn with_target(mut self, target: MutableValueExpression) -> DiscardDataExpression {
+        self.target = Some(target);
 
         self
     }
@@ -120,6 +133,14 @@ impl Expression for DiscardDataExpression {
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Discard")?;
+        match self.target.as_ref() {
+            None => writeln!(f, "{indent}├── Target: None")?,
+            Some(t) => {
+                writeln!(f, "{indent}├── Target")?;
+                write!(f, "{indent}│   └── ")?;
+                t.fmt_with_indent(f, format!("{indent}│       ").as_str())?;
+            }
+        }
         match self.predicate.as_ref() {
             None => writeln!(f, "{indent}└── Predicate: None")?,
             Some(p) => {
@@ -128,6 +149,7 @@ impl Expression for DiscardDataExpression {
                 p.fmt_with_indent(f, format!("{indent}        ").as_str())?;
             }
         }
+
         Ok(())
     }
 }
@@ -358,7 +380,6 @@ pub enum OutputExpression {
     /// this to contain the more general `StaticExpression`.
     NamedSink(StringScalarExpression),
 }
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -385,6 +406,40 @@ mod test {
                 "Output:\n\
                 └── {string_expr:?}\n"
             )
+        );
+    }
+
+    #[test]
+    fn test_format_with_indent_discard_target() {
+        let discard_expr = DiscardDataExpression::new(QueryLocation::new_fake()).with_target(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Map),
+                0,
+                ValueAccessor::new(),
+            )),
+        );
+        let output = format!("{}", DisplayWrapper(&discard_expr, ""));
+        assert_eq!(
+            output,
+            "Discard\n\
+            ├── Target\n\
+            │   └── Argument\n\
+            │       ├── ValueType: Some(Map)\n\
+            │       └── Id: 0\n\
+            └── Predicate: None\n"
+        );
+    }
+
+    #[test]
+    fn test_format_with_indent_discard_target_no_target() {
+        let discard_expr = DiscardDataExpression::new(QueryLocation::new_fake());
+        let output = format!("{}", DisplayWrapper(&discard_expr, ""));
+        assert_eq!(
+            output,
+            "Discard\n\
+            ├── Target: None\n\
+            └── Predicate: None\n"
         );
     }
 }

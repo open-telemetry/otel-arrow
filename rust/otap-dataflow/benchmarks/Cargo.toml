@@ -12,6 +12,7 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+otap-df-core-nodes = { path = "../crates/core-nodes" }
 otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]
@@ -97,4 +98,12 @@ harness = false
 
 [[bench]]
 name = "self_tracing"
+harness = false
+
+[[bench]]
+name = "topic_balanced"
+harness = false
+
+[[bench]]
+name = "topic_broadcast"
 harness = false

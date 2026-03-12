@@ -56,7 +56,7 @@ receivers:
       tcp:
         listening_addr: "0.0.0.0:514"
     batch:
-      flush_timeout_ms: 50    # Flush after 50 ms (default: 100)
+      max_batch_duration_ms: 50    # Flush after 50 ms (default: 100)
       max_size: 25       # Flush after 25 messages (default: 100)
 ```
 
@@ -69,7 +69,7 @@ receivers:
 | `protocol.tcp.tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
 | `protocol.udp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
 | `batch` | `object` | No | Batching configuration (see below) |
-| `batch.flush_timeout_ms` | `integer` | No | Max ms before flushing a batch (default: `100`) |
+| `batch.max_batch_duration_ms` | `integer` | No | Max ms before flushing a batch (default: `100`) |
 | `batch.max_size` | `integer` | No | Max messages per batch (default: `100`) |
 
 ## Transport Protocols
@@ -365,7 +365,7 @@ messages into Apache Arrow record batches before sending downstream:
 |                              |                              |
 |   Flush conditions:          |                              |
 |   +- Size: max_size messages +-------------------------->   |
-|   +- Time: flush_timeout_ms  |                              |
+|   +- Time: max_batch_duration_ms  |                              |
 |                                                             |
 +-------------------------------------------------------------+
 ```
@@ -373,7 +373,7 @@ messages into Apache Arrow record batches before sending downstream:
 A batch is flushed when either:
 
 - **`batch.max_size`** messages have accumulated (default: 100), or
-- **`batch.flush_timeout_ms`** milliseconds have elapsed since the last flush
+- **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
   (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
 

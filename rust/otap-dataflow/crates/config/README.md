@@ -21,7 +21,8 @@ Main public model types:
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
-- `policy::Policies`: channel-capacity/health/telemetry/resources policy families
+- `policy::Policies`: channel-capacity/health/telemetry/resources
+  policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
@@ -67,7 +68,8 @@ For runtime consumption, resolve hierarchy once:
 
 Resolved model highlights:
 
-- deterministic pipeline ordering for regular pipelines (`group_id`, `pipeline_id`)
+- deterministic pipeline ordering for regular pipelines
+  (`group_id`, `pipeline_id`)
 - role-tagged resolved pipelines:
   - `ResolvedPipelineRole::Regular`
   - `ResolvedPipelineRole::ObservabilityInternal`
@@ -104,8 +106,8 @@ Resolution precedence:
 
 Observability note:
 
-- `engine.observability.pipeline.policies.resources` is intentionally unsupported
-  and rejected.
+- `engine.observability.pipeline.policies.resources` is intentionally
+  unsupported and rejected.
 
 Resolution semantics:
 
@@ -123,12 +125,79 @@ Topics can be declared in two scopes:
 - top-level: `topics.<name>`
 - group-level: `groups.<group>.topics.<name>` (visible only in that group)
 
-Current topic policy support:
+General topic capabilities:
 
-- `policies.queue_capacity` (default: `128`, must be > 0)
-- `policies.queue_on_full`:
+- decouple pipelines through named in-memory communication points
+- support balanced worker-pool delivery via subscription groups
+- support broadcast fan-out / tap pipelines
+- support mixed balanced + broadcast consumers on one topic
+
+Topic wiring must remain acyclic across topic hops. During startup, the
+controller rejects feedback loops that involve declared topics, including:
+
+- same-pipeline loops such as `receiver:topic -> ... -> exporter:topic`
+- cross-pipeline loops where one pipeline eventually routes back into an
+  earlier topic
+
+Current topic declaration shape:
+
+```yaml
+topics:
+  raw_signals:
+    description: "raw ingest stream"
+    backend: in_memory
+    impl_selection: auto
+    policies:
+      balanced:
+        queue_capacity: 1000
+        on_full: drop_newest
+      broadcast:
+        queue_capacity: 4096
+        on_lag: drop_oldest
+      ack_propagation:
+        mode: auto
+        max_in_flight: 1024
+        timeout: 30s
+```
+
+- `backend`:
+  - `in_memory` (default, currently implemented)
+  - `quiver` (accepted by config, not implemented by the runtime yet)
+- `impl_selection`:
+  - `auto`
+  - `force_mixed`
+
+Unsupported backend or policy combinations are rejected during startup topic
+declaration with explicit errors.
+
+- `policies.balanced.queue_capacity` (default: `128`, must be > 0)
+- `policies.balanced.on_full`:
   - `block` (default)
   - `drop_newest`
+- `policies.broadcast.queue_capacity` (default: `128`, must be > 0)
+- `policies.broadcast.on_lag`:
+  - `drop_oldest` (default)
+  - `disconnect`
+- `policies.ack_propagation.mode`:
+  - `disabled` (default)
+  - `auto`
+- `policies.ack_propagation.max_in_flight` (default: `1024`, must be > 0)
+- `policies.ack_propagation.timeout` (default: `30s`)
+
+`policies.balanced.on_full` applies to balanced delivery paths.
+`policies.broadcast.on_lag` applies to broadcast delivery paths.
+`policies.ack_propagation.mode` applies to the topic hop as a whole.
+`policies.ack_propagation.max_in_flight` and
+`policies.ack_propagation.timeout` apply to tracked publish outcomes when
+Ack/Nack propagation is enabled.
+
+Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
+aggregate acknowledgements across all subscribers. The first broadcast
+subscriber Ack/Nack resolves the upstream message, so upstream completion does
+not mean all broadcast subscribers processed the message. This matters
+especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
+a message that another subscriber still Acks upstream. Future enhancements are
+tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
 
 Topic declaration precedence (for a pipeline in a given group):
 
@@ -138,8 +207,13 @@ Topic declaration precedence (for a pipeline in a given group):
 
 - `config.queue_on_full`: `block` | `drop_newest`
 - effective precedence:
-  `topic:exporter.config.queue_on_full` -> `topic.policies.queue_on_full` -> `block`
-- `queue_capacity` remains topic-scope only
+  `topic:exporter.config.queue_on_full` ->
+  `topic.policies.balanced.on_full` -> `block`
+- queue capacities remain topic-scope only
+- broadcast lag handling remains topic-scope only via
+  `policies.broadcast.on_lag`
+- Ack/Nack tracking limits remain topic-scope only via
+  `policies.ack_propagation`
 
 ## Engine Observability Pipeline
 
@@ -204,8 +278,11 @@ struct MyProcessorConfig {
     mode: String,
 }
 
-fn parse_node_config(raw: &serde_json::Value) -> Result<MyProcessorConfig, String> {
-    serde_json::from_value(raw.clone()).map_err(|e| format!("invalid my_processor config: {e}"))
+fn parse_node_config(
+    raw: &serde_json::Value,
+) -> Result<MyProcessorConfig, String> {
+    serde_json::from_value(raw.clone())
+        .map_err(|e| format!("invalid my_processor config: {e}"))
 }
 ```
 

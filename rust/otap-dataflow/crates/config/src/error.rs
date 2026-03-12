@@ -215,6 +215,16 @@ pub enum Error {
         error: String,
     },
 
+    /// Topic name cannot be empty.
+    #[error("invalid topic name: topic name must be non-empty")]
+    #[diagnostic(code(data_plane::invalid_topic_name), url(docsrs))]
+    TopicNameEmpty,
+
+    /// Subscription group name cannot be empty.
+    #[error("invalid subscription group name: subscription group name must be non-empty")]
+    #[diagnostic(code(data_plane::invalid_subscription_group_name), url(docsrs))]
+    SubscriptionGroupNameEmpty,
+
     /// A pipeline with the same id already exists in the pipeline group.
     #[error("Pipeline with id `{pipeline_id}` already exists in the pipeline group")]
     DuplicatePipeline {

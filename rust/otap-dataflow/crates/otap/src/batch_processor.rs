@@ -71,8 +71,8 @@ pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;
 /// Default configuration item min-size (OTLP default)
 pub const DEFAULT_OTLP_MIN_SIZE_BYTES: usize = 262144;
 
-/// Timeout in milliseconds for periodic flush
-pub const DEFAULT_TIMEOUT_MS: u64 = 200;
+/// Default max batch duration in milliseconds
+pub const DEFAULT_MAX_BATCH_DURATION_MS: u64 = 200;
 
 /// Log messages
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
@@ -166,10 +166,11 @@ pub struct Config {
     #[serde(default = "default_otlp")]
     pub otlp: FormatConfig,
 
-    /// Flush non-empty batches on this interval, which may be 0 for
-    /// immediate flush or None for no timeout.
-    #[serde(with = "humantime_serde", default = "default_flush_timeout")]
-    pub flush_timeout: Duration,
+    /// Maximum time data can sit in a batch before being flushed.
+    /// The timer starts when the first item arrives into an empty batch.
+    /// Set to 0 for immediate flush on every input.
+    #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
+    pub max_batch_duration: Duration,
 
     /// Limits the number of pending requests for ack/nack tracking.
     #[serde(default = "default_inbound_request_limit")]
@@ -211,8 +212,8 @@ const fn default_otlp_sizer_bytes() -> Sizer {
     Sizer::Bytes
 }
 
-const fn default_flush_timeout() -> Duration {
-    Duration::from_millis(DEFAULT_TIMEOUT_MS)
+const fn default_max_batch_duration() -> Duration {
+    Duration::from_millis(DEFAULT_MAX_BATCH_DURATION_MS)
 }
 
 const fn default_inbound_request_limit() -> NonZeroUsize {
@@ -248,7 +249,7 @@ impl Default for Config {
         Self {
             otap: default_otap(),
             otlp: default_otlp(),
-            flush_timeout: default_flush_timeout(),
+            max_batch_duration: default_max_batch_duration(),
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
             format: default_batching_format(),
@@ -259,17 +260,21 @@ impl Default for Config {
 impl Config {
     /// Validates the configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let no_timeout = self.flush_timeout == Duration::ZERO;
+        let immediate_flush = self.max_batch_duration == Duration::ZERO;
         match self.format {
             BatchingFormat::Otap => {
-                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
+                self.otap
+                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
             }
             BatchingFormat::Otlp => {
-                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+                self.otlp
+                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
             }
             BatchingFormat::Preserve => {
-                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
-                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+                self.otap
+                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
+                self.otlp
+                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
             }
         };
 
@@ -301,9 +306,9 @@ impl FormatConfig {
         self.min_size.or(self.max_size).expect("valid").get()
     }
 
-    /// Validate the config, given its format. `no_timeout` indicates the
-    /// parent Config has flush_timeout == 0.
-    pub fn validate(&self, format: SignalFormat, no_timeout: bool) -> Result<(), ConfigError> {
+    /// Validate the config, given its format. `immediate_flush` indicates the
+    /// parent Config has max_batch_duration == 0.
+    pub fn validate(&self, format: SignalFormat, immediate_flush: bool) -> Result<(), ConfigError> {
         // At least one size is set.
         if self.min_size.or(self.max_size).is_none() {
             return Err(ConfigError::InvalidUserConfig {
@@ -335,21 +340,21 @@ impl FormatConfig {
             }
         }
 
-        // no_timeout indicates there is not a time-based flush criteria, which
+        // immediate_flush indicates there is not a time-based flush criteria, which
         // raises requirements:
-        if no_timeout {
-            // If min_size is set, we need a timeout to avoid
+        if immediate_flush {
+            // If min_size is set, we need a max_batch_duration to avoid
             // indefinite delay.
             if self.min_size.is_some() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "min_size set requires flush_timeout is set".into(),
+                    error: "min_size set requires max_batch_duration is set".into(),
                 });
             }
             // If max_size is unset, we're doing nothing with a batch processor,
             // so this is considered an error.
             if self.max_size.is_none() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "flush_timeout unset requires max_size is set".into(),
+                    error: "max_batch_duration unset requires max_size is set".into(),
                 });
             }
         }
@@ -792,7 +797,7 @@ where
         };
 
         // Set the arrival time when the current input is empty.
-        let timeout = self.config.flush_timeout;
+        let timeout = self.config.max_batch_duration;
         let mut arrival: Option<Instant> = None;
         if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
             let now = Instant::now();
@@ -841,8 +846,9 @@ where
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
-            && self.config.flush_timeout != Duration::ZERO
-            && now.duration_since(self.buffer.arrival.expect("timed")) < self.config.flush_timeout
+            && self.config.max_batch_duration != Duration::ZERO
+            && now.duration_since(self.buffer.arrival.expect("timed"))
+                < self.config.max_batch_duration
         {
             return Ok(());
         }
@@ -876,7 +882,7 @@ where
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        if self.config.flush_timeout != Duration::ZERO
+        if self.config.max_batch_duration != Duration::ZERO
             && reason == FlushReason::Size
             && self.fmtcfg.max_size.is_some()
             && output_batches.len() > 1
@@ -911,7 +917,7 @@ where
 
                 // We use the latest arrival time as the new arrival for timeout purposes.
                 self.buffer
-                    .set_arrival(self.signal, now, self.config.flush_timeout, effect)
+                    .set_arrival(self.signal, now, self.config.max_batch_duration, effect)
                     .await?;
             }
         }
@@ -1505,7 +1511,7 @@ mod tests {
         let cfg = Config {
             otap: FormatConfig::new_items(100, 200),
             otlp: FormatConfig::new_bytes(10000, 20000),
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
@@ -1515,7 +1521,7 @@ mod tests {
         let cfg = Config {
             otap: FormatConfig::new_items(100, 0),
             otlp: FormatConfig::new_items(0, 0),
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             format: BatchingFormat::Otap,
             ..Default::default()
         };
@@ -1524,7 +1530,7 @@ mod tests {
         // Only max size: OK (OTLP default)
         let cfg = Config {
             otap: FormatConfig::new_items(0, 200),
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
@@ -1533,7 +1539,7 @@ mod tests {
         let cfg = Config {
             otap: FormatConfig::new_items(0, 200),
             otlp: FormatConfig::new_bytes(20000, 0),
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
@@ -1542,7 +1548,7 @@ mod tests {
         let cfg = Config {
             otlp: FormatConfig::new_bytes(0, 100),
             otap: FormatConfig::new_items(0, 0),
-            flush_timeout: Duration::ZERO,
+            max_batch_duration: Duration::ZERO,
             format: BatchingFormat::Otlp,
             ..Default::default()
         };
@@ -1560,7 +1566,7 @@ mod tests {
         let cfg = Config {
             otap: FormatConfig::new_bytes(0, 0),
             format: BatchingFormat::Otap,
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
@@ -1568,7 +1574,7 @@ mod tests {
         // Max < batch: ERROR
         let cfg = Config {
             otap: FormatConfig::new_items(200, 100),
-            flush_timeout: Duration::from_millis(100),
+            max_batch_duration: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
@@ -1576,7 +1582,7 @@ mod tests {
         // lower-bound without timeout: ERROR
         let cfg = Config {
             otap: FormatConfig::new_items(100, 200),
-            flush_timeout: Duration::ZERO,
+            max_batch_duration: Duration::ZERO,
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
@@ -1861,7 +1867,7 @@ mod tests {
                     "max_size": 5,
                     "sizer": "items",
                 },
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1918,7 +1924,7 @@ mod tests {
                     "max_size": 10,
                     "sizer": "items",
                 },
-                "flush_timeout": "50ms"
+                "max_batch_duration": "50ms"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1979,7 +1985,7 @@ mod tests {
                     "max_size": 3,
                     "sizer": "items",
                 },
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -2036,7 +2042,7 @@ mod tests {
                     "max_size": 10,
                     "sizer": "items",
                 },
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -2063,7 +2069,7 @@ mod tests {
                     "sizer": "bytes",
                 },
                 "format": "otlp",
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |_| {},
@@ -2109,7 +2115,7 @@ mod tests {
                     "sizer": "items",
                 },
                 "format": "otap",
-                "flush_timeout": "0s"
+                "max_batch_duration": "0s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -2138,7 +2144,7 @@ mod tests {
                     "sizer": "bytes",
                 },
                 "format": "otlp",
-                "flush_timeout": "0s"
+                "max_batch_duration": "0s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |_| {},
@@ -2192,7 +2198,7 @@ mod tests {
                     "max_size": 5,
                     "sizer": "items",
                 },
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
             json!({
                 "otlp": {
@@ -2201,7 +2207,7 @@ mod tests {
                     "sizer": "bytes",
                 },
                 "format": "otlp",
-                "flush_timeout": "1s"
+                "max_batch_duration": "1s"
             }),
         ] {
             let extract_markers = extract_markers.clone();
@@ -2379,7 +2385,7 @@ mod tests {
                 "max_size": 20000,
                 "sizer": "bytes",
             },
-            "flush_timeout": "50ms"
+            "max_batch_duration": "50ms"
         }));
 
         phase

@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest a new feature or enhancement for OTel-Arrow
 type: Feature
-labels: ["Feature"]
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
