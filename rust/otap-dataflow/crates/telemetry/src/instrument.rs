@@ -590,6 +590,7 @@ impl Timer {
     /// Consume the timer and return the elapsed wall-clock duration
     /// in nanoseconds as an f64.
     #[inline]
+    #[must_use]
     pub fn elapsed_nanos(self) -> f64 {
         self.start.elapsed().as_nanos() as f64
     }
