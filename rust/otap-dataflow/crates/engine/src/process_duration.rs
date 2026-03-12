@@ -37,7 +37,7 @@ pub struct ProcessDurationMetrics {
 /// Wrapper providing interests-gated duration recording and reporting.
 pub struct ProcessDuration {
     metrics: MetricSet<ProcessDurationMetrics>,
-    /// Shared accumulator written by [`TimingGuard`] on drop.
+    /// Shared accumulator written by TimingGuard on drop.
     accumulator: Rc<Cell<Mmsc>>,
 }
 
@@ -83,7 +83,7 @@ impl ProcessDuration {
 
 /// Records the elapsed duration into the originating
 /// ProcessDuration when dropped.
-#[must_use = "the timing guard records on drop; bind it with `let _timing = …`"]
+#[must_use]
 pub struct TimingGuard {
     timer: Option<Timer>,
     accumulator: Rc<Cell<Mmsc>>,
