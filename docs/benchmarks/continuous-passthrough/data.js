@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773355485678,
+  "lastUpdate": 1773359809511,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "2a724e8fd906c054284e3a2e2cc311188181a037",
-          "message": "Fix eventname for syslog.recevier (#2114)\n\n# Change Summary\n\nProper event name to identify the component.\n\n## How are these changes tested?\n\nManual run and verify new event names.\n\n## Are there any user-facing changes?\n\nYes, event names change.",
-          "timestamp": "2026-02-26T01:13:48Z",
-          "tree_id": "dbf31b46e7e8fd9866efda1c51079f7c753919c8",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/2a724e8fd906c054284e3a2e2cc311188181a037"
-        },
-        "date": 1772079343685,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.2110460996627808,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.30976989802765,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.76055962202773,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 49.819661458333336,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 51.78125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 500263.7311218173,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 506322.15555248054,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002399,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11249024.330204438,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11193255.607651928,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10790909.575369947,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pritishnahar@gmail.com",
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ae865070d2743cb6b56a3f7bd2c4a228c1648c89",
+          "message": "Support pluggable rustls crypto providers (ring, aws-lc-rs, OpenSSL) … (#2269)\n\n# Change Summary\n\nSupport pluggable rustls crypto providers (ring, aws-lc-rs, OpenSSL) via\ncompile-time feature flags. TLS support previously hardcoded `ring` as\nthe\nrustls crypto backend. This PR introduces three mutually exclusive\nfeature\nflags (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`) so users can\nselect\ntheir preferred `CryptoProvider` at build time, enabling compliance with\nenvironments that require OpenSSL or FIPS-validated cryptography.\n\n## What issue does this PR close?\n\n* closes #2251\n\n## How are these changes tested?\n\n- `cargo check` passes with default features (`crypto-ring`).\n- `cargo check --no-default-features --features\njemalloc,crypto-openssl,experimental-tls` passes.\n- All existing TLS tests (`tls_utils`, `mtls_tests`, `tls_stream`,\n`tls_reload`,\n`otlp_exporter_tls`, `otlp_exporter_proxy_tls`) now use the centralized\n`install_crypto_provider()` helper and will exercise whichever backend\nis\n  selected by feature flags.\n- `compile_error!` guards prevent enabling multiple crypto features\nsimultaneously.\n\n## Are there any user-facing changes?\n\nYes:\n\n- **New feature flags** on the root crate and `otap-df-otap`:\n  - `crypto-ring` (default) — uses `ring`, backward-compatible.\n  - `crypto-aws-lc` — uses `aws-lc-rs` for AWS environments.\n- `crypto-openssl` — uses `rustls-openssl` for regulated/FIPS\nenvironments.\n- **Default behavior is unchanged** — `crypto-ring` is included in the\ndefault\n  feature set, so existing builds are unaffected.\n- **To build with OpenSSL**: `cargo build --no-default-features\n--features jemalloc,crypto-openssl`\n- **Transitive `ring` dependencies** from `opentelemetry-otlp` (via\n`reqwest 0.12`)\nand `weaver` (via `ureq`) remain and are tracked for resolution as\nupstream\ncrates release updates. Weaver is dev/test tooling only, not a\nproduction\n  pipeline component.",
+          "timestamp": "2026-03-12T23:14:25Z",
+          "tree_id": "3bef4c7140f6e2fae9ac8ef2f0e474278376057e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ae865070d2743cb6b56a3f7bd2c4a228c1648c89"
+        },
+        "date": 1773359808962,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.4401947259902954,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.6075497063346,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 95.91014564039219,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 54.48294270833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 56.32421875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 469843.61408616346,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 476610.27686576336,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002399,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10798992.368139792,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10732079.077319592,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
