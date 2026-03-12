@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, concat_batches, filter, filter_record_batch, not, or};
+use arrow::compute::{and, concat_batches, filter_record_batch, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -249,7 +249,12 @@ impl PipelineStage for ConditionalPipelineStage {
             };
 
             // determine which rows are selected by this branch's predicate
-            let predicate = filter_exec.predicate.as_mut().unwrap();
+            let predicate = filter_exec.predicate
+                .as_mut()
+                .ok_or_else(||Error::InvalidPipelineError {
+                    cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                    query_location: None,
+                })?;
             let predicate_selection_vec =
                 predicate.evaluate_filter(&attrs_record_batch, session_ctx)?;
 

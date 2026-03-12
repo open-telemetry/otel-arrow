@@ -93,10 +93,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use arrow::{
-        array::{ArrayRef, DictionaryArray, UInt8Array, UInt16Array, UInt64Array},
-        datatypes::DataType,
-    };
+    use arrow::{array::UInt8Array, datatypes::DataType};
     use data_engine_kql_parser::Parser;
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
@@ -1133,7 +1130,7 @@ mod test {
         assert!(
             err.to_string().contains("All input rows for attribute assignment must have the same type if value used in expression"),
             "unexpected error message {}",
-            err.to_string()
+            err
         )
     }
 

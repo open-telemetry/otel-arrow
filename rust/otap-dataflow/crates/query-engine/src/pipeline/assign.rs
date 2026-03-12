@@ -18,8 +18,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array,
-    NullArray, RecordBatch, StringArray, UInt8Array,
+    Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
+    RecordBatch, StringArray, UInt8Array,
 };
 use arrow::compute::{cast, kernels::cmp::neq, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -69,9 +69,8 @@ pub(crate) struct AssignPipelineStage {
     source: ScopedPhysicalExpr,
 
     /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
-    /// applying an expression that references the virtual "value" column. If this is the case, we
-    /// project the active attribute value column to a new column called "value". If the expression
-    /// doesn't reference this virtual column, we skip doing this projection
+    /// applying an expression that references the virtual "value" column. This flag will be set if
+    /// the expression references this column.
     projection_contains_value_column: bool,
 }
 
@@ -438,9 +437,8 @@ impl PipelineStage for AssignPipelineStage {
                 }
             };
 
-            let values_column = values_column_name
-                .map(|col| attrs_record_batch.column_by_name(col))
-                .flatten();
+            let values_column =
+                values_column_name.and_then(|col| attrs_record_batch.column_by_name(col));
 
             let values_column: ArrayRef = match values_column {
                 Some(col) => Arc::clone(col),
@@ -486,7 +484,10 @@ impl PipelineStage for AssignPipelineStage {
                 Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
 
-            Cow::Owned(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
+            Cow::Owned(RecordBatch::try_new(
+                Arc::new(Schema::new(fields)),
+                columns,
+            )?)
         } else {
             // since the expression does not require the "value" column, we assume that it is an
             // expression involving only static literals, in which case the input can just be an
@@ -536,39 +537,35 @@ impl PipelineStage for AssignPipelineStage {
 
         // possibly cast the result into a dict if the type column supports it and if it will fit
         if supports_dict {
-            match result.data_type() {
-                DataType::Dictionary(k, _) => {
-                    // just double check the key type is u16
-                    todo!() // TODO - how to trigger this?
-                }
+            let needs_to_dict = match result.data_type() {
+                DataType::Dictionary(k, _) => **k != DataType::UInt16,
                 _ => {
                     let field_info = FieldInfo::new_from_array(&result);
                     let cardinality = estimate_cardinality(&field_info);
-                    if cardinality != Cardinality::GreaterThanU16 {
-                        // can downcast to dict
-                        result = cast(
-                            &result,
-                            &DataType::Dictionary(
-                                Box::new(DataType::UInt16),
-                                Box::new(result.data_type().clone()),
-                            ),
-                        )?
-                    }
+                    cardinality != Cardinality::GreaterThanU16
                 }
+            };
+
+            if needs_to_dict {
+                result = cast(
+                    &result,
+                    &DataType::Dictionary(
+                        Box::new(DataType::UInt16),
+                        Box::new(result.data_type().clone()),
+                    ),
+                )?
             }
         }
 
         // create a new record batch including the result column ...
 
-        let field_index = field_name
-            .map(|field_name| {
-                attrs_record_batch
-                    .schema()
-                    .fields()
-                    .find(field_name)
-                    .map(|(i, _)| i)
-            })
-            .flatten();
+        let field_index = field_name.and_then(|field_name| {
+            attrs_record_batch
+                .schema()
+                .fields()
+                .find(field_name)
+                .map(|(i, _)| i)
+        });
 
         let mut fields = attrs_record_batch.schema_ref().fields.to_vec();
         let mut columns = attrs_record_batch.columns().to_vec();
@@ -613,9 +610,10 @@ impl PipelineStage for AssignPipelineStage {
             columns[type_column_index] = Arc::new(new_type_column)
         }
 
-        let result = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
-
-        Ok(result)
+        Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            columns,
+        )?)
     }
 
     fn supports_exec_on_attributes(&self) -> bool {

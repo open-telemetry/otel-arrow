@@ -560,7 +560,7 @@ impl ScopedPhysicalExpr {
             .physical_expr
             .as_ref()
             .expect("physical expr initialized")
-            .evaluate(&record_batch)?;
+            .evaluate(record_batch)?;
 
         Ok(result_vals)
     }
