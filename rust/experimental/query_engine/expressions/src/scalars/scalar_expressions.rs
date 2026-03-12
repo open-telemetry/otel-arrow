@@ -1568,7 +1568,6 @@ impl InvokeFunctionScalarExpression {
         {
             let mut return_statement = None;
             let mut return_count = 0;
-
             for e in expressions {
                 if let PipelineFunctionExpression::Return(r) = e {
                     return_count += 1;
@@ -1577,7 +1576,9 @@ impl InvokeFunctionScalarExpression {
             }
 
             if return_count == 1
-                && let ScalarExpression::Static(s) = return_statement.unwrap()
+                // safety: we can "expect" one return_statement here because if return_count is 
+                // non-zero, then we've set this variable to `Some` in the loop above
+                && let ScalarExpression::Static(s) = return_statement.expect("return_statement not None")
             {
                 return Ok(Some(if s.foldable() {
                     ResolvedStaticScalarExpression::FoldEligibleReference(s)

@@ -3,19 +3,19 @@
 
 //! Handles the output flow of the debug processor
 
-use crate::debug_processor::DisplayMode;
-use crate::debug_processor::Verbosity;
-use crate::debug_processor::detailed_marshaler::DetailedViewMarshaler;
-use crate::debug_processor::marshaler::ViewMarshaler;
-use crate::debug_processor::normal_marshaler::NormalViewMarshaler;
-use crate::debug_processor::sampling::Sampler;
-use crate::pdata::OtapPdata;
+use crate::processors::debug_processor::DisplayMode;
+use crate::processors::debug_processor::Verbosity;
+use crate::processors::debug_processor::detailed_marshaler::DetailedViewMarshaler;
+use crate::processors::debug_processor::marshaler::ViewMarshaler;
+use crate::processors::debug_processor::normal_marshaler::NormalViewMarshaler;
+use crate::processors::debug_processor::sampling::Sampler;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::proto::{
     OtlpProtoMessage,
     opentelemetry::{

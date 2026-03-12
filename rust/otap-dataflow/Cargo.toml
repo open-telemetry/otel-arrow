@@ -33,6 +33,7 @@ path = "src/main.rs"
 otap-df-config.workspace = true
 otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
+otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
 thiserror.workspace = true

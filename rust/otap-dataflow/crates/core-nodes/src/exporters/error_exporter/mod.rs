@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -16,10 +14,13 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-const ERROR_EXPORTER_URN: &str = "urn:otel:exporter:error";
+/// The URN for the error exporter.
+pub const ERROR_EXPORTER_URN: &str = "urn:otel:exporter:error";
 
 /// The error exporter is an exporter that does nothing (like
 /// noop_exporter) but returns a NACK with a configurable message.
@@ -34,9 +35,10 @@ struct ErrorExporterConfig {
     pub message: String,
 }
 
+/// Declare the Error Exporter as a local exporter factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+pub static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: ERROR_EXPORTER_URN,
     create: ErrorExporter::create_exporter,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -100,8 +102,8 @@ impl Exporter<OtapPdata> for ErrorExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
     use otap_df_engine::Interests;
+    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
     use serde_json::json;
 
     #[test]
