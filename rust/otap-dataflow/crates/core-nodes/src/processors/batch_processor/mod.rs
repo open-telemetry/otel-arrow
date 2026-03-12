@@ -28,9 +28,9 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::accessory::slots::{Key as SlotKey, State as SlotState};
-use crate::pdata::{Context, OtapPdata};
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -1333,9 +1333,9 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::OtapPdata;
-    use crate::testing::TestCallData;
-    use crate::testing::{next_ack, next_nack};
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::TestCallData;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;

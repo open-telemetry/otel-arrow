@@ -7,8 +7,8 @@
 //! All signals are forwarded unchanged via the engine-provided default output port
 //! (or error if multiple ports are connected without a default).
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -365,7 +365,7 @@ mod tests {
 
     mod telemetry {
         use super::*;
-        use crate::pdata::OtapPdata;
+        use otap_df_otap::pdata::OtapPdata;
         use otap_df_channel::mpsc;
         use otap_df_engine::context::ControllerContext;
         use otap_df_engine::control::NodeControlMsg;

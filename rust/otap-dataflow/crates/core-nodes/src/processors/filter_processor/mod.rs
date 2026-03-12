@@ -10,7 +10,7 @@
 
 use self::config::Config;
 use self::metrics::FilterPdataMetrics;
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -186,8 +186,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
 #[cfg(test)]
 mod tests {
-    use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
-    use crate::pdata::OtapPdata;
+    use crate::processors::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;

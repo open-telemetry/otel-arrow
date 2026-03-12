@@ -38,6 +38,7 @@ weaver_resolver.workspace = true
 weaver_semconv.workspace = true
 
 [dev-dependencies]
+otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
 otap-df-telemetry = { path = "../telemetry" }
