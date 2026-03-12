@@ -120,7 +120,7 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         consts::UNIT => ExprLogicalType::String,
         consts::AGGREGATION_TEMPORALITY => ExprLogicalType::Int32,
 
-        // TODO not sure if we want this here ...
+        // the virtual attributes "value" column
         VALUE_COLUMN_NAME => ExprLogicalType::AnyValue,
 
         _ => return None,
