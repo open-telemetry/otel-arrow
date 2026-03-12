@@ -831,8 +831,8 @@ fn write_instrumentation_scope(mut report: &mut String, scope: &InstrumentationS
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_processor::detailed_marshaler::DetailedViewMarshaler;
-    use crate::debug_processor::marshaler::ViewMarshaler;
+    use crate::processors::debug_processor::detailed_marshaler::DetailedViewMarshaler;
+    use crate::processors::debug_processor::marshaler::ViewMarshaler;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
