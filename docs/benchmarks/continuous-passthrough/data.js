@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773342334683,
+  "lastUpdate": 1773342976529,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "198982749+Copilot@users.noreply.github.com",
-            "name": "Copilot",
-            "username": "Copilot"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "23e007741f1054e60c9ce59fc61b3c307a58f338",
-          "message": "Skip flaky parquet exporter test on Windows (#2068)\n\n`test_adaptive_schema_dict_upgrade_write` intermittently times out on\nWindows CI because its 200ms shutdown deadline is too tight for Windows\nI/O timing.\n\n## Change Summary\n\nApplies `#[cfg_attr(target_os = \"windows\", ignore = \"...\")]` to skip the\ntest on Windows, matching the existing pattern already used for\n`test_shutdown_timeout` in the same file.\n\n```rust\n#[test]\n#[cfg_attr(\n    target_os = \"windows\",\n    ignore = \"Skipping on Windows due to timing flakiness\"\n)]\nfn test_adaptive_schema_dict_upgrade_write() {\n```\n\n## What issue does this PR close?\n\n## How are these changes tested?\n\nVerified the crate compiles cleanly. The test continues to run on\nLinux/macOS; it is skipped on Windows.\n\n## Are there any user-facing changes?\n\nNo.\n\n> [!WARNING]\n>\n> <details>\n> <summary>Firewall rules blocked me from connecting to one or more\naddresses (expand for details)</summary>\n>\n> #### I tried to connect to the following addresses, but was blocked by\nfirewall rules:\n>\n> - `https://api.github.com/repos/open-telemetry/weaver/commits/v0.17.0`\n> - Triggering command:\n`/home/REDACTED/.rustup/toolchains/stable-x86_64-REDACTED-linux-gnu/bin/cargo\n/home/REDACTED/.rustup/toolchains/stable-x86_64-REDACTED-linux-gnu/bin/cargo\ncheck -p otap-df-otap` (http block)\n>\n> If you need me to access, download, or install something from one of\nthese locations, you can either:\n>\n> - Configure [Actions setup\nsteps](https://gh.io/copilot/actions-setup-steps) to set up my\nenvironment, which run before the firewall is enabled\n> - Add the appropriate URLs or hosts to the custom allowlist in this\nrepository's [Copilot coding agent\nsettings](https://github.com/open-telemetry/otel-arrow/settings/copilot/coding_agent)\n(admins only)\n>\n> </details>\n\n<!-- START COPILOT ORIGINAL PROMPT -->\n\n\n\n<details>\n\n<summary>Original prompt</summary>\n\n> \n> ----\n> \n> *This section details on the original issue you should resolve*\n> \n> <issue_title>Flaky test on windows</issue_title>\n> <issue_description> FAIL [ 0.469s] ( 741/2067) otap-df-otap\nparquet_exporter::test::test_adaptive_schema_dict_upgrade_write\n>   stdout ───\n> \n>     running 1 test\n> test parquet_exporter::test::test_adaptive_schema_dict_upgrade_write\n... FAILED\n> \n>     failures:\n> \n>     failures:\n> parquet_exporter::test::test_adaptive_schema_dict_upgrade_write\n> \n> test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 675\nfiltered out; finished in 0.45s\n>     \n>   stderr ───\n> \n> thread\n'parquet_exporter::test::test_adaptive_schema_dict_upgrade_write' (6072)\npanicked at crates\\otap\\src\\parquet_exporter.rs:581:37:\n> called `Result::unwrap()` on an `Err` value: IoError { node: NodeId {\nindex: 0, name: \"test_exporter\" }, error: Kind(TimedOut) }\n> note: run with `RUST_BACKTRACE=1` environment variable to display a\nbacktrace\n> \n>   Cancelling due to test failure: 3 tests still running\n> PASS [ 0.188s] ( 742/2067) otap-df-otap\nparquet_exporter::test::test_collect_telemetry_reports_metrics\n> PASS [ 1.085s] ( 743/2067) otap-df-otap\nparquet_exporter::test::test_can_flush_on_interval\n> PASS [ 14.357s] ( 744/2067) otap-df-otap\nfake_data_generator::tests::test_fake_signal_receiver\n> ────────────\n> Summary [ 22.916s] 744/2067 tests run: 743 passed, 1 failed, 10\nskipped\n> FAIL [ 0.469s] ( 741/2067) otap-df-otap\nparquet_exporter::test::test_adaptive_schema_dict_upgrade_write\n> warning: 1323/2067 tests were not run due to test failure (run with\n--no-fail-fast to run all tests, or run with --max-fail)\n> error: test run failed\n> Error: Process completed with exit code 1.\n> \n> \n> \n> Suggestion: Let us ignore the test in Windows for now to make CI's\nclean and track fixing it separately</issue_description>\n> \n> <agent_instructions>See if the test flakiness can be fixed in Windows.\nIf not easy, lets just ignore it for Windows for\nnow</agent_instructions>\n> \n> ## Comments on the Issue (you are @copilot in this section)\n> \n> <comments>\n> </comments>\n> \n\n\n</details>\n\n\n\n<!-- START COPILOT CODING AGENT SUFFIX -->\n\n- Fixes open-telemetry/otel-arrow#2067\n\n<!-- START COPILOT CODING AGENT TIPS -->\n---\n\n💡 You can make Copilot smarter by setting up custom instructions,\ncustomizing its development environment and configuring Model Context\nProtocol (MCP) servers. Learn more [Copilot coding agent\ntips](https://gh.io/copilot-coding-agent-tips) in the docs.\n\n---------\n\nCo-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>\nCo-authored-by: cijothomas <5232798+cijothomas@users.noreply.github.com>\nCo-authored-by: Cijo Thomas <cijo.thomas@gmail.com>",
-          "timestamp": "2026-02-19T19:22:10Z",
-          "tree_id": "af74f593df9fcdfb582c0edc0cba0a635e00deee",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/23e007741f1054e60c9ce59fc61b3c307a58f338"
-        },
-        "date": 1771532056828,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.00382661819458,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 95.78279360778512,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.47121042325188,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 48.885416666666664,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 51.26171875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 497240.174103413,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 502231.6030007567,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006865,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11246436.879899524,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11189024.645116081,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10968489.864656245,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85636459239ecd667dde2dd7f56b5a9e689ad557",
+          "message": "fix(deps): update golang.org/x/exp digest to 7ab1446 (#2287)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [golang.org/x/exp](https://pkg.go.dev/golang.org/x/exp) | require |\ndigest | `3dfff04` → `7ab1446` |\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - At any time (no schedule defined),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My41OS4wIiwidXBkYXRlZEluVmVyIjoiNDMuNTkuMCIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: otelbot <197425009+otelbot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-03-12T18:33:57Z",
+          "tree_id": "207c633818319bc38d4da42d6015d26d948c4f77",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/85636459239ecd667dde2dd7f56b5a9e689ad557"
+        },
+        "date": 1773342976116,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.8079960942268372,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.20703865586813,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.53994977378369,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 54.51731770833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 56.6171875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 467842.9378099448,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 471623.0903160058,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001812,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10878814.967248976,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10826070.118339922,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
