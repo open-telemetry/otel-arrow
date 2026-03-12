@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773349532492,
+  "lastUpdate": 1773351944860,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "69a449783154f7740de679bbfd6a96e261bf9c59",
-          "message": "Expand config validation to cover entire repo (#2111)\n\nhttps://github.com/open-telemetry/otel-arrow/pull/2065 continuation by\nexpanding to cover entire repo for invalid config. This found additional\ninvalid configs! (And yes, syslog perf runs were broken because of\nthis).\nThis CI check will now guard us from accidentally breaking configs!",
-          "timestamp": "2026-02-25T21:47:11Z",
-          "tree_id": "e2e6113e0697830278c7247e180f18356d497e02",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/69a449783154f7740de679bbfd6a96e261bf9c59"
-        },
-        "date": 1772061347760,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9209336638450623,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 97.13658087257812,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.57015525182085,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 48.23424479166667,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 49.69140625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 509558.0173039325,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 514250.70859888516,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.008209,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11342431.672245456,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11302573.643686218,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10894373.542985672,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e46f91a07b16b461e36f6b195bcd7cf3d2215983",
+          "message": "Implement `try_fold` for `ConditionalDataExpression` (#2273)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nIn our expression AST, `try_fold` is the method that traverses the\nexpression tree and attempts to optimize the expressions.\n\nThis includes doing things like resolving logical expressions to static\nbooleans, or optimizing function calls to static scalars if that is what\nthe function returns.\n\nThis PR implements this method for the `ConditionalDataExpression`,\nwhich is used to represent our `if/else` statements. In this case, we\nsimply call `try_fold` on the nested expressions w/in each branch, but\nwe also determine if the conditions can be resolved to static booleans,\nand drop branches accordingly.\n\n### Folding logic\n\nFor example, if we had a statement like:\n```js\nif (x = \"a\") {\n  // ...\n} else if (\"a\" == \"a\") {\n  // ...\n} else if (x = \"y\") {\n  // ...\n} else {\n ...\n}\n```\n\nSince `\"a\" == \"a\"` will always be `true`, so branches after this will\nsee no rows. So we optimize to:\n```js\nif (x = \"a\") {\n  // ...\n} else if (true) {\n  // ...\n}\n```\n\nSimilarly, if we had: \n```js\nif (x = \"a\") {\n  // ...\n} else if (\"a\" == \"b\") {\n  // ...\n} else {\n  // ...\n}\n```\n\nWe recognize that `\"a\" == \"b\"` will always be `false` so we remove this\nbranch because no rows will be handled by the branch, and it is\noptimized to:\n```js\nif (x = \"a\") {\n  // ...\n} else {\n  // ...\n}\n```\n\nTo handle filter which has been optimized to a single scaler boolean\nvalue, the filter pipeline stage in columnar query engine has also been\nupdated to support this.\n\n### The real point: consistent expression representation\n\nThe real purpose of this change however isn't really about optimization\nper se. The real need here is to have the conditions/statements in the\n`ConditionalDataExpression` in their folded/optimized format. The reason\nfor this is, the query planner expects the statements to have been\nfolded/optimized, and if they're not, it gets confused.\n\nFor example, consider:\n```kql\nlogs | where matches(event_name, \".*hello.*\")\n```\n\nThe pipeline expression builder was already folding the match statement\nfor this `where` operator call, which turns the string argument into a\nstatic regex expression. This is what we were expecting to receive when\nplanning the query:\n\nhttps://github.com/open-telemetry/otel-arrow/blob/7b5d392672b765a21a45955c8b74a7cf46c80c03/rust/otap-dataflow/crates/query-engine/src/pipeline/filter.rs#L531-L541\n\nHowever when this expression wasn't folded and we do something like:\n```js\nif (matches(event_name, \".*hello.*\")) { // ...\n```\nThen we get an unexpected static.\n\nThe real purpose of this change is to try to ensure that the statements\nthe columnar query engine receives are in the optimized/folded format as\noften as possible to ensure we don't run into strange issues depending\non where the statement appears.\n\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes https://github.com/open-telemetry/otel-arrow/issues/2272\n\n## How are these changes tested?\n\nUnit\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n \nThere's now additional types of expressions supported in the transform\nprocessor. The types of statements that now work, which would previously\nproduce errors are things like:\n```kql\n// filtering where the predicate can be resolved to a static boolean. e.g.\nlogs | where \"a\" == \"a\" \n\n// using matches in if/else condition\nlogs | if (matches(severity_text, \"ERROR|WARN\")) { ...\n```",
+          "timestamp": "2026-03-12T21:08:26Z",
+          "tree_id": "96c8e6ddea5a607ec4be9b766b868b619434c1fc",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e46f91a07b16b461e36f6b195bcd7cf3d2215983"
+        },
+        "date": 1773351943889,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.22132723033428192,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.493072664408,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.89241927295133,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 57.074869791666664,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 58.59375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 470353.1008437502,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 469312.0813179177,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002717,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10780882.617175397,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10728761.178275598,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
