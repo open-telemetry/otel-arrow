@@ -252,7 +252,18 @@ impl Producer {
         let allowed_payloads = otap_batch.allowed_payload_types();
         let mut arrow_payloads = Vec::<ArrowPayload>::with_capacity(allowed_payloads.len());
 
-        for payload_type in allowed_payloads {
+        // The root signal payload (e.g., LOGS, SPANS, UNIVARIATE_METRICS) must be the first
+        // element in `arrow_payloads`. The Go otelarrowreceiver's `consumeBatch` inspects
+        // `payloads[0].Type` to determine the signal type and will return
+        // `ErrUnrecognizedPayload` if it sees a related-data type like RESOURCE_ATTRS first.
+        let root_payload_type = otap_batch.root_payload_type();
+
+        // Iterate root payload type first, then the rest, to ensure the root is
+        // always `arrow_payloads[0]`.
+        let ordered_payloads = std::iter::once(&root_payload_type)
+            .chain(allowed_payloads.iter().filter(|pt| **pt != root_payload_type));
+
+        for payload_type in ordered_payloads {
             let record_batch = match otap_batch.get(*payload_type) {
                 Some(rb) => rb,
                 None => continue,
@@ -564,6 +575,36 @@ mod test {
         .unwrap();
 
         assert_eq!(result_attrs, &expected_rb);
+    }
+
+    /// The Go otelarrowreceiver's `consumeBatch` determines the signal type by inspecting
+    /// `payloads[0].Type` (the first ArrowPayload's type). It expects the root signal type
+    /// (LOGS, SPANS, or UNIVARIATE_METRICS) to come first. If a related-data type like
+    /// RESOURCE_ATTRS is first, it falls into the default case returning
+    /// `ErrUnrecognizedPayload`.
+    #[test]
+    fn test_root_signal_payload_is_first_in_batch_arrow_records() {
+        let mut producer = Producer::new();
+
+        // Check logs: root must be LOGS
+        let logs = to_otap_logs(vec![
+            LogRecord::build()
+                .event_name("test")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("v"))])
+                .finish(),
+        ]);
+        let bar = producer.produce_bar(&mut logs.clone()).unwrap();
+        assert!(
+            !bar.arrow_payloads.is_empty(),
+            "logs batch should produce at least one payload"
+        );
+        assert_eq!(
+            bar.arrow_payloads[0].r#type,
+            ArrowPayloadType::Logs as i32,
+            "first payload must be the root signal type LOGS, \
+             got {:?} instead",
+            ArrowPayloadType::try_from(bar.arrow_payloads[0].r#type)
+        );
     }
 
     #[test]
