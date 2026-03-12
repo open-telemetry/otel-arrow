@@ -879,7 +879,8 @@ mod test {
 
         assert_eq!(expr, expected);
     }
-  
+
+    #[test]
     fn test_format_with_indent_discard_target() {
         let discard_expr = DiscardDataExpression::new(QueryLocation::new_fake()).with_target(
             MutableValueExpression::Argument(ArgumentScalarExpression::new(
