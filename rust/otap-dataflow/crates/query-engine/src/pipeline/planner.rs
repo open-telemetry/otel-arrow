@@ -106,9 +106,12 @@ impl PipelinePlanner {
                         ));
                         self.plan_filter(&keep_plan, session_ctx, otap_batch)
                     }
-                    _ => {
-                        todo!("handle invalid scalar")
-                    }
+                    invalid => Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "unsupported Static for discard expression. Expected boolean, found {invalid:?}"
+                        ),
+                        query_location: Some(discard_expr.get_query_location().clone()),
+                    }),
                 },
                 // discard expression with `None` predicate indicates the default behaviour which
                 // discards everything. In this case, what we want is a static filter that rejects
