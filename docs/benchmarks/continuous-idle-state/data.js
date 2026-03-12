@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773347610868,
+  "lastUpdate": 1773348647275,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "jmacd@users.noreply.github.com",
-            "name": "Joshua MacDonald",
-            "username": "jmacd"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "9737434e98d32d80ae6d020117bde5b7909f0840",
-          "message": "Node telemetry_attributes into entity::extend::identity_attributes (#2101)\n\n# Change Summary\n\nMoves telemetry_attributes as requested.\n\n## What issue does this PR close?\n\nFixes #2078.\n\n## How are these changes tested?\n\n✅ \n\n## Are there any user-facing changes?\n\nYes, documented.\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
-          "timestamp": "2026-02-24T23:00:28Z",
-          "tree_id": "92b401c308cf6819709112070b0aaa23ed8f0409",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/9737434e98d32d80ae6d020117bde5b7909f0840"
-        },
-        "date": 1771977272879,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.1275689934532836,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.17652174346201743,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 42.09877232142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 42.5,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001036,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.5735932020689974,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.7487753865317244,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 173.20089285714286,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 173.71875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001124,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.2762217112594224,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.3330927367682594,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 94.00279017857143,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 94.046875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001511,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.08554965047397058,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.1090759007081161,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 29.717633928571427,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 29.8125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000842,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.17404377530622614,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.19723729679227653,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 61.502232142857146,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 61.66796875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.006371,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.059300566971655075,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.06121876051074431,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 28.15625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 28.15625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000777,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.000771,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ff7ab7ba40b4b9e3e113e3346bf079ede1296aa9",
+          "message": "fix(fanout): replace nack-on-full with accept_pdata() backpressure to prevent silent data loss (#2225)\n\nIssue reported in PR: #2223 \n\n## Problem\nWhen fanout hits its `max_inflight` limit it nacks incoming messages\nback upstream instead of applying backpressure. This causes silent data\nloss.\nThe correct behavior is for fanout to stop consuming from its input\nchannel when `max_inflight` is full. This causes the pdata channel to\nfill up, which blocks the upstream `send_message().await`, naturally\nslowing the receiver -- no data lost, no retry needed.\n\n  Instead, fanout today does this:\n\n  ```rust\n  if self.slim_inflight.len() >= self.config.max_inflight {\n// nacks the message -- data is lost as receive is not supposed to\nretry.\n      effect_handler.notify_nack(...).await?;\n  }\n  ```\n\nReceivers are ingress nodes and are not expected to handle nacks from\ndownstream processors. There is no retry contract in the engine. The\nnack carries the original pdata in `nack.refused` but it goes out of\nscope and is dropped silently -- no log, no metric, no recovery.\n\nThe workaround is `max_inflight: 0` (unlimited inflight), which prevents\nnacking and lets channel capacity provide natural backpressure, but\nremoves the memory bound on in-flight state.\n\n  ## Background: Stateless vs. Stateful Processors\n\nThe engine's processor model was originally designed around stateless\ntransforms: each call to `process()` is independent, and the engine\nfeeds messages as fast as the channel delivers them.\n   \nFanout and batch are **stateful processors** -- they maintain in-flight\ntracking across multiple `process()` calls and must wait for acks before\nthey can accept more work. This creates a throttling requirement that\nthe engine's push model does not support:\n                                                            \n  - The processor knows when it is at capacity (inflight map full)\n- But it cannot signal the engine to pause -- the engine keeps calling\n`process()` regardless\n- The only escape valve was to nack the message, which causes data loss\nwhen receivers do not retry\n\nThe fix closes this gap by letting processors signal their readiness\nback to the engine via `accept_pdata()`.\n\n## Batch Processor\n\nBatch has similar stateful limits (`inbound_request_limit`,\n`outbound_request_limit`) but does not have the same silent data loss\nproblem in practice. When batch nacks due to capacity, it expects a\n**retry processor** to be present upstream to catch and re-deliver the\nnacked message. This is the standard recommended pipeline topology:\n  receiver -> retry -> batch -> exporter                    \n\nWithout a retry processor upstream, batch nacks would also cause silent\ndata loss -- the same root cause. The `accept_pdata()` mechanism\nintroduced here is the correct long-term fix for batch as well, but that\nis left as a follow-up since the immediate data loss issue only\nmanifests in fanout (receivers do not retry; retry processors do).\n\n## Fix  \n\nIntroduces `accept_pdata()` on the `Processor` trait and wires it into\nthe engine run loop.\n   \n**`Processor` trait (`local` and `shared`)** -- new default method:\n                                                            \n ```rust\n  fn accept_pdata(&self) -> bool { true }\n```\n  All existing stateless processors inherit true with no change. Only stateful processors that need throttling override it.\n\n  Engine run loop -- changed from unconditional recv() to:\n\n```rust\nwhile let Ok(msg) =\nmessage_channel.recv_when(processor.accept_pdata()).await {\n      processor.process(msg, &mut effect_handler).await?;\n  }\n```\n\n  `recv_when(false)` only reads from the control channel (acks/nacks), leaving `pdata` untouched in its channel. This lets acks drain the inflight map without deadlocking, and causes natural backpressure upstream once the pdata channel fills.\n\n  **`FanoutProcessor`** -- implements accept_pdata():\n\n```rust\n  fn accept_pdata(&self) -> bool {\n      if self.config.max_inflight == 0 { return true; }\n      if self.config.use_fire_and_forget { return true; }\n      if self.config.use_slim_primary {\n          self.slim_inflight.len() < self.config.max_inflight\n      } else {\n          self.inflight.len() < self.config.max_inflight\n      }\n  }\n```\n\n  The nack-on-full blocks are removed from `process_slim_primary()` and the full path. No `pdata` is ever dropped due to `max_inflight` pressure.\n\n\n## Coverage across all fanout modes                                                                                                                                                                                                                                                                           \n                                         \n  `accept_pdata()` handles all three paths correctly:                                                                                                                                                                                                                                                           \n                                                            \n  | Mode | `accept_pdata()` behavior | Was nacking before? |                                                                                                                                                                                                                                                    \n  |------|--------------------------|---------------------| \n  | Fire-and-forget | Always `true` -- no inflight tracking, no throttling needed | No |\n  | Slim primary | `slim_inflight.len() < max_inflight` | Yes -- fixed |\n  | Full path (sequential / await_all / fallback / timeout) | `inflight.len() < max_inflight` | Yes -- fixed |\n\n  Fire-and-forget is unaffected by design: it sends and acks upstream immediately, so inflight never accumulates.\n\n  ## Performance\n\n  **Hot path (`accept_pdata()` = `true`, the common case):**\n  - `accept_pdata()` is a handful of integer comparisons -- effectively free\n  - `recv_when(true)` is identical to `recv()` -- polls both channels, no added overhead\n  - Zero latency impact on the steady-state hot path\n\n  **When throttling kicks in (`accept_pdata()` = `false`):**\n  - Engine loop only reads from `control_rx` -- proper async await, no busy loop, no CPU spin\n  - Acks drain `inflight`, then `accept_pdata()` returns `true` again on the next iteration\n  - Control messages (acks, nacks, shutdown, timeouts) are still delivered even while pdata is paused -- shutdown and timeout handling are unaffected\n\n  **Heap:**\n  - No new allocations. `inflight` and `slim_inflight` are still bounded by `max_inflight` exactly as before\n  - The nack path removed actually slightly reduces code path length\n\n  **One behavioral change worth noting:**\n  Previously when `max_inflight` was hit, fanout nacked immediately and continued processing new messages (at the cost of data loss). Now, if the downstream exporter is permanently stuck and never acks, the pipeline stalls end-to-end rather than silently dropping. This is the correct behavior -- a stuck exporter should surface as backpressure, not silent loss -- but it is a visible behavioral change if `max_inflight` is configured and the downstream is unhealthy.",
+          "timestamp": "2026-03-12T20:17:24Z",
+          "tree_id": "a5bfae829a100a550f7bc3c0c79ef52df263da8c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ff7ab7ba40b4b9e3e113e3346bf079ede1296aa9"
+        },
+        "date": 1773348646368,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.31570761360282057,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.4174018146447747,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 103.84319196428571,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 104.12890625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001514,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.08188961969176149,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.1435010709838107,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 37.94419642857143,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 38.046875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000726,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.11977663918315712,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.25617585809864635,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 48.493861607142854,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 48.66015625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000651,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.20345118241515409,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3305892901618929,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 71.41015625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 71.4921875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.003059,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.6668579124807579,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.8331348535825546,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 171.73995535714286,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 172.08984375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000946,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.07098716486901716,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.17010105591029434,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 31.595982142857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 31.7109375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000775,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
