@@ -51,6 +51,19 @@ pub fn install_crypto_provider() -> Result<(), String> {
             .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
     }
 
+    #[cfg(not(any(
+        feature = "crypto-ring",
+        feature = "crypto-aws-lc",
+        feature = "crypto-openssl"
+    )))]
+    {
+        otap_df_telemetry::otel_warn!(
+            "crypto.no_provider",
+            message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
+                       Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl"
+        );
+    }
+
     Ok(())
 }
 
