@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773351942342,
+  "lastUpdate": 1773355483966,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "pritishnahar@gmail.com",
-            "name": "Pritish Nahar",
-            "username": "pritishnahar95"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "bffbd770fe67cfd3f3a8db6a5b6ba8cac82727bf",
-          "message": "refactor: flip URN format from urn:ns:id:kind to urn:ns:kind:id (#2110)\n\n# Change Summary\n\nRefactor URN format: flip component name and type ordering from\n`urn:<namespace>:<id>:<kind>` to `urn:<namespace>:<kind>:<id>`.\n\nThe new ordering follows a general-to-specific hierarchy — you first\nspecify what kind of component it is (receiver, processor, exporter),\nthen which one. This makes URNs more intuitive to read and discover.\n\n**Before:**\n```\nurn:otel:otlp:receiver\nurn:otel:batch:processor\nurn:otel:noop:exporter\nurn:microsoft:geneva:exporter\n```\n\n**After:**\n```\nurn:otel:receiver:otlp\nurn:otel:processor:batch\nurn:otel:exporter:noop\nurn:microsoft:exporter:geneva\n```\n\nThe shortcut form is also updated from `<id>:<kind>` to `<kind>:<id>`\n(e.g., `receiver:otlp`).\n\nChanges span the following:\n- Core URN parsing logic (`node_urn.rs`): updated `parse()`,\n`build_node_urn()`, `split_segments()`, error messages, and all\ndoc-comments\n- All URN constant definitions across receiver, processor, and exporter\nimplementations\n- All YAML configuration files (quoted and unquoted URN values)\n- All test fixtures (JSON and YAML) and inline test strings\n- All documentation (`urns.md`, `configuration-model.md`,\n`otlp-receiver.md`, crate READMEs)\n- Added a test case verifying the old format is now rejected\n\n## What issue does this PR close?\n\n* Closes\n[#2108](https://github.com/open-telemetry/otel-arrow/issues/2108)\n\n## How are these changes tested?\n\n- All existing unit tests in `otap-df-config` pass with zero failures.\n- Updated test assertions to validate the new URN format.\n- Added explicit test case confirming old format\n(`urn:otel:otlp:receiver`) is rejected.\n- Full workspace build (`cargo check --workspace`) compiles cleanly.\n\n## Are there any user-facing changes?\n\nYes. All URN references in pipeline configuration files must use the new\n`urn:<namespace>:<kind>:<id>` format. The shortcut form changes from\n`<id>:<kind>` to `<kind>:<id>`. For example:\n- `urn:otel:otlp:receiver` → `urn:otel:receiver:otlp`\n- `otlp:receiver` → `receiver:otlp`\n\nExisting configurations using the old format will be rejected with a\nclear error message pointing to the URN documentation.\n\n---------\n\nCo-authored-by: Cijo Thomas <cijo.thomas@gmail.com>",
-          "timestamp": "2026-02-25T23:47:47Z",
-          "tree_id": "c8c87fe51e90fcd3fbec90236a09fabde2e1fc8c",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/bffbd770fe67cfd3f3a8db6a5b6ba8cac82727bf"
-        },
-        "date": 1772066925242,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.3072990857854223,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.3665825828072637,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 97.10267857142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 97.359375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001107,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.09085855394710955,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.11370844458291145,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 33.481026785714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 33.55859375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000997,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.11015224182270594,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.16504983570816786,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 36.386160714285715,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 36.546875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000878,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.1777345890998586,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.21954740579258797,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 61.449776785714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 61.53515625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000812,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.5865794995831604,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.7659624082872498,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 176.68136160714286,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 176.9453125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000902,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.06014114395209365,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.07522307272585547,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 27.293526785714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 27.35546875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001106,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.000813,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b31d4d1c5769c0d05deff7ba0b96757be7453630",
+          "message": "Skip slow validation integration tests on non-Linux platforms (#2222)\n\nThe validation integration tests (debug_processor,\nattribute_processor_pipeline, filter_processor_pipeline,\nmultiple_input_output) take 60+ seconds each as they spin up full gRPC\npipelines end-to-end. They test platform-independent logic, so running\non Linux alone is sufficient. This adds #[cfg(target_os = \"linux\")] to\nthose 4 tests, keeping no_processor as a cross-platform smoke test.\nWindows CI is the slowest by a big margin (13min vs 20+ minutes in\nwindows), so this should make CI faster.\n\n\nCI logs from before:\nSLOW [> 60.000s] (─────────) otap-df-validation\ntests::attribute_processor_pipeline\nSLOW [> 60.000s] (─────────) otap-df-validation tests::debug_processor\nSLOW [> 60.000s] (─────────) otap-df-validation\ntests::filter_processor_pipeline\nSLOW [> 60.000s] (─────────) otap-df-validation\ntests::multiple_input_output",
+          "timestamp": "2026-03-12T22:11:22Z",
+          "tree_id": "c3ba8d1c031296cd12f68525a563b2264780f967",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b31d4d1c5769c0d05deff7ba0b96757be7453630"
+        },
+        "date": 1773355483359,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2768939247738323,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.32942689258510804,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 109.62779017857143,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 109.8046875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001276,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.09530219204788336,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.21813261008495052,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 36.085379464285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 36.21484375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001319,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.1304336623238768,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.22870388798133023,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 50.63392857142857,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 50.8359375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00092,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.21978584548819718,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3830998973082309,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 67.91908482142857,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 68.08984375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000804,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.6384855065639584,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.8795021890082516,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 180.74609375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 181.0078125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00124,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.07625418643254206,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.15397361569604484,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 31.858816964285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 31.93359375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001073,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
