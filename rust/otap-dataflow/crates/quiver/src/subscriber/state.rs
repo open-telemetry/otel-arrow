@@ -190,6 +190,15 @@ impl SubscriberState {
         self.active
     }
 
+    /// Returns a reference to the per-segment progress map.
+    ///
+    /// Each entry maps a [`SegmentSeq`] to its [`SegmentProgress`], which
+    /// tracks which bundles have been resolved via a bitmap.
+    #[must_use]
+    pub const fn segments(&self) -> &BTreeMap<SegmentSeq, SegmentProgress> {
+        &self.segments
+    }
+
     /// Activates the subscriber to receive new bundles.
     pub const fn activate(&mut self) {
         self.active = true;

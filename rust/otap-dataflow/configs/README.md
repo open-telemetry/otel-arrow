@@ -128,20 +128,21 @@ Syslog/CEF receiver with performance metrics:
 - Measures and exports performance metrics
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
-To send test syslog messages:
+To send a quick test message (UDP):
 
 ```bash
-# Send a single syslog message
 echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
-
-# Send multiple messages
-for i in {1..100}; do
-  echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message #$i" | nc -u -w1 127.0.0.1 5140
-done
-
-# Send CEF format message
-echo "<134>$(date '+%b %d %H:%M:%S') testhost CEF:0|Security|IDS|1.0|100|Test Event|5|src=192.168.1.100 dst=10.0.0.50" | nc -u -w1 127.0.0.1 5140
 ```
+
+For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+
+```bash
+cd tools/pipeline_perf_test/load_generator
+python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+```
+
+> **Note:** The default `syslog-perf.yaml` config only enables UDP.
+> To also accept TCP, add a `tcp` section under `protocol` in the config.
 
 ## Usage
 

@@ -70,6 +70,35 @@ def test_context_type_assertion():
         scenario.run(DummyCtx())
 
 
+def test_remaining_steps_run_after_failure(
+    fake_test_step_factory, fake_test_suite, caplog
+):
+    """After a step fails, remaining steps should still execute for diagnostics."""
+    failing_step = fake_test_step_factory()
+    failing_step.name = "Failing Step"
+    failing_step.action.execute.side_effect = RuntimeError("Boom")
+
+    cleanup_step = fake_test_step_factory()
+    cleanup_step.name = "Cleanup Step"
+
+    scenario = Scenario(name="ContinueTest", steps=[failing_step, cleanup_step])
+    ctx = ScenarioContext(
+        name="TestCtx", scenario_definition=scenario, parent_ctx=fake_test_suite.context
+    )
+
+    import logging
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError, match="Boom"):
+            scenario.run(ctx)
+
+    # The cleanup step should still have been executed
+    cleanup_step.action.execute.assert_called_once()
+    assert len(ctx.child_contexts) == 2
+    assert ctx.child_contexts[0].status == ExecutionStatus.ERROR
+    assert ctx.child_contexts[1].status == ExecutionStatus.SUCCESS
+    assert "Continuing remaining steps for diagnostics" in caplog.text
+
+
 def test_hooks_are_called(fake_test_step_factory, fake_test_suite):
     step = fake_test_step_factory()
     scenario = Scenario(name="HookTest", steps=[step])

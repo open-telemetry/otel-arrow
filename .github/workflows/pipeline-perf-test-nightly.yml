@@ -3,341 +3,388 @@ permissions:
   contents: read
 
 on:
-    schedule:
-      - cron: '0 16 * * *'  # runs every day at 8 AM PT (4 PM UTC)
-      - cron: '0 0 * * *'   # runs every day at 4 PM PT (midnight UTC)
-    workflow_dispatch:
+  schedule:
+    - cron: "0 16 * * *" # runs every day at 8 AM PT (4 PM UTC)
+    - cron: "0 0 * * *" # runs every day at 4 PM PT (midnight UTC)
+  workflow_dispatch:
 
 jobs:
-    pipeline-perf-test:
-        runs-on: oracle-bare-metal-64cpu-512gb-x86-64
-        steps:
-        - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
-          with:
-            egress-policy: audit
+  pipeline-perf-test:
+    runs-on: oracle-bare-metal-64cpu-512gb-x86-64
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
 
-        - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-        - id: detect_os
-          name: Detect OS (self-hosted)
-          shell: bash
-          run: |
-            . /etc/os-release
-            echo "id=$ID" >> "$GITHUB_OUTPUT"
-            echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+      - id: detect_os
+        name: Detect OS (self-hosted)
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
 
-        - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
-          if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
-          shell: bash
-          run: |
-            set -euxo pipefail
+      - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
+        if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            # Run disk cleanup script
-            bash ./.github/workflows/scripts/disk-cleanup.sh
+          # Run disk cleanup script
+          bash ./.github/workflows/scripts/disk-cleanup.sh
 
-            # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
-            if rpm -q python3.11 python3.11-devel &>/dev/null; then
-              echo "Python 3.11 packages already installed, skipping repository setup and package installation"
-            else
-              # Enable repos and refresh metadata (only runs if Python not installed)
-              sudo dnf -y install oracle-epel-release-el8 || true
-              sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-              sudo dnf -y makecache --timer
+          # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
+          if rpm -q python3.11 python3.11-devel &>/dev/null; then
+            echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+          else
+            # Enable repos and refresh metadata (only runs if Python not installed)
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache --timer
 
-              # Install core packages (ignore subpackages that don't exist on OL8)
-              sudo dnf -y install python3.11 python3.11-devel || true
-            fi
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+          fi
 
-            # pip may be packaged as part of python3.11 or available via ensurepip;
-            # fall back to ensurepip if needed.
-            if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
-              /usr/bin/python3.11 -m ensurepip --upgrade || true
-            fi
+          # pip may be packaged as part of python3.11 or available via ensurepip;
+          # fall back to ensurepip if needed.
+          if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
+            /usr/bin/python3.11 -m ensurepip --upgrade || true
+          fi
 
-            # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
-            /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
+          # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
+          /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
 
-            # Add a 'python' shim so subsequent steps can call `python ...`
-            mkdir -p "$HOME/.local/bin"
-            ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Add a 'python' shim so subsequent steps can call `python ...`
+          mkdir -p "$HOME/.local/bin"
+          ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-            # Smoke test
-            python --version
-            python -m pip --version
+          # Smoke test
+          python --version
+          python -m pip --version
 
-        - name: Build dataflow_engine
-          run: |
-            git submodule init
-            git submodule update
-            cd rust/otap-dataflow
-            docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-            cd ../..
+      - name: Build dataflow_engine
+        run: |
+          git submodule init
+          git submodule update
+          cd rust/otap-dataflow
+          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          cd ../..
 
-        - name: Build otelarrowcol
-          run: |
-            docker build . -t otelarrowcol
+      - name: Build otelarrowcol
+        run: |
+          docker build . -t otelarrowcol
 
-        - name: Install dependencies
-          run: |
-            python -m pip install --user --upgrade pip
-            pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-            pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-        - name: Run syslog performance test log suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
+      - name: Run syslog performance test log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
 
-        - name: Run standard load batch size test suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/100klrps-batch-sizes-docker.yaml
+      - name: Run standard load batch size test suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/100klrps-batch-sizes-docker.yaml
 
-        - name: Run backpressure performance test log suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/backpressure-docker.yaml
+      - name: Run backpressure performance test log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/backpressure-docker.yaml
 
-        - name: Run filter performance test log suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/filter-docker.yaml
+      - name: Run filter performance test log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/filter-docker.yaml
 
-        - name: Run filter performance test otelcol log suite
-          run: |
-            cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
+      - name: Run filter performance test otelcol log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
-        - name: Run saturation/scaling performance test suite
-          run: |
-            cd tools/pipeline_perf_test
-            ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
-              | tee saturation-scaling-report.txt
-            # Add scaling report to job summary
-            echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            # Extract just the analysis section from the report
-            sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Run batch processor performance test log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
 
-        - name: Upload syslog results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: syslog-nightly-results
-            path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
+      - name: Run saturation/scaling performance test suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+            | tee saturation-scaling-report.txt
+          # Add scaling report to job summary
+          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract just the analysis section from the report
+          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
-        - name: Upload standard load batch size results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: standardload-batch-size-nightly-results
-            path: tools/pipeline_perf_test/results/nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
+      - name: Upload syslog results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: syslog-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
-        - name: Upload backpressure results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: backpressure-nightly-results
-            path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
+      - name: Upload standard load batch size results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: standardload-batch-size-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
 
-        - name: Upload filter results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: filter-nightly-results
-            path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
+      - name: Upload backpressure results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: backpressure-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
 
-        - name: Upload otelcol filter results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: filter-otelcol-results
-            path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
+      - name: Upload filter results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: filter-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
 
-        - name: Upload saturation results for processing
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: saturation-nightly-results
-            path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+      - name: Upload batch processor results for processing
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: batch-processor-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_batch_processor/gh-actions-benchmark/*.json
 
-        - name: Upload scaling efficiency metrics
-          uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-          with:
-            name: scaling-efficiency-nightly-results
-            path: tools/pipeline_perf_test/results/scaling-efficiency.json
+      - name: Upload otelcol filter results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: filter-otelcol-results
+          path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
-        - name: Add benchmark link to job summary
-          run: |
-            echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-            echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+      - name: Upload saturation results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: saturation-nightly-results
+          path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
-    update-benchmarks:
-        runs-on: ubuntu-24.04
-        needs: [pipeline-perf-test]
-        permissions:
-          # deployments permission to deploy GitHub pages website
-          deployments: write
-          # contents permission to update benchmark contents in gh-pages branch
-          contents: write
-        steps:
-          - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Upload scaling efficiency metrics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: scaling-efficiency-nightly-results
+          path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
-          - name: Download syslog artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: syslog-nightly-results*
-              merge-multiple: true
-              path: syslog_results
+      - name: Add benchmark link to job summary
+        if: ${{ !cancelled() }}
+        run: |
+          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
 
-          - name: Download standard load batch size artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: standardload-batch-size-nightly-results*
-              merge-multiple: true
-              path: standardload_batch_size_results
+  update-benchmarks:
+    runs-on: ubuntu-24.04
+    needs: [pipeline-perf-test]
+    permissions:
+      # deployments permission to deploy GitHub pages website
+      deployments: write
+      # contents permission to update benchmark contents in gh-pages branch
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-          - name: Download backpressure artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: backpressure-nightly-results*
-              merge-multiple: true
-              path: backpressure_results
+      - name: Download syslog artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: syslog-nightly-results*
+          merge-multiple: true
+          path: syslog_results
 
+      - name: Download standard load batch size artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: standardload-batch-size-nightly-results*
+          merge-multiple: true
+          path: standardload_batch_size_results
 
-          - name: Download filter artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: filter-nightly-results*
-              merge-multiple: true
-              path: filter_results
+      - name: Download backpressure artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: backpressure-nightly-results*
+          merge-multiple: true
+          path: backpressure_results
 
-          - name: Download otelcol filter artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: filter-otelcol-results*
-              merge-multiple: true
-              path: filter_otelcol_results
+      - name: Download filter artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: filter-nightly-results*
+          merge-multiple: true
+          path: filter_results
 
-          - name: Download saturation artifacts
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              pattern: saturation-nightly-results*
-              merge-multiple: true
-              path: saturation_results
+      - name: Download batch processor artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: batch-processor-nightly-results*
+          merge-multiple: true
+          path: batch_processor_results
 
-          - name: Download scaling efficiency metrics
-            uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-            with:
-              name: scaling-efficiency-nightly-results
-              path: scaling_efficiency_results
+      - name: Download otelcol filter artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: filter-otelcol-results*
+          merge-multiple: true
+          path: filter_otelcol_results
 
-          - name: Consolidate syslog benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
+      - name: Download saturation artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: saturation-nightly-results*
+          merge-multiple: true
+          path: saturation_results
 
-          - name: Consolidate standard load batch size benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh standardload_batch_size_results standardload_batch_size_output.json
+      - name: Download scaling efficiency metrics
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: scaling-efficiency-nightly-results
+          path: scaling_efficiency_results
 
-          - name: Consolidate backpressure benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
+      - name: Consolidate syslog benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
-          - name: Consolidate filter benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
+      - name: Consolidate standard load batch size benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh standardload_batch_size_results standardload_batch_size_output.json
 
-          - name: Consolidate otelcol filter benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
+      - name: Consolidate backpressure benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
 
-          - name: Consolidate saturation benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
+      - name: Consolidate filter benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
 
-          - name: Update benchmark data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: syslog_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
-              auto-push: true
-              save-data-file: true
+      - name: Consolidate batch processor benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh batch_processor_results batch_processor_output.json
 
-          - name: Update standard load batch size benchmark data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: standardload_batch_size_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/standardload-batch-size"
-              auto-push: true
-              save-data-file: true
+      - name: Consolidate otelcol filter benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
 
-          - name: Update benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: backpressure_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/backpressure"
-              auto-push: true
-              save-data-file: true
+      - name: Consolidate saturation benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
 
-          - name: Update filter benchmark data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: filter_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
-              auto-push: true
-              save-data-file: true
+      - name: Update benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: syslog_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
+          auto-push: true
+          save-data-file: true
 
-          - name: Update filter otelcol benchmark data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: filter_otelcol_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
-              auto-push: true
-              save-data-file: true
+      - name: Update standard load batch size benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: standardload_batch_size_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/standardload-batch-size"
+          auto-push: true
+          save-data-file: true
 
-          - name: Update saturation benchmark data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: saturation_output.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/saturation"
-              auto-push: true
-              save-data-file: true
+      - name: Update benchmark data and deploy to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: backpressure_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/backpressure"
+          auto-push: true
+          save-data-file: true
 
-          - name: Update scaling efficiency data
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customBiggerIsBetter"
-              output-file-path: scaling_efficiency_results/scaling-efficiency.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/nightly/scaling-efficiency"
-              auto-push: true
-              save-data-file: true
+      - name: Update filter benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: filter_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+          auto-push: true
+          save-data-file: true
 
-          - name: Add benchmark link to job summary
-            run: |
-              echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
-              echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+      - name: Update batch processor benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: batch_processor_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/batch-processor"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update filter otelcol benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: filter_otelcol_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update saturation benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: saturation_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/saturation"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update scaling efficiency data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customBiggerIsBetter"
+          output-file-path: scaling_efficiency_results/scaling-efficiency.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/scaling-efficiency"
+          auto-push: true
+          save-data-file: true
+
+      - name: Add benchmark link to job summary
+        run: |
+          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
