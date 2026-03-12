@@ -248,6 +248,9 @@ pub struct Interests: u8 {
     /// Source-tagging requested. A frame with no other interests may be inserted.
     const SOURCE_TAGGING = 1 << 6;
 
+    /// Process-duration timing requested for processors.
+    const PROCESS_DURATION = 1 << 7;
+
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
 }
@@ -258,14 +261,16 @@ impl Interests {
     ///
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
-    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
+    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION | ENTRY_TIMESTAMP
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
-            MetricLevel::Normal => Self::PIPELINE_METRICS,
-            MetricLevel::Detailed => Self::PIPELINE_METRICS | Self::ENTRY_TIMESTAMP,
+            MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
+            MetricLevel::Detailed => {
+                Self::PIPELINE_METRICS | Self::PROCESS_DURATION | Self::ENTRY_TIMESTAMP
+            }
         }
     }
 }

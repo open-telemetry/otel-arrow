@@ -4,15 +4,13 @@
 //! Opt-in process-duration timing for processors.
 //!
 //! Processors that perform meaningful compute can add a
-//! [`ProcessDuration`] field and use either:
+//! [`ProcessDuration`] field and use [`ProcessDuration::start`] to
+//! begin timing.  The returned [`TimingGuard`] is a lightweight token;
+//! call [`TimingGuard::stop`] to record the elapsed duration into the
+//! metric set.  If the guard is dropped without calling `stop`
+//! (e.g. on early-return error paths) no measurement is recorded.
 //!
-//! - [`ProcessDuration::guard`] – a drop-guard that records the
-//!   elapsed time when it goes out of scope.  This keeps the
-//!   original code structure intact (no closure / re-indentation).
-//! - [`ProcessDuration::timed`] – a scoped closure that records
-//!   duration on return.
-//!
-//! Both are gated on [`Interests::CONSUMER_METRICS`] (MetricLevel ≥ Normal).
+//! Timing is gated on [`Interests::PROCESS_DURATION`] (MetricLevel ≥ Normal).
 
 use crate::Interests;
 use otap_df_telemetry::instrument::{Mmsc, Timer};
@@ -45,7 +43,7 @@ impl ProcessDuration {
         }
     }
 
-    /// Start timing if `interests` includes [`Interests::CONSUMER_METRICS`].
+    /// Start timing if `interests` includes [`Interests::PROCESS_DURATION`].
     ///
     /// Returns a lightweight [`TimingGuard`] that captures the start
     /// instant.  Call [`TimingGuard::stop`] to record the elapsed
@@ -54,30 +52,17 @@ impl ProcessDuration {
     ///
     /// Usage:
     /// ```ignore
-    /// let timing = self.process_duration.start(effect_handler.node_interests());
+    /// let timing = ProcessDuration::start(effect_handler.node_interests());
     /// // … existing processing code unchanged …
     /// timing.stop(&mut self.process_duration);
     /// ```
     pub fn start(interests: Interests) -> TimingGuard {
-        let timer = if interests.contains(Interests::CONSUMER_METRICS) {
+        let timer = if interests.contains(Interests::PROCESS_DURATION) {
             Some(Timer::start())
         } else {
             None
         };
         TimingGuard { timer }
-    }
-
-    /// Time `f` if `interests` includes [`Interests::CONSUMER_METRICS`],
-    /// otherwise just call `f` without overhead.
-    pub fn timed<F, R>(&mut self, interests: Interests, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        if interests.contains(Interests::CONSUMER_METRICS) {
-            self.metrics.process_duration.timed(f)
-        } else {
-            f()
-        }
     }
 
     /// Report accumulated duration metrics to the collector.

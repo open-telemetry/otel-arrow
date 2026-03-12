@@ -211,10 +211,7 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
 
 impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance from configuration
-    pub fn from_config(
-        pipeline_ctx: PipelineContext,
-        config: &Value,
-    ) -> Result<Self, ConfigError> {
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let process_duration = ProcessDuration::new(&pipeline_ctx);
         Ok(Self {
             config: Config::from_config(config)?,
@@ -230,18 +227,19 @@ impl CondenseAttributesProcessor {
 
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0);
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_grp".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
         Self::from_config(pipeline_ctx, config)
     }
 
     /// Condenses attributes in the given record batch according to the processor configuration.
     /// Returns the number of individual attributes that were condensed.
     fn condense(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
-        Self::do_condense(&self.config, records)
-    }
-
-    fn do_condense(config: &Config, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
             None => {
@@ -283,7 +281,7 @@ impl CondenseAttributesProcessor {
         let int_col = rb.column_by_name(consts::ATTRIBUTE_INT);
         let double_col = rb.column_by_name(consts::ATTRIBUTE_DOUBLE);
         let bool_col = rb.column_by_name(consts::ATTRIBUTE_BOOL);
-        let delimiter_str = config.delimiter.to_string();
+        let delimiter_str = self.config.delimiter.to_string();
 
         // Pre-extract key arrays
         let key_str_arr = key_col.as_any().downcast_ref::<StringArray>();
@@ -395,14 +393,14 @@ impl CondenseAttributesProcessor {
             };
 
             // Always skip attributes that match the destination_key to prevent circular references
-            if key == config.destination_key {
+            if key == self.config.destination_key {
                 removed_existing_destination = true;
                 removed_existing_destination_count += 1;
                 continue;
             }
 
             // Check if we should include this key
-            let should_condense = match (&config.source_keys, &config.exclude_keys) {
+            let should_condense = match (&self.config.source_keys, &self.config.exclude_keys) {
                 (Some(source), _) => source.contains(key),
                 (None, Some(exclude)) => !exclude.contains(key),
                 (None, None) => true,
@@ -499,7 +497,7 @@ impl CondenseAttributesProcessor {
 
                 for (index, (key, val)) in attrs.iter().enumerate() {
                     if index > 0 {
-                        condensed_value.push(config.delimiter);
+                        condensed_value.push(self.config.delimiter);
                     }
                     condensed_value.push_str(key);
                     condensed_value.push('=');
@@ -508,7 +506,7 @@ impl CondenseAttributesProcessor {
                 }
 
                 builder.append_parent_id(parent_id);
-                builder.append_key(&config.destination_key);
+                builder.append_key(&self.config.destination_key);
                 builder
                     .any_values_builder
                     .append_str(condensed_value.as_bytes());
@@ -891,7 +889,8 @@ mod condense_tests {
             "source_keys": ["nonexistent1", "nonexistent2"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
 
         let mut bytes = BytesMut::new();
         input.encode(&mut bytes).expect("encode input");
@@ -923,7 +922,8 @@ mod condense_tests {
             "destination_key": "condensed",
             "delimiter": ";"
         });
-        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         let mut records = OtapArrowRecords::from(Logs::default());
 
         let condensed_count = processor
@@ -1384,7 +1384,8 @@ mod config_tests {
             "source_keys": ["key1", "key2", "key3"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed");
         assert_eq!(processor.config.delimiter, '|');
         assert!(processor.config.exclude_keys.is_none());
@@ -1408,7 +1409,8 @@ mod config_tests {
             "exclude_keys": ["id", "timestamp"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed_attr");
         assert_eq!(processor.config.delimiter, ',');
         assert!(processor.config.source_keys.is_none());
@@ -1430,7 +1432,8 @@ mod config_tests {
             "delimiter": ";"
         });
 
-        let processor = CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "all_condensed");
         assert_eq!(processor.config.delimiter, ';');
         assert!(processor.config.source_keys.is_none());
