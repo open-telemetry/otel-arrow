@@ -638,8 +638,8 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
 
 /// Attribute view for OTAP format
 pub struct OtapAttributeView<'a> {
-    key: &'a [u8],
-    value: OtapAnyValueView<'a>,
+    pub(crate) key: &'a [u8],
+    pub(crate) value: OtapAnyValueView<'a>,
 }
 
 impl<'a> AttributeView for OtapAttributeView<'a> {
