@@ -715,7 +715,6 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    // TODO - not sure fi want to make pub or just want to
     pub(crate) predicate: Option<AdaptivePhysicalExprExec>,
 
     attributes_filter: Option<Composite<AttributeFilterExec>>,
@@ -1145,7 +1144,6 @@ impl AdaptivePhysicalExprExec {
 
     /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
     /// vector for the rows that pass the predicate.
-    // TODO - do we want this pub, or hide inside some function call?
     pub(crate) fn evaluate_filter(
         &mut self,
         record_batch: &RecordBatch,

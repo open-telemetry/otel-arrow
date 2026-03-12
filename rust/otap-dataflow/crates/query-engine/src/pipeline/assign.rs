@@ -445,12 +445,6 @@ impl PipelineStage for AssignPipelineStage {
                 None => {
                     // here the values column is missing, which basically means the attributes
                     // were all null. We'll create an all null array as a placeholder column.
-                    //
-                    // TODO - we're making an assumption here that the value is missing b/c its
-                    // null, but it's equally true that the value could be missing because it was
-                    // all default value. This is a problem because it leads to ambiguous results
-                    // in expressions like `value + 2`. If value = 0, the result is 2. if
-                    // value = null, the result is null.
                     let len = attrs_record_batch.num_rows();
                     match input_attr_type {
                         AttributeValueType::Bool => Arc::new(BooleanArray::new_null(len)),

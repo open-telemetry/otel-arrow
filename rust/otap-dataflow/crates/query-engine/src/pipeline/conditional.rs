@@ -237,7 +237,6 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             // extract the base filter predicate from the branch condition
-            // extract the base filter predicate from the branch condition
             let filter_exec = match &mut branch.condition {
                 Composite::Base(filter) => filter,
                 _ => {
