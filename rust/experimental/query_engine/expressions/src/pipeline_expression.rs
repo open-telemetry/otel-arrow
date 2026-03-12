@@ -110,7 +110,7 @@ impl PipelineExpression {
             // body temporarily.
             //
             // The main limitation of this approach is that we will not to optimize an expression
-            // inside a recursive function by inspecting the body the function's body. However,
+            // inside a recursive function by inspecting the function's body. However,
             // currently this kind of optimization only occurs for functions without mutable
             // parameters that have a single static return
             // (see crate::scalars::scalar_expressions::InvokeFunctionScalarExpression::try_fold`)
