@@ -1239,4 +1239,32 @@ mod test {
             &[OtlpProtoMessage::Logs(expected)],
         );
     }
+
+    #[tokio::test]
+    async fn test_pipeline_where_conditional_receives_empty_batch_works_correctly() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value == 0 |
+                if (value < 10) {
+                    set value = 2
+                }
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        // also just assert there are no attrs remaining
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
+    }
 }

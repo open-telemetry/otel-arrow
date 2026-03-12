@@ -219,6 +219,11 @@ impl PipelineStage for ConditionalPipelineStage {
         task_context: Arc<TaskContext>,
         exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
+        if attrs_record_batch.num_rows() == 0 {
+            // no branches would handle any rows, so nothing to do
+            return Ok(attrs_record_batch);
+        }
+
         // keep track of the rows that were selected by previous branches
         let mut already_selected_vec = BooleanArray::new(
             BooleanBuffer::new_unset(attrs_record_batch.num_rows()),
