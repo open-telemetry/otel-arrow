@@ -74,12 +74,18 @@ mod test {
     const ITERATIONS: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
+        // Path to the semantic-conventions git submodule (rust/semantic-conventions/).
+        // CARGO_MANIFEST_DIR = rust/otap-dataflow/crates/validation
+        // Submodule root     = rust/semantic-conventions
+        // Relative path      = ../../../semantic-conventions/model
         let registry_repo = RegistryRepo::try_new(
             "main",
-            &VirtualDirectoryPath::GitRepo {
-                url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-                sub_folder: Some("model".to_owned()),
-                refspec: None,
+            &VirtualDirectoryPath::LocalFolder {
+                path: concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../semantic-conventions/model"
+                )
+                .to_owned(),
             },
         )
         .expect("all registries are definied under the model folder in semantic convention repo");

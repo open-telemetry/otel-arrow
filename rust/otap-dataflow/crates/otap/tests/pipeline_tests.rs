@@ -261,10 +261,15 @@ fn build_mixed_receiver_pipeline_config(
 
 fn fake_receiver_config_value() -> serde_json::Value {
     let traffic_config = TrafficConfig::new(Some(1), Some(1), 1, 1, 1, 1);
-    let registry_path = VirtualDirectoryPath::GitRepo {
-        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-        sub_folder: Some("model".to_owned()),
-        refspec: None,
+    // DataSource::Static does not load the registry; the path is required by the config
+    // struct but never accessed at runtime.
+    // CARGO_MANIFEST_DIR = rust/otap-dataflow/crates/otap → ../../../semantic-conventions
+    let registry_path = VirtualDirectoryPath::LocalFolder {
+        path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../semantic-conventions/model"
+        )
+        .to_owned(),
     };
     let receiver_config = FakeDataGeneratorConfig::new(traffic_config, registry_path)
         .with_data_source(DataSource::Static);
