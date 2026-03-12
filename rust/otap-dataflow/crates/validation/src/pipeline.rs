@@ -5,17 +5,132 @@
 //! pipelines and rewriting receiver/exporter endpoints at runtime so tests
 //! can bind to ephemeral ports.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::error::ValidationError;
+use crate::template::render_jinja;
+use minijinja::context;
 use serde_yaml::{Mapping, Value};
 use std::fs;
+
+/// Config key path for OTLP gRPC receiver listening address
+/// (`nodes.<node>.config.protocols.grpc.listening_addr`).
+const OTLP_RECEIVER_KEY: &str = "protocols.grpc.listening_addr";
+
+/// Config key path for OTAP gRPC receiver listening address
+/// (`nodes.<node>.config.listening_addr`).
+const OTAP_RECEIVER_KEY: &str = "listening_addr";
+
+/// Config key path for gRPC exporter endpoint, used by both OTLP and OTAP
+/// (`nodes.<node>.config.grpc_endpoint`).
+const GRPC_EXPORTER_KEY: &str = "grpc_endpoint";
+
+/// Address prefix for receiver endpoints. The allocated port is appended.
+const RECEIVER_ADDR_PREFIX: &str = "127.0.0.1:";
+
+/// Address prefix for exporter endpoints. The allocated port is appended.
+const EXPORTER_ADDR_PREFIX: &str = "http://127.0.0.1:";
+
+/// Describes a connection between a node in the SUV pipeline and a test
+/// container. During config wiring the framework allocates a host port
+/// mapped to the container's `internal_port`, then rewrites the specified
+/// config key in the pipeline YAML with the formatted address.
+///
+/// The `config_key` is a dot-separated path relative to
+/// `nodes.<node_name>.config`. For example, `"broker"` targets
+/// `nodes.<node>.config.broker`, while `"protocols.grpc.listening_addr"`
+/// targets `nodes.<node>.config.protocols.grpc.listening_addr`.
+///
+/// The `address_template` is a Jinja2 template string with `{{ port }}`
+/// available in the context. For example, `"127.0.0.1:{{ port }}"` or
+/// `"http://127.0.0.1:{{ port }}"`.
+///
+/// # Example
+///
+///
+/// Pipeline::from_yaml(yaml)?
+///     .connect_container(
+///         PipelineContainerConnection::new("kafka")
+///             .internal_port(9092)
+///             .node("kafka_sink")
+///             .config_key("broker")
+///             .address_template("127.0.0.1:{{ port }}")
+///     )
+///
+pub struct PipelineContainerConnection {
+    /// Label matching a container added via
+    /// [`Scenario::add_container`](crate::scenario::Scenario::add_container).
+    pub(crate) container_label: String,
+    /// The container's internal port (before host mapping).
+    /// `None` until set via [`internal_port`](Self::internal_port).
+    pub(crate) internal_port: Option<u16>,
+    /// The node name in the SUV pipeline YAML to rewrite.
+    pub(crate) node_name: String,
+    /// Dot-separated path to the config key relative to
+    /// `nodes.<node_name>.config`.
+    pub(crate) config_key_path: String,
+    /// Jinja2 template for the address value. `{{ port }}` is set to the
+    /// allocated host port.
+    pub(crate) address_template: String,
+}
+
+impl PipelineContainerConnection {
+    /// Create a new pipeline container connection referencing a container by
+    /// its label.
+    #[must_use]
+    pub fn new(container_label: impl Into<String>) -> Self {
+        Self {
+            container_label: container_label.into(),
+            internal_port: None,
+            node_name: String::new(),
+            config_key_path: String::new(),
+            address_template: String::new(),
+        }
+    }
+
+    /// Set the internal port on the container to connect to.
+    #[must_use]
+    pub fn internal_port(mut self, port: u16) -> Self {
+        self.internal_port = Some(port);
+        self
+    }
+
+    /// Set the node name in the SUV pipeline YAML whose config will be
+    /// rewritten.
+    #[must_use]
+    pub fn node(mut self, name: impl Into<String>) -> Self {
+        self.node_name = name.into();
+        self
+    }
+
+    /// Set the dot-separated config key path relative to
+    /// `nodes.<node>.config`.
+    #[must_use]
+    pub fn config_key(mut self, path: impl Into<String>) -> Self {
+        self.config_key_path = path.into();
+        self
+    }
+
+    /// Set the address template string. This is a Jinja2 template with
+    /// `{{ port }}` available in the context, set to the allocated host port.
+    #[must_use]
+    pub fn address_template(mut self, template: impl Into<String>) -> Self {
+        self.address_template = template.into();
+        self
+    }
+
+    /// Render the address template with the given port.
+    pub(crate) fn render_address(&self, port: u16) -> Result<String, ValidationError> {
+        render_jinja(&self.address_template, context! { port => port })
+    }
+}
 
 /// Pipeline configuration wrapper that supports rewiring logical endpoints.
 pub struct Pipeline {
     pub(crate) suv_yaml: Value,
     pub(crate) core_start: u16,
     pub(crate) core_end: u16,
+    /// Container connections declared on this pipeline, consumed during
+    /// config wiring.
+    pub(crate) container_connections: Vec<PipelineContainerConnection>,
 }
 
 impl Pipeline {
@@ -23,7 +138,7 @@ impl Pipeline {
     pub fn from_file(path: &str) -> Result<Self, ValidationError> {
         let content = fs::read_to_string(path)
             .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
-        Ok(Self::from_yaml(&content))
+        Self::from_yaml(&content)
     }
 
     /// Load a pipeline from a YAML file with `${VAR}` placeholder substitution.
@@ -42,18 +157,19 @@ impl Pipeline {
                 "unresolved placeholder {unresolved} in {path}"
             )));
         }
-        Ok(Self::from_yaml(&content))
+        Self::from_yaml(&content)
     }
 
     /// Load a pipeline from a YAML string slice.
-    #[must_use]
-    pub fn from_yaml(yaml: &str) -> Self {
-        let suv_yaml: Value = serde_yaml::from_str(yaml).expect("invalid pipeline yaml");
-        Self {
+    pub fn from_yaml(yaml: &str) -> Result<Self, ValidationError> {
+        let suv_yaml: Value = serde_yaml::from_str(yaml)
+            .map_err(|e| ValidationError::Config(format!("invalid pipeline yaml: {e}")))?;
+        Ok(Self {
             suv_yaml,
             core_start: 0,
             core_end: 0,
-        }
+            container_connections: Vec::new(),
+        })
     }
 
     /// Set the core range for the SUV pipeline.
@@ -68,6 +184,26 @@ impl Pipeline {
     pub(crate) fn to_yaml_string(&self) -> Result<String, ValidationError> {
         serde_yaml::to_string(&self.suv_yaml)
             .map_err(|e| ValidationError::Config(format!("failed to serialize pipeline yaml: {e}")))
+    }
+
+    /// Declare a connection between a pipeline node and a test container.
+    /// The connection is consumed during config wiring in
+    /// [`Scenario::update_configs`](crate::scenario::Scenario).
+    #[must_use]
+    pub fn connect_container(mut self, conn: PipelineContainerConnection) -> Self {
+        self.container_connections.push(conn);
+        self
+    }
+
+    /// Rewrite a config value in the pipeline YAML at the given
+    /// dot-separated key path under `nodes.<node>.config`.
+    pub(crate) fn set_node_config_value(
+        &mut self,
+        node: &str,
+        key_path: &str,
+        value: &str,
+    ) -> Result<(), ValidationError> {
+        set_config_by_path(&mut self.suv_yaml, node, key_path, value)
     }
 
     /// Apply a single endpoint rewrite directly.
@@ -96,14 +232,24 @@ pub enum EndpointKind {
 impl EndpointKind {
     /// Apply rewrite to the given YAML value in-place using the provided port.
     pub fn apply_to_value(&self, doc: &mut Value, port: u16) -> Result<(), ValidationError> {
-        match self {
-            EndpointKind::OtlpGrpcReceiver(node) => set_otlp_receiver_addr(doc, node, port)?,
-            EndpointKind::OtapGrpcReceiver(node) => set_otap_receiver_addr(doc, node, port)?,
-            EndpointKind::OtlpGrpcExporter(node) | EndpointKind::OtapGrpcExporter(node) => {
-                set_exporter_endpoint(doc, node, port)?
-            }
-        }
-        Ok(())
+        let (node, key_path, value) = match self {
+            EndpointKind::OtlpGrpcReceiver(node) => (
+                node.as_str(),
+                OTLP_RECEIVER_KEY,
+                format!("{RECEIVER_ADDR_PREFIX}{port}"),
+            ),
+            EndpointKind::OtapGrpcReceiver(node) => (
+                node.as_str(),
+                OTAP_RECEIVER_KEY,
+                format!("{RECEIVER_ADDR_PREFIX}{port}"),
+            ),
+            EndpointKind::OtlpGrpcExporter(node) | EndpointKind::OtapGrpcExporter(node) => (
+                node.as_str(),
+                GRPC_EXPORTER_KEY,
+                format!("{EXPORTER_ADDR_PREFIX}{port}"),
+            ),
+        };
+        set_config_by_path(doc, node, key_path, &value)
     }
 
     /// Return the node name this endpoint targets.
@@ -124,7 +270,7 @@ fn node_config_map<'a>(doc: &'a mut Value, node: &str) -> Result<&'a mut Mapping
         .and_then(Value::as_mapping_mut)
         .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
     let node_cfg = nodes
-        .get_mut(Value::from(node.to_string()))
+        .get_mut(node)
         .and_then(Value::as_mapping_mut)
         .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
     let config = node_cfg
@@ -135,44 +281,34 @@ fn node_config_map<'a>(doc: &'a mut Value, node: &str) -> Result<&'a mut Mapping
     })
 }
 
-fn set_otlp_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
-    let config_map = node_config_map(doc, node)?;
-    let protocols = config_map
-        .entry(Value::from("protocols"))
-        .or_insert_with(|| Value::Mapping(Default::default()));
-    let protocols_map = protocols.as_mapping_mut().ok_or_else(|| {
-        ValidationError::Config(format!(
-            "protocols section for node {node} is not a mapping"
-        ))
-    })?;
-    let grpc = protocols_map
-        .entry(Value::from("grpc"))
-        .or_insert_with(|| Value::Mapping(Default::default()));
-    let grpc_map = grpc.as_mapping_mut().ok_or_else(|| {
-        ValidationError::Config(format!("grpc section for node {node} is not a mapping"))
-    })?;
-    let _ = grpc_map.insert(
-        Value::from("listening_addr"),
-        Value::from(format!("127.0.0.1:{port}")),
-    );
-    Ok(())
-}
-
-fn set_otap_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
-    let config_map = node_config_map(doc, node)?;
-    let _ = config_map.insert(
-        Value::from("listening_addr"),
-        Value::from(format!("127.0.0.1:{port}")),
-    );
-    Ok(())
-}
-
-fn set_exporter_endpoint(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
-    let config_map = node_config_map(doc, node)?;
-    let _ = config_map.insert(
-        Value::from("grpc_endpoint"),
-        Value::from(format!("http://127.0.0.1:{port}")),
-    );
+/// Walk a dot-separated config key path under `nodes.<node>.config` and set
+/// the leaf key to the given value. Intermediate mappings are created when
+/// missing.
+fn set_config_by_path(
+    doc: &mut Value,
+    node: &str,
+    key_path: &str,
+    value: &str,
+) -> Result<(), ValidationError> {
+    if key_path.is_empty() {
+        return Err(ValidationError::Config(format!(
+            "empty config key path for node {node}"
+        )));
+    }
+    let mut current: &mut Mapping = node_config_map(doc, node)?;
+    let segments: Vec<&str> = key_path.split('.').collect();
+    let (leaf, intermediate) = segments.split_last().expect("non-empty key_path");
+    for &segment in intermediate {
+        let entry = current
+            .entry(Value::from(segment))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        current = entry.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!(
+                "{segment} in config path for node {node} is not a mapping"
+            ))
+        })?;
+    }
+    let _ = current.insert(Value::from(*leaf), Value::from(value));
     Ok(())
 }
 
@@ -202,7 +338,7 @@ nodes:
 
     #[test]
     fn otlp_wiring_rewrites_addresses() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
         pipeline
             .apply_endpoint(EndpointKind::OtlpGrpcReceiver("receiver".into()), 5555)
             .expect("receiver rewrite succeeds");
@@ -252,7 +388,7 @@ nodes:
 
     #[test]
     fn otap_wiring_rewrites_addresses() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
         pipeline
             .apply_endpoint(EndpointKind::OtapGrpcReceiver("otap_recv".into()), 6000)
             .expect("receiver rewrite succeeds");
@@ -294,7 +430,7 @@ nodes:
 
     #[test]
     fn missing_output_wire_errors() {
-        let mut pipeline = Pipeline::from_yaml(sample_yaml());
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
         let err = pipeline
             .apply_endpoint(EndpointKind::OtlpGrpcExporter("missing".into()), 1234)
             .unwrap_err();
@@ -312,7 +448,7 @@ nodes:
 
     #[test]
     fn core_range_sets_values() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).core_range(3, 7);
+        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap().core_range(3, 7);
         assert_eq!(pipeline.core_start, 3);
         assert_eq!(pipeline.core_end, 7);
     }
@@ -334,6 +470,80 @@ nodes:
         assert_eq!(
             EndpointKind::OtapGrpcExporter("otap_exp".into()).node_name(),
             "otap_exp"
+        );
+    }
+
+    #[test]
+    fn set_config_by_path_single_key() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        pipeline
+            .set_node_config_value("exporter", "grpc_endpoint", "http://127.0.0.1:9999")
+            .expect("single key rewrite succeeds");
+
+        let doc: Value = serde_yaml::from_str(&pipeline.to_yaml_string().unwrap()).unwrap();
+        let config = doc["nodes"]["exporter"]["config"].as_mapping().unwrap();
+        assert_eq!(
+            config.get(Value::from("grpc_endpoint")),
+            Some(&Value::from("http://127.0.0.1:9999"))
+        );
+    }
+
+    #[test]
+    fn set_config_by_path_nested_key() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        pipeline
+            .set_node_config_value(
+                "receiver",
+                "protocols.grpc.listening_addr",
+                "127.0.0.1:5555",
+            )
+            .expect("nested key rewrite succeeds");
+
+        let doc: Value = serde_yaml::from_str(&pipeline.to_yaml_string().unwrap()).unwrap();
+        let addr = &doc["nodes"]["receiver"]["config"]["protocols"]["grpc"]["listening_addr"];
+        assert_eq!(addr, &Value::from("127.0.0.1:5555"));
+    }
+
+    #[test]
+    fn set_config_by_path_creates_intermediate_maps() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        pipeline
+            .set_node_config_value("exporter", "deep.nested.key", "some_value")
+            .expect("creating intermediate maps succeeds");
+
+        let doc: Value = serde_yaml::from_str(&pipeline.to_yaml_string().unwrap()).unwrap();
+        let val = &doc["nodes"]["exporter"]["config"]["deep"]["nested"]["key"];
+        assert_eq!(val, &Value::from("some_value"));
+    }
+
+    #[test]
+    fn set_config_by_path_missing_node_errors() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        let err = pipeline
+            .set_node_config_value("nonexistent", "key", "value")
+            .unwrap_err();
+        assert!(matches!(err, ValidationError::Config(_)));
+    }
+
+    #[test]
+    fn connect_container_stores_connection() {
+        let pipeline = Pipeline::from_yaml(sample_yaml())
+            .unwrap()
+            .connect_container(
+                PipelineContainerConnection::new("kafka")
+                    .internal_port(9092)
+                    .node("exporter")
+                    .config_key("broker")
+                    .address_template("127.0.0.1:{{ port }}"),
+            );
+        assert_eq!(pipeline.container_connections.len(), 1);
+        assert_eq!(pipeline.container_connections[0].container_label, "kafka");
+        assert_eq!(pipeline.container_connections[0].internal_port, Some(9092));
+        assert_eq!(pipeline.container_connections[0].node_name, "exporter");
+        assert_eq!(pipeline.container_connections[0].config_key_path, "broker");
+        assert_eq!(
+            pipeline.container_connections[0].address_template,
+            "127.0.0.1:{{ port }}"
         );
     }
 }

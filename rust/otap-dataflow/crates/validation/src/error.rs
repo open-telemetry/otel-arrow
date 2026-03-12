@@ -25,6 +25,8 @@ pub enum ValidationError {
     Container(String),
 }
 
+impl std::error::Error for ValidationError {}
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

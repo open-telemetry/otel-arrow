@@ -12,6 +12,7 @@
 
 use crate::error::ValidationError;
 use std::collections::HashMap;
+use std::time::Duration;
 use testcontainers::core::IntoContainerPort;
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
@@ -26,10 +27,10 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 ///
 /// # Example
 ///
-/// ```ignore
 /// let redis = ContainerConfig::new("redis", "7.2.4")
 ///     .env("REDIS_ARGS", "--save 60 1");
-/// ```
+///
+#[derive(Debug)]
 pub struct ContainerConfig {
     /// Docker image name (e.g., `"redis"`, `"confluentinc/cp-kafka"`)
     pub(crate) image: String,

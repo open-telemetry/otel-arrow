@@ -7,14 +7,13 @@
 
 use crate::ValidationInstructions;
 use crate::error::ValidationError;
-use minijinja::{Environment, context};
+use crate::template::render_jinja;
+use minijinja::context;
 use otap_df_otap::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::path::PathBuf;
 
-const DEFAULT_SUV_PORT: u16 = 4318;
-const DEFAULT_SUV_ENDPOINT_PORT: u16 = 4317;
 const DEFAULT_MAX_SIGNAL_COUNT: usize = 2000;
 const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
@@ -33,7 +32,7 @@ const DEFAULT_LOG_WEIGHT: u32 = 100;
 ///
 /// # Example
 ///
-/// ```ignore
+///
 /// ContainerConnection::new("kafka")
 ///     .internal_port(9092)
 ///     .node_template(r#"
@@ -42,19 +41,21 @@ const DEFAULT_LOG_WEIGHT: u32 = 100;
 ///   broker: "127.0.0.1:{{ port }}"
 ///   topic: "otlp-logs"
 /// "#)
-/// ```
+///
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerConnection {
     /// Label matching a container added via
     /// [`Scenario::add_container`](crate::scenario::Scenario::add_container).
     pub(crate) container_label: String,
     /// The container's internal port (before host mapping).
-    pub(crate) internal_port: u16,
+    /// `None` until set via [`internal_port`](Self::internal_port).
+    pub(crate) internal_port: Option<u16>,
     /// Jinja2 template for the custom node config. Rendered with
     /// `{{ port }}` = the allocated host port mapped to `internal_port`.
     pub(crate) node_template: String,
     /// Allocated host port (set by the framework during config wiring).
-    pub(crate) allocated_port: u16,
+    /// `None` until the connection is wired.
+    pub(crate) allocated_port: Option<u16>,
 }
 
 impl ContainerConnection {
@@ -63,9 +64,9 @@ impl ContainerConnection {
     pub fn new(container_label: impl Into<String>) -> Self {
         Self {
             container_label: container_label.into(),
-            internal_port: 0,
+            internal_port: None,
             node_template: String::new(),
-            allocated_port: 0,
+            allocated_port: None,
         }
     }
 
@@ -73,7 +74,7 @@ impl ContainerConnection {
     /// the container listens on internally (before testcontainers host mapping).
     #[must_use]
     pub fn internal_port(mut self, port: u16) -> Self {
-        self.internal_port = port;
+        self.internal_port = Some(port);
         self
     }
 
@@ -89,14 +90,13 @@ impl ContainerConnection {
     /// Render the node template with the allocated port in the Jinja2 context.
     /// Returns the rendered YAML string for the custom node configuration.
     pub(crate) fn render(&self) -> Result<String, ValidationError> {
-        let mut env = Environment::new();
-        env.add_template("node", &self.node_template)
-            .map_err(|e| ValidationError::Template(e.to_string()))?;
-        let tmpl = env
-            .get_template("node")
-            .map_err(|e| ValidationError::Template(e.to_string()))?;
-        tmpl.render(context! { port => self.allocated_port })
-            .map_err(|e| ValidationError::Template(e.to_string()))
+        let port = self.allocated_port.ok_or_else(|| {
+            ValidationError::Config(format!(
+                "container connection to '{}' has no allocated port",
+                self.container_label
+            ))
+        })?;
+        render_jinja(&self.node_template, context! { port => port })
     }
 }
 
@@ -115,7 +115,7 @@ pub enum MessageType {
 /// When provided, the traffic-generator exporter connects to the SUV receiver
 /// over TLS (or mTLS) instead of plain-text gRPC.
 ///
-/// Construct via [`TlsScenarioConfig::tls_only`] or [`TlsScenarioConfig::mtls`].
+/// Construct via [`TlsConfig::tls_only`] or [`TlsConfig::mtls`].
 ///
 /// **Note:** Requires the `experimental-tls` feature to be enabled on `otap-df-otap`,
 /// otherwise the rendered pipeline config will fail to deserialize.
@@ -374,7 +374,7 @@ impl Default for Generator {
             suv_exporter_node: String::new(),
             core_start: 2,
             core_end: 2,
-            suv_port: DEFAULT_SUV_ENDPOINT_PORT,
+            suv_port: 0,
             control_ports: vec![],
             max_signal_count: DEFAULT_MAX_SIGNAL_COUNT,
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
@@ -464,7 +464,7 @@ impl Default for Capture {
             suv_receiver_node: String::new(),
             core_start: 1,
             core_end: 1,
-            suv_port: DEFAULT_SUV_PORT,
+            suv_port: 0,
             control_ports: vec![],
             control_streams: vec![],
             validate: vec![],
@@ -481,7 +481,7 @@ mod tests {
     fn generator_defaults_match_expected() {
         let g = Generator::default();
         assert_eq!(g.suv_exporter_type, MessageType::Otlp);
-        assert_eq!(g.suv_port, DEFAULT_SUV_ENDPOINT_PORT);
+        assert_eq!(g.suv_port, 0);
         assert_eq!(g.control_ports, Vec::<u16>::new());
         assert_eq!(g.max_signal_count, 2000);
         assert_eq!(g.max_batch_size, 100);
@@ -498,7 +498,7 @@ mod tests {
     fn capture_defaults_match_expected() {
         let c = Capture::default();
         assert_eq!(c.suv_receiver_type, MessageType::Otlp);
-        assert_eq!(c.suv_port, DEFAULT_SUV_PORT);
+        assert_eq!(c.suv_port, 0);
         assert_eq!(c.control_ports, Vec::<u16>::new());
         assert_eq!(c.control_streams, Vec::<String>::new());
         assert_eq!(c.validate, vec![]);
