@@ -205,7 +205,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                         otap_df_telemetry::descriptor::Instrument::UpDownCounter
                                     ),
                                         quote!(Some(
-                                            otap_df_telemetry::descriptor::Temporality::Delta
+                                            otap_df_telemetry::descriptor::Temporality::Cumulative
                                         )),
                                     ),
                                     "ObserveUpDownCounter" => (
@@ -262,7 +262,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             metric_field_value_types.push(value_type_variant);
 
             match instrument_ty_name.as_str() {
-                "Counter" | "UpDownCounter" | "Mmsc" => {
+                "Counter" | "Mmsc" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
                         if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
@@ -270,7 +270,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                         }
                     ));
                 }
-                "ObserveCounter" | "ObserveUpDownCounter" | "Gauge" => {
+                "UpDownCounter" | "ObserveCounter" | "ObserveUpDownCounter" | "Gauge" => {
                     always_flush = true;
                 }
                 _ => {}

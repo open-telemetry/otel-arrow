@@ -22,6 +22,14 @@ pub struct AttributesProcessorMetrics {
     #[metric(unit = "{attr}")]
     pub deleted_entries: Counter<u64>,
 
+    /// Total number of attribute entries actually inserted.
+    #[metric(unit = "{attr}")]
+    pub inserted_entries: Counter<u64>,
+
+    /// Total number of attribute entries actually upserted.
+    #[metric(unit = "{attr}")]
+    pub upserted_entries: Counter<u64>,
+
     /// Number of times transforms were applied to signal-level payloads.
     #[metric(unit = "{apply}")]
     pub domains_signal: Counter<u64>,

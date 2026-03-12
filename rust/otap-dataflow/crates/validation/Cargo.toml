@@ -35,6 +35,7 @@ weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-core-nodes = { path = "../core-nodes" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
