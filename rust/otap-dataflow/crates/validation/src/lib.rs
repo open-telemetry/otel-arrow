@@ -32,6 +32,7 @@ mod tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
+    #[cfg(target_os = "linux")]
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
     use std::time::Duration;
 
