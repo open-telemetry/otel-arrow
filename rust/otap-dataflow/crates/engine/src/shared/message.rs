@@ -237,10 +237,16 @@ impl<T> SharedReceiver<T> {
     pub fn try_recv(&mut self) -> Result<T, RecvError> {
         let result = match &mut self.inner {
             SharedReceiverInner::Mpsc(receiver) => {
-                receiver.try_recv().map_err(|_| RecvError::Closed)
+                receiver.try_recv().map_err(|e| match e {
+                    tokio::sync::mpsc::error::TryRecvError::Empty => RecvError::Empty,
+                    tokio::sync::mpsc::error::TryRecvError::Disconnected => RecvError::Closed,
+                })
             }
             SharedReceiverInner::Mpmc(receiver) => {
-                receiver.try_recv().map_err(|_| RecvError::Closed)
+                receiver.try_recv().map_err(|e| match e {
+                    flume::TryRecvError::Empty => RecvError::Empty,
+                    flume::TryRecvError::Disconnected => RecvError::Closed,
+                })
             }
         };
 
