@@ -28,9 +28,9 @@ The extension system should:
 * provide a **clear developer experience** for implementing extensions
 * preserve the engine's **performance model**:
 
-    * thread-per-core execution
-    * minimal synchronization
-    * local hot-path access
+  * thread-per-core execution
+  * minimal synchronization
+  * local hot-path access
 * support **future hierarchical scopes** (global, group, pipeline)
 * allow extensions to run **background tasks**
 
@@ -129,7 +129,7 @@ nodes:
 This creates a mapping:
 
 ```text
-node → capability → extension instance
+node -> capability -> extension instance
 ```
 
 This approach improves:
@@ -140,7 +140,7 @@ This approach improves:
 
 ## Configuration Integration
 
-The extension system integrates directly into the engine’s configuration
+The extension system integrates directly into the engine's configuration
 hierarchy.
 
 For phase 1, extensions are declared at the **pipeline level** and consumed by
@@ -223,8 +223,8 @@ Example:
 
 ```text
 oidc_auth provider
- ├─ capability: auth_check
- └─ background task: JWKS refresh
+ |- capability: auth_check
+ `- background task: JWKS refresh
 ```
 
 Extension developers should focus on **provider logic**, not runtime plumbing.
@@ -262,14 +262,14 @@ Conceptually:
 
 ```text
 Extension implementation
-        │
-        ▼
+        |
+        v
 distributed_slice registration
-        │
-        ▼
+        |
+        v
 extension registry
-        │
-        ▼
+        |
+        v
 capability catalog
 ```
 
@@ -283,20 +283,20 @@ The runtime system consists of:
 
 ```text
 Config
-   │
-   ▼
+   |
+   v
 Extension declarations
-   │
-   ▼
+   |
+   v
 Extension Runtime Manager
-   │
-   ▼
+   |
+   v
 Extension runtime units
-   │
-   ▼
+   |
+   v
 Capability handles
-   │
-   ▼
+   |
+   v
 Nodes
 ```
 
@@ -310,7 +310,7 @@ The engine runs **one pipeline instance per core**.
 
 ```text
 Core 0   Core 1   Core 2   Core 3
-  │        │        │        │
+  |        |        |        |
 Pipeline  Pipeline  Pipeline  Pipeline     <- All configured from the same config
 Instance  Instance  Instance  Instance
 ```
@@ -354,12 +354,12 @@ RefCell
 Cell
 ```
 
-This avoids cross-core synchronization and preserves the engine’s performance
+This avoids cross-core synchronization and preserves the engine's performance
 characteristics.
 
 ## Evolution Plan
 
-### Phase 1 — Basic Extension Support
+### Phase 1 - Basic Extension Support
 
 Features:
 
@@ -367,18 +367,18 @@ Features:
 * capability binding in nodes
 * background tasks supported
 
-### Phase 2 — Hierarchical Extensions
+### Phase 2 - Hierarchical Extensions
 
 Adds:
 
 * extension declarations at
 
-    * top/engine-level
-    * group-level
+  * top/engine-level
+  * group-level
 
 Possible future distributed scope.
 
-### Phase 3 — WASM Extensions
+### Phase 3 - WASM Extensions
 
 Adds:
 
@@ -389,7 +389,7 @@ Adds:
 ## Conclusion
 
 This proposal introduces a **capability-based extension architecture** aligned
-with the **OTel Dataflow Engine’s high-performance design** and configuration
+with the **OTel Dataflow Engine's high-performance design** and configuration
 model.
 
 The phased rollout allows the system to evolve gradually while keeping the
@@ -399,7 +399,8 @@ The result is a flexible extension mechanism that preserves **performance,
 clarity, and long-term extensibility**.
 
 ---
-# Appendix 1: Go Collector vs OTel Dataflow Engine Extensions
+
+## Appendix 1: Go Collector vs OTel Dataflow Engine Extensions
 
 ### Go Collector Extension Model
 
@@ -440,14 +441,13 @@ Cons:
 * slightly more configuration
 * ecosystem still developing
 
-
-# Appendix 2: Implementation Recommendations
+## Appendix 2: Implementation Recommendations
 
 This appendix provides implementation guidance intended to help extension
 authors build something performant, aligned with the supported scopes, and
 compatible with the engine architecture.
 
-## 1. Capability handles should be lightweight
+### 1. Capability handles should be lightweight
 
 Capability handles are expected to be used by nodes on hot paths. They should
 therefore be:
@@ -463,14 +463,14 @@ extension state.
 They can also include local cached state for hot-path usage, with background
 tasks responsible for refreshing that state as needed.
 
-## 2. Resolve once during initialization
+### 2. Resolve once during initialization
 
 Capability binding should happen during node initialization only.
 
 Nodes should receive typed capability handles once and keep them for their
 lifetime. They should not perform dynamic capability lookups during runtime.
 
-## 3. Prefer local implementations when the capability is hot-path
+### 3. Prefer local implementations when the capability is hot-path
 
 If a capability is frequently used during request or batch processing, `local`
 execution model should generally be preferred.
@@ -481,7 +481,7 @@ This gives:
 * more predictable latency
 * no cross-core synchronization on the hot path
 
-## 4. `local` execution model should enable lock-free local designs
+### 4. `local` execution model should enable lock-free local designs
 
 For `local` execution model, implementations should be designed so they can
 often rely on thread-local ownership and avoid `Arc<Mutex<...>>`.
@@ -495,7 +495,7 @@ Typical building blocks for local implementations include:
 This is one of the main performance advantages of local extensions in a
 thread-per-core engine.
 
-## 5. Use background tasks for slow-path work
+### 5. Use background tasks for slow-path work
 
 Extension providers may need to:
 
@@ -514,7 +514,7 @@ A typical pattern is:
 * handle reads local cached state
 * background task refreshes or reloads that state asynchronously
 
-## 6. Shared scopes should avoid making every call cross-core
+### 6. Shared scopes should avoid making every call cross-core
 
 For non-local `pipeline` scope and future broader scopes, implementations should
 avoid designs where every capability call requires cross-core communication.
@@ -524,7 +524,7 @@ A better pattern is usually:
 * shared ownership for coordination or refresh
 * local read views or local cached snapshots for hot-path usage
 
-## 7. Keep capability surfaces small and focused
+### 7. Keep capability surfaces small and focused
 
 Capabilities should expose only what nodes need.
 
@@ -535,7 +535,7 @@ Small capability interfaces are easier to:
 * optimize
 * evolve over time
 
-## 8. Extension metadata should stay accurate
+### 8. Extension metadata should stay accurate
 
 Because extension metadata may be used to generate documentation and catalogs,
 it should remain up to date and include at least:
