@@ -7,8 +7,6 @@
 //! All signals are forwarded unchanged via the engine-provided default output port
 //! (or error if multiple ports are connected without a default).
 
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -22,6 +20,8 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ProcessorFactory};
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -365,7 +365,6 @@ mod tests {
 
     mod telemetry {
         use super::*;
-        use otap_df_otap::pdata::OtapPdata;
         use otap_df_channel::mpsc;
         use otap_df_engine::context::ControllerContext;
         use otap_df_engine::control::NodeControlMsg;
@@ -375,6 +374,7 @@ mod tests {
         };
         use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
+        use otap_df_otap::pdata::OtapPdata;
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;

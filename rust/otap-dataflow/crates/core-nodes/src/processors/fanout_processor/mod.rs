@@ -1168,8 +1168,6 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1180,6 +1178,8 @@ mod tests {
     use otap_df_engine::message::Sender;
     use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
     use otap_df_engine::testing::test_node;
+    use otap_df_otap::pdata::Context;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
