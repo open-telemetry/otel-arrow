@@ -261,6 +261,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_conditional_with_condition_match_statement() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        // internally, try_fold must be called on the match expression here to convert the string
+        // argument into a regex scalar expression. This test is is to help avoid regressions of
+        // cases where try_fold might not be called on the condition statements
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (matches(severity_text, ".*E.*")) {
+                project-rename attributes["y"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
     async fn test_conditional_with_default_branch() {
         let log_records = vec![
             LogRecord::build()
