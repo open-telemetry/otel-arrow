@@ -25,8 +25,8 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::process_duration::ProcessDuration;
+use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_pdata::OtlpProtoBytes;
@@ -308,8 +308,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 Ok(())
             }
             Message::PData(mut pdata) => {
-                let _timing =
-                    self.process_duration.start(effect_handler.node_interests());
+                let _timing = self.process_duration.start(effect_handler.node_interests());
 
                 if self.config.verbosity() == Verbosity::Detailed {
                     // Print ACK/NACK detail only in Detailed mode.
