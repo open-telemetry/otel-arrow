@@ -37,7 +37,7 @@ groups:
                 min_size: 1000
                 sizer: items
               format: preserve
-              flush_timeout: 3s
+              max_batch_duration: 3s
           console:
             type: exporter:console
             config: {}
