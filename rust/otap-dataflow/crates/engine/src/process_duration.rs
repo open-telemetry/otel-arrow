@@ -56,7 +56,6 @@ impl ProcessDuration {
     /// Returns a TimingGuard that records the elapsed time into a
     /// ProcessDuration when dropped.  If interests do not include
     /// PROCESS_DURATION, the guard has no effect.
-    #[must_use]
     pub fn start(&self, interests: Interests) -> TimingGuard {
         let timer = if interests.contains(Interests::PROCESS_DURATION) {
             Some(Timer::start())
