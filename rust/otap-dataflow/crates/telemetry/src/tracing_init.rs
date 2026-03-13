@@ -84,13 +84,15 @@ impl TracingSetup {
 /// Provider configuration for setting up a tracing subscriber.
 #[derive(Clone)]
 pub enum ProviderSetup {
-    /// Logs are silently dropped.
+    /// No external logging sink.
+    ///
+    /// Events may still be forwarded to the internal log tap when configured.
     Noop {
         /// Optional internal log tap.
         tap: Option<InternalLogTapReporter>,
     },
 
-    /// Synchronous console logging via `RawLoggingLayer`.
+    /// Synchronous console logging via `StructuredLoggingLayer`.
     ConsoleDirect {
         /// Optional internal log tap.
         tap: Option<InternalLogTapReporter>,

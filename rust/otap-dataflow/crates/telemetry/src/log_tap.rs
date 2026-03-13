@@ -147,7 +147,7 @@ impl InternalLogTapHandle {
         let oldest_seq = state.entries.front().map(|entry| entry.event.seq);
         let newest_seq = state.entries.back().map(|entry| entry.event.seq);
         let truncated_before_seq = match (query.after, oldest_seq) {
-            (Some(after), Some(oldest)) if after < oldest => Some(oldest),
+            (Some(after), Some(oldest)) if after < oldest.saturating_sub(1) => Some(oldest),
             _ => None,
         };
 
@@ -195,13 +195,38 @@ pub struct InternalLogTapRuntime {
 }
 
 impl InternalLogTapRuntime {
+    fn flush_batch(&self, batch: &mut Vec<QueuedLogEvent>) {
+        if batch.is_empty() {
+            return;
+        }
+
+        let mut retention = self.state.write();
+        for item in batch.drain(..) {
+            retention.push(item);
+        }
+    }
+
+    fn drain_remaining(&self, batch: &mut Vec<QueuedLogEvent>) {
+        while let Ok(item) = self.rx.try_recv() {
+            batch.push(item);
+            if batch.len() >= 64 {
+                self.flush_batch(batch);
+            }
+        }
+        self.flush_batch(batch);
+    }
+
     /// Drain the ingestion queue until cancellation is requested.
     pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
         let mut batch = Vec::with_capacity(64);
 
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
+                _ = cancel.cancelled() => {
+                    // Best-effort final flush for events already accepted on the hot path.
+                    self.drain_remaining(&mut batch);
+                    return Ok(());
+                },
                 received = self.rx.recv_async() => {
                     let Ok(first) = received else {
                         return Ok(());
@@ -213,10 +238,7 @@ impl InternalLogTapRuntime {
                             Err(_) => break,
                         }
                     }
-                    let mut retention = self.state.write();
-                    for item in batch.drain(..) {
-                        retention.push(item);
-                    }
+                    self.flush_batch(&mut batch);
                 }
             }
         }
@@ -427,6 +449,67 @@ mod tests {
         });
         assert_eq!(result.truncated_before_seq, Some(5));
         assert_eq!(result.next_seq, 6);
+    }
+
+    #[test]
+    fn query_does_not_report_truncation_when_cursor_is_immediately_before_oldest() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            ingest_channel_size: 4,
+            max_entries: 2,
+            max_bytes: usize::MAX,
+        };
+        let (_reporter, handle, runtime) = build(&config);
+
+        {
+            let mut state = runtime.state.write();
+            state.push(QueuedLogEvent {
+                seq: 5,
+                event: event_with_message("a"),
+                estimated_bytes: 1,
+            });
+            state.push(QueuedLogEvent {
+                seq: 6,
+                event: event_with_message("b"),
+                estimated_bytes: 1,
+            });
+        }
+
+        let result = handle.query(LogQuery {
+            after: Some(4),
+            limit: 10,
+        });
+        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
+        assert_eq!(seqs, vec![5, 6]);
+        assert!(result.truncated_before_seq.is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_flushes_queued_logs_on_cancellation() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            ingest_channel_size: 4,
+            max_entries: 10,
+            max_bytes: usize::MAX,
+        };
+        let (reporter, handle, runtime) = build(&config);
+
+        reporter.log(event_with_message("first"));
+        reporter.log(event_with_message("second"));
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        runtime
+            .run(cancel)
+            .await
+            .expect("runtime should shut down cleanly");
+
+        let result = handle.query(LogQuery {
+            after: None,
+            limit: 10,
+        });
+        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
+        assert_eq!(seqs, vec![1, 2]);
     }
 
     #[test]
