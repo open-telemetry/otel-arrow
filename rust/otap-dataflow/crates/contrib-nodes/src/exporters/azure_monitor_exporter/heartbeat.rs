@@ -49,9 +49,6 @@ struct HeartbeatRow {
 
     #[serde(rename = "Version")]
     version: String,
-
-    #[serde(rename = "SCAgentChannel")]
-    sc_agent_channel: String,
 }
 
 #[inline]
@@ -147,7 +144,6 @@ impl Heartbeat {
                 os_major_version: default_heartbeat_os_major_version(),
                 os_minor_version: default_heartbeat_os_minor_version(),
                 version: default_heartbeat_version(),
-                sc_agent_channel: "Direct".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         })
@@ -168,7 +164,6 @@ impl Heartbeat {
                 os_major_version: "1".to_string(),
                 os_minor_version: "0".to_string(),
                 version: "test-version".to_string(),
-                sc_agent_channel: "Direct".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         }
@@ -266,7 +261,6 @@ mod tests {
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
             version: "1.0.0".to_string(),
-            sc_agent_channel: "Direct".to_string(),
         };
 
         let json = serde_json::to_value(&row).unwrap();
@@ -278,7 +272,6 @@ mod tests {
         assert_eq!(json["OSMajorVersion"], "22");
         assert_eq!(json["OSMinorVersion"], "04");
         assert_eq!(json["Version"], "1.0.0");
-        assert_eq!(json["SCAgentChannel"], "Direct");
     }
 
     #[test]
@@ -291,7 +284,6 @@ mod tests {
             os_major_version: "".to_string(),
             os_minor_version: "".to_string(),
             version: "".to_string(),
-            sc_agent_channel: "".to_string(),
         };
 
         let json = serde_json::to_string(&row).unwrap();
@@ -304,14 +296,12 @@ mod tests {
         assert!(json.contains("\"OSMajorVersion\""));
         assert!(json.contains("\"OSMinorVersion\""));
         assert!(json.contains("\"Version\""));
-        assert!(json.contains("\"SCAgentChannel\""));
 
         // Verify no snake_case field names
         assert!(!json.contains("\"time\""));
         assert!(!json.contains("\"version\""));
         assert!(!json.contains("\"os_name\""));
         assert!(!json.contains("\"os_type\""));
-        assert!(!json.contains("\"sc_agent_channel\""));
     }
 
     #[test]
@@ -324,7 +314,6 @@ mod tests {
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
             version: "1.0.0".to_string(),
-            sc_agent_channel: "Direct".to_string(),
         };
 
         let payload = serde_json::json!([row]);
