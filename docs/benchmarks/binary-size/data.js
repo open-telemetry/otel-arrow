@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773275054901,
+  "lastUpdate": 1773361411534,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2459,6 +2459,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 88.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "42ab40c66b2baf7d1a171b019991a5b461d8bb9b",
+          "message": "Columnar query engine condition and assign operator support in nested attributes pipelines (#2290)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nIn #2190 we added the ability to execute an OPL \"pipeline\" on a stream\nof attributes. This PR extends the capability to implement the `set` and\n`if/else` syntax to operate on attributes.\n\nIt allows us to write expressions that can optionally modify attribute,\nfor example to redact based on sensitive attribtue keys or values:\n```js\nlogs | apply attributes {\n  if (key == \"api-key\" or key == \"secret\" or value = \"4519 0123 4567 8901\") {\n    set value = \"<redacted>\"\n  }\n}\n```\n\n(After https://github.com/open-telemetry/otel-arrow/pull/2273 merges,\nwe'll also be able to use regex match in the \"if\" condition).\n\nThe expression on the left side of the `set` does not have to be a\nstatic value. This uses the expression evaluation code that was added in\nhttps://github.com/open-telemetry/otel-arrow/pull/2126. This paves the\nway for more interesting types of attribute value updates as our\nexpression evaluation becomes more mature.\n\nThe rules for setting attribute values are currently a bit restrictive:\n1. If the expression used to compute the value includes the `value`\ncolumn (a virtual column representing attribute value), then all the\nattributes must be the same type. In the future, I'll add some\ncapability to ensure that we can check this in the if statement\n2. The attribute \"key\" column, as well as the other attribute columns\n(type, parent_id, int, float, etc) cannot be used in the `set`\nexpressions at this time. This helps ensure we don't create invalid\nbatches.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes https://github.com/open-telemetry/otel-arrow/issues/2034\n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nThese types of expressions would now be available for users in the\ntransform processor.",
+          "timestamp": "2026-03-12T23:19:59Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/42ab40c66b2baf7d1a171b019991a5b461d8bb9b"
+        },
+        "date": 1773361405758,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.58,
             "unit": "MB"
           }
         ]
