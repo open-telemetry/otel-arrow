@@ -77,3 +77,15 @@ tests:
         observation_interval: 60
         signals_per_second: null
         max_batch_size: 512
+
+  - name: OTLP-BATCH-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: continuous_passthrough_batch
+        engine_config_template: test_suites/integration/templates/configs/engine/batch/otlp-batch-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        observation_interval: 60
+        signals_per_second: null
+        max_batch_size: 512

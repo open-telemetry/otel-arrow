@@ -196,7 +196,7 @@ const fn default_otap_max_size_items() -> Option<NonZeroUsize> {
 }
 
 const fn default_otap_sizer_items() -> Sizer {
-    Sizer::Bytes
+    Sizer::Items
 }
 
 const fn default_otlp_min_size_bytes() -> Option<NonZeroUsize> {
