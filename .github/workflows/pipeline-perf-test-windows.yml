@@ -64,40 +64,7 @@ jobs:
         shell: pwsh
         run: |
           docker images df_engine_win
-
-          Write-Host "=== Smoke test: --version ==="
-          docker run --rm --name df-verify df_engine_win --version 2>&1
-          Write-Host "Exit code: $LASTEXITCODE"
-
-          Write-Host "=== Smoke test: run with config mount ==="
-          # Render a minimal config and try to start the engine briefly
-          $configDir = "${{ github.workspace }}\tools\pipeline_perf_test\test_suites\integration\configs\engine"
-          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-          @"
-          version: otel_dataflow/v1
-          telemetry:
-            metrics:
-              readers: []
-          pipelines: []
-          "@ | Set-Content "$configDir\config.rendered.yaml"
-
-          Write-Host "Config dir contents:"
-          Get-ChildItem $configDir
-
-          # Start container in background, wait a few seconds, check status and logs
-          docker run -d --name df-smoketest `
-            -v "${configDir}:C:/dataflow/config:ro" `
-            df_engine_win --config C:/dataflow/config/config.rendered.yaml --http-admin-bind 0.0.0.0:8080
-          Start-Sleep -Seconds 10
-
-          Write-Host "=== Container status ==="
-          docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}}' df-smoketest
-
-          Write-Host "=== Container logs ==="
-          docker logs df-smoketest
-
-          Write-Host "=== Cleanup ==="
-          docker rm -f df-smoketest 2>$null
+          docker run --rm df_engine_win --version
 
       - name: Install Python dependencies
         if: ${{ !cancelled() }}
