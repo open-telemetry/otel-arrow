@@ -1,0 +1,85 @@
+# 100kLRPS Performance Test (Windows) - OTLP in, OTLP out
+# Runs load-generator -> df-engine -> backend-service at 100k logs/sec
+# Uses Windows Docker containers on GitHub Actions windows-latest runner (4 vCPUs)
+#
+# Core allocation (4 vCPUs total):
+#   - load-generator: core 0
+#   - backend-service: core 1
+#   - df-engine: core 2
+#   - core 3: reserved for OS/Docker overhead
+name: Windows - 100kLRPS OTLP-OTLP
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine_win:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen:C:/dataflow/config:ro'
+        command:
+          - "--config"
+          - "C:/dataflow/config/config.rendered.yaml"
+          - "--core-id-range"
+          - "0-0"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine_win:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine:C:/dataflow/config:ro'
+        command:
+          - "--config"
+          - "C:/dataflow/config/config.rendered.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine_win:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend:C:/dataflow/config:ro'
+        command:
+          - "--config"
+          - "C:/dataflow/config/config.rendered.yaml"
+          - "--core-id-range"
+          - "1-1"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTLP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-windows.yaml
+      variables:
+        result_dir: windows_100klrps
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 1000
