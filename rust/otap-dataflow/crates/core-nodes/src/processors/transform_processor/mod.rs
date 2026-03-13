@@ -33,18 +33,18 @@ use otap_df_engine::{
     processor::ProcessorWrapper,
 };
 use otap_df_opl::parser::OplParser;
+use otap_df_otap::{
+    OTAP_PROCESSOR_FACTORIES,
+    accessory::slots::Key,
+    pdata::{Context, OtapPdata},
+};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
 
-use crate::{
-    OTAP_PROCESSOR_FACTORIES,
-    accessory::slots::Key,
-    pdata::{Context, OtapPdata},
-    transform_processor::routing::RouterImpl,
-};
+use crate::processors::transform_processor::routing::RouterImpl;
 
 use self::config::{Config, Query};
 use self::context::Contexts;
@@ -452,7 +452,7 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
-    use crate::{
+    use otap_df_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
     };
@@ -1076,24 +1076,23 @@ mod test {
                 assert_eq!(output.len(), 1, "Should emit one transformed message");
 
                 let outbound_pdata = output.pop().unwrap();
-                let (outbound_context, _payload) = outbound_pdata.into_parts();
 
-                // The processor at node 5 should have tagged its source with empty interests
-                assert_eq!(outbound_context.source_node(), Some(5));
-                // The subscriber at node 999 is still present (the source-node frame
-                // has empty interests and does not count as a subscriber)
-                assert!(outbound_context.has_subscribers());
+                // The processor at node 5 should have tagged the outbound source.
+                assert_eq!(outbound_pdata.get_source_node(), Some(5));
+                // The original ACK subscriber should still be present.
+                assert!(outbound_pdata.has_subscribers());
 
-                // Verify the stack structure: frame[0] is the subscriber,
-                // frame[1] is the source-node tag.
-                let frames = outbound_context.frames();
-                assert_eq!(frames.len(), 2);
-                // Bottom frame: the ACK subscriber at node 999
-                assert_eq!(frames[0].node_id, 999);
-                assert_eq!(frames[0].interests, Interests::ACKS);
-                // Top frame: the source-node tag at node 5 with empty interests
-                assert_eq!(frames[1].node_id, 5);
-                assert_eq!(frames[1].interests, Interests::empty());
+                // Behavior check: ACK unwinds back to the original subscriber.
+                let (node_id, ack) = next_ack(AckMsg::new(outbound_pdata))
+                    .expect("expected ACK subscriber after transform");
+                assert_eq!(node_id, 999);
+                let got_calldata: TestCallData = ack
+                    .unwind
+                    .route
+                    .calldata
+                    .try_into()
+                    .expect("expected TestCallData in unwind route");
+                assert_eq!(got_calldata, TestCallData::new_with(1, 0));
             })
             .validate(|_ctx| async move {})
     }

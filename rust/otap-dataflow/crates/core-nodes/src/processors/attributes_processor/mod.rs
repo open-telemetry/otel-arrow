@@ -30,10 +30,9 @@
 //!   # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
 //! ```
 //!
-//! Implementation uses otel_arrow_rust::otap::transform::transform_attributes for
+//! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -47,6 +46,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
@@ -572,11 +572,11 @@ mod payload_sets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::OtapPdata;
     use bytes::BytesMut;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1785,13 +1785,13 @@ mod tests {
 #[cfg(test)]
 mod telemetry_tests {
     use super::*;
-    use crate::pdata::OtapPdata;
     use bytes::BytesMut;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use prost::Message as _;
     use serde_json::json;

@@ -7,7 +7,7 @@
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 
-use crate::{
+use otap_df_otap::{
     accessory::slots::{Key, State},
     pdata::Context,
 };
@@ -152,6 +152,7 @@ impl Contexts {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_otap::testing::create_test_pdata;
     use std::num::NonZeroUsize;
 
     fn new_contexts() -> Contexts {
@@ -163,13 +164,12 @@ mod test {
 
     // Helper to create a test context with subscribers
     fn create_context_with_subscribers() -> Context {
-        let mut ctx = Context::default();
-        use otap_df_engine::control::Context8u8;
-        ctx.subscribe_to(
+        let pdata = create_test_pdata().test_subscribe_to(
             otap_df_engine::Interests::ACKS,
-            smallvec::smallvec![Context8u8::from(1u64)],
+            smallvec::smallvec![otap_df_engine::control::Context8u8::from(1u64)],
             1,
         );
+        let (ctx, _payload) = pdata.into_parts();
         ctx
     }
 
