@@ -572,6 +572,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 "azure_monitor_exporter.auth.token_acquisition_failed.details",
                                 error = %e
                             );
+                            self.metrics.borrow_mut().add_auth_failure();
                             let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
                             next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                         }
