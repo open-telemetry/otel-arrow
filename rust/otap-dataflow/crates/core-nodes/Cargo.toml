@@ -13,23 +13,34 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-engine = { path = "../engine" }
+otap-df-opl = { path = "../opl" }
 otap-df-otap = { path = "../otap" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-pdata-views = { workspace = true }
+otap-df-query-engine = { path = "../query-engine" }
+otap-df-quiver = { path = "../quiver" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 
+arrow = { workspace = true }
 async-trait.workspace = true
+blake3.workspace = true
+byte-unit.workspace = true
 bytes.workspace = true
+data_engine_expressions.workspace = true
+data_engine_kql_parser.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
 prost.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+slotmap.workspace = true
 smallvec.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 weaver_common.workspace = true
 weaver_forge.workspace = true
@@ -42,3 +53,4 @@ otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
 otap-df-telemetry = { path = "../telemetry" }
+tempfile.workspace = true

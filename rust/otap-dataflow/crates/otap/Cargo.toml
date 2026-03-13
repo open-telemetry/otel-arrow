@@ -117,6 +117,7 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
+otap-df-contrib-nodes = { path = "../contrib-nodes" }
 otap-df-core-nodes = { path = "../core-nodes" }
 otap-test-tls-certs.workspace = true
 otap-df-engine = { path = "../engine", features = ["test-utils"] }

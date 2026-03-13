@@ -218,8 +218,9 @@ async fn process(
 Depending on the caller, there are different ways to construct the
 `CallData`. Some components will be stateless, provided they can fit
 everything they need for Ack/Nack handling into the provided space
-with clonable data. See the OTAP retry processor as an example of this
-approach, which stores a retry count and timestamp in the call data.
+with clonable data. See the core-nodes retry processor as an example of
+this approach, which stores a retry count and timestamp in the call
+data.
 
 Some components will require dedicated space that does not fit the
 calldata pattern, they will have to manage their own state. See the
