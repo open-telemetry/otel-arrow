@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::BooleanArray;
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, concat_batches, not, or};
+use arrow::compute::{and, concat_batches, filter_record_batch, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -16,7 +16,7 @@ use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
@@ -210,6 +210,116 @@ impl PipelineStage for ConditionalPipelineStage {
 
         Ok(result)
     }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_ctx: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        if attrs_record_batch.num_rows() == 0 {
+            // no branches would handle any rows, so nothing to do
+            return Ok(attrs_record_batch);
+        }
+
+        // keep track of the rows that were selected by previous branches
+        let mut already_selected_vec = BooleanArray::new(
+            BooleanBuffer::new_unset(attrs_record_batch.num_rows()),
+            None,
+        );
+
+        let mut branch_results = Vec::with_capacity(
+            self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
+        );
+
+        for branch in &mut self.branches {
+            if already_selected_vec.true_count() == attrs_record_batch.num_rows() {
+                // all rows have been selected by previous branches, so there is no need to continue
+                // executing the next branches with empty batches
+                break;
+            }
+
+            // extract the base filter predicate from the branch condition
+            let filter_exec = match &mut branch.condition {
+                Composite::Base(filter) => filter,
+                _ => {
+                    return Err(Error::InvalidPipelineError {
+                        cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                        query_location: None,
+                    });
+                }
+            };
+
+            // determine which rows are selected by this branch's predicate
+            let predicate = filter_exec.predicate
+                .as_mut()
+                .ok_or_else(||Error::InvalidPipelineError {
+                    cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                    query_location: None,
+                })?;
+            let predicate_selection_vec =
+                predicate.evaluate_filter(&attrs_record_batch, session_ctx)?;
+
+            // select only the rows that match this branch AND were not already selected
+            // by a previous branch
+            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+
+            // update the list of rows that were already selected by branches
+            already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+            // create a record batch with only the rows that match the condition and execute
+            // the branch's pipeline stages on it
+            let mut branch_record_batch =
+                filter_record_batch(&attrs_record_batch, &branch_selection_vec)?;
+            for stage in &mut branch.pipeline_stages {
+                branch_record_batch = stage
+                    .execute_on_attributes(
+                        branch_record_batch,
+                        session_ctx,
+                        config_options,
+                        task_context.clone(),
+                        exec_options,
+                    )
+                    .await?;
+            }
+
+            branch_results.push(branch_record_batch)
+        }
+
+        // handle the default branch - e.g. the rows that did not match the condition from any of
+        // the previous branches
+        if already_selected_vec.true_count() != attrs_record_batch.num_rows() {
+            let mut default_branch_batch =
+                filter_record_batch(&attrs_record_batch, &not(&already_selected_vec)?)?;
+
+            if let Some(default_branch) = self.default_branch.as_mut() {
+                for stage in default_branch {
+                    default_branch_batch = stage
+                        .execute_on_attributes(
+                            default_branch_batch,
+                            session_ctx,
+                            config_options,
+                            task_context.clone(),
+                            exec_options,
+                        )
+                        .await?;
+                }
+            }
+            branch_results.push(default_branch_batch);
+        }
+
+        // reconstruct the result by concatenating the record batches from all branches
+        let batch_refs = branch_results.iter().collect::<Vec<_>>();
+        let final_result = concat_batches(branch_results[0].schema_ref(), batch_refs)?;
+
+        Ok(final_result)
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +351,44 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(
             r#"
             logs | if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_with_condition_match_statement() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        // internally, try_fold must be called on the match expression here to convert the string
+        // argument into a regex scalar expression. This test is is to help avoid regressions of
+        // cases where try_fold might not be called on the condition statements
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (matches(severity_text, ".*E.*")) {
                 project-rename attributes["y"] = attributes["x"]
             }"#,
             to_logs_data(log_records),

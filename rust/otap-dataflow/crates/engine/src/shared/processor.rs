@@ -88,6 +88,14 @@ pub trait Processor<PData> {
         msg: Message<PData>,
         effect_handler: &mut EffectHandler<PData>,
     ) -> Result<(), Error>;
+
+    /// Returns whether the engine should deliver pdata messages to this processor right now.
+    ///
+    /// When this returns `false` the engine pauses pdata delivery and only forwards control
+    /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
+    fn accept_pdata(&self) -> bool {
+        true
+    }
 }
 
 /// A `Send` implementation of the EffectHandler.

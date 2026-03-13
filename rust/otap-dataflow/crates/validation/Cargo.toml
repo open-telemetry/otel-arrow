@@ -35,6 +35,7 @@ weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-core-nodes = { path = "../core-nodes" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
@@ -44,8 +45,10 @@ prost = { workspace = true }
 
 [features]
 experimental-tls = ["otap-df-otap/experimental-tls"]
+crypto-ring = ["otap-df-otap/crypto-ring"]
+crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
 tempfile = "3"
 otap-test-tls-certs = { workspace = true }
-rustls = { workspace = true }

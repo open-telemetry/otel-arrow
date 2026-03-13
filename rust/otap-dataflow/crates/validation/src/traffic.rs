@@ -7,7 +7,7 @@
 
 use crate::ValidationInstructions;
 use crate::error::ValidationError;
-use otap_df_otap::fake_data_generator::config::DataSource;
+use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::path::PathBuf;

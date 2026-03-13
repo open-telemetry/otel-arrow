@@ -13,8 +13,8 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_otap::fake_data_generator::config::{Config, TrafficConfig};
-use otap_df_otap::fake_data_generator::semconv_signal::semconv_otlp_logs;
+use otap_df_core_nodes::receivers::fake_data_generator::config::{Config, TrafficConfig};
+use otap_df_core_nodes::receivers::fake_data_generator::semconv_signal::semconv_otlp_logs;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;

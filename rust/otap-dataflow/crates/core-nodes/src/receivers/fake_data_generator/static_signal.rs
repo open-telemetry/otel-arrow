@@ -7,7 +7,7 @@
 //! semantic conventions registry, making them ideal for high-throughput
 //! load testing where startup time and per-signal CPU cost matter.
 
-use crate::fake_data_generator::fake_data::{
+use crate::receivers::fake_data_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
 use otap_df_pdata::proto::opentelemetry::{

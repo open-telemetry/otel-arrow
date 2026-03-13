@@ -9,6 +9,7 @@ emitted via `otel_*` log macros.
 | Metric name | Description | Produced in file |
 | --- | --- | --- |
 | `engine.metrics.memory_rss` | Process resident memory (RSS) in bytes. | `crates/engine/src/engine_metrics.rs` |
+| `engine.metrics.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | `crates/engine/src/engine_metrics.rs` |
 | `channel.sender.send.count` | Number of messages successfully sent to a channel. | `crates/engine/src/channel_metrics.rs` |
 | `channel.sender.send.error_full` | Number of send attempts that failed because the channel was full. | `crates/engine/src/channel_metrics.rs` |
 | `channel.sender.send.error_closed` | Number of send attempts that failed because the channel was closed. | `crates/engine/src/channel_metrics.rs` |
@@ -16,6 +17,14 @@ emitted via `otel_*` log macros.
 | `channel.receiver.recv.error_empty` | Number of receive attempts when the channel was empty. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.recv.error_closed` | Number of receive attempts after the channel was closed. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.success` | Consumed requests successfully processed. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.failure` | Consumed requests that failed (retryable errors). | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.refused` | Consumed requests permanently refused (permanent failures). | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.duration` | Duration from production until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.success` | Produced requests acknowledged by downstream. | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.failure` | Produced requests that failed (retryable errors). | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.refused` | Produced requests permanently refused (permanent failures). | `crates/engine/src/channel_metrics.rs` |
 | `pipeline.metrics.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.metrics.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.metrics.memory_allocated` | Cumulative bytes allocated by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
@@ -72,6 +81,9 @@ emitted via `otel_*` log macros.
 | `pipeline.metrics.reporting.fail` | `warn` | Reporting pipeline internal metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `tokio.metrics.reporting.fail` | `warn` | Reporting Tokio runtime metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `channel.metrics.reporting.fail` | `warn` | Reporting channel metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
+| `node.metrics.reporting.fail` | `warn` | Reporting node (consumer/producer) metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
+| `pipeline.ctrl.pending_sends.high` | `warn` | Pending sends buffer reached the warning threshold; a node's control channel may be persistently full. | `crates/engine/src/pipeline_ctrl.rs` |
+| `topic.tracked_publish.duplicate_message_id` | `warn` | Tracked publish tracker registered a duplicate message id and overwrote the previous entry. | `crates/engine/src/topic/types.rs` |
 
 ## Maintenance
 

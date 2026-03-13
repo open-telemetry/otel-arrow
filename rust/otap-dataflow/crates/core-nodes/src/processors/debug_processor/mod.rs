@@ -12,7 +12,6 @@ use self::config::{Config, DisplayMode, SignalActive, Verbosity};
 use self::metrics::DebugPdataMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use self::sampling::Sampler;
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -28,6 +27,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
@@ -534,16 +534,16 @@ impl DebugProcessor {
 #[cfg(test)]
 mod tests {
 
-    use crate::debug_processor::config::{Config, DisplayMode, SignalActive, Verbosity};
-    use crate::debug_processor::filter::{FilterMode, FilterRules};
-    use crate::debug_processor::output::OutputMode;
-    use crate::debug_processor::predicate::{
+    use crate::processors::debug_processor::config::{
+        Config, DisplayMode, SignalActive, Verbosity,
+    };
+    use crate::processors::debug_processor::filter::{FilterMode, FilterRules};
+    use crate::processors::debug_processor::output::OutputMode;
+    use crate::processors::debug_processor::predicate::{
         KeyValue as PredicateKeyValue, MatchValue, Predicate, SignalField,
     };
-    use crate::debug_processor::sampling::SamplingConfig;
-    use crate::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{next_ack, next_nack};
+    use crate::processors::debug_processor::sampling::SamplingConfig;
+    use crate::processors::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
@@ -552,6 +552,8 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1414,9 +1416,9 @@ mod tests {
     /// Tests that the debug processor forwards ACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
-        use crate::testing::TestCallData;
         use otap_df_engine::Interests;
         use otap_df_engine::control::{AckMsg, PipelineControlMsg};
+        use otap_df_otap::testing::TestCallData;
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_ack_test.txt");
@@ -1466,9 +1468,9 @@ mod tests {
     /// Tests that the debug processor forwards NACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
-        use crate::testing::TestCallData;
         use otap_df_engine::Interests;
         use otap_df_engine::control::{NackMsg, PipelineControlMsg};
+        use otap_df_otap::testing::TestCallData;
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_nack_test.txt");
