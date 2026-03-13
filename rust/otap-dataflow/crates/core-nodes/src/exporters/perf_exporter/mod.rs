@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the Perf Exporter node
+//! Exporter used to measure the performance of the OTAP data pipeline.
 //!
 //! ToDo - Future developments / improvements:
 //! - Replace this exporter with a processor that could be combined with a Noop exporter to achieve
@@ -232,7 +232,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // }
 
                     // Successful perf reporting: mark as exported for this signal
-
                     self.pdata_metrics.inc_exported(signal_type);
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
