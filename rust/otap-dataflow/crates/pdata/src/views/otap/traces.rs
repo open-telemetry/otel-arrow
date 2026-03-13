@@ -1545,7 +1545,7 @@ fn get_attribute_value<'a>(
 mod tests {
     use super::*;
     use arrow::array::{
-        ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, StringArray,
+        ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         TimestampNanosecondArray, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
