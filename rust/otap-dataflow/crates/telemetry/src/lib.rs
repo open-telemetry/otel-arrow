@@ -32,6 +32,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
+use parking_lot::Mutex;
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -45,6 +46,8 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Internal log tap for admin-side log queries.
+pub mod log_tap;
 pub mod metrics;
 /// OpenTelemetry SDK provider configuration.
 pub mod otel_sdk;
@@ -157,6 +160,15 @@ pub struct InternalTelemetrySystem {
     /// Event reporter for ITS mode (Internal Telemetry System).
     its_reporter: Option<ObservedEventReporter>,
 
+    /// Optional reporter for the internal log tap.
+    log_tap_reporter: Option<log_tap::InternalLogTapReporter>,
+
+    /// Optional handle for querying retained internal logs.
+    log_tap_handle: Option<log_tap::InternalLogTapHandle>,
+
+    /// Runtime responsible for draining the internal log tap queue.
+    log_tap_runtime: Mutex<Option<log_tap::InternalLogTapRuntime>>,
+
     /// Internal telemetry pipeline setup.
     its_settings: Option<InternalTelemetrySettings>,
 }
@@ -222,6 +234,13 @@ impl InternalTelemetrySystem {
             (None, None)
         };
 
+        let (log_tap_reporter, log_tap_handle, log_tap_runtime) = if config.logs.tap.enabled {
+            let (reporter, handle, runtime) = log_tap::build(&config.logs.tap);
+            (Some(reporter), Some(handle), Some(runtime))
+        } else {
+            (None, None, None)
+        };
+
         Ok(Self {
             registry: telemetry_registry,
             collector: Arc::new(collector),
@@ -234,6 +253,9 @@ impl InternalTelemetrySystem {
             context_fn,
             console_async_reporter,
             its_reporter,
+            log_tap_reporter,
+            log_tap_handle,
+            log_tap_runtime: Mutex::new(log_tap_runtime),
             its_settings,
         })
     }
@@ -257,9 +279,13 @@ impl InternalTelemetrySystem {
     #[must_use]
     fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
         let provider = match mode {
-            ProviderMode::Noop => ProviderSetup::Noop,
+            ProviderMode::Noop => ProviderSetup::Noop {
+                tap: self.log_tap_reporter.clone(),
+            },
 
-            ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect,
+            ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect {
+                tap: self.log_tap_reporter.clone(),
+            },
 
             ProviderMode::ConsoleAsync => ProviderSetup::InternalAsync {
                 reporter: self
@@ -267,10 +293,12 @@ impl InternalTelemetrySystem {
                     .as_ref()
                     .expect("has provider")
                     .clone(),
+                tap: self.log_tap_reporter.clone(),
             },
 
             ProviderMode::ITS => ProviderSetup::InternalAsync {
                 reporter: self.its_reporter.as_ref().expect("has provider").clone(),
+                tap: self.log_tap_reporter.clone(),
             },
         };
 
@@ -302,6 +330,18 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn internal_telemetry_settings(&self) -> Option<InternalTelemetrySettings> {
         self.its_settings.clone()
+    }
+
+    /// Returns a shareable handle to the internal log tap, if enabled.
+    #[must_use]
+    pub fn log_tap_handle(&self) -> Option<log_tap::InternalLogTapHandle> {
+        self.log_tap_handle.clone()
+    }
+
+    /// Takes ownership of the internal log tap runtime, if enabled.
+    #[must_use]
+    pub fn take_log_tap_runtime(&self) -> Option<log_tap::InternalLogTapRuntime> {
+        self.log_tap_runtime.lock().take()
     }
 
     /// Returns the configured log level.
@@ -429,7 +469,7 @@ mod tests {
         assert!(rx.is_empty(), "receiver starts empty");
 
         // Emit a log using the engine tracing setup (which uses ITS)
-        its.engine_tracing_setup().with_subscriber(|| {
+        its.engine_tracing_setup().with_subscriber_ignoring_env(|| {
             crate::otel_info!("test log message");
         });
 
