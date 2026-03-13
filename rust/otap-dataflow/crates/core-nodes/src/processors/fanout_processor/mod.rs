@@ -32,7 +32,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
 use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,8 @@ struct FanoutConfig {
     )]
     pub timeout_check_interval: Duration,
     /// Maximum number of in-flight messages tracked by the processor.
-    /// When exceeded, new messages are nacked to apply backpressure.
+    /// When the limit is reached, `accept_pdata()` returns `false` to apply backpressure
+    /// via the engine's `recv_when` gate — no data is lost or nacked.
     /// Only applies when await_ack is "primary" or "all" (not "none").
     /// Default: 10000. Set to 0 for unlimited (not recommended for production).
     #[serde(default = "FanoutConfig::default_max_inflight")]
@@ -376,9 +377,18 @@ struct FanoutMetrics {
     pub nacked: Counter<u64>,
     #[metric(unit = "{item}")]
     pub timed_out: Counter<u64>,
-    /// Messages rejected due to max_inflight limit (backpressure).
+    /// Current number of in-flight requests tracked by the processor.
     #[metric(unit = "{item}")]
-    pub rejected_max_inflight: Counter<u64>,
+    pub in_flight: Gauge<u64>,
+    /// Configured max_inflight value (0 means unlimited).
+    #[metric(unit = "{item}")]
+    pub max_inflight_config: Gauge<u64>,
+    /// 1 when fanout is currently refusing new pdata via accept_pdata(), else 0.
+    #[metric(unit = "1")]
+    pub throttled: Gauge<u64>,
+    /// Increments on transition from not-throttled to throttled.
+    #[metric(unit = "{episode}")]
+    pub throttle_episodes: Counter<u64>,
 }
 
 /// Entry in the deadline min-heap for efficient timeout checking.
@@ -403,6 +413,8 @@ pub struct FanoutProcessor {
     deadline_heap: BinaryHeap<Reverse<Deadline>>,
     next_id: u64,
     timer_started: bool,
+    /// Tracks previous throttle state for throttle_episodes transition detection.
+    was_throttled: bool,
 }
 
 fn build_calldata(request_id: u64, dest_index: usize) -> CallData {
@@ -427,7 +439,8 @@ fn now() -> Instant {
 
 impl FanoutProcessor {
     fn new(pipeline_ctx: PipelineContext, config: ValidatedConfig) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+        let mut metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+        metrics.max_inflight_config.set(config.max_inflight as u64);
         Self {
             config,
             metrics,
@@ -436,6 +449,7 @@ impl FanoutProcessor {
             deadline_heap: BinaryHeap::new(),
             next_id: 1,
             timer_started: false,
+            was_throttled: false,
         }
     }
 
@@ -451,6 +465,23 @@ impl FanoutProcessor {
         })?;
         let validated = cfg.validate(node_config)?;
         Ok(Self::new(pipeline_ctx, validated))
+    }
+
+    /// Updates saturation gauges after any state mutation that changes inflight count.
+    fn update_saturation_metrics(&mut self) {
+        let current_inflight = if self.config.use_slim_primary {
+            self.slim_inflight.len()
+        } else {
+            self.inflight.len()
+        };
+        self.metrics.in_flight.set(current_inflight as u64);
+
+        let throttled = !self.accept_pdata();
+        self.metrics.throttled.set(u64::from(throttled));
+        if throttled && !self.was_throttled {
+            self.metrics.throttle_episodes.add(1);
+        }
+        self.was_throttled = throttled;
     }
 
     async fn ensure_timer(
@@ -938,22 +969,9 @@ impl FanoutProcessor {
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // Check max_inflight limit before accepting new message.
-        if self.config.max_inflight > 0 && self.slim_inflight.len() >= self.config.max_inflight {
-            self.metrics.rejected_max_inflight.add(1);
-            self.metrics.nacked.add(1);
-            let nack = NackMsg {
-                reason: format!(
-                    "fanout: max_inflight limit ({}) exceeded",
-                    self.config.max_inflight
-                ),
-                unwind: UnwindData::default(),
-                refused: Box::new(pdata),
-                permanent: false, // Backpressure is retriable
-            };
-            effect_handler.notify_nack(nack).await?;
-            return Ok(());
-        }
+        // Note: max_inflight backpressure is enforced by accept_pdata() at the engine level.
+        // The engine will not call process() with pdata when accept_pdata() returns false,
+        // so no nack is needed here.
 
         let request_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
@@ -1030,12 +1048,28 @@ impl FanoutProcessor {
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for FanoutProcessor {
+    /// Returns `false` when the inflight map is at capacity, pausing pdata delivery until acks
+    /// drain the inflight map below the limit. This provides backpressure without data loss.
+    fn accept_pdata(&self) -> bool {
+        if self.config.max_inflight == 0 {
+            return true;
+        }
+        if self.config.use_fire_and_forget {
+            return true;
+        }
+        if self.config.use_slim_primary {
+            self.slim_inflight.len() < self.config.max_inflight
+        } else {
+            self.inflight.len() < self.config.max_inflight
+        }
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match msg {
+        let result = match msg {
             Message::Control(NodeControlMsg::Ack(ack)) => {
                 // Fire-and-forget never receives acks (no subscription).
                 // Slim primary path uses dedicated handler.
@@ -1069,12 +1103,19 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 mut metrics_reporter,
             }) => {
                 _ = metrics_reporter.report(&mut self.metrics);
-                Ok(())
+                return Ok(());
             }
             // Shutdown and other control messages are ignored: we drop inflight state on drop,
             // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
-            Message::Control(_) => Ok(()),
+            Message::Control(_) => return Ok(()),
             Message::PData(pdata) => {
+                debug_assert!(
+                    self.accept_pdata(),
+                    "process() called with PData while at max_inflight ({}) — \
+                     engine must check accept_pdata() before delivering",
+                    self.config.max_inflight
+                );
+
                 // === FAST PATH 1: Fire-and-forget (await_ack = none) ===
                 // No inflight tracking at all. Clone, send, ack upstream immediately.
                 if self.config.use_fire_and_forget {
@@ -1086,48 +1127,35 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 // Minimal state: just request_id → original_pdata.
                 if self.config.use_slim_primary {
                     self.process_slim_primary(pdata, effect_handler).await?;
-                    return Ok(());
-                }
+                    Ok(())
+                } else {
+                    // === FULL PATH: Sequential, await_all, fallback, or timeout ===
+                    // Full inflight tracking with DestinationVec.
+                    // Note: max_inflight backpressure is enforced by accept_pdata() at the engine
+                    // level, so no nack is needed here.
 
-                // === FULL PATH: Sequential, await_all, fallback, or timeout ===
-                // Full inflight tracking with DestinationVec.
-
-                // Check max_inflight limit before accepting new message.
-                if self.config.max_inflight > 0 && self.inflight.len() >= self.config.max_inflight {
-                    self.metrics.rejected_max_inflight.add(1);
-                    self.metrics.nacked.add(1);
-                    let nack = NackMsg {
-                        reason: format!(
-                            "fanout: max_inflight limit ({}) exceeded",
-                            self.config.max_inflight
-                        ),
-                        unwind: UnwindData::default(),
-                        refused: Box::new(pdata),
-                        permanent: false, // Backpressure is retriable
-                    };
-                    effect_handler.notify_nack(nack).await?;
-                    return Ok(());
+                    let request_id = self.register_inflight(pdata, effect_handler).await?;
+                    let inflight = self
+                        .inflight
+                        .get_mut(&request_id)
+                        .expect("inflight just inserted");
+                    let deadlines = Self::dispatch_ready(
+                        request_id,
+                        inflight,
+                        &self.config.destinations,
+                        effect_handler,
+                    )
+                    .await?;
+                    for d in deadlines {
+                        self.deadline_heap.push(Reverse(d));
+                    }
+                    self.metrics.sent.add(1);
+                    Ok(())
                 }
-
-                let request_id = self.register_inflight(pdata, effect_handler).await?;
-                let inflight = self
-                    .inflight
-                    .get_mut(&request_id)
-                    .expect("inflight just inserted");
-                let deadlines = Self::dispatch_ready(
-                    request_id,
-                    inflight,
-                    &self.config.destinations,
-                    effect_handler,
-                )
-                .await?;
-                for d in deadlines {
-                    self.deadline_heap.push(Reverse(d));
-                }
-                self.metrics.sent.add(1);
-                Ok(())
             }
-        }
+        };
+        self.update_saturation_metrics();
+        result
     }
 }
 
@@ -2523,9 +2551,9 @@ mod tests {
         }
     }
 
-    /// Test that max_inflight limits are enforced and messages are nacked when exceeded.
+    /// Test that accept_pdata() returns false when max_inflight limit is reached (full path).
     #[tokio::test]
-    async fn max_inflight_rejects_when_limit_exceeded() {
+    async fn max_inflight_pauses_pdata_when_limit_reached() {
         // Use full path (with timeout) to test inflight map, max_inflight = 2
         let mut h = build_harness_with_config(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, Some("10s"))]),
@@ -2534,7 +2562,10 @@ mod tests {
             json!({ "max_inflight": 2 }),
         );
 
-        // Send 2 messages - should succeed (at limit)
+        // Initially accept_pdata() should be true
+        assert!(h.fanout.accept_pdata(), "should accept pdata when empty");
+
+        // Send 2 messages - fills the inflight map to limit
         for _ in 0..2 {
             h.fanout
                 .process(Message::PData(make_pdata()), &mut h.effect)
@@ -2543,42 +2574,26 @@ mod tests {
         }
         assert_eq!(h.fanout.inflight.len(), 2, "should have 2 inflight");
 
-        // Send 3rd message - should be nacked due to max_inflight
-        h.fanout
-            .process(Message::PData(make_pdata()), &mut h.effect)
-            .await
-            .expect("process ok");
-
-        // Inflight should still be 2
-        assert_eq!(
-            h.fanout.inflight.len(),
-            2,
-            "inflight should not grow beyond limit"
+        // accept_pdata() must now return false - engine will pause pdata delivery
+        assert!(
+            !h.fanout.accept_pdata(),
+            "should not accept pdata when inflight is at limit"
         );
 
-        // Check that a nack was sent upstream for the rejected message
-        let mut nack_received = false;
-        while let Ok(Ok(msg)) =
-            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
-        {
-            if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
-                assert!(
-                    nack.reason.contains("max_inflight"),
-                    "nack reason should mention max_inflight: {}",
-                    nack.reason
-                );
-                nack_received = true;
-            }
-        }
+        // No nack should have been sent - backpressure is via accept_pdata(), not nacking
+        let nack_received = tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv())
+            .await
+            .map(|r| matches!(r, Ok(PipelineControlMsg::DeliverNack { .. })))
+            .unwrap_or(false);
         assert!(
-            nack_received,
-            "should have received a nack for rejected message"
+            !nack_received,
+            "no nack should be sent; backpressure is via accept_pdata()"
         );
     }
 
-    /// Test that max_inflight limits work for slim primary path.
+    /// Test that accept_pdata() returns false when max_inflight limit is reached (slim path).
     #[tokio::test]
-    async fn max_inflight_slim_path_rejects_when_limit_exceeded() {
+    async fn max_inflight_slim_path_pauses_pdata_when_limit_reached() {
         // Use slim path (no timeout, no fallback) with max_inflight = 2
         let mut h = build_harness_with_config(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2587,13 +2602,15 @@ mod tests {
             json!({ "max_inflight": 2 }),
         );
 
-        // Verify slim path is used
         assert!(
             h.fanout.config.use_slim_primary,
             "should use slim primary path"
         );
 
-        // Send 2 messages - should succeed
+        // Initially accept_pdata() should be true
+        assert!(h.fanout.accept_pdata(), "should accept pdata when empty");
+
+        // Send 2 messages - fills slim_inflight to limit
         for _ in 0..2 {
             h.fanout
                 .process(Message::PData(make_pdata()), &mut h.effect)
@@ -2606,29 +2623,21 @@ mod tests {
             "should have 2 slim_inflight"
         );
 
-        // Send 3rd message - should be nacked
-        h.fanout
-            .process(Message::PData(make_pdata()), &mut h.effect)
-            .await
-            .expect("process ok");
-
-        assert_eq!(
-            h.fanout.slim_inflight.len(),
-            2,
-            "slim_inflight should not grow beyond limit"
+        // accept_pdata() must return false now
+        assert!(
+            !h.fanout.accept_pdata(),
+            "should not accept pdata when slim_inflight is at limit"
         );
 
-        // Check nack was sent
-        let mut nack_received = false;
-        while let Ok(Ok(msg)) =
-            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
-        {
-            if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
-                assert!(nack.reason.contains("max_inflight"));
-                nack_received = true;
-            }
-        }
-        assert!(nack_received, "should have received a nack");
+        // No nack should have been sent
+        let nack_received = tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv())
+            .await
+            .map(|r| matches!(r, Ok(PipelineControlMsg::DeliverNack { .. })))
+            .unwrap_or(false);
+        assert!(
+            !nack_received,
+            "no nack should be sent; backpressure is via accept_pdata()"
+        );
     }
 
     /// Test that max_inflight = 0 means unlimited.
@@ -2822,5 +2831,58 @@ mod tests {
 
         // Request should be complete
         assert!(h.fanout.inflight.is_empty(), "request should be complete");
+    }
+
+    /// Verifies that fanout does not produce nacks when messages are sent up to
+    /// the `max_inflight` limit.
+    ///
+    /// Backpressure is enforced via the `debug_assert!(self.accept_pdata())`
+    /// guard in `process()` and the engine's `recv_when`-based gating.  This
+    /// test calls `process()` directly so it can only send up to `max_inflight`
+    /// messages without violating that contract.  It confirms that at-limit
+    /// usage produces zero nacks.
+    ///
+    /// ```text
+    /// traffic-gen --> [pdata channel] --> fanout --> [slow exporter, holds acks]
+    ///                                       |
+    ///                                 slim_inflight{}   max_inflight = 2
+    /// ```
+    #[tokio::test]
+    async fn no_nacks_at_max_inflight() {
+        // Slim primary path: parallel + primary + no fallback + no timeout.
+        // Acks are never returned — simulating a slow exporter holding all acks.
+        const MAX_INFLIGHT: usize = 2;
+        let mut h = build_harness_with_config(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
+            "parallel",
+            "primary",
+            json!({ "max_inflight": MAX_INFLIGHT }),
+        );
+        assert!(
+            h.fanout.config.use_slim_primary,
+            "expected slim primary path for this test"
+        );
+
+        // Send exactly max_inflight messages — the most we can send without
+        // violating the accept_pdata() contract (no acks are returned).
+        for _ in 0..MAX_INFLIGHT {
+            h.fanout
+                .process(Message::PData(make_pdata()), &mut h.effect)
+                .await
+                .expect("process should not error");
+        }
+
+        // Verify no nacks were produced.
+        let mut nacked = 0usize;
+        while let Ok(Ok(PipelineControlMsg::DeliverNack { .. })) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            nacked += 1;
+        }
+
+        assert_eq!(
+            nacked, 0,
+            "fanout must not nack messages — backpressure is handled by the engine"
+        );
     }
 }

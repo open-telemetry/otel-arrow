@@ -423,7 +423,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -451,7 +451,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

@@ -89,6 +89,10 @@ pub mod topic_exporter;
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
+
+/// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
+pub mod crypto;
+
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;

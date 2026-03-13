@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StructArray};
+use arrow::array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, StructArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
@@ -27,7 +27,7 @@ pub struct ProjectionOptions {
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
 #[derive(Debug)]
 pub struct Projection {
-    schema: ProjectedSchema,
+    pub schema: ProjectedSchema,
 }
 
 impl From<Vec<String>> for Projection {
@@ -75,8 +75,12 @@ impl Projection {
         // safety: `try_new` should not return an error here unless the columns do not match the
         // fields in the schema, or if the columns are different lengths. Based on how we've
         // constructed the inputs, this should not happen because we've taken them from the input
-        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("can project record batch");
+        let rb = RecordBatch::try_new_with_options(
+            Arc::new(Schema::new(fields)),
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows())),
+        )
+        .expect("can project record batch");
 
         Ok(Some(rb))
     }

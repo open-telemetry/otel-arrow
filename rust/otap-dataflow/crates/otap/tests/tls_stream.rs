@@ -47,7 +47,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_tls_stream_success() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -113,7 +113,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_tls_stream_handshake_failure_filtered() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -183,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_stream_transport_error_propagated() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -230,7 +230,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_handshake_respects_timeout() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -319,7 +319,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_concurrent_handshakes_not_blocked() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(

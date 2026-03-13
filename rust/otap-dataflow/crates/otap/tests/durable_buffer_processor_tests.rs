@@ -1799,15 +1799,13 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     );
 
     // Validate per-item metrics: permanent NACKs should reject items, not requeue them.
-    // This test uses 50% logs + 50% traces, so both log and span counters should be non-zero.
+    // Each bundle carries a single signal type, so with only a handful of permanent
+    // NACKs it is possible (~25%) that all NACKed bundles are the same type.
+    // Assert on the aggregate rather than expecting both counters to be non-zero.
     assert!(
-        metrics.rejected_log_records() > 0,
-        "Expected rejected_log_records metric > 0 (items permanently rejected), got {}",
-        metrics.rejected_log_records()
-    );
-    assert!(
-        metrics.rejected_spans() > 0,
-        "Expected rejected_spans metric > 0 (items permanently rejected), got {}",
+        metrics.rejected_log_records() + metrics.rejected_spans() > 0,
+        "Expected some items permanently rejected, got rejected_log_records={}, rejected_spans={}",
+        metrics.rejected_log_records(),
         metrics.rejected_spans()
     );
     assert_eq!(
@@ -1829,11 +1827,13 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         metrics.requeued_spans()
     );
 
-    // Validate: items were produced (sent downstream)
+    // Validate: items were produced (sent downstream).
+    // Signal type is random per-bundle, so check aggregate.
     assert!(
-        metrics.produced_log_records() > 0,
-        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
-        metrics.produced_log_records()
+        metrics.produced_log_records() + metrics.produced_spans() > 0,
+        "Expected some items produced, got produced_log_records={}, produced_spans={}",
+        metrics.produced_log_records(),
+        metrics.produced_spans()
     );
 
     // Validate: queued gauges should reflect that permanent NACKs decremented them.
