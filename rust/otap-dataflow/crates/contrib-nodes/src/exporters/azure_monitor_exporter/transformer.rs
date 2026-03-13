@@ -1142,4 +1142,215 @@ mod tests {
         assert_eq!(json2["EventName"], "");
         assert_eq!(json2["Severity"], "");
     }
+
+    /// Round-trip test: every record produced by the transformer must be valid JSON
+    /// that can be deserialized back into a serde_json::Value and re-serialized
+    /// to produce identical output.
+    #[test]
+    fn test_roundtrip_json_validity() {
+        let config = create_test_config();
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "test".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("my-scope".into())),
+                            }),
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hello world".into())),
+                        }),
+                        severity_text: "INFO".into(),
+                        attributes: vec![KeyValue {
+                            key: "test.attr".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::BoolValue(true)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+
+        for (i, result) in results.iter().enumerate() {
+            // Must parse as valid JSON
+            let parsed: Value = serde_json::from_slice(result).unwrap_or_else(|e| {
+                panic!(
+                    "record {i} is not valid JSON: {e}\nraw: {}",
+                    String::from_utf8_lossy(result)
+                )
+            });
+
+            // Re-serialize and re-parse must produce identical value
+            let re_serialized = serde_json::to_vec(&parsed).unwrap();
+            let re_parsed: Value = serde_json::from_slice(&re_serialized).unwrap();
+            assert_eq!(parsed, re_parsed, "round-trip mismatch for record {i}");
+        }
+    }
+
+    /// Test that UTF-8 multi-byte strings (emoji, CJK, etc.) survive the
+    /// direct JSON serialization without corruption.
+    #[test]
+    fn test_utf8_multibyte_strings() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("body".into(), json!("Body")),
+            ("severity_text".into(), json!("Sev")),
+        ]);
+
+        let transformer = Transformer::new(&config);
+
+        let test_strings = vec![
+            "hello world",                  // ASCII
+            "héllo wörld",                  // Latin diacritics
+            "日本語テスト",                 // CJK
+            "🚀🔥💯",                       // Emoji
+            "mixed: café ☕ naïve 日本 🎉", // Mixed scripts
+            "line1\nline2\ttab",            // Escape sequences
+            "quote\"and\\backslash",        // JSON-special chars
+            "\x01\x02\x1f",                 // Control characters
+            "",                             // Empty string
+        ];
+
+        for test_str in &test_strings {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    resource: None,
+                    scope_logs: vec![ScopeLogs {
+                        scope: None,
+                        log_records: vec![LogRecord {
+                            body: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(test_str.to_string())),
+                            }),
+                            severity_text: test_str.to_string(),
+                            ..Default::default()
+                        }],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+            };
+
+            let bytes = request.encode_to_vec();
+            let logs_view = RawLogsData::new(&bytes);
+            let results = transformer.convert_to_log_analytics(&logs_view);
+
+            assert_eq!(
+                results.len(),
+                1,
+                "expected 1 result for input: {test_str:?}"
+            );
+
+            let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
+                panic!(
+                    "invalid JSON for input {test_str:?}: {e}\nraw bytes: {:?}",
+                    &results[0]
+                )
+            });
+
+            // Verify the body value round-trips correctly
+            let body = json["Body"].as_str().unwrap_or_else(|| {
+                panic!("Body field missing or not a string for input: {test_str:?}")
+            });
+            assert_eq!(body, *test_str, "body mismatch for input: {test_str:?}");
+
+            // Verify severity_text also round-trips
+            let sev = json["Sev"].as_str().unwrap();
+            assert_eq!(sev, *test_str, "severity mismatch for input: {test_str:?}");
+        }
+    }
+
+    /// Test that write_json_string produces output identical to serde_json
+    /// for various edge-case strings.
+    #[test]
+    fn test_write_json_string_matches_serde() {
+        let cases = vec![
+            "",
+            "simple",
+            "with \"quotes\"",
+            "back\\slash",
+            "new\nline",
+            "tab\there",
+            "carriage\rreturn",
+            "\x00\x01\x1f", // control chars
+            "emoji 🎉 and ñ",
+            "日本語",
+            "mixed\t\"escape\"\n🚀",
+        ];
+
+        for input in &cases {
+            let mut our_output = Vec::new();
+            Transformer::write_json_string(input.as_bytes(), &mut our_output);
+
+            let serde_output = serde_json::to_vec(input).unwrap();
+
+            assert_eq!(
+                our_output,
+                serde_output,
+                "mismatch for input {input:?}:\n  ours:  {}\n  serde: {}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+    }
+
+    /// Test numeric formatting matches serde_json output.
+    #[test]
+    fn test_numeric_formatting_matches_serde() {
+        // Integers via itoa
+        let int_cases: Vec<i64> = vec![0, 1, -1, 42, -42, i64::MAX, i64::MIN];
+        for n in &int_cases {
+            let mut our_output = Vec::new();
+            Transformer::write_i64(*n, &mut our_output);
+            let serde_output = serde_json::to_vec(n).unwrap();
+            assert_eq!(
+                our_output,
+                serde_output,
+                "i64 mismatch for {n}: ours={}, serde={}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+
+        // Unsigned via itoa
+        let uint_cases: Vec<u64> = vec![0, 1, 42, u64::MAX];
+        for n in &uint_cases {
+            let mut our_output = Vec::new();
+            Transformer::write_u64(*n, &mut our_output);
+            let serde_output = serde_json::to_vec(n).unwrap();
+            assert_eq!(
+                our_output,
+                serde_output,
+                "u64 mismatch for {n}: ours={}, serde={}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+    }
 }
