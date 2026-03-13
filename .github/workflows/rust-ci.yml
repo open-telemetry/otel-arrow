@@ -367,6 +367,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
+        run: |
+          vcpkg install openssl:x64-windows-static-md
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+        shell: pwsh
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -464,6 +471,13 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
+        run: |
+          vcpkg install openssl:x64-windows-static-md
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+        shell: pwsh
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings

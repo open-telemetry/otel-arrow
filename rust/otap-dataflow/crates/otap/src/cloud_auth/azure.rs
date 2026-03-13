@@ -178,6 +178,7 @@ mod test {
     }
 
     fn test_auth_method(json: &str, expected: AuthMethod) {
+        crate::crypto::ensure_crypto_provider();
         let method: AuthMethod =
             serde_json::from_str(json).expect("Failed to deserialize AuthMethod");
         assert_eq!(method, expected);

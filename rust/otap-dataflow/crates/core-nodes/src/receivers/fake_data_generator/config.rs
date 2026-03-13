@@ -4,7 +4,11 @@
 //! Implementation of the configuration of the fake signal receiver
 //!
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
+
+use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
@@ -56,6 +60,28 @@ pub enum GenerationStrategy {
     Templates,
 }
 
+/// A single resource-attribute set with an optional batch weight.
+///
+/// The weight controls how many batches out of every `sum(weights)` batches will
+/// use this attribute set during round-robin rotation.  Defaults to 1.
+///
+/// ```yaml
+/// resource_attributes:
+///   - attrs: {"tenant.id": "prod"}
+///     weight: 3
+///   - attrs: {"tenant.id": "ppe"}
+///     weight: 1
+/// ```
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceAttributeSet {
+    /// Key-value pairs merged into the resource of every generated signal.
+    pub attrs: HashMap<String, String>,
+    /// Relative batch weight (must be ≥ 1).  Defaults to 1.
+    #[serde(default = "default_resource_weight")]
+    pub weight: NonZeroU32,
+}
+
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +106,36 @@ pub struct Config {
     /// This is useful for end-to-end Ack/Nack measurements across topic hops.
     #[serde(default = "default_enable_ack_nack")]
     enable_ack_nack: bool,
+
+    /// Resource attribute sets to rotate across generated batches.
+    /// Only applies to `data_source: static`. With `pre_generated`, only the
+    /// first attribute set is used.
+    ///
+    /// Accepted forms (all backward-compatible):
+    ///
+    /// Single plain map (weight 1):
+    /// ```yaml
+    /// resource_attributes:
+    ///   "tenant.id": "prod"
+    /// ```
+    ///
+    /// List of plain maps (each weight 1, equal rotation):
+    /// ```yaml
+    /// resource_attributes:
+    ///   - {"tenant.id": "prod"}
+    ///   - {"tenant.id": "ppe"}
+    /// ```
+    ///
+    /// List of weighted entries (3:1 split — prod gets 3 batches per ppe batch):
+    /// ```yaml
+    /// resource_attributes:
+    ///   - attrs: {"tenant.id": "prod"}
+    ///     weight: 3
+    ///   - attrs: {"tenant.id": "ppe"}
+    ///     weight: 1
+    /// ```
+    #[serde(default, deserialize_with = "deserialize_resource_attributes")]
+    resource_attributes: Vec<ResourceAttributeSet>,
 }
 
 /// Configuration to describe the traffic being sent
@@ -110,6 +166,7 @@ impl Config {
             data_source: DataSource::default(),
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
+            resource_attributes: Vec::new(),
         }
     }
 
@@ -193,6 +250,12 @@ impl Config {
                 Ok(Some(resolved_registry))
             }
         }
+    }
+
+    /// Get the typed resource attribute sets.
+    #[must_use]
+    pub fn resource_attributes(&self) -> &[ResourceAttributeSet] {
+        &self.resource_attributes
     }
 }
 
@@ -309,9 +372,95 @@ const fn default_enable_ack_nack() -> bool {
     false
 }
 
+fn default_resource_weight() -> NonZeroU32 {
+    NonZeroU32::new(1).expect("1 is non-zero")
+}
+
+/// Precompute the rotation index table from a slice of weighted attribute sets.
+///
+/// Each entry at position `i` contributes `entry.weight` copies of `i` to the
+/// table.  The hot path is then:
+/// ```
+/// slot = rotation[batch_index % rotation.len()]
+/// attrs = &entries[slot].attrs
+/// ```
+/// An empty table means no custom attributes are configured.
+///
+/// # Example
+/// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
+///
+/// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.
+#[must_use]
+pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .flat_map(|(i, e)| std::iter::repeat_n(i, e.weight.get() as usize))
+        .collect()
+}
+
+/// Accepts a plain map, a list of plain maps, a list of weighted structs, or a
+/// mixed list — all normalized to `Vec<ResourceAttributeSet>`.
+fn deserialize_resource_attributes<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ResourceAttributeSet>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    /// A single entry: either a weighted struct or a plain map.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawEntry {
+        Weighted(ResourceAttributeSet),
+        Plain(HashMap<String, String>),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(RawEntry),
+        Many(Vec<RawEntry>),
+    }
+
+    let raw = match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(e) => vec![e],
+        OneOrMany::Many(list) => list,
+    };
+
+    raw.into_iter()
+        .filter_map(|e| match e {
+            RawEntry::Weighted(s) => {
+                if s.attrs.is_empty() {
+                    // Explicit weighted entry with no attrs is a misconfiguration:
+                    // the user wrote `attrs: {}` (or omitted it entirely) alongside
+                    // a `weight`, which has no useful effect and is almost certainly
+                    // a typo.  Reject it rather than silently ignoring it.
+                    Some(Err(serde::de::Error::custom(
+                        "resource_attributes entry has `attrs` that is empty; \
+                         either provide at least one attribute or remove the entry",
+                    )))
+                } else {
+                    Some(Ok(s))
+                }
+            }
+            RawEntry::Plain(map) => {
+                if map.is_empty() {
+                    // A bare empty map `{}` in a list is harmless noise; skip it.
+                    None
+                } else {
+                    Some(Ok(ResourceAttributeSet {
+                        attrs: map,
+                        weight: default_resource_weight(),
+                    }))
+                }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Config, DataSource, GenerationStrategy};
+    use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
     use serde_json::json;
 
     #[test]
@@ -353,5 +502,156 @@ mod tests {
         .expect("config should parse");
 
         assert!(cfg.enable_ack_nack());
+    }
+
+    fn base_traffic() -> serde_json::Value {
+        json!({
+            "signals_per_second": 10,
+            "max_signal_count": null,
+            "max_batch_size": 100,
+            "metric_weight": 0,
+            "trace_weight": 0,
+            "log_weight": 1
+        })
+    }
+
+    #[test]
+    fn resource_attributes_absent_yields_empty() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static"
+        }))
+        .expect("config should parse");
+        assert!(cfg.resource_attributes().is_empty());
+        assert!(build_rotation_table(cfg.resource_attributes()).is_empty());
+    }
+
+    #[test]
+    fn resource_attributes_plain_single_map() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": {"tenant.id": "prod"}
+        }))
+        .expect("config should parse");
+        let attrs = cfg.resource_attributes();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(
+            attrs[0].attrs.get("tenant.id").map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(attrs[0].weight.get(), 1);
+        assert_eq!(build_rotation_table(attrs), vec![0]);
+    }
+
+    #[test]
+    fn resource_attributes_list_of_plain_maps() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"tenant.id": "prod"},
+                {"tenant.id": "ppe"}
+            ]
+        }))
+        .expect("config should parse");
+        let attrs = cfg.resource_attributes();
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(build_rotation_table(attrs), vec![0, 1]);
+    }
+
+    #[test]
+    fn resource_attributes_weighted_entries() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {"tenant.id": "prod"}, "weight": 3},
+                {"attrs": {"tenant.id": "ppe"},  "weight": 1}
+            ]
+        }))
+        .expect("config should parse");
+        let attrs = cfg.resource_attributes();
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs[0].weight.get(), 3);
+        assert_eq!(attrs[1].weight.get(), 1);
+        // rotation table: prod 3 times, then ppe once
+        assert_eq!(build_rotation_table(attrs), vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn resource_attributes_weighted_default_weight() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {"tenant.id": "prod"}}
+            ]
+        }))
+        .expect("config should parse");
+        assert_eq!(cfg.resource_attributes()[0].weight.get(), 1);
+    }
+
+    #[test]
+    fn resource_attributes_weight_zero_is_rejected() {
+        let result = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {"tenant.id": "prod"}, "weight": 0}
+            ]
+        }));
+        assert!(result.is_err(), "weight=0 should be rejected");
+    }
+
+    #[test]
+    fn resource_attributes_unknown_field_is_rejected() {
+        // "weights" is a common typo for "weight" — must not silently fall back
+        // to weight=1 with the stray field ignored.
+        let result = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {"tenant.id": "prod"}, "weights": 3}
+            ]
+        }));
+        assert!(
+            result.is_err(),
+            "unknown field 'weights' should be rejected"
+        );
+    }
+
+    #[test]
+    fn resource_attributes_weighted_empty_attrs_is_rejected() {
+        let result = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "resource_attributes": [
+                {"attrs": {}, "weight": 2}
+            ]
+        }));
+        assert!(
+            result.is_err(),
+            "weighted entry with empty attrs should be rejected"
+        );
+    }
+
+    #[test]
+    fn build_rotation_table_correct_order() {
+        use super::ResourceAttributeSet;
+        use std::collections::HashMap;
+        use std::num::NonZeroU32;
+
+        let entries = vec![
+            ResourceAttributeSet {
+                attrs: HashMap::new(),
+                weight: NonZeroU32::new(2).unwrap(),
+            },
+            ResourceAttributeSet {
+                attrs: HashMap::new(),
+                weight: NonZeroU32::new(3).unwrap(),
+            },
+        ];
+        assert_eq!(build_rotation_table(&entries), vec![0, 0, 1, 1, 1]);
     }
 }
