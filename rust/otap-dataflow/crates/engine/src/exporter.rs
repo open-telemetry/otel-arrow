@@ -12,7 +12,7 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{Controllable, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
@@ -272,8 +272,12 @@ impl<PData> ExporterWrapper<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
-    ) -> Result<TerminalState, Error> {
-        match (self, metrics_reporter) {
+    ) -> Result<TerminalState, Error>
+    where
+        PData: crate::Unwindable,
+    {
+        let nack_sender = pipeline_ctrl_msg_tx.clone();
+        let (terminal_state, mut msg_chan) = match (self, metrics_reporter) {
             (
                 ExporterWrapper::Local {
                     node_id,
@@ -302,7 +306,8 @@ impl<PData> ExporterWrapper<PData> {
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                let (ts, mc) = exporter.start(message_channel, effect_handler).await?;
+                (ts, MsgChan::Local(mc))
             }
             (
                 ExporterWrapper::Shared {
@@ -332,8 +337,36 @@ impl<PData> ExporterWrapper<PData> {
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                let (ts, mc) = exporter.start(message_channel, effect_handler).await?;
+                (ts, MsgChan::Shared(mc))
             }
+        };
+
+        // Auto-nack any pdata left unprocessed in the channel at shutdown.
+        // This ensures upstream nodes are always notified about unprocessed data.
+        let orphaned = msg_chan.take_orphaned_pdata();
+        for pdata in orphaned {
+            let nack = NackMsg::new("shutdown: unprocessed pdata", pdata);
+            if nack.refused.has_frames() {
+                let _ = nack_sender.try_send(PipelineControlMsg::DeliverNack { nack });
+            }
+        }
+
+        Ok(terminal_state)
+    }
+}
+
+/// Helper enum to unify local and shared MessageChannel for auto-nack draining.
+enum MsgChan<PData> {
+    Local(message::MessageChannel<PData>),
+    Shared(shared::MessageChannel<PData>),
+}
+
+impl<PData> MsgChan<PData> {
+    fn take_orphaned_pdata(&mut self) -> Vec<PData> {
+        match self {
+            MsgChan::Local(mc) => mc.take_orphaned_pdata(),
+            MsgChan::Shared(mc) => mc.take_orphaned_pdata(),
         }
     }
 }
@@ -451,7 +484,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
-        ) -> Result<TerminalState, Error> {
+        ) -> Result<(TerminalState, message::MessageChannel<TestMsg>), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -478,7 +511,7 @@ mod tests {
                     }
                 }
             }
-            Ok(TerminalState::default())
+            Ok((TerminalState::default(), msg_chan))
         }
     }
 
@@ -488,7 +521,7 @@ mod tests {
             self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
-        ) -> Result<TerminalState, Error> {
+        ) -> Result<(TerminalState, shared::MessageChannel<TestMsg>), Error> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -515,7 +548,7 @@ mod tests {
                     }
                 }
             }
-            Ok(TerminalState::default())
+            Ok((TerminalState::default(), msg_chan))
         }
     }
 
@@ -1018,8 +1051,10 @@ mod tests {
     }
 
     /// recv_when(false) with a closed pdata channel that still has
-    /// buffered data should not trigger synthetic shutdown until the
-    /// data is drained.
+    /// buffered data should NOT trigger synthetic shutdown — the data
+    /// must be preserved for draining when the caller re-enables pdata.
+    /// This is important for nodes using accept_pdata=false as temporary
+    /// backpressure (e.g., fanout processor at max_inflight).
     #[tokio::test]
     async fn test_recv_when_false_closed_with_buffered_data() {
         let (_control_tx, pdata_tx, mut channel) = make_chan();
@@ -1029,8 +1064,7 @@ mod tests {
         drop(pdata_tx);
 
         // recv_when(false) should NOT trigger shutdown because there's
-        // still buffered data (is_empty() is false).
-        // It should time out waiting for control.
+        // still buffered data that can be drained later.
         let result =
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(
@@ -1048,6 +1082,22 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    /// recv_when(false) with a closed AND empty pdata channel should
+    /// return synthetic shutdown immediately (TOCTOU-safe via is_closed()).
+    #[tokio::test]
+    async fn test_recv_when_false_closed_empty_returns_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Close the channel with no buffered data
+        drop(pdata_tx);
+
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })),
+            "should return shutdown when pdata channel is closed and empty"
+        );
     }
 
     /// Helper that creates a MessageChannel with shared (tokio mpsc) pdata channel.
@@ -1106,5 +1156,209 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    /// When a real Shutdown is pending (draining mode) and pdata closes+empties,
+    /// the original deadline and reason must be preserved — not replaced by a
+    /// synthetic 1-second shutdown.
+    #[tokio::test]
+    async fn test_draining_mode_preserves_original_shutdown_deadline() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Buffer some pdata
+        pdata_tx.send_async("msg1".to_owned()).await.unwrap();
+
+        // Send a real Shutdown with a generous deadline
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let reason = "graceful shutdown".to_owned();
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: reason.clone(),
+            })
+            .await
+            .unwrap();
+
+        // First recv_when(true): biased select picks Shutdown control first,
+        // enters draining mode, then loops back to drain pdata.
+        let msg = channel.recv_when(true).await.unwrap();
+        // The biased select picks control first → enters draining → loops → drains pdata
+        // So the first message returned should be pdata (after entering draining mode).
+        assert!(
+            matches!(msg, Message::PData(ref s) if s == "msg1"),
+            "expected pdata after entering draining, got: {msg:?}"
+        );
+
+        // Close pdata channel — now closed+empty in draining mode
+        drop(pdata_tx);
+        // Keep control_tx alive so control channel doesn't close
+        let _keep = control_tx;
+
+        // The next recv should return the ORIGINAL shutdown with the original deadline
+        let msg = channel.recv_when(true).await.unwrap();
+        match msg {
+            Message::Control(NodeControlMsg::Shutdown {
+                deadline: d,
+                reason: r,
+            }) => {
+                assert_eq!(r, reason, "original reason must be preserved");
+                // Deadline should be the original 30s one, not a synthetic 1s
+                assert!(
+                    d.duration_since(Instant::now()) > Duration::from_secs(10),
+                    "original deadline must be preserved, not replaced with 1s synthetic"
+                );
+            }
+            other => panic!("expected Shutdown, got: {other:?}"),
+        }
+    }
+
+    /// recv_when(false) on a shared channel with closed+buffered pdata
+    /// should NOT trigger shutdown — data must be preserved for draining.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_closed_with_buffered_data_no_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Buffer pdata, then close the channel
+        pdata_tx.send("buffered".to_owned()).await.unwrap();
+        drop(pdata_tx);
+
+        // recv_when(false) must block — pdata is buffered, no control available
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "should block — shared pdata channel is closed but data is still buffered"
+        );
+
+        // Drain the buffered data
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "buffered"));
+
+        // Now recv_when(false) should detect closed+empty and return shutdown
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// Validates that take_orphaned_pdata() returns empty when
+    /// all data was drained normally before shutdown.
+    #[tokio::test]
+    async fn test_take_orphaned_pdata_after_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Buffer one message, drain it normally
+        pdata_tx.send_async("msg_a".to_owned()).await.unwrap();
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "msg_a"));
+
+        // Close pdata, then send shutdown
+        drop(pdata_tx);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        // Shutdown returned
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+
+        // All data was drained normally, so no buffered pdata
+        let buffered = channel.take_orphaned_pdata();
+        assert!(buffered.is_empty(), "No buffered data when fully drained");
+    }
+
+    /// Validates that take_orphaned_pdata() captures data from the channel
+    /// when shutdown fires while accept_pdata=false (the auth-outage scenario).
+    /// The buffered data is preserved for auto-nacking by the engine.
+    #[tokio::test]
+    async fn test_take_orphaned_pdata_with_unread_data() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Buffer messages
+        pdata_tx.send_async("unread_1".to_owned()).await.unwrap();
+        pdata_tx.send_async("unread_2".to_owned()).await.unwrap();
+        drop(pdata_tx);
+
+        // Send shutdown on control channel
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        // recv_when(false) — the exporter is not accepting pdata (auth outage)
+        // Immediate deadline → Shutdown returned immediately
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+
+        // The channel's shutdown() should have drained buffered pdata
+        let buffered = channel.take_orphaned_pdata();
+        assert_eq!(buffered.len(), 2, "Should capture 2 unread messages");
+        assert_eq!(buffered[0], "unread_1");
+        assert_eq!(buffered[1], "unread_2");
+
+        // Second call returns empty
+        let buffered = channel.take_orphaned_pdata();
+        assert!(buffered.is_empty(), "take_orphaned_pdata should drain on first call");
+    }
+
+    /// Validates that take_orphaned_pdata() returns empty when the channel
+    /// was fully drained before shutdown (normal healthy shutdown path).
+    #[tokio::test]
+    async fn test_take_orphaned_pdata_empty_after_normal_drain() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Send and drain one message normally
+        pdata_tx.send_async("processed".to_owned()).await.unwrap();
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "processed"));
+
+        // Close pdata, send shutdown
+        drop(pdata_tx);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+
+        // Nothing was left unread
+        let buffered = channel.take_orphaned_pdata();
+        assert!(buffered.is_empty(), "No buffered data in normal shutdown");
+    }
+
+    /// Validates that shared MessageChannel also captures buffered pdata on shutdown.
+    #[tokio::test]
+    async fn test_shared_take_orphaned_pdata() {
+        let (control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        pdata_tx.send("shared_unread".to_owned()).await.unwrap();
+        drop(pdata_tx);
+
+        control_tx
+            .send(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let msg = channel.recv().await.unwrap();
+        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+
+        let buffered = channel.take_orphaned_pdata();
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(buffered[0], "shared_unread");
     }
 }

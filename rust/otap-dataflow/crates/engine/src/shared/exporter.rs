@@ -58,7 +58,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<TerminalState, Error>;
+    ) -> Result<(TerminalState, MessageChannel<PData>), Error>;
 }
 
 /// A channel for receiving control and pdata messages.
@@ -80,8 +80,8 @@ pub struct MessageChannel<PData> {
     /// Node ID for entry-frame stamping via `ReceivedAtNode`.
     node_id: usize,
     /// Node interests for entry-frame stamping via `ReceivedAtNode`.
-    interests: Interests,
-}
+    interests: Interests,    /// Pdata that was left unprocessed in the channel when shutdown occurred.
+    orphaned_pdata: Vec<PData>,}
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
@@ -99,7 +99,13 @@ impl<PData> MessageChannel<PData> {
             pending_shutdown: None,
             node_id,
             interests,
+            orphaned_pdata: Vec::new(),
         }
+    }
+
+    /// Take any pdata that was left unprocessed in the channel at shutdown time.
+    pub fn take_orphaned_pdata(&mut self) -> Vec<PData> {
+        std::mem::take(&mut self.orphaned_pdata)
     }
 }
 
@@ -220,7 +226,14 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     fn shutdown(&mut self) {
         self.shutting_down_deadline = None;
         drop(self.control_rx.take().expect("control_rx must exist"));
-        drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+        // Drain any unprocessed pdata before dropping the receiver.
+        // The engine auto-nacks these via take_orphaned_pdata().
+        if let Some(mut pdata_rx) = self.pdata_rx.take() {
+            while let Ok(pdata) = pdata_rx.try_recv() {
+                self.orphaned_pdata.push(pdata);
+            }
+            drop(pdata_rx);
+        }
     }
 }
 

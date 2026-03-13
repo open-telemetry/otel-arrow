@@ -462,7 +462,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, EngineError> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), EngineError> {
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
@@ -648,10 +648,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             let _ = telemetry_timer_cancel_handle.cancel().await;
                             self.handle_shutdown(&effect_handler).await?;
                             let snapshot = self.metrics.borrow().metrics().snapshot();
-                            return Ok(TerminalState::new(
+                            return Ok((TerminalState::new(
                                 deadline,
                                 [snapshot],
-                            ));
+                            ), msg_chan));
                         }
                         other => {
                             self.handle_message(&effect_handler, other, &mut msg_id).await?;

@@ -110,7 +110,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         otel_info!(
             "otap_exporter.start",
             grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
@@ -227,7 +227,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         _ = metrics_handle.await;
                         _ = traces_handle.await;
                         _ = timer_cancel_handle.cancel().await;
-                        return Ok(TerminalState::new(deadline, [self.pdata_metrics]))
+                        return Ok((TerminalState::new(deadline, [self.pdata_metrics]), msg_chan))
                     }
                     //send data
                     Message::PData(mut pdata) => {

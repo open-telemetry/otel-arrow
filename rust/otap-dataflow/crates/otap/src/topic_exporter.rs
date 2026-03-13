@@ -160,7 +160,7 @@ impl Exporter<OtapPdata> for TopicExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         let TopicExporter {
             topic,
             queue_on_full,
@@ -356,7 +356,7 @@ impl Exporter<OtapPdata> for TopicExporter {
 
         _ = telemetry_cancel_handle.cancel().await;
         run_result?;
-        Ok(TerminalState::default())
+        Ok((TerminalState::default(), msg_chan))
     }
 }
 
