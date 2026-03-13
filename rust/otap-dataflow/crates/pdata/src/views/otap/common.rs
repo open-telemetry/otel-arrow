@@ -257,7 +257,7 @@ fn get_attribute_value_16<'a>(
     cols: &'a Attribute16Arrays<'a>,
     row_idx: usize,
 ) -> OtapAnyValueView<'a> {
-    extract_anyvalue(&cols.anyval_arrays.attr_type, &cols.anyval_arrays, row_idx)
+    extract_anyvalue(cols.anyval_arrays.attr_type, &cols.anyval_arrays, row_idx)
 }
 
 #[allow(dead_code)]
@@ -270,7 +270,7 @@ fn get_attribute_value_32<'a>(
     cols: &'a Attribute32Arrays<'a>,
     row_idx: usize,
 ) -> OtapAnyValueView<'a> {
-    extract_anyvalue(&cols.anyval_arrays.attr_type, &cols.anyval_arrays, row_idx)
+    extract_anyvalue(cols.anyval_arrays.attr_type, &cols.anyval_arrays, row_idx)
 }
 
 /// Extract an AnyValue from attribute arrays given the type and value columns.

@@ -8,30 +8,29 @@
 
 use std::collections::BTreeMap;
 
-use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
+use arrow::array::{Array, RecordBatch, UInt16Array};
 
 #[cfg(test)]
 use arrow::array::{TimestampNanosecondArray, UInt32Array};
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
+use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
 use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otap::common::{
     OtapAnyValueView, OtapAttributeView, RowGroup, RowGroupIter, build_attribute_index,
     group_by_resource_id, group_by_scope_id,
 };
-use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView, Str, ValueType};
+use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 
-use std::ops::Range;
+
 
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {

@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use arrow::array::{Array, RecordBatch, StructArray, UInt16Array, UInt32Array};
+use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
 
 use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
