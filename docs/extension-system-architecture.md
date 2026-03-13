@@ -119,6 +119,76 @@ no wasted resources.
    pure background tasks simply use the default (empty)
    implementation and never appear in the registry.
 
+### State Management: Clone + Arc
+
+Extensions use the **Clone + Arc** pattern for shared state
+management. This is the same convention used by widely-adopted
+Rust libraries including:
+
+- **[axum](https://docs.rs/axum/latest/axum/extract/struct.State.html#shared-mutable-state)**
+  (25k stars, by the tokio team) — documents this pattern
+  explicitly:
+
+  > *"As state is global within a Router you can't directly
+  > get a mutable reference to the state. The most basic
+  > solution is to use an `Arc<Mutex<_>>`. Which kind of
+  > mutex you need depends on your use case. See the tokio
+  > docs for more details."*
+
+- **tonic** (gRPC framework, by the tokio team) — services
+  must be `Clone`; shared state is wrapped in `Arc`.
+- **tower** (`Service` trait) — clone-per-request model;
+  documentation recommends `Arc` for shared state.
+- **reqwest::Client**, **kube::Client**, **AWS SDK clients**
+  — all use `Clone` wrapping an `Arc<Inner>`.
+
+In our extension system, the extension struct is `Clone`.
+When cloned into the capability registry and distributed to
+consumers, all clones share the same underlying state via
+`Arc`. No per-clone copies are made of shared resources
+like credentials or broadcast channels.
+
+**Example — shared state via `Arc`:**
+
+```rust
+#[derive(Clone)]
+pub struct MyExtension {
+    // Shared across all clones — Arc is the sharing primitive
+    credential: Arc<dyn TokenCredential>,
+    token_sender: Arc<watch::Sender<Option<BearerToken>>>,
+
+    // Cheap to clone — small owned values
+    scope: String,
+    method: AuthMethod,
+}
+```
+
+**Interior mutability without `Mutex`:**
+
+For hot-path operations, `Arc<Mutex<_>>` is not the only
+option. The following `Send`-compatible primitives provide
+lock-free interior mutability:
+
+| Primitive | Cost | Use case |
+|---|---|---|
+| `AtomicU64` | ~1ns | Counters, flags |
+| `ArcSwap<T>` | ~2ns read | Swapping configs, token caches |
+| `watch::Sender` | ~3ns read | Push-based state updates |
+| `DashMap<K,V>` | ~10-15ns | Concurrent hash maps |
+
+These are preferred over `Mutex` for extension state that
+is read frequently on the hot path. `Mutex` (~15ns) is
+acceptable for state accessed infrequently (e.g., config
+updates).
+
+**Why `Send` only, not `Rc`/`RefCell`:**
+
+Capability traits must be `Send` so they can be stored in
+the registry and distributed to any consumer — including
+shared (`Send`) receivers and exporters. This rules out
+`Rc` and `RefCell` in the extension struct. However, the
+performance difference is minimal.
+
 ## Core Types
 
 ### Extension Lifecycle Trait
