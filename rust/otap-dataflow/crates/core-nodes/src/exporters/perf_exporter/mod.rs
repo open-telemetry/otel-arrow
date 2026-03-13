@@ -133,16 +133,21 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        // init variables for tracking
+        // let mut average_pipeline_latency: f64 = 0.0;
+
         otel_info!(
             "perf_exporter.start",
             frequency_ms = self.config.frequency(),
             message = "Starting Perf Exporter"
         );
 
+        // Start telemetry collection tick as a dedicated control message.
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
             .await?;
 
+        // Loop until a Shutdown event is received.
         loop {
             let msg = msg_chan.recv().await?;
             match msg {
@@ -152,17 +157,21 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
+                // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     _ = timer_cancel_handle.cancel().await;
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(mut pdata) => {
+                    // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
+
+                    // Increment consumed for this signal
                     self.pdata_metrics.inc_consumed(signal_type);
 
                     let payload = pdata.take_payload();
-                    _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                    let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
                     let batch: OtapArrowRecords = match payload.try_into() {
                         Ok(batch) => batch,
@@ -172,6 +181,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         }
                     };
 
+                    // Increment counters per type of OTLP signals
                     match signal_type {
                         SignalType::Metrics => {
                             self.metrics.metrics.add(batch.num_items() as u64);
@@ -184,7 +194,48 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                         }
                     }
 
+                    // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
+                    // decode the headers which are hpack encoded
+                    // check for timestamp
+                    // get time delta between now and timestamp
+                    // calculate average
+                    // ToDo Temporary disable latency calculation until we have a better way to add the timestamp header
+                    // let mut decoder = Decoder::new();
+                    // let header_list =
+                    //     decoder
+                    //         .decode(&batch.headers)
+                    //         .map_err(|_| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error: "Failed to decode batch headers".to_owned(),
+                    //         })?;
+                    // find the timestamp header and parse it
+                    // timestamp will be added in the receiver to enable pipeline latency calculation
+                    // let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp");
+                    // if let Some((_, value)) = timestamp_pair {
+                    //     let timestamp =
+                    //         decode_timestamp(value).map_err(|error| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error,
+                    //         })?;
+                    //     let current_unix_time = SystemTime::now()
+                    //         .duration_since(UNIX_EPOCH)
+                    //         .map_err(|error| Error::ExporterError {
+                    //             exporter: effect_handler.exporter_id(),
+                    //             error: error.to_string(),
+                    //         })?;
+                    //     let latency = (current_unix_time - timestamp).as_secs_f64();
+                    //     average_pipeline_latency = update_average(
+                    //         latency,
+                    //         average_pipeline_latency,
+                    //         self.config.smoothing_factor() as f64,
+                    //     );
+                    // }
+
+                    // Successful perf reporting: mark as exported for this signal
+
                     self.pdata_metrics.inc_exported(signal_type);
+
+                    // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -198,6 +249,26 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         }
     }
 }
+
+// uses the exponential moving average formula to update the average
+// fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
+//     // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
+//     smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
+// }
+
+// decodes the byte array from the timestamp header and gets the equivalent duration value
+// fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
+//     let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
+//     let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
+//     let secs = timestamp_parts[0]
+//         .parse::<u64>()
+//         .map_err(|error| error.to_string())?;
+//     let nanosecs = timestamp_parts[1]
+//         .parse::<u32>()
+//         .map_err(|error| error.to_string())?;
+//
+//     Ok(Duration::new(secs, nanosecs))
+// }
 
 #[cfg(test)]
 mod tests {
@@ -219,6 +290,9 @@ mod tests {
     use std::time::Instant;
     use tokio::time::{Duration, sleep};
 
+    /// Test closure that simulates a typical test scenario by sending timer ticks, config,
+    /// data message, and shutdown control messages.
+    ///
     fn scenario()
     -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
@@ -229,8 +303,10 @@ mod tests {
                         .expect("Failed to send data message");
                 }
 
+                // TODO ADD DELAY BETWEEN HERE
                 _ = sleep(Duration::from_millis(5000));
 
+                // Send shutdown
                 ctx.send_shutdown(
                     Instant::now().add(Duration::from_millis(200)),
                     "test complete",
@@ -241,6 +317,7 @@ mod tests {
         }
     }
 
+    /// Validation closure that checks the expected counter values
     fn validation_procedure(
         telemetry_registry_handle: TelemetryRegistryHandle,
     ) -> impl FnOnce(
