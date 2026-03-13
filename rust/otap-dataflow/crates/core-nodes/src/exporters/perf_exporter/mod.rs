@@ -54,9 +54,9 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
-	config: Config,
-	metrics: MetricSet<PerfExporterPdataMetrics>,
-	pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    config: Config,
+    metrics: MetricSet<PerfExporterPdataMetrics>,
+    pdata_metrics: MetricSet<ExporterPDataMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -66,219 +66,219 @@ pub struct PerfExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-	name: OTAP_PERF_EXPORTER_URN,
-	create: |pipeline: PipelineContext,
-			 node: NodeId,
-			 node_config: Arc<NodeUserConfig>,
-			 exporter_config: &ExporterConfig| {
-		Ok(ExporterWrapper::local(
-			PerfExporter::from_config(pipeline, &node_config.config)?,
-			node,
-			node_config,
-			exporter_config,
-		))
-	},
-	wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-	validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    name: OTAP_PERF_EXPORTER_URN,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig| {
+        Ok(ExporterWrapper::local(
+            PerfExporter::from_config(pipeline, &node_config.config)?,
+            node,
+            node_config,
+            exporter_config,
+        ))
+    },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl PerfExporter {
-	/// creates a perf exporter with the provided config
-	#[must_use]
-	pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-		let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
-		let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+    /// creates a perf exporter with the provided config
+    #[must_use]
+    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
+        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
 
-		PerfExporter {
-			config,
-			metrics,
-			pdata_metrics,
-		}
-	}
+        PerfExporter {
+            config,
+            metrics,
+            pdata_metrics,
+        }
+    }
 
-	/// Creates a new PerfExporter from a configuration object
-	pub fn from_config(
-		pipeline_ctx: PipelineContext,
-		config: &Value,
-	) -> Result<Self, otap_df_config::error::Error> {
-		Ok(PerfExporter::new(
-			pipeline_ctx,
-			serde_json::from_value(config.clone()).map_err(|e| {
-				otap_df_config::error::Error::InvalidUserConfig {
-					error: e.to_string(),
-				}
-			})?,
-		))
-	}
+    /// Creates a new PerfExporter from a configuration object
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
+        Ok(PerfExporter::new(
+            pipeline_ctx,
+            serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
+        ))
+    }
 
-	fn terminal_state(&self, deadline: Instant) -> TerminalState {
-		let mut snapshots = Vec::new();
+    fn terminal_state(&self, deadline: Instant) -> TerminalState {
+        let mut snapshots = Vec::new();
 
-		if self.metrics.needs_flush() {
-			snapshots.push(self.metrics.snapshot());
-		}
+        if self.metrics.needs_flush() {
+            snapshots.push(self.metrics.snapshot());
+        }
 
-		if self.pdata_metrics.needs_flush() {
-			snapshots.push(self.pdata_metrics.snapshot());
-		}
+        if self.pdata_metrics.needs_flush() {
+            snapshots.push(self.pdata_metrics.snapshot());
+        }
 
-		TerminalState::new(deadline, snapshots)
-	}
+        TerminalState::new(deadline, snapshots)
+    }
 }
 
 #[async_trait(?Send)]
 impl local::Exporter<OtapPdata> for PerfExporter {
-	async fn start(
-		mut self: Box<Self>,
-		mut msg_chan: MessageChannel<OtapPdata>,
-		effect_handler: local::EffectHandler<OtapPdata>,
-	) -> Result<TerminalState, Error> {
-		otel_info!(
-			"perf_exporter.start",
-			frequency_ms = self.config.frequency(),
-			message = "Starting Perf Exporter"
-		);
+    async fn start(
+        mut self: Box<Self>,
+        mut msg_chan: MessageChannel<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        otel_info!(
+            "perf_exporter.start",
+            frequency_ms = self.config.frequency(),
+            message = "Starting Perf Exporter"
+        );
 
-		let timer_cancel_handle = effect_handler
-			.start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
-			.await?;
+        let timer_cancel_handle = effect_handler
+            .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
+            .await?;
 
-		loop {
-			let msg = msg_chan.recv().await?;
-			match msg {
-				Message::Control(NodeControlMsg::CollectTelemetry {
-					mut metrics_reporter,
-				}) => {
-					_ = metrics_reporter.report(&mut self.metrics);
-					_ = metrics_reporter.report(&mut self.pdata_metrics);
-				}
-				Message::Control(NodeControlMsg::Config { .. }) => {}
-				Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-					_ = timer_cancel_handle.cancel().await;
-					return Ok(self.terminal_state(deadline));
-				}
-				Message::PData(mut pdata) => {
-					let signal_type = pdata.signal_type();
-					self.pdata_metrics.inc_consumed(signal_type);
+        loop {
+            let msg = msg_chan.recv().await?;
+            match msg {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                }
+                Message::Control(NodeControlMsg::Config { .. }) => {}
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    _ = timer_cancel_handle.cancel().await;
+                    return Ok(self.terminal_state(deadline));
+                }
+                Message::PData(mut pdata) => {
+                    let signal_type = pdata.signal_type();
+                    self.pdata_metrics.inc_consumed(signal_type);
 
-					let payload = pdata.take_payload();
-					_ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                    let payload = pdata.take_payload();
+                    _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
-					let batch: OtapArrowRecords = match payload.try_into() {
-						Ok(batch) => batch,
-						Err(_) => {
-							self.pdata_metrics.inc_failed(signal_type);
-							continue;
-						}
-					};
+                    let batch: OtapArrowRecords = match payload.try_into() {
+                        Ok(batch) => batch,
+                        Err(_) => {
+                            self.pdata_metrics.inc_failed(signal_type);
+                            continue;
+                        }
+                    };
 
-					match signal_type {
-						SignalType::Metrics => {
-							self.metrics.metrics.add(batch.num_items() as u64);
-						}
-						SignalType::Logs => {
-							self.metrics.logs.add(batch.num_items() as u64);
-						}
-						SignalType::Traces => {
-							self.metrics.spans.add(batch.num_items() as u64);
-						}
-					}
+                    match signal_type {
+                        SignalType::Metrics => {
+                            self.metrics.metrics.add(batch.num_items() as u64);
+                        }
+                        SignalType::Logs => {
+                            self.metrics.logs.add(batch.num_items() as u64);
+                        }
+                        SignalType::Traces => {
+                            self.metrics.spans.add(batch.num_items() as u64);
+                        }
+                    }
 
-					self.pdata_metrics.inc_exported(signal_type);
-				}
-				_ => {
-					return Err(Error::ExporterError {
-						exporter: effect_handler.exporter_id(),
-						kind: ExporterErrorKind::Other,
-						error: "Unknown control message".to_owned(),
-						source_detail: String::new(),
-					});
-				}
-			}
-		}
-	}
+                    self.pdata_metrics.inc_exported(signal_type);
+                }
+                _ => {
+                    return Err(Error::ExporterError {
+                        exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Other,
+                        error: "Unknown control message".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{OTAP_PERF_EXPORTER_URN, PerfExporter};
-	use crate::exporters::perf_exporter::config::Config;
-	use otap_df_config::node::NodeUserConfig;
-	use otap_df_engine::context::ControllerContext;
-	use otap_df_engine::error::Error;
-	use otap_df_engine::exporter::ExporterWrapper;
-	use otap_df_engine::testing::exporter::TestContext;
-	use otap_df_engine::testing::exporter::TestRuntime;
-	use otap_df_engine::testing::test_node;
-	use otap_df_otap::pdata::OtapPdata;
-	use otap_df_otap::testing::create_test_pdata;
-	use otap_df_telemetry::registry::TelemetryRegistryHandle;
-	use std::future::Future;
-	use std::ops::Add;
-	use std::sync::Arc;
-	use std::time::Instant;
-	use tokio::time::{Duration, sleep};
+    use super::{OTAP_PERF_EXPORTER_URN, PerfExporter};
+    use crate::exporters::perf_exporter::config::Config;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::error::Error;
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::testing::exporter::TestContext;
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::create_test_pdata;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::future::Future;
+    use std::ops::Add;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::time::{Duration, sleep};
 
-	fn scenario()
-	-> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-		|ctx| {
-			Box::pin(async move {
-				for _ in 0..3 {
-					ctx.send_pdata(create_test_pdata())
-						.await
-						.expect("Failed to send data message");
-				}
+    fn scenario()
+    -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+                for _ in 0..3 {
+                    ctx.send_pdata(create_test_pdata())
+                        .await
+                        .expect("Failed to send data message");
+                }
 
-				_ = sleep(Duration::from_millis(5000));
+                _ = sleep(Duration::from_millis(5000));
 
-				ctx.send_shutdown(
-					Instant::now().add(Duration::from_millis(200)),
-					"test complete",
-				)
-				.await
-				.expect("Failed to send Shutdown");
-			})
-		}
-	}
+                ctx.send_shutdown(
+                    Instant::now().add(Duration::from_millis(200)),
+                    "test complete",
+                )
+                .await
+                .expect("Failed to send Shutdown");
+            })
+        }
+    }
 
-	fn validation_procedure(
-		telemetry_registry_handle: TelemetryRegistryHandle,
-	) -> impl FnOnce(
-		TestContext<OtapPdata>,
-		Result<(), Error>,
-	) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-		|_, exporter_result| {
-			Box::pin(async move {
-				exporter_result.unwrap();
+    fn validation_procedure(
+        telemetry_registry_handle: TelemetryRegistryHandle,
+    ) -> impl FnOnce(
+        TestContext<OtapPdata>,
+        Result<(), Error>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_, exporter_result| {
+            Box::pin(async move {
+                exporter_result.unwrap();
 
-				telemetry_registry_handle.visit_current_metrics(
-					|_metrics_descriptor, _attrs, _metric_values| {
-						// ToDo Check the counters, once the timer tick control message is implemented in the test infrastructure.
-					},
-				);
-			})
-		}
-	}
+                telemetry_registry_handle.visit_current_metrics(
+                    |_metrics_descriptor, _attrs, _metric_values| {
+                        // ToDo Check the counters, once the timer tick control message is implemented in the test infrastructure.
+                    },
+                );
+            })
+        }
+    }
 
-	#[test]
-	fn test_exporter_local() {
-		let test_runtime = TestRuntime::new();
-		let config = Config::new(1000, 0.3, true, true, true, true, true);
-		let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
-		let telemetry_registry_handle = TelemetryRegistryHandle::new();
-		let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
-		let pipeline_ctx =
-			controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-		let exporter = ExporterWrapper::local(
-			PerfExporter::new(pipeline_ctx, config),
-			test_node(test_runtime.config().name.clone()),
-			node_config,
-			test_runtime.config(),
-		);
+    #[test]
+    fn test_exporter_local() {
+        let test_runtime = TestRuntime::new();
+        let config = Config::new(1000, 0.3, true, true, true, true, true);
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let exporter = ExporterWrapper::local(
+            PerfExporter::new(pipeline_ctx, config),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
 
-		test_runtime
-			.set_exporter(exporter)
-			.run_test(scenario())
-			.run_validation(validation_procedure(telemetry_registry_handle));
-	}
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure(telemetry_registry_handle));
+    }
 }
