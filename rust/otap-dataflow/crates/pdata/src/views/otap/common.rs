@@ -11,7 +11,7 @@ use std::ops::Range;
 
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
 
-use crate::arrays::MaybeDictArrayAccessor;
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::schema::consts;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
@@ -184,6 +184,7 @@ impl<'a> AttributeView for OtapAttributeView<'a> {
 // ===== Attribute Iterators =====
 
 /// Iterator over attributes with u16 parent_id (logs, spans, resources, scopes).
+#[allow(dead_code)]
 pub struct OtapAttributeIter<'a> {
     pub(crate) attrs: Option<&'a Attribute16Arrays<'a>>,
     pub(crate) matching_rows: &'a [usize],
@@ -214,6 +215,7 @@ impl<'a> Iterator for OtapAttributeIter<'a> {
 }
 
 /// Iterator over attributes with u32 parent_id (event attrs, link attrs per OTAP spec §5.4.1).
+#[allow(dead_code)]
 pub struct Otap32AttributeIter<'a> {
     pub(crate) attrs: Option<&'a Attribute32Arrays<'a>>,
     pub(crate) matching_rows: &'a [usize],
@@ -245,10 +247,12 @@ impl<'a> Iterator for Otap32AttributeIter<'a> {
 
 // ===== Attribute Helper Functions =====
 
+#[allow(dead_code)]
 fn get_attribute_key_16<'a>(cols: &'a Attribute16Arrays<'a>, row_idx: usize) -> Option<&'a [u8]> {
     cols.attr_key.str_at(row_idx).map(|s| s.as_bytes())
 }
 
+#[allow(dead_code)]
 fn get_attribute_value_16<'a>(
     cols: &'a Attribute16Arrays<'a>,
     row_idx: usize,
@@ -256,10 +260,12 @@ fn get_attribute_value_16<'a>(
     extract_anyvalue(&cols.anyval_arrays.attr_type, &cols.anyval_arrays, row_idx)
 }
 
+#[allow(dead_code)]
 fn get_attribute_key_32<'a>(cols: &'a Attribute32Arrays<'a>, row_idx: usize) -> Option<&'a [u8]> {
     cols.attr_key.str_at(row_idx).map(|s| s.as_bytes())
 }
 
+#[allow(dead_code)]
 fn get_attribute_value_32<'a>(
     cols: &'a Attribute32Arrays<'a>,
     row_idx: usize,
@@ -270,9 +276,10 @@ fn get_attribute_value_32<'a>(
 /// Extract an AnyValue from attribute arrays given the type and value columns.
 /// Works for both Attribute16Arrays and Attribute32Arrays since their anyval_arrays
 /// share the same AnyValueArrays type.
+#[allow(dead_code)]
 fn extract_anyvalue<'a>(
     type_array: &'a arrow::array::UInt8Array,
-    anyval: &'a crate::otlp::attributes::AnyValueArrays<'a>,
+    anyval: &'a crate::otlp::common::AnyValueArrays<'a>,
     row_idx: usize,
 ) -> OtapAnyValueView<'a> {
     if !type_array.is_valid(row_idx) {
@@ -360,6 +367,7 @@ pub(crate) fn build_u16_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> 
 
 /// Build an inverted index from parent_id (u16) to list of row indices for event/link batches.
 /// Events and links use u16 parent_id to reference their parent span's id.
+#[allow(dead_code)]
 pub(crate) fn build_u16_parent_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
     build_u16_index(batch)
 }
@@ -384,7 +392,10 @@ pub(crate) fn group_by_resource_id(batch: &RecordBatch) -> Vec<(u16, RowGroup)> 
 }
 
 /// Group rows by scope ID within a set of rows.
-pub(crate) fn group_by_scope_id(batch: &RecordBatch, row_indices: &RowGroup) -> Vec<(u16, RowGroup)> {
+pub(crate) fn group_by_scope_id(
+    batch: &RecordBatch,
+    row_indices: &RowGroup,
+) -> Vec<(u16, RowGroup)> {
     let scope_struct = batch
         .column_by_name(consts::SCOPE)
         .and_then(|c| c.as_any().downcast_ref::<StructArray>());
@@ -408,7 +419,7 @@ fn group_by_id_column(
     }
 
     fn insert_idx(builders: &mut BTreeMap<u16, GroupBuilder>, id: u16, i: usize) {
-        builders
+        let _ = builders
             .entry(id)
             .and_modify(|builder| match builder {
                 GroupBuilder::Contiguous { start, count } => {
@@ -428,7 +439,10 @@ fn group_by_id_column(
 
     let mut builders: BTreeMap<u16, GroupBuilder> = BTreeMap::new();
 
-    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(id_col) {
+    // Convert to ArrayRef to handle dictionary cases
+    let id_col_arc: arrow::array::ArrayRef =
+        std::sync::Arc::new(arrow::array::make_array(id_col.to_data()));
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(&id_col_arc) {
         for i in indices {
             if let Some(id) = accessor.value_at(i) {
                 insert_idx(&mut builders, id, i);
@@ -467,7 +481,7 @@ mod tests {
         let rg = RowGroup::Contiguous(5..8);
         assert_eq!(rg.len(), 3);
         assert!(!rg.is_empty());
-        
+
         let indices: Vec<usize> = rg.iter().collect();
         assert_eq!(indices, vec![5, 6, 7]);
     }
@@ -540,4 +554,60 @@ mod tests {
         assert_eq!(val.as_string(), Some(b"my-service".as_slice()));
     }
 }
-                                                                                                                                                                        
+
+// ===== Shared Helpers =====
+
+/// Build an inverted index from parent_id to list of row indices.
+/// This is used for attribute batches where parent_id links back to the parent entity.
+pub(crate) fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
+    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
+        Some(col) => col,
+        None => return BTreeMap::new(),
+    };
+
+    let mut index: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
+
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(&parent_id_col.clone()) {
+        for i in 0..batch.num_rows() {
+            if let Some(pid) = accessor.value_at(i) {
+                index.entry(pid).or_default().push(i);
+            }
+        }
+        return index;
+    }
+
+    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt16Array>() {
+        for i in 0..batch.num_rows() {
+            if parent_id_array.is_valid(i) {
+                let pid = parent_id_array.value(i);
+                index.entry(pid).or_default().push(i);
+            }
+        }
+    }
+
+    index
+}
+
+/// Build an inverted index from u32 parent_id to list of row indices.
+pub(crate) fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Vec<usize>> {
+    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
+        Some(col) => col,
+        None => return BTreeMap::new(),
+    };
+
+    let mut index: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+
+    if let Some(parent_id_array) = parent_id_col
+        .as_any()
+        .downcast_ref::<arrow::array::UInt32Array>()
+    {
+        for i in 0..batch.num_rows() {
+            if parent_id_array.is_valid(i) {
+                let pid = parent_id_array.value(i);
+                index.entry(pid).or_default().push(i);
+            }
+        }
+    }
+
+    index
+}

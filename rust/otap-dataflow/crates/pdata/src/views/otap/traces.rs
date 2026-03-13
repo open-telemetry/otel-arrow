@@ -20,16 +20,16 @@
 
 use std::collections::BTreeMap;
 
-use arrow::array::{
-    Array, RecordBatch, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
-};
+use arrow::array::{Array, RecordBatch, StructArray, UInt16Array, UInt32Array};
 
-use crate::arrays::{
-    ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-};
+use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
+use crate::otlp::common::{ResourceArrays, ScopeArrays};
+use crate::otlp::traces::{
+    span_event::SpanEventArrays, span_link::SpanLinkArrays, spans_arrays::SpansArrays,
+};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
@@ -39,242 +39,10 @@ use otap_df_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 
-// Re-use shared types from the logs module
-use super::logs::{OtapAnyValueView, OtapAttributeView, RowGroup, RowGroupIter};
-
-// ===== Column Accessors =====
-
-/// Cached column references for the main spans record batch.
-/// This avoids repeated column lookups by name during iteration.
-struct SpanColumns<'a> {
-    id: Option<&'a UInt16Array>,
-    start_time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    // duration is stored as Duration(Nanosecond) but we access raw i64 values
-    duration_time_unix_nano: Option<&'a std::sync::Arc<dyn Array>>,
-    trace_id: Option<ByteArrayAccessor<'a>>,
-    span_id: Option<ByteArrayAccessor<'a>>,
-    trace_state: Option<StringArrayAccessor<'a>>,
-    parent_span_id: Option<ByteArrayAccessor<'a>>,
-    flags: Option<&'a UInt32Array>,
-    name: Option<StringArrayAccessor<'a>>,
-    kind: Option<Int32ArrayAccessor<'a>>,
-    dropped_attributes_count: Option<&'a UInt32Array>,
-    dropped_events_count: Option<&'a UInt32Array>,
-    dropped_links_count: Option<&'a UInt32Array>,
-    status_code: Option<Int32ArrayAccessor<'a>>,
-    status_message: Option<StringArrayAccessor<'a>>,
-    // Resource struct sub-fields
-    resource_schema_url: Option<StringArrayAccessor<'a>>,
-    // Scope struct sub-fields
-    scope_name: Option<StringArrayAccessor<'a>>,
-    scope_version: Option<StringArrayAccessor<'a>>,
-}
-
-impl<'a> SpanColumns<'a> {
-    fn try_from(batch: &'a RecordBatch) -> Result<Self, Error> {
-        let id = batch
-            .column_by_name(consts::ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-
-        let start_time_unix_nano = batch
-            .column_by_name(consts::START_TIME_UNIX_NANO)
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
-
-        let duration_time_unix_nano = batch.column_by_name(consts::DURATION_TIME_UNIX_NANO);
-
-        let trace_id = batch
-            .column_by_name(consts::TRACE_ID)
-            .and_then(|c| ByteArrayAccessor::try_new(c).ok());
-
-        let span_id = batch
-            .column_by_name(consts::SPAN_ID)
-            .and_then(|c| ByteArrayAccessor::try_new(c).ok());
-
-        let trace_state = batch
-            .column_by_name(consts::TRACE_STATE)
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        let parent_span_id = batch
-            .column_by_name(consts::PARENT_SPAN_ID)
-            .and_then(|c| ByteArrayAccessor::try_new(c).ok());
-
-        let flags = batch
-            .column_by_name(consts::FLAGS)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let name = batch
-            .column_by_name(consts::NAME)
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        let kind = batch
-            .column_by_name(consts::KIND)
-            .and_then(|c| Int32ArrayAccessor::try_new(c).ok());
-
-        let dropped_attributes_count = batch
-            .column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let dropped_events_count = batch
-            .column_by_name(consts::DROPPED_EVENTS_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let dropped_links_count = batch
-            .column_by_name(consts::DROPPED_LINKS_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        // Status is a struct column with "code" and "status_message" sub-fields
-        let (status_code, status_message) = batch
-            .column_by_name(consts::STATUS)
-            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-            .map(|status_struct| {
-                let code = status_struct
-                    .column_by_name(consts::STATUS_CODE)
-                    .and_then(|c| Int32ArrayAccessor::try_new(c).ok());
-                let message = status_struct
-                    .column_by_name(consts::STATUS_MESSAGE)
-                    .and_then(|c| StringArrayAccessor::try_new(c).ok());
-                (code, message)
-            })
-            .unwrap_or((None, None));
-
-        // Resource struct sub-fields (schema_url)
-        let resource_schema_url = batch
-            .column_by_name(consts::RESOURCE)
-            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-            .and_then(|s| s.column_by_name(consts::SCHEMA_URL))
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        // Scope struct sub-fields (name, version)
-        let scope_struct = batch
-            .column_by_name(consts::SCOPE)
-            .and_then(|c| c.as_any().downcast_ref::<StructArray>());
-
-        let scope_name = scope_struct
-            .and_then(|s| s.column_by_name(consts::NAME))
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        let scope_version = scope_struct
-            .and_then(|s| s.column_by_name(consts::VERSION))
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        Ok(Self {
-            id,
-            start_time_unix_nano,
-            duration_time_unix_nano,
-            trace_id,
-            span_id,
-            trace_state,
-            parent_span_id,
-            flags,
-            name,
-            kind,
-            dropped_attributes_count,
-            dropped_events_count,
-            dropped_links_count,
-            status_code,
-            status_message,
-            resource_schema_url,
-            scope_name,
-            scope_version,
-        })
-    }
-}
-
-/// Cached column references for the events record batch.
-struct EventColumns<'a> {
-    #[allow(dead_code)]
-    parent_id: Option<&'a UInt16Array>,
-    id: Option<&'a UInt32Array>,
-    time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    name: Option<StringArrayAccessor<'a>>,
-    dropped_attributes_count: Option<&'a UInt32Array>,
-}
-
-impl<'a> EventColumns<'a> {
-    fn try_from(batch: &'a RecordBatch) -> Result<Self, Error> {
-        let parent_id = batch
-            .column_by_name(consts::PARENT_ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-
-        let id = batch
-            .column_by_name(consts::ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let time_unix_nano = batch
-            .column_by_name(consts::TIME_UNIX_NANO)
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
-
-        let name = batch
-            .column_by_name(consts::NAME)
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        let dropped_attributes_count = batch
-            .column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        Ok(Self {
-            parent_id,
-            id,
-            time_unix_nano,
-            name,
-            dropped_attributes_count,
-        })
-    }
-}
-
-/// Cached column references for the links record batch.
-struct LinkColumns<'a> {
-    #[allow(dead_code)]
-    parent_id: Option<&'a UInt16Array>,
-    id: Option<&'a UInt32Array>,
-    trace_id: Option<ByteArrayAccessor<'a>>,
-    span_id: Option<ByteArrayAccessor<'a>>,
-    trace_state: Option<StringArrayAccessor<'a>>,
-    dropped_attributes_count: Option<&'a UInt32Array>,
-    flags: Option<&'a UInt32Array>,
-}
-
-impl<'a> LinkColumns<'a> {
-    fn try_from(batch: &'a RecordBatch) -> Result<Self, Error> {
-        let parent_id = batch
-            .column_by_name(consts::PARENT_ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-
-        let id = batch
-            .column_by_name(consts::ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let trace_id = batch
-            .column_by_name(consts::TRACE_ID)
-            .and_then(|c| ByteArrayAccessor::try_new(c).ok());
-
-        let span_id = batch
-            .column_by_name(consts::SPAN_ID)
-            .and_then(|c| ByteArrayAccessor::try_new(c).ok());
-
-        let trace_state = batch
-            .column_by_name(consts::TRACE_STATE)
-            .and_then(|c| StringArrayAccessor::try_new(c).ok());
-
-        let dropped_attributes_count = batch
-            .column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        let flags = batch
-            .column_by_name(consts::FLAGS)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        Ok(Self {
-            parent_id,
-            id,
-            trace_id,
-            span_id,
-            trace_state,
-            dropped_attributes_count,
-            flags,
-        })
-    }
-}
+use crate::views::otap::common::{
+    OtapAnyValueView, OtapAttributeView, RowGroup, RowGroupIter, build_attribute_index,
+    build_attribute_index_u32,
+};
 
 // ===== Main View =====
 
@@ -283,9 +51,11 @@ impl<'a> LinkColumns<'a> {
 /// This struct holds references to the Arrow RecordBatches and pre-computed indices
 /// for efficient hierarchical traversal of the trace data.
 pub struct OtapTracesView<'a> {
-    columns: SpanColumns<'a>,
-    event_columns: Option<EventColumns<'a>>,
-    link_columns: Option<LinkColumns<'a>>,
+    columns: SpansArrays<'a>,
+    resource_columns: ResourceArrays<'a>,
+    scope_columns: ScopeArrays<'a>,
+    event_columns: Option<SpanEventArrays<'a>>,
+    link_columns: Option<SpanLinkArrays<'a>>,
 
     resource_attrs: Option<Attribute16Arrays<'a>>,
     scope_attrs: Option<Attribute16Arrays<'a>>,
@@ -334,7 +104,9 @@ impl<'a> OtapTracesView<'a> {
         link_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
         // 1. Cache columns for O(1) access
-        let columns = SpanColumns::try_from(spans_batch)?;
+        let columns = SpansArrays::try_from(spans_batch)?;
+        let resource_columns = ResourceArrays::try_from(spans_batch)?;
+        let scope_columns = ScopeArrays::try_from(spans_batch)?;
 
         // 2. Pre-compute resource grouping
         let resource_groups = group_by_resource_id(spans_batch);
@@ -359,16 +131,21 @@ impl<'a> OtapTracesView<'a> {
             .map(build_attribute_index_u32)
             .unwrap_or_default();
 
-        // 5. Pre-compute event and link index maps (parent_id -> row indices)
-        let events_map = events_batch.map(build_parent_id_index).unwrap_or_default();
-        let links_map = links_batch.map(build_parent_id_index).unwrap_or_default();
+        let events_map = events_batch
+            .map(crate::views::otap::common::build_u16_index)
+            .unwrap_or_default();
+        let links_map = links_batch
+            .map(crate::views::otap::common::build_u16_index)
+            .unwrap_or_default();
 
         // 6. Cache event/link columns
-        let event_columns = events_batch.map(EventColumns::try_from).transpose()?;
-        let link_columns = links_batch.map(LinkColumns::try_from).transpose()?;
+        let event_columns = events_batch.map(SpanEventArrays::try_from).transpose()?;
+        let link_columns = links_batch.map(SpanLinkArrays::try_from).transpose()?;
 
         Ok(Self {
             columns,
+            resource_columns,
+            scope_columns,
             event_columns,
             link_columns,
             resource_attrs: resource_attrs
@@ -514,14 +291,13 @@ impl<'a> ResourceSpansView for OtapResourceSpansView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // All rows in a resource group share the same schema_url;
-        // read from the first row.
         let first_row = self.row_indices.iter().next()?;
         self.view
-            .columns
-            .resource_schema_url
+            .resource_columns
+            .schema_url
             .as_ref()
-            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
+            .and_then(|c| c.str_at(first_row))
+            .map(|s| s.as_bytes())
     }
 }
 
@@ -540,7 +316,7 @@ impl<'a> OtapScopeSpansIter<'a> {
             .view
             .scope_groups_map
             .get(&resource_view.resource_id)
-            .map(|v| v.iter())
+            .map(|v: &Vec<(u16, RowGroup)>| v.iter())
             .unwrap_or_default();
 
         Self {
@@ -602,9 +378,6 @@ impl<'a> ScopeSpansView for OtapScopeSpansView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // Scope-level schema_url is not stored separately in the OTAP batch;
-        // it shares the same column as resource schema_url.
-        // Return None as there is no dedicated scope schema_url column.
         None
     }
 }
@@ -867,7 +640,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
     #[inline]
     fn status(&self) -> Option<Self::Status<'_>> {
         // Return a status view if we have status columns
-        if self.view.columns.status_code.is_some() || self.view.columns.status_message.is_some() {
+        if self.view.columns.status.is_some() {
             Some(OtapStatusView {
                 view: self.view,
                 row_idx: self.row_idx,
@@ -882,7 +655,7 @@ impl<'a> OtapSpanView<'a> {
     /// Get the span's row ID from the "id" column (used for attribute/event/link matching)
     #[inline]
     fn get_span_row_id(&self) -> Option<u16> {
-        let array = self.view.columns.id?;
+        let array = &self.view.columns.id;
         if array.is_valid(self.row_idx) {
             Some(array.value(self.row_idx))
         } else {
@@ -893,16 +666,11 @@ impl<'a> OtapSpanView<'a> {
     /// Get the duration in nanoseconds from the duration column
     #[inline]
     fn get_duration_nanos(&self) -> Option<i64> {
-        let col = self.view.columns.duration_time_unix_nano?;
-        col.as_any()
-            .downcast_ref::<arrow::array::DurationNanosecondArray>()
-            .and_then(|dur_array| {
-                if dur_array.is_valid(self.row_idx) {
-                    Some(dur_array.value(self.row_idx))
-                } else {
-                    None
-                }
-            })
+        self.view
+            .columns
+            .duration_time_unix_nano
+            .as_ref()
+            .and_then(|col| col.value_at(self.row_idx))
     }
 }
 
@@ -1250,8 +1018,9 @@ impl<'a> StatusView for OtapStatusView<'a> {
     fn message(&self) -> Option<Str<'_>> {
         self.view
             .columns
-            .status_message
+            .status
             .as_ref()
+            .and_then(|s| s.message.as_ref())
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
     }
 
@@ -1259,8 +1028,9 @@ impl<'a> StatusView for OtapStatusView<'a> {
     fn status_code(&self) -> i32 {
         self.view
             .columns
-            .status_code
+            .status
             .as_ref()
+            .and_then(|s| s.code.as_ref())
             .and_then(|col| col.value_at(self.row_idx))
             .unwrap_or(0)
     }
@@ -1329,8 +1099,8 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
         // Scope name is in the scope struct column; find a row with this scope_id
         let first_row = self.find_first_row_for_scope()?;
         self.view
-            .columns
-            .scope_name
+            .scope_columns
+            .name
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
@@ -1339,8 +1109,8 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
     fn version(&self) -> Option<Str<'_>> {
         let first_row = self.find_first_row_for_scope()?;
         self.view
-            .columns
-            .scope_version
+            .scope_columns
+            .version
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
@@ -1374,7 +1144,7 @@ impl<'a> OtapTraceInstrumentationScopeView<'a> {
         for scope_list in self.view.scope_groups_map.values() {
             for (sid, row_group) in scope_list {
                 if *sid == self.scope_id {
-                    return row_group.iter().next();
+                    return row_group.iter().next(); // type known
                 }
             }
         }
@@ -1383,68 +1153,6 @@ impl<'a> OtapTraceInstrumentationScopeView<'a> {
 }
 
 // ===== Helper Functions =====
-
-/// Build an inverted index from parent_id to list of row indices.
-/// This is used for attribute batches where parent_id links back to the parent entity.
-fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
-    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
-        Some(col) => col,
-        None => return BTreeMap::new(),
-    };
-
-    let mut index: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
-
-    if let Ok(accessor) =
-        crate::arrays::MaybeDictArrayAccessor::<UInt16Array>::try_new(parent_id_col)
-    {
-        for i in 0..batch.num_rows() {
-            if let Some(pid) = accessor.value_at(i) {
-                index.entry(pid).or_default().push(i);
-            }
-        }
-        return index;
-    }
-
-    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt16Array>() {
-        for i in 0..batch.num_rows() {
-            if parent_id_array.is_valid(i) {
-                let pid = parent_id_array.value(i);
-                index.entry(pid).or_default().push(i);
-            }
-        }
-    }
-
-    index
-}
-
-/// Build an inverted index from parent_id (u32) to list of row indices.
-/// Used for event/link attribute batches per OTAP spec §5.4.1.
-fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Vec<usize>> {
-    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
-        Some(col) => col,
-        None => return BTreeMap::new(),
-    };
-
-    let mut index: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-
-    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt32Array>() {
-        for i in 0..batch.num_rows() {
-            if parent_id_array.is_valid(i) {
-                let pid = parent_id_array.value(i);
-                index.entry(pid).or_default().push(i);
-            }
-        }
-    }
-
-    index
-}
-
-/// Build an inverted index from parent_id to list of row indices.
-/// Used for event and link batches where parent_id links back to the span's id.
-fn build_parent_id_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
-    // Same logic as build_attribute_index - parent_id column maps child rows to parent
-    build_attribute_index(batch)
-}
 
 /// Group rows by resource ID (same logic as logs)
 fn group_by_resource_id(batch: &RecordBatch) -> Vec<(u16, RowGroup)> {
@@ -2079,5 +1787,89 @@ mod tests {
         }
 
         assert_eq!(total_events, 3, "Should iterate all 3 events");
+    }
+
+    #[test]
+    fn test_otap_traces_view_integration() {
+        let spans_batch = create_test_spans_batch();
+        let resource_attrs = None; // we could build complex attrs but basics are fine
+        let scope_attrs = None;
+
+        let events_schema = Arc::new(Schema::new(vec![
+            Field::new("parent_id", DataType::UInt16, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+
+        let events_batch = RecordBatch::try_new(
+            events_schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                Arc::new(TimestampNanosecondArray::from(vec![1_100_000])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["integration-event"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let links_schema = Arc::new(Schema::new(vec![
+            Field::new("parent_id", DataType::UInt16, false),
+            Field::new("trace_id", DataType::FixedSizeBinary(16), true),
+            Field::new("span_id", DataType::FixedSizeBinary(8), true),
+        ]));
+
+        let links_batch = RecordBatch::try_new(
+            links_schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                        vec![Some(vec![1; 16])],
+                        16,
+                    )
+                    .unwrap(),
+                ) as ArrayRef,
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(vec![Some(vec![2; 8])], 8)
+                        .unwrap(),
+                ) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let view = OtapTracesView::new(
+            &spans_batch,
+            resource_attrs,
+            scope_attrs,
+            None,
+            Some(&events_batch),
+            None,
+            Some(&links_batch),
+            None,
+        )
+        .expect("Failed to create unified integration view");
+
+        let mut span_count = 0;
+        let mut event_count = 0;
+        let mut link_count = 0;
+        for resource in view.resources() {
+            assert!(resource.schema_url().is_none()); // because our test default has none
+            for scope in resource.scopes() {
+                assert!(scope.schema_url().is_none());
+                for span in scope.spans() {
+                    span_count += 1;
+                    event_count += span.events().count();
+                    link_count += span.links().count();
+                    assert!(span.span_id().is_some());
+                }
+            }
+        }
+
+        assert_eq!(span_count, 3);
+        assert_eq!(event_count, 1);
+        assert_eq!(link_count, 1);
     }
 }
