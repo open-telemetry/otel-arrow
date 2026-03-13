@@ -6,19 +6,12 @@
 #![allow(unused_results)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_contrib_nodes::exporters::azure_monitor_exporter::{
-    AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc, Config, Transformer,
-};
+use otap_df_contrib_nodes::exporters::azure_monitor_exporter::{Config, Transformer};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
 use prost::Message;
 use serde_json::json;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
-use otap_df_contrib_nodes::exporters::azure_monitor_exporter::metrics::AzureMonitorExporterMetricsTracker;
 use otap_df_pdata::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value::Value as OtelAnyValueEnum,
 };
@@ -26,15 +19,6 @@ use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, Sco
 use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-
-fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
-    let registry = TelemetryRegistryHandle::new();
-    let metric_set =
-        registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-    Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-        metric_set,
-    )))
-}
 
 fn create_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
@@ -119,7 +103,11 @@ fn make_log_record(i: usize) -> LogRecord {
     }
 }
 
-fn make_request(num_resource_logs: usize, num_scope_logs: usize, records_per_scope: usize) -> Vec<u8> {
+fn make_request(
+    num_resource_logs: usize,
+    num_scope_logs: usize,
+    records_per_scope: usize,
+) -> Vec<u8> {
     let resource_logs: Vec<ResourceLogs> = (0..num_resource_logs)
         .map(|_| ResourceLogs {
             resource: Some(Resource {
@@ -155,9 +143,7 @@ fn make_request(num_resource_logs: usize, num_scope_logs: usize, records_per_sco
                             KeyValue {
                                 key: "scope.name".into(),
                                 value: Some(AnyValue {
-                                    value: Some(OtelAnyValueEnum::StringValue(
-                                        "my-library".into(),
-                                    )),
+                                    value: Some(OtelAnyValueEnum::StringValue("my-library".into())),
                                 }),
                             },
                             KeyValue {
@@ -185,7 +171,7 @@ fn bench_transform(c: &mut Criterion) {
     let mut group = c.benchmark_group("transformer");
 
     let config = create_config();
-    let transformer = Transformer::new(&config, create_test_metrics());
+    let transformer = Transformer::new(&config);
 
     // Varying record counts: 1 ResourceLogs, 1 ScopeLogs, N records
     for num_records in [10, 100, 1000] {

@@ -9,15 +9,12 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::otel_warn;
-use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::config::{Config, SchemaConfig};
 use super::error::Error;
-use super::metrics::AzureMonitorExporterMetricsRc;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -127,7 +124,6 @@ impl ParsedSchema {
 #[derive(Debug)]
 pub struct Transformer {
     schema: ParsedSchema,
-    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl Transformer {
@@ -136,19 +132,17 @@ impl Transformer {
     /// # Panics
     /// Panics if the schema configuration contains invalid field names
     #[must_use]
-    pub fn new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
             schema: ParsedSchema::from_config(&config.api.schema)
                 .expect("Invalid schema configuration"),
-            metrics,
         }
     }
 
     /// Create a new Transformer, returning an error if configuration is invalid
-    pub fn try_new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Result<Self, Error> {
+    pub fn try_new(config: &Config) -> Result<Self, Error> {
         Ok(Self {
             schema: ParsedSchema::from_config(&config.api.schema)?,
-            metrics,
         })
     }
 
@@ -156,6 +150,10 @@ impl Transformer {
     /// then writes per-record fields directly to the buffer — no Map cloning or re-serialization.
     /// Assumes non-overlapping mappings across resource, scope, and log record levels.
     #[must_use]
+    // TODO: When Rust generators stabilize (rust-lang/rust#117078), replace
+    // Vec<Bytes> return with a generator that yields &[u8] per record,
+    // allowing the caller to feed records directly into GzipBatcher
+    // without the intermediate Vec allocation and second iteration pass.
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
         let mut results = Vec::with_capacity(1024);
         let mut buf = BytesMut::with_capacity(2048);
@@ -185,8 +183,7 @@ impl Transformer {
                 for log_record in scope_logs.log_records() {
                     record_buf.clear();
 
-                    let has_record =
-                        self.write_record_fields_json(&log_record, &mut record_buf);
+                    let has_record = self.write_record_fields_json(&log_record, &mut record_buf);
 
                     buf.clear();
                     match (has_base, has_record) {
@@ -271,8 +268,7 @@ impl Transformer {
                 Self::write_json_string(ts.as_bytes(), out);
             }
             LogRecordField::ObservedTimeUnixNano => {
-                let ts =
-                    Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0));
+                let ts = Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0));
                 Self::write_json_string(ts.as_bytes(), out);
             }
             LogRecordField::TraceId => match log_record.trace_id() {
@@ -287,10 +283,7 @@ impl Transformer {
                 Self::write_u64(log_record.flags().unwrap_or(0).into(), out);
             }
             LogRecordField::SeverityNumber => {
-                Self::write_u64(
-                    log_record.severity_number().unwrap_or(0) as u64,
-                    out,
-                );
+                Self::write_u64(log_record.severity_number().unwrap_or(0) as u64, out);
             }
             LogRecordField::SeverityText => {
                 Self::write_json_string(log_record.severity_text().unwrap_or(b""), out);
@@ -428,66 +421,6 @@ impl Transformer {
         }
     }
 
-    /// Transform log record fields into a Map (no longer returns Result - validation done at construction)
-    fn transform_log_record_to_map<R: LogRecordView>(
-        &self,
-        log_record: &R,
-        map: &mut serde_json::Map<String, Value>,
-    ) {
-        // Process pre-parsed field mappings
-        for field_mapping in &self.schema.field_mappings {
-            let value = Self::extract_field_value(field_mapping.source, log_record);
-            _ = map.insert(field_mapping.dest.clone(), value);
-        }
-
-        // Process attribute mappings
-        if !self.schema.attribute_mapping.is_empty() {
-            for attr in log_record.attributes() {
-                let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                if let Some(dest_field) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
-                    if let Some(val) = attr.value() {
-                        _ = map.insert(dest_field.clone(), Self::convert_any_value(&val));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Extract value from log record by pre-parsed field enum (no string comparison needed)
-    #[inline]
-    fn extract_field_value<R: LogRecordView>(field: LogRecordField, log_record: &R) -> Value {
-        match field {
-            LogRecordField::TimeUnixNano => Value::String(Self::format_timestamp(
-                log_record.time_unix_nano().unwrap_or(0),
-            )),
-            LogRecordField::ObservedTimeUnixNano => Value::String(Self::format_timestamp(
-                log_record.observed_time_unix_nano().unwrap_or(0),
-            )),
-            LogRecordField::TraceId => log_record
-                .trace_id()
-                .map(|id| Value::String(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null),
-            LogRecordField::SpanId => log_record
-                .span_id()
-                .map(|id| Value::String(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null),
-            LogRecordField::Flags => Value::Number(log_record.flags().unwrap_or(0).into()),
-            LogRecordField::SeverityNumber => {
-                Value::Number((log_record.severity_number().unwrap_or(0) as i64).into())
-            }
-            LogRecordField::SeverityText => Value::String(Self::str_to_string(
-                log_record.severity_text().unwrap_or(b""),
-            )),
-            LogRecordField::Body => log_record
-                .body()
-                .map(|b| Value::String(Self::extract_string_value(&b)))
-                .unwrap_or(Value::Null),
-            LogRecordField::EventName => {
-                Value::String(Self::str_to_string(log_record.event_name().unwrap_or(b"")))
-            }
-        }
-    }
-
     /// Convert Str<'_> (&[u8]) to String
     #[inline]
     fn str_to_string(s: Str<'_>) -> String {
@@ -585,24 +518,9 @@ mod tests {
         resource::v1::Resource,
     };
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
     use prost::Message;
     use serde_json::json;
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use super::super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
-
-    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
-        let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
-        )))
-    }
 
     fn create_test_config() -> Config {
         use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
@@ -632,7 +550,7 @@ mod tests {
     #[test]
     fn test_schema_mapping() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -702,7 +620,7 @@ mod tests {
             ("severity_number".to_string(), json!("SeverityNum")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -746,7 +664,7 @@ mod tests {
     #[test]
     fn test_any_value_types() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -784,7 +702,7 @@ mod tests {
     #[test]
     fn test_kvlist_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -836,7 +754,7 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!("Body"));
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -873,7 +791,7 @@ mod tests {
     #[test]
     fn test_try_new_success() {
         let config = create_test_config();
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_ok());
     }
 
@@ -886,7 +804,7 @@ mod tests {
             .log_record_mapping
             .insert("invalid_field".into(), json!("Invalid"));
 
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_err());
         assert!(
             result
@@ -906,7 +824,7 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!({"nested": "object"}));
 
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must be a string"));
     }
@@ -929,7 +847,7 @@ mod tests {
             auth: AuthConfig::default(),
         };
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -965,7 +883,7 @@ mod tests {
     #[test]
     fn test_attribute_with_no_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1015,7 +933,7 @@ mod tests {
     #[test]
     fn test_multiple_log_records() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1064,7 +982,7 @@ mod tests {
         let mut config = create_test_config();
         config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1111,7 +1029,7 @@ mod tests {
             ("SEVERITY_TEXT".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1145,7 +1063,7 @@ mod tests {
     #[test]
     fn test_double_nan_becomes_null() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1185,7 +1103,7 @@ mod tests {
             ("severity_text".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
