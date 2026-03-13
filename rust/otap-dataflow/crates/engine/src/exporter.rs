@@ -1018,8 +1018,10 @@ mod tests {
     }
 
     /// recv_when(false) with a closed pdata channel that still has
-    /// buffered data should not trigger synthetic shutdown until the
-    /// data is drained.
+    /// buffered data should NOT trigger synthetic shutdown — the data
+    /// must be preserved for draining when the caller re-enables pdata.
+    /// This is important for nodes using accept_pdata=false as temporary
+    /// backpressure (e.g., fanout processor at max_inflight).
     #[tokio::test]
     async fn test_recv_when_false_closed_with_buffered_data() {
         let (_control_tx, pdata_tx, mut channel) = make_chan();
@@ -1029,8 +1031,7 @@ mod tests {
         drop(pdata_tx);
 
         // recv_when(false) should NOT trigger shutdown because there's
-        // still buffered data (is_empty() is false).
-        // It should time out waiting for control.
+        // still buffered data that can be drained later.
         let result =
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(
@@ -1048,6 +1049,22 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    /// recv_when(false) with a closed AND empty pdata channel should
+    /// return synthetic shutdown immediately (TOCTOU-safe via is_closed()).
+    #[tokio::test]
+    async fn test_recv_when_false_closed_empty_returns_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Close the channel with no buffered data
+        drop(pdata_tx);
+
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })),
+            "should return shutdown when pdata channel is closed and empty"
+        );
     }
 
     /// Helper that creates a MessageChannel with shared (tokio mpsc) pdata channel.
@@ -1102,6 +1119,90 @@ mod tests {
             .expect("recv_when(false) should not block when shared pdata channel is closed")
             .unwrap();
 
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// When a real Shutdown is pending (draining mode) and pdata closes+empties,
+    /// the original deadline and reason must be preserved — not replaced by a
+    /// synthetic 1-second shutdown.
+    #[tokio::test]
+    async fn test_draining_mode_preserves_original_shutdown_deadline() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Buffer some pdata
+        pdata_tx.send_async("msg1".to_owned()).await.unwrap();
+
+        // Send a real Shutdown with a generous deadline
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let reason = "graceful shutdown".to_owned();
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: reason.clone(),
+            })
+            .await
+            .unwrap();
+
+        // First recv_when(true): biased select picks Shutdown control first,
+        // enters draining mode, then loops back to drain pdata.
+        let msg = channel.recv_when(true).await.unwrap();
+        // The biased select picks control first → enters draining → loops → drains pdata
+        // So the first message returned should be pdata (after entering draining mode).
+        assert!(
+            matches!(msg, Message::PData(ref s) if s == "msg1"),
+            "expected pdata after entering draining, got: {msg:?}"
+        );
+
+        // Close pdata channel — now closed+empty in draining mode
+        drop(pdata_tx);
+        // Keep control_tx alive so control channel doesn't close
+        let _keep = control_tx;
+
+        // The next recv should return the ORIGINAL shutdown with the original deadline
+        let msg = channel.recv_when(true).await.unwrap();
+        match msg {
+            Message::Control(NodeControlMsg::Shutdown {
+                deadline: d,
+                reason: r,
+            }) => {
+                assert_eq!(r, reason, "original reason must be preserved");
+                // Deadline should be the original 30s one, not a synthetic 1s
+                assert!(
+                    d.duration_since(Instant::now()) > Duration::from_secs(10),
+                    "original deadline must be preserved, not replaced with 1s synthetic"
+                );
+            }
+            other => panic!("expected Shutdown, got: {other:?}"),
+        }
+    }
+
+    /// recv_when(false) on a shared channel with closed+buffered pdata
+    /// should NOT trigger shutdown — data must be preserved for draining.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_closed_with_buffered_data_no_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Buffer pdata, then close the channel
+        pdata_tx.send("buffered".to_owned()).await.unwrap();
+        drop(pdata_tx);
+
+        // recv_when(false) must block — pdata is buffered, no control available
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "should block — shared pdata channel is closed but data is still buffered"
+        );
+
+        // Drain the buffered data
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "buffered"));
+
+        // Now recv_when(false) should detect closed+empty and return shutdown
+        let msg = channel.recv_when(false).await.unwrap();
         assert!(matches!(
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
