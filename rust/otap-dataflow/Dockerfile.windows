@@ -10,8 +10,11 @@
 #
 # The binary is expected at target/release/df_engine.exe relative to the build
 # context (the rust/otap-dataflow directory).
+#
+# The base image tag must match the Windows version on the host. GitHub Actions
+# windows-latest uses Windows Server 2025 which requires ltsc2025.
 
-FROM mcr.microsoft.com/windows/servercore:ltsc2022
+FROM mcr.microsoft.com/windows/servercore:ltsc2025
 
 WORKDIR C:\\dataflow
 
