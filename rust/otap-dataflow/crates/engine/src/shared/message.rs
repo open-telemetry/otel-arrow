@@ -267,6 +267,16 @@ impl<T> SharedReceiver<T> {
             SharedReceiverInner::Mpmc(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` if the sender side has been closed.
+    /// There may still be buffered items to drain.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match &self.inner {
+            SharedReceiverInner::Mpsc(receiver) => receiver.is_closed(),
+            SharedReceiverInner::Mpmc(receiver) => receiver.is_disconnected(),
+        }
+    }
 }
 
 #[cfg(test)]
