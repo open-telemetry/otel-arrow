@@ -267,6 +267,15 @@ impl<T> SharedReceiver<T> {
             SharedReceiverInner::Mpmc(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` if the channel is closed (all senders dropped).
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match &self.inner {
+            SharedReceiverInner::Mpsc(receiver) => receiver.is_closed(),
+            SharedReceiverInner::Mpmc(receiver) => receiver.is_disconnected(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +324,42 @@ mod tests {
         assert!(
             matches!(result, Err(RecvError::Closed)),
             "expected Closed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_mpsc_is_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(10);
+        let receiver = SharedReceiver::mpsc(rx);
+
+        assert!(
+            !receiver.is_closed(),
+            "channel with live sender must not be closed"
+        );
+
+        drop(tx);
+
+        assert!(
+            receiver.is_closed(),
+            "channel with dropped sender must be closed"
+        );
+    }
+
+    #[test]
+    fn test_mpmc_is_closed() {
+        let (tx, rx) = flume::bounded::<String>(10);
+        let receiver = SharedReceiver::mpmc(rx);
+
+        assert!(
+            !receiver.is_closed(),
+            "channel with live sender must not be closed"
+        );
+
+        drop(tx);
+
+        assert!(
+            receiver.is_closed(),
+            "channel with dropped sender must be closed"
         );
     }
 }

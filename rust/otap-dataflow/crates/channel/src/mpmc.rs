@@ -350,6 +350,14 @@ impl<T> Receiver<T> {
         let state = self.channel.state.borrow();
         state.buffer.is_empty()
     }
+
+    /// Returns `true` if the channel is closed (all senders dropped or
+    /// explicitly closed).
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        let state = self.channel.state.borrow();
+        state.is_closed
+    }
 }
 
 struct SendFuture<T> {
@@ -1030,6 +1038,52 @@ mod tests {
                 .expect("waiting sender task failed");
 
             assert_eq!(rx.recv().await.expect("must receive second value"), 2);
+        });
+
+        rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
+    }
+
+    #[test]
+    fn test_is_closed() {
+        let rt = create_test_runtime();
+        let local = tokio::task::LocalSet::new();
+
+        let handle = local.spawn_local(async {
+            let (tx, rx) = Channel::<i32>::new(NonZeroUsize::new(10).unwrap());
+
+            // Sender alive — not closed
+            assert!(!rx.is_closed());
+
+            // Explicitly close
+            tx.close();
+            assert!(rx.is_closed());
+        });
+
+        rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
+    }
+
+    #[test]
+    fn test_is_closed_on_sender_drop() {
+        let rt = create_test_runtime();
+        let local = tokio::task::LocalSet::new();
+
+        let handle = local.spawn_local(async {
+            let (tx, rx) = Channel::new(NonZeroUsize::new(10).unwrap());
+
+            // Buffer a value, then drop sender
+            tx.send(42).unwrap();
+            drop(tx);
+
+            // Channel is closed but data is still buffered
+            assert!(rx.is_closed());
+            assert!(!rx.is_empty());
+
+            // Can still drain buffered data
+            assert_eq!(rx.try_recv().unwrap(), 42);
+            assert!(rx.is_closed());
+            assert!(rx.is_empty());
         });
 
         rt.block_on(local);

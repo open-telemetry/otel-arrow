@@ -1107,4 +1107,68 @@ mod tests {
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
     }
+
+    /// recv_when(false) on a shared channel that is closed but still has
+    /// buffered data should NOT trigger a synthetic shutdown — the data
+    /// must be drained first.  This is the shared-channel counterpart of
+    /// `test_recv_when_false_closed_with_buffered_data` (which uses local
+    /// channels where the race cannot occur).
+    #[tokio::test]
+    async fn test_recv_when_false_shared_closed_with_buffered_data_no_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Buffer pdata, then close the channel
+        pdata_tx.send("buffered".to_owned()).await.unwrap();
+        drop(pdata_tx);
+
+        // recv_when(false) must block — pdata is buffered, no control available.
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "should block — shared pdata channel is closed but data is still buffered"
+        );
+
+        // Drain the buffered data
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "buffered"));
+
+        // Now recv_when(false) should detect closed+empty and return shutdown
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// Verify that pdata sent concurrently is never lost when
+    /// recv_when(false) probes the channel.  This covers the original
+    /// data-loss race: if the probe consumed data via try_recv(), the
+    /// Ok(msg) was silently discarded.  With is_closed() the probe
+    /// never dequeues anything.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_concurrent_send_no_data_loss() {
+        let (control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Send pdata while the channel is alive and non-empty
+        pdata_tx.send("msg1".to_owned()).await.unwrap();
+
+        // recv_when(false) should block (channel alive, only pdata present)
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(result.is_err(), "should block waiting for control");
+
+        // The pdata message must still be retrievable
+        let msg = tokio::time::timeout(Duration::from_millis(50), channel.recv_when(true))
+            .await
+            .expect("should not block — pdata is buffered")
+            .unwrap();
+        assert!(
+            matches!(msg, Message::PData(ref s) if s == "msg1"),
+            "pdata must not have been consumed by the probe"
+        );
+
+        drop(pdata_tx);
+        drop(control_tx);
+    }
 }
