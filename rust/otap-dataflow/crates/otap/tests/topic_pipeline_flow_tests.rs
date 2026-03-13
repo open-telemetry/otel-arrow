@@ -6,6 +6,8 @@
 use bytes::Bytes;
 use otap_df_config::TopicName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_core_nodes::exporters::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN};
+use otap_df_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
 use otap_df_engine::Interests;
 use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
@@ -17,8 +19,6 @@ use otap_df_engine::testing::exporter::create_test_pipeline_context;
 use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_engine::topic::{TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet};
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN};
-use otap_df_otap::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::reporter::MetricsReporter;
 use prost::Message as _;
