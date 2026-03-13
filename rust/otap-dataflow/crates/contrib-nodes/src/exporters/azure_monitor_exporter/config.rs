@@ -51,6 +51,7 @@ pub struct AuthConfig {
 
 impl AuthConfig {
     /// Returns a human-readable name for the configured authentication method.
+    #[must_use]
     pub fn auth_method_name(&self) -> &'static str {
         match self.method {
             AuthMethod::ManagedIdentity => {
