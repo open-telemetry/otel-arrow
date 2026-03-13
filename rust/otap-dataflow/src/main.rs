@@ -10,16 +10,16 @@ use otap_df_config::engine::{
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
-// Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (contrib processors/exporters) are visible
-// in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_config::{PipelineGroupId, PipelineId};
-use otap_df_contrib_nodes as _;
 // Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (contrib processors/exporters) are visible
+// distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_contrib_nodes as _;
 use otap_df_controller::Controller;
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (core nodes) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
@@ -34,6 +34,42 @@ use sysinfo::System;
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+);
+
+// Crypto provider features are mutually exclusive.
+// The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
+// pattern so that `cargo test --all-features` (used in CI) does not fail.
+// When all features are enabled (e.g. --all-features), crypto.rs uses a
+// priority order (ring > aws-lc > openssl) so the binary still works.
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-aws-lc",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-aws-lc` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-aws-lc",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
 
 #[cfg(feature = "mimalloc")]
@@ -253,12 +289,10 @@ fn validate_engine_components(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize rustls crypto provider (required for rustls 0.23+)
-    // We use ring as the default provider
-    #[cfg(feature = "experimental-tls")]
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+    // Install the rustls crypto provider selected by the crypto-* feature flag.
+    // This must happen before any TLS connections (reqwest, tonic, etc.).
+    otap_df_otap::crypto::install_crypto_provider()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let Args {
         config,

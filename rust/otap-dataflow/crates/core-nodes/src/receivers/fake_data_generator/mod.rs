@@ -5,11 +5,8 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::fake_data_generator::config::{Config, DataSource, GenerationStrategy};
-use crate::pdata::OtapPdata;
+use crate::receivers::fake_data_generator::config::{Config, DataSource, GenerationStrategy};
 use async_trait::async_trait;
-use bytes::BytesMut;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
@@ -25,11 +22,11 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{
     Interests, ProducerEffectHandlerExtension, ReceiverFactory, control::NodeControlMsg,
 };
-use otap_df_pdata::OtlpProtoBytes;
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info};
-use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
@@ -732,39 +729,11 @@ async fn generate_signal_fresh(
     Ok(())
 }
 
-impl TryFrom<OtlpProtoMessage> for OtapPdata {
-    type Error = Error;
-
-    fn try_from(value: OtlpProtoMessage) -> Result<Self, Self::Error> {
-        let mut bytes = BytesMut::new();
-        Ok(match value {
-            OtlpProtoMessage::Logs(logs_data) => {
-                logs_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(
-                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
-                )
-            }
-            OtlpProtoMessage::Metrics(metrics_data) => {
-                metrics_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(
-                    OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into(),
-                )
-            }
-            OtlpProtoMessage::Traces(trace_data) => {
-                trace_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(
-                    OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into(),
-                )
-            }
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::fake_data_generator::config::{Config, TrafficConfig};
+    use crate::receivers::fake_data_generator::config::{Config, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -772,12 +741,14 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
     use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use prost::Message;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep};
@@ -794,23 +765,22 @@ mod tests {
     const MAX_SIGNALS: u64 = 3;
     const MAX_BATCH: usize = 30;
 
-    impl From<OtapPdata> for OtlpProtoMessage {
-        fn from(value: OtapPdata) -> Self {
-            let otlp_bytes: OtlpProtoBytes = value
-                .payload()
-                .try_into()
-                .expect("can convert signal to otlp bytes");
-            match otlp_bytes {
-                OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                    Self::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
-                }
-                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                    Self::Metrics(MetricsData::decode(bytes.as_ref()).expect("can decode bytes"))
-                }
-                OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                    Self::Traces(TracesData::decode(bytes.as_ref()).expect("can decode bytes"))
-                }
+    /// Convert OtapPdata signal to OtlpProtoMessage for testing purposes.
+    fn pdata_to_otlp_message(value: OtapPdata) -> OtlpProtoMessage {
+        let otlp_bytes: OtlpProtoBytes = value
+            .payload()
+            .try_into()
+            .expect("can convert signal to otlp bytes");
+        match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                OtlpProtoMessage::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
             }
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => OtlpProtoMessage::Metrics(
+                MetricsData::decode(bytes.as_ref()).expect("can decode bytes"),
+            ),
+            OtlpProtoBytes::ExportTracesRequest(bytes) => OtlpProtoMessage::Traces(
+                TracesData::decode(bytes.as_ref()).expect("can decode bytes"),
+            ),
         }
     }
 
@@ -837,7 +807,7 @@ mod tests {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
                 while let Ok(received_signal) = ctx.recv().await {
-                    match received_signal.into() {
+                    match pdata_to_otlp_message(received_signal) {
                         OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             let resource_count = metric.resource_metrics.len();
@@ -1041,7 +1011,7 @@ mod tests {
                 let mut received_messages = 0;
 
                 while let Ok(received_signal) = ctx.recv().await {
-                    match received_signal.into() {
+                    match pdata_to_otlp_message(received_signal) {
                         OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             for resource in metric.resource_metrics.iter() {
@@ -1121,7 +1091,7 @@ mod tests {
                 let mut received_messages = 0;
 
                 while let Ok(received_signal) = ctx.recv().await {
-                    match received_signal.into() {
+                    match pdata_to_otlp_message(received_signal) {
                         OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             for resource in metric.resource_metrics.iter() {
@@ -1197,7 +1167,7 @@ mod tests {
                 let mut received_messages = 0;
 
                 while let Ok(received_signal) = ctx.recv().await {
-                    match received_signal.into() {
+                    match pdata_to_otlp_message(received_signal) {
                         OtlpProtoMessage::Metrics(metric) => {
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {

@@ -17,7 +17,7 @@ groups:
             type: "urn:otel:receiver:traffic_generator"
             config:
               data_source: semantic_conventions
-              generation_strategy: pre_generated
+              generation_strategy: {{ generation_strategy | default("pre_generated") }}
               traffic_config:
                 max_batch_size: {{ max_batch_size | default(1000) }}
                 signals_per_second: {% if signals_per_second is none %}null{% else %}{{ signals_per_second | default(100000) }}{% endif %}

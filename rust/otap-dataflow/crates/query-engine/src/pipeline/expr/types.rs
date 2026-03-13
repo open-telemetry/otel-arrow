@@ -3,7 +3,7 @@
 
 //! Utilities for identifying and coercing expression types
 
-use crate::pipeline::expr::ScopedLogicalExpr;
+use crate::pipeline::expr::{ScopedLogicalExpr, VALUE_COLUMN_NAME};
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::cast;
 use otap_df_pdata::schema::consts;
@@ -119,6 +119,9 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         consts::DESCRIPTION => ExprLogicalType::String,
         consts::UNIT => ExprLogicalType::String,
         consts::AGGREGATION_TEMPORALITY => ExprLogicalType::Int32,
+
+        // the virtual attributes "value" column
+        VALUE_COLUMN_NAME => ExprLogicalType::AnyValue,
 
         _ => return None,
     })
