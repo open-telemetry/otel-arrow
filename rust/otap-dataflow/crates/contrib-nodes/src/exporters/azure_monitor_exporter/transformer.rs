@@ -304,38 +304,33 @@ impl Transformer {
     /// Write an AnyValueView directly as JSON bytes.
     fn write_any_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
         match value.value_type() {
-            ValueType::String => {
-                Self::write_json_string(value.as_string().unwrap_or(b""), out);
-            }
-            ValueType::Int64 => {
-                let n = value.as_int64().unwrap_or(0);
-                Self::write_i64(n, out);
-            }
-            ValueType::Double => {
-                let d = value.as_double().unwrap_or(0.0);
-                if d.is_finite() {
-                    // Use ryu for fast float formatting
+            ValueType::String => match value.as_string() {
+                Some(s) => Self::write_json_string(s, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Int64 => match value.as_int64() {
+                Some(n) => Self::write_i64(n, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Double => match value.as_double() {
+                Some(d) if d.is_finite() => {
                     let mut ryu_buf = ryu::Buffer::new();
-                    out.extend_from_slice(ryu_buf.format(d).as_bytes());
-                } else {
-                    out.extend_from_slice(b"null");
+                    out.extend_from_slice(ryu_buf.format_finite(d).as_bytes());
                 }
-            }
-            ValueType::Bool => {
-                if value.as_bool().unwrap_or(false) {
-                    out.extend_from_slice(b"true");
-                } else {
-                    out.extend_from_slice(b"false");
-                }
-            }
-            ValueType::Bytes => {
-                Self::write_json_hex(value.as_bytes().unwrap_or(&[]), out);
-            }
+                _ => out.extend_from_slice(b"null"),
+            },
+            ValueType::Bool => match value.as_bool() {
+                Some(true) => out.extend_from_slice(b"true"),
+                Some(false) => out.extend_from_slice(b"false"),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Bytes => match value.as_bytes() {
+                Some(b) => Self::write_json_hex(b, out),
+                None => out.extend_from_slice(b"null"),
+            },
             ValueType::Array | ValueType::KeyValueList => {
-                // Fallback to serde for complex nested types
                 let v = Self::convert_any_value(value);
-                // unwrap is safe: convert_any_value produces valid JSON values
-                _ = serde_json::to_writer(&mut *out, &v);
+                _ = serde_json::to_writer(out, &v);
             }
             ValueType::Empty => out.extend_from_slice(b"null"),
         }
@@ -1352,5 +1347,153 @@ mod tests {
                 String::from_utf8_lossy(&serde_output)
             );
         }
+    }
+
+    /// Test that attribute values with type mismatch (e.g. value_type says Int64
+    /// but as_int64() returns None) produce null instead of silently defaulting
+    /// to 0, false, or empty string. This covers the null-safe extraction in
+    /// write_any_value_json.
+    #[test]
+    fn test_null_safe_attribute_value_extraction() {
+        // Test each value type mapped as a log record attribute
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([(
+            "attributes".into(),
+            json!({
+                "str_attr": "StrCol",
+                "int_attr": "IntCol",
+                "dbl_attr": "DblCol",
+                "bool_attr": "BoolCol",
+                "bytes_attr": "BytesCol",
+            }),
+        )]);
+
+        let transformer = Transformer::new(&config);
+
+        // Normal case: all attributes present with valid values
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue {
+                                key: "str_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("hello".into())),
+                                }),
+                            },
+                            KeyValue {
+                                key: "int_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::IntValue(42)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "dbl_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(2.72)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "bool_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::BoolValue(true)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "bytes_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::BytesValue(vec![0xCA, 0xFE])),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(json["StrCol"], "hello");
+        assert_eq!(json["IntCol"], 42);
+        assert_eq!(json["DblCol"], 2.72);
+        assert_eq!(json["BoolCol"], true);
+        assert_eq!(json["BytesCol"], "cafe");
+
+        // NaN/Infinity doubles become null
+        let request_nan = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue {
+                                key: "dbl_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(f64::NAN)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "int_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(f64::INFINITY)),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request_nan.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(json["DblCol"], json!(null), "NaN must become null");
+        assert_eq!(json["IntCol"], json!(null), "Infinity must become null");
+
+        // Boolean false is a real value, not null
+        let request_false = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "bool_attr".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::BoolValue(false)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request_false.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(
+            json["BoolCol"], false,
+            "false must be serialized as false, not null"
+        );
     }
 }
