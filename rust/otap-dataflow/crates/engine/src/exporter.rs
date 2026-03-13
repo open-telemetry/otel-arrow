@@ -1018,8 +1018,11 @@ mod tests {
     }
 
     /// recv_when(false) with a closed pdata channel that still has
-    /// buffered data should not trigger synthetic shutdown until the
-    /// data is drained.
+    /// buffered data should trigger synthetic shutdown immediately.
+    /// Even though data is buffered, the node cannot drain it while
+    /// accept_pdata is false. Detecting closure prevents the node
+    /// from hanging indefinitely waiting for a control message that
+    /// will never arrive.
     #[tokio::test]
     async fn test_recv_when_false_closed_with_buffered_data() {
         let (_control_tx, pdata_tx, mut channel) = make_chan();
@@ -1028,26 +1031,46 @@ mod tests {
         // Close the channel — data is still buffered
         drop(pdata_tx);
 
-        // recv_when(false) should NOT trigger shutdown because there's
-        // still buffered data (is_empty() is false).
-        // It should time out waiting for control.
-        let result =
-            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
-        assert!(
-            result.is_err(),
-            "should block — pdata has data, no control available"
-        );
-
-        // Now drain the data with recv_when(true)
-        let msg = channel.recv_when(true).await.unwrap();
-        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
-
-        // Now recv_when(false) should detect closed+empty and return shutdown
+        // recv_when(false) should detect the closed channel and return
+        // a synthetic shutdown, even though there's still buffered data.
         let msg = channel.recv_when(false).await.unwrap();
-        assert!(matches!(
-            msg,
-            Message::Control(NodeControlMsg::Shutdown { .. })
-        ));
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })),
+            "should return shutdown when pdata channel is closed, even with buffered data"
+        );
+    }
+
+    /// Simulates the auth-outage shutdown hang scenario:
+    /// 1. Upstream processor sends data then closes the pdata channel
+    /// 2. Exporter has accept_pdata=false (e.g. auth is failing)
+    /// 3. No Shutdown arrives on control (engine only sends Shutdown to receivers)
+    /// 4. recv_when(false) must detect the closed pdata channel and return
+    ///    a synthetic Shutdown rather than hanging forever.
+    #[tokio::test]
+    async fn test_auth_outage_shutdown_does_not_hang() {
+        let (_control_tx, pdata_tx, mut channel) = make_chan();
+
+        // Upstream sends several messages before shutting down
+        pdata_tx.send_async("msg_a".to_owned()).await.unwrap();
+        pdata_tx.send_async("msg_b".to_owned()).await.unwrap();
+        pdata_tx.send_async("msg_c".to_owned()).await.unwrap();
+
+        // Upstream processor exits, closing the pdata channel
+        drop(pdata_tx);
+
+        // Exporter is in auth-outage mode: accept_pdata=false
+        // This must NOT hang — it must detect closure and return Shutdown
+        let result =
+            tokio::time::timeout(Duration::from_millis(100), channel.recv_when(false)).await;
+        assert!(
+            result.is_ok(),
+            "recv_when(false) must not hang when pdata channel is closed with buffered data"
+        );
+        let msg = result.unwrap().unwrap();
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })),
+            "expected synthetic Shutdown, got: {msg:?}"
+        );
     }
 
     /// Helper that creates a MessageChannel with shared (tokio mpsc) pdata channel.

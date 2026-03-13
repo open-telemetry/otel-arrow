@@ -177,6 +177,16 @@ impl<T> Receiver<T> {
             Receiver::Shared(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` if the sender side has been closed.
+    /// There may still be buffered items to drain.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Receiver::Local(receiver) => receiver.is_closed(),
+            Receiver::Shared(receiver) => receiver.is_closed(),
+        }
+    }
 }
 
 /// A channel for receiving control and pdata messages.
@@ -270,27 +280,21 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
             // When pdata is guarded (!accept_pdata), detect a closed pdata
             // channel eagerly so we don't block forever on control-only select.
-            // We only probe when the buffer is empty — try_recv on an empty
-            // channel distinguishes Closed from Empty without consuming data.
+            // We check is_closed() regardless of buffer state — the sender side
+            // may have closed while items remain in the buffer. Without this,
+            // buffered items prevent closure detection and the node hangs.
             if !accept_pdata
                 && self
                     .pdata_rx
                     .as_ref()
                     .expect("pdata_rx must exist")
-                    .is_empty()
+                    .is_closed()
             {
-                if let Err(RecvError::Closed) = self
-                    .pdata_rx
-                    .as_mut()
-                    .expect("pdata_rx must exist")
-                    .try_recv()
-                {
-                    self.shutdown();
-                    return Ok(Message::Control(NodeControlMsg::Shutdown {
-                        deadline: Instant::now().add(Duration::from_secs(1)),
-                        reason: "pdata channel closed".to_owned(),
-                    }));
-                }
+                self.shutdown();
+                return Ok(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    reason: "pdata channel closed".to_owned(),
+                }));
             }
 
             // Draining mode: Shutdown pending
