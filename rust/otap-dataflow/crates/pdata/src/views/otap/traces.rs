@@ -29,7 +29,7 @@ use crate::arrays::{
 };
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
+use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
@@ -63,6 +63,11 @@ struct SpanColumns<'a> {
     dropped_links_count: Option<&'a UInt32Array>,
     status_code: Option<Int32ArrayAccessor<'a>>,
     status_message: Option<StringArrayAccessor<'a>>,
+    // Resource struct sub-fields
+    resource_schema_url: Option<StringArrayAccessor<'a>>,
+    // Scope struct sub-fields
+    scope_name: Option<StringArrayAccessor<'a>>,
+    scope_version: Option<StringArrayAccessor<'a>>,
 }
 
 impl<'a> SpanColumns<'a> {
@@ -132,6 +137,26 @@ impl<'a> SpanColumns<'a> {
             })
             .unwrap_or((None, None));
 
+        // Resource struct sub-fields (schema_url)
+        let resource_schema_url = batch
+            .column_by_name(consts::RESOURCE)
+            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+            .and_then(|s| s.column_by_name(consts::SCHEMA_URL))
+            .and_then(|c| StringArrayAccessor::try_new(c).ok());
+
+        // Scope struct sub-fields (name, version)
+        let scope_struct = batch
+            .column_by_name(consts::SCOPE)
+            .and_then(|c| c.as_any().downcast_ref::<StructArray>());
+
+        let scope_name = scope_struct
+            .and_then(|s| s.column_by_name(consts::NAME))
+            .and_then(|c| StringArrayAccessor::try_new(c).ok());
+
+        let scope_version = scope_struct
+            .and_then(|s| s.column_by_name(consts::VERSION))
+            .and_then(|c| StringArrayAccessor::try_new(c).ok());
+
         Ok(Self {
             id,
             start_time_unix_nano,
@@ -148,6 +173,9 @@ impl<'a> SpanColumns<'a> {
             dropped_links_count,
             status_code,
             status_message,
+            resource_schema_url,
+            scope_name,
+            scope_version,
         })
     }
 }
@@ -156,6 +184,7 @@ impl<'a> SpanColumns<'a> {
 struct EventColumns<'a> {
     #[allow(dead_code)]
     parent_id: Option<&'a UInt16Array>,
+    id: Option<&'a UInt32Array>,
     time_unix_nano: Option<&'a TimestampNanosecondArray>,
     name: Option<StringArrayAccessor<'a>>,
     dropped_attributes_count: Option<&'a UInt32Array>,
@@ -166,6 +195,10 @@ impl<'a> EventColumns<'a> {
         let parent_id = batch
             .column_by_name(consts::PARENT_ID)
             .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+
+        let id = batch
+            .column_by_name(consts::ID)
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
 
         let time_unix_nano = batch
             .column_by_name(consts::TIME_UNIX_NANO)
@@ -181,6 +214,7 @@ impl<'a> EventColumns<'a> {
 
         Ok(Self {
             parent_id,
+            id,
             time_unix_nano,
             name,
             dropped_attributes_count,
@@ -192,6 +226,7 @@ impl<'a> EventColumns<'a> {
 struct LinkColumns<'a> {
     #[allow(dead_code)]
     parent_id: Option<&'a UInt16Array>,
+    id: Option<&'a UInt32Array>,
     trace_id: Option<ByteArrayAccessor<'a>>,
     span_id: Option<ByteArrayAccessor<'a>>,
     trace_state: Option<StringArrayAccessor<'a>>,
@@ -204,6 +239,10 @@ impl<'a> LinkColumns<'a> {
         let parent_id = batch
             .column_by_name(consts::PARENT_ID)
             .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+
+        let id = batch
+            .column_by_name(consts::ID)
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
 
         let trace_id = batch
             .column_by_name(consts::TRACE_ID)
@@ -227,6 +266,7 @@ impl<'a> LinkColumns<'a> {
 
         Ok(Self {
             parent_id,
+            id,
             trace_id,
             span_id,
             trace_state,
@@ -250,8 +290,8 @@ pub struct OtapTracesView<'a> {
     resource_attrs: Option<Attribute16Arrays<'a>>,
     scope_attrs: Option<Attribute16Arrays<'a>>,
     span_attrs: Option<Attribute16Arrays<'a>>,
-    event_attrs: Option<Attribute16Arrays<'a>>,
-    link_attrs: Option<Attribute16Arrays<'a>>,
+    event_attrs: Option<Attribute32Arrays<'a>>,
+    link_attrs: Option<Attribute32Arrays<'a>>,
 
     // Pre-computed indices for hierarchy reconstruction
     resource_groups: Vec<(u16, RowGroup)>,
@@ -261,9 +301,9 @@ pub struct OtapTracesView<'a> {
     resource_attrs_map: BTreeMap<u16, Vec<usize>>,
     scope_attrs_map: BTreeMap<u16, Vec<usize>>,
     span_attrs_map: BTreeMap<u16, Vec<usize>>,
-    event_attrs_map: BTreeMap<u16, Vec<usize>>,
-    #[allow(dead_code)]
-    link_attrs_map: BTreeMap<u16, Vec<usize>>,
+    // Event and link attributes use u32 parent_id per OTAP spec §5.4.1
+    event_attrs_map: BTreeMap<u32, Vec<usize>>,
+    link_attrs_map: BTreeMap<u32, Vec<usize>>,
 
     // Pre-computed event/link index maps (parent span id -> list of event/link row indices)
     events_map: BTreeMap<u16, Vec<usize>>,
@@ -312,8 +352,12 @@ impl<'a> OtapTracesView<'a> {
             .unwrap_or_default();
         let scope_attrs_map = scope_attrs.map(build_attribute_index).unwrap_or_default();
         let span_attrs_map = span_attrs.map(build_attribute_index).unwrap_or_default();
-        let event_attrs_map = event_attrs.map(build_attribute_index).unwrap_or_default();
-        let link_attrs_map = link_attrs.map(build_attribute_index).unwrap_or_default();
+        let event_attrs_map = event_attrs
+            .map(build_attribute_index_u32)
+            .unwrap_or_default();
+        let link_attrs_map = link_attrs
+            .map(build_attribute_index_u32)
+            .unwrap_or_default();
 
         // 5. Pre-compute event and link index maps (parent_id -> row indices)
         let events_map = events_batch.map(build_parent_id_index).unwrap_or_default();
@@ -332,8 +376,9 @@ impl<'a> OtapTracesView<'a> {
                 .transpose()?,
             scope_attrs: scope_attrs.map(Attribute16Arrays::try_from).transpose()?,
             span_attrs: span_attrs.map(Attribute16Arrays::try_from).transpose()?,
-            event_attrs: event_attrs.map(Attribute16Arrays::try_from).transpose()?,
-            link_attrs: link_attrs.map(Attribute16Arrays::try_from).transpose()?,
+            event_attrs: event_attrs.map(Attribute32Arrays::try_from).transpose()?,
+            link_attrs: link_attrs.map(Attribute32Arrays::try_from).transpose()?,
+
             resource_groups,
             scope_groups_map,
             resource_attrs_map,
@@ -469,8 +514,14 @@ impl<'a> ResourceSpansView for OtapResourceSpansView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // TODO: Implement schema_url lookup from spans batch
-        None
+        // All rows in a resource group share the same schema_url;
+        // read from the first row.
+        let first_row = self.row_indices.iter().next()?;
+        self.view
+            .columns
+            .resource_schema_url
+            .as_ref()
+            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
 }
 
@@ -551,7 +602,9 @@ impl<'a> ScopeSpansView for OtapScopeSpansView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // TODO: Implement schema_url lookup for scope
+        // Scope-level schema_url is not stored separately in the OTAP batch;
+        // it shares the same column as resource schema_url.
+        // Return None as there is no dedicated scope schema_url column.
         None
     }
 }
@@ -855,9 +908,8 @@ impl<'a> OtapSpanView<'a> {
 
 // ===== Span Attribute Iterator =====
 
-/// Iterator over span attributes.
-/// This is separate from OtapAttributeIter (which is tied to OtapLogsView)
-/// because it references OtapTracesView instead.
+/// Iterator over span attributes (u16 parent_id).
+/// Used for resource, scope, and span attributes.
 pub struct OtapSpanAttributeIter<'a> {
     attrs: Option<&'a Attribute16Arrays<'a>>,
     matching_rows: &'a [usize],
@@ -865,6 +917,37 @@ pub struct OtapSpanAttributeIter<'a> {
 }
 
 impl<'a> Iterator for OtapSpanAttributeIter<'a> {
+    type Item = OtapAttributeView<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let attrs_cols = self.attrs?;
+
+        loop {
+            if self.current_idx >= self.matching_rows.len() {
+                return None;
+            }
+
+            let attr_row_idx = self.matching_rows[self.current_idx];
+            self.current_idx += 1;
+
+            if let Some(key) = get_attribute_key(attrs_cols, attr_row_idx) {
+                let value = get_attribute_value(attrs_cols, attr_row_idx);
+                return Some(OtapAttributeView { key, value });
+            }
+        }
+    }
+}
+
+/// Iterator over event/link attributes (u32 parent_id).
+/// Per OTAP spec §5.4.1, event and link attributes use u32 parent_id.
+pub struct OtapU32AttributeIter<'a> {
+    attrs: Option<&'a Attribute32Arrays<'a>>,
+    matching_rows: &'a [usize],
+    current_idx: usize,
+}
+
+impl<'a> Iterator for OtapU32AttributeIter<'a> {
     type Item = OtapAttributeView<'a>;
 
     #[inline]
@@ -902,7 +985,7 @@ impl<'a> EventView for OtapEventView<'a> {
         Self: 'att;
 
     type AttributeIter<'att>
-        = OtapSpanAttributeIter<'att>
+        = OtapU32AttributeIter<'att>
     where
         Self: 'att;
 
@@ -932,14 +1015,14 @@ impl<'a> EventView for OtapEventView<'a> {
 
     #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        // Events use their own ID column to look up event attributes
+        // Event attributes use u32 parent_id per OTAP spec §5.4.1
         let event_id = self.get_event_id();
         let matching_rows = event_id
             .and_then(|id| self.view.event_attrs_map.get(&id))
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
-        OtapSpanAttributeIter {
+        OtapU32AttributeIter {
             attrs: self.view.event_attrs.as_ref(),
             matching_rows,
             current_idx: 0,
@@ -964,18 +1047,21 @@ impl<'a> EventView for OtapEventView<'a> {
 }
 
 impl<'a> OtapEventView<'a> {
-    /// Get event ID from the events batch (used for attribute matching).
-    /// Events use parent_id to link back to spans, but they may also have their own id
-    /// for linking to event attributes. We use the row index as implicit ID if no explicit
-    /// ID column exists.
+    /// Get event ID (u32) from the events batch for attribute matching.
+    /// Event attributes are linked via parent_id (u32) in the event_attrs batch.
     #[inline]
-    fn get_event_id(&self) -> Option<u16> {
-        // Event attributes are linked via parent_id in the event_attrs batch,
-        // where parent_id refers to the event's own row id.
-        // For now, events don't have their own ID column in the standard schema,
-        // so event attributes would need to be matched differently.
-        // TODO: Implement proper event attribute matching when event ID columns are available
-        None
+    fn get_event_id(&self) -> Option<u32> {
+        self.view
+            .event_columns
+            .as_ref()
+            .and_then(|cols| cols.id.as_ref())
+            .and_then(|id_col| {
+                if id_col.is_valid(self.event_row_idx) {
+                    Some(id_col.value(self.event_row_idx))
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -1020,7 +1106,7 @@ impl<'a> LinkView for OtapLinkView<'a> {
         Self: 'att;
 
     type AttributeIter<'att>
-        = OtapSpanAttributeIter<'att>
+        = OtapU32AttributeIter<'att>
     where
         Self: 'att;
 
@@ -1059,10 +1145,16 @@ impl<'a> LinkView for OtapLinkView<'a> {
 
     #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        // TODO: Implement proper link attribute matching when link ID columns are available
-        OtapSpanAttributeIter {
+        // Link attributes use u32 parent_id per OTAP spec §5.4.1
+        let link_id = self.get_link_id();
+        let matching_rows = link_id
+            .and_then(|id| self.view.link_attrs_map.get(&id))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
+        OtapU32AttributeIter {
             attrs: self.view.link_attrs.as_ref(),
-            matching_rows: &[],
+            matching_rows,
             current_idx: 0,
         }
     }
@@ -1092,6 +1184,25 @@ impl<'a> LinkView for OtapLinkView<'a> {
             .and_then(|col| {
                 if col.is_valid(self.link_row_idx) {
                     Some(col.value(self.link_row_idx))
+                } else {
+                    None
+                }
+            })
+    }
+}
+
+impl<'a> OtapLinkView<'a> {
+    /// Get link ID (u32) from the links batch for attribute matching.
+    /// Link attributes are linked via parent_id (u32) in the link_attrs batch.
+    #[inline]
+    fn get_link_id(&self) -> Option<u32> {
+        self.view
+            .link_columns
+            .as_ref()
+            .and_then(|cols| cols.id.as_ref())
+            .and_then(|id_col| {
+                if id_col.is_valid(self.link_row_idx) {
+                    Some(id_col.value(self.link_row_idx))
                 } else {
                     None
                 }
@@ -1215,12 +1326,23 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        // Scope name is in the scope struct column; find a row with this scope_id
+        let first_row = self.find_first_row_for_scope()?;
+        self.view
+            .columns
+            .scope_name
+            .as_ref()
+            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
 
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        let first_row = self.find_first_row_for_scope()?;
+        self.view
+            .columns
+            .scope_version
+            .as_ref()
+            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
 
     #[inline]
@@ -1242,6 +1364,21 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
         0 // TODO: implement if stored in OTAP
+    }
+}
+
+impl<'a> OtapTraceInstrumentationScopeView<'a> {
+    /// Find the first row in the spans batch that belongs to this scope.
+    /// All rows with the same scope_id share the same scope name/version.
+    fn find_first_row_for_scope(&self) -> Option<usize> {
+        for scope_list in self.view.scope_groups_map.values() {
+            for (sid, row_group) in scope_list {
+                if *sid == self.scope_id {
+                    return row_group.iter().next();
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1269,6 +1406,28 @@ fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
     }
 
     if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt16Array>() {
+        for i in 0..batch.num_rows() {
+            if parent_id_array.is_valid(i) {
+                let pid = parent_id_array.value(i);
+                index.entry(pid).or_default().push(i);
+            }
+        }
+    }
+
+    index
+}
+
+/// Build an inverted index from parent_id (u32) to list of row indices.
+/// Used for event/link attribute batches per OTAP spec §5.4.1.
+fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Vec<usize>> {
+    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
+        Some(col) => col,
+        None => return BTreeMap::new(),
+    };
+
+    let mut index: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+
+    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt32Array>() {
         for i in 0..batch.num_rows() {
             if parent_id_array.is_valid(i) {
                 let pid = parent_id_array.value(i);
@@ -1476,14 +1635,19 @@ fn group_by_scope_id(batch: &RecordBatch, row_indices: &RowGroup) -> Vec<(u16, R
         .collect()
 }
 
-/// Extract attribute key from an attribute batch row
-fn get_attribute_key<'a>(cols: &'a Attribute16Arrays<'a>, row_idx: usize) -> Option<&'a [u8]> {
+/// Extract attribute key from an attribute batch row.
+/// Generic over ArrowPrimitiveType to work with both u16 and u32 attribute arrays.
+fn get_attribute_key<'a, T: arrow::datatypes::ArrowPrimitiveType>(
+    cols: &'a crate::otlp::attributes::AttributeArrays<'a, T>,
+    row_idx: usize,
+) -> Option<&'a [u8]> {
     cols.attr_key.str_at(row_idx).map(|s| s.as_bytes())
 }
 
-/// Extract attribute value with type information from an attribute batch row
-fn get_attribute_value<'a>(
-    cols: &'a Attribute16Arrays<'a>,
+/// Extract attribute value with type information from an attribute batch row.
+/// Generic over ArrowPrimitiveType to work with both u16 and u32 attribute arrays.
+fn get_attribute_value<'a, T: arrow::datatypes::ArrowPrimitiveType>(
+    cols: &'a crate::otlp::attributes::AttributeArrays<'a, T>,
     row_idx: usize,
 ) -> OtapAnyValueView<'a> {
     let type_array = &cols.anyval_arrays.attr_type;
