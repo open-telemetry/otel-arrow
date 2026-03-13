@@ -679,6 +679,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_pipeline_ctx() -> PipelineContext {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)

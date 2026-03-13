@@ -68,7 +68,7 @@ weaver_semconv.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["http2", "rustls", "stream"] }
+reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
@@ -89,6 +89,7 @@ rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
+rustls-openssl = { workspace = true, optional = true }
 
 # Quiver persistence engine (durable buffer processor)
 quiver = { package = "otap-df-quiver", path = "../quiver" }
@@ -97,7 +98,10 @@ byte-unit.workspace = true
 
 [features]
 test-utils = []
-experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
+experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:arc-swap", "dep:notify", "tonic/tls-native-roots"]
+crypto-ring = ["dep:rustls", "rustls/ring", "tokio-rustls?/ring"]
+crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs", "tokio-rustls?/aws-lc-rs"]
+crypto-openssl = ["dep:rustls", "dep:rustls-openssl", "tonic/tls-native-roots"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 aws = ["object_store/aws", "object_store/cloud"]
 

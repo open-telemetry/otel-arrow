@@ -46,7 +46,7 @@ impl LogsService for LogsServiceMock {
 
 #[tokio::test]
 async fn otlp_exporter_connects_with_mtls() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    otap_df_otap::crypto::ensure_crypto_provider();
 
     // Generate CA, server cert, client cert.
     let ca = generate_ca("Test CA");
@@ -133,7 +133,7 @@ async fn otlp_exporter_connects_with_mtls() {
 
 #[tokio::test]
 async fn otlp_exporter_fails_with_invalid_ca_pem() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    otap_df_otap::crypto::ensure_crypto_provider();
 
     // Generate CA and server cert.
     let ca = generate_ca("Test CA");
@@ -237,7 +237,7 @@ async fn otlp_exporter_fails_partial_mtls() {
 
 #[tokio::test]
 async fn otlp_exporter_connects_with_tls_only() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    otap_df_otap::crypto::ensure_crypto_provider();
 
     // Generate CA and server cert (no client cert needed for TLS-only).
     let ca = generate_ca("Test CA");

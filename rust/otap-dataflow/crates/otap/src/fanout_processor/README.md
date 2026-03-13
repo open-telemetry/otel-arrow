@@ -262,7 +262,6 @@ Set `max_inflight: 0` for unlimited tracking (not recommended for production).
 | `acked` | Requests acked upstream (after await_ack/fallback) |
 | `nacked` | Requests nacked upstream (after await_ack/fallback) |
 | `timed_out` | Destinations that timed out |
-| `rejected_max_inflight` | Requests rejected due to max_inflight limit |
 
 > **Note**: `acked` and `nacked` reflect *request-level* outcomes after
 > applying the `await_ack` policy and fallback logic - not per-destination

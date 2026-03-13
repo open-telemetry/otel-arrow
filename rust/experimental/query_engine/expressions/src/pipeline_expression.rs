@@ -260,6 +260,19 @@ impl<'a> PipelineResolutionScope<'a> {
     pub fn get_function(&self, function_id: usize) -> Option<&'a PipelineFunction> {
         self.functions.get(function_id)
     }
+
+    /// create a new empty pipeline resolution scope. Can be used in tests for verifying
+    /// folding/optimization logic
+    #[cfg(test)]
+    pub fn new_for_test(
+        constants: &'a Vec<StaticScalarExpression>,
+        functions: &'a Vec<PipelineFunction>,
+    ) -> Self {
+        Self {
+            constants,
+            functions,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -372,6 +385,7 @@ impl AsRef<PipelineExpression> for PipelineExpressionBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineFunctionExpression {
+    Conditional(ConditionalDataExpression),
     Discard(DiscardDataExpression),
     Transform(TransformExpression),
     Return(ScalarExpression),
@@ -383,6 +397,7 @@ impl PipelineFunctionExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
         match self {
+            Self::Conditional(c) => c.try_fold(scope),
             Self::Discard(d) => d.try_fold(scope),
             Self::Transform(t) => t.try_fold(scope),
             Self::Return(_r) => Ok(()), // no need to fold return
@@ -397,6 +412,10 @@ impl PipelineFunctionExpression {
         indent: &str,
     ) -> std::fmt::Result {
         match self {
+            PipelineFunctionExpression::Conditional(c) => {
+                write!(f, "Conditional: ")?;
+                c.fmt_with_indent(f, format!("{indent}           ").as_str())
+            }
             PipelineFunctionExpression::Discard(d) => {
                 write!(f, "Discard: ")?;
                 d.fmt_with_indent(f, format!("{indent}           ").as_str())
