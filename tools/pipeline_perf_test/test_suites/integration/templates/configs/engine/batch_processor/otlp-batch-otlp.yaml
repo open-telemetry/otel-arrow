@@ -1,0 +1,41 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 0.0.0.0:4317
+                  request_compression: gzip
+                  wait_for_result: true
+          batch:
+            type: urn:otel:processor:batch
+            config:
+              otlp:
+                min_size: 262144
+                sizer: bytes
+              max_batch_duration: 200ms
+          exporter:
+            type: urn:otel:exporter:otlp_grpc
+            config:
+              grpc_endpoint: http://{{backend_hostname}}:1235
+              compression_method: gzip
+        connections:
+        - from: receiver
+          to: batch
+        - from: batch
+          to: exporter

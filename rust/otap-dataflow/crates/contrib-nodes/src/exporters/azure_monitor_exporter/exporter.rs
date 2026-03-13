@@ -497,7 +497,50 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 message: format!("Failed to start telemetry timer: {e}"),
             })?;
 
-        let mut next_token_refresh = tokio::time::Instant::now();
+        // Quick startup probe: try to acquire a token with a short timeout.
+        // On success, auth headers are set immediately and token refresh is scheduled normally.
+        // On failure (e.g., MSI on a non-Azure machine), a warning surfaces within ~5s
+        // and the main loop retries via the regular get_token() infinite retry path.
+        let mut next_token_refresh = match auth
+            .try_get_token(tokio::time::Duration::from_secs(5), 3)
+            .await
+        {
+            Ok(access_token) => {
+                match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
+                    Ok(header) => {
+                        self.client_pool.update_auth(header.clone());
+                        self.heartbeat.update_auth(header.clone());
+
+                        let next = Self::get_next_token_refresh(access_token);
+                        let refresh_in =
+                            next.saturating_duration_since(tokio::time::Instant::now());
+                        let total_secs = refresh_in.as_secs();
+                        let hours = total_secs / 3600;
+                        let minutes = (total_secs % 3600) / 60;
+                        let seconds = total_secs % 60;
+
+                        otel_info!(
+                            "azure_monitor_exporter.auth.initial_token_acquired",
+                            next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
+                        );
+                        next
+                    }
+                    Err(e) => {
+                        otel_warn!("azure_monitor_exporter.auth.initial_header_creation_failed", error = ?e);
+                        tokio::time::Instant::now()
+                    }
+                }
+            }
+            Err(e) => {
+                otel_warn!(
+                    "azure_monitor_exporter.auth.startup_probe_failed",
+                    error = %e,
+                    hint = "Check auth method configuration. Token acquisition will keep retrying in background."
+                );
+                tokio::time::Instant::now()
+            }
+        };
+
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
@@ -636,6 +679,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_pipeline_ctx() -> PipelineContext {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)

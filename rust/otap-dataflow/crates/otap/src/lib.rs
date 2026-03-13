@@ -23,9 +23,6 @@ pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
-/// Batch processor
-pub mod batch_processor;
-
 // Retry processor that is aware of the OTAP PData/context.
 pub mod retry_processor;
 
@@ -37,28 +34,11 @@ pub mod accessory;
 
 pub mod pdata;
 
+mod pdata_conversions;
+
 pub mod parquet_exporter;
 
 pub mod perf_exporter;
-
-pub mod fake_data_generator;
-
-/// Implementation of debug processor that outputs received signals in a string format for user view
-pub mod debug_processor;
-
-pub mod filter_processor;
-
-/// Implementation of a noop exporter that acts as a exporter placeholder
-pub mod noop_exporter;
-
-/// Fan-out processor to clone data to multiple downstream outputs.
-pub mod fanout_processor;
-
-/// Delay processor that introduces artificial latency before forwarding data.
-pub mod delay_processor;
-
-/// An error-exporter returns a static error.
-pub mod error_exporter;
 
 /// testing utilities
 #[cfg(test)]
@@ -71,9 +51,6 @@ mod fixtures;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
-
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
 
 /// Content-based router processor (routes by resource attribute value)
 pub mod content_router;
@@ -112,12 +89,13 @@ pub mod topic_exporter;
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
+
+/// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
+pub mod crypto;
+
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
-
-/// Console exporter similar using built-in OTLP-bytes formatting.
-pub mod console_exporter;
 
 /// Durable buffer processor for crash-resilient buffering via Quiver
 pub mod durable_buffer_processor;

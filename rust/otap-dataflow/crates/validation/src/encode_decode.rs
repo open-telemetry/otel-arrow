@@ -57,7 +57,7 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_otap::fake_data_generator::semconv_signal::{
+    use otap_df_core_nodes::receivers::fake_data_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;

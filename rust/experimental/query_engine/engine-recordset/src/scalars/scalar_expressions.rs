@@ -411,6 +411,18 @@ where
 
                     for e in expressions {
                         match e {
+                            PipelineFunctionExpression::Conditional(c) => {
+                                return Err(ExpressionError::NotSupported(
+                                    c.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", c.get_name()),
+                                ));
+                            }
+                            PipelineFunctionExpression::Discard(d) => {
+                                return Err(ExpressionError::NotSupported(
+                                    d.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", d.get_name()),
+                                ));
+                            }
                             PipelineFunctionExpression::Transform(t) => {
                                 execute_transform_expression(&func_execution_context, t)?
                             }
@@ -3008,6 +3020,92 @@ mod tests {
                 ],
             ),
             "value1",
+        );
+    }
+
+    #[test]
+    fn test_execute_invoke_function_with_discard_expression_returns_error() {
+        // for now, just ensure that we handle the expression type with an error.
+        // if/when we support this type of expression, we'll can modify the test to
+        // assert on the function's return value.
+        let pipeline = PipelineExpressionBuilder::new("")
+            .with_functions(vec![PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                )],
+                Some(ValueType::Boolean),
+                vec![
+                    PipelineFunctionExpression::Discard(
+                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Some(ValueType::String),
+                                    0,
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                )),
+                                true,
+                            )),
+                        ),
+                    ),
+                    PipelineFunctionExpression::Return(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                ],
+            )])
+            .build()
+            .unwrap();
+
+        let mut test = TestExecutionContext::new()
+            .with_record(
+                TestRecord::new()
+                    .with_key_value(
+                        "x".into(),
+                        OwnedValue::String(StringValueStorage::new("a".into())),
+                    )
+                    .with_key_value(
+                        "y".into(),
+                        OwnedValue::String(StringValueStorage::new("b".into())),
+                    ),
+            )
+            .with_pipeline(pipeline.clone());
+
+        let execution_context = test.create_execution_context();
+
+        let invoke_func_expr = InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            Some(ValueType::Boolean),
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "x",
+                        )),
+                    )]),
+                ),
+            ))],
+        );
+
+        let expression = ScalarExpression::InvokeFunction(invoke_func_expr);
+
+        let err = execute_scalar_expression(&execution_context, &expression).unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("DiscardDataExpression not supported in pipeline function"),
+            "unexpected error {}",
+            err_msg
         );
     }
 }

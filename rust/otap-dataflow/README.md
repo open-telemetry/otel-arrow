@@ -257,8 +257,11 @@ ongoing refactor.
 
 Current status:
 
-- The crate is currently a scaffold.
-- No core node implementations have been moved there yet.
+- 10 core node components are implemented in `otap-df-core-nodes`.
+- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`
+- Processors: `batch_processor`, `debug_processor`, `delay_processor`,
+  `fanout_processor`, `filter_processor`, `signal_type_router`
+- Receivers: `fake_data_generator`
 
 ### Contrib Nodes
 
