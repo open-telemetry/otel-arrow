@@ -3,6 +3,11 @@ permissions:
   contents: read
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/pipeline-perf-test-windows.yml'
+      - 'rust/otap-dataflow/**'
+      - 'tools/pipeline_perf_test/**'
   workflow_dispatch:
 
 jobs:

@@ -296,7 +296,7 @@ def _reassemble_drive_letter_parts(parts: List[str]) -> List[str]:
             and i + 1 < len(parts)
             and parts[i + 1][:1] in ("/", "\\")
         ):
-            # Drive letter detected – merge with the following path segment.
+            # Drive letter detected - merge with the following path segment.
             result.append(parts[i] + ":" + parts[i + 1])
             i += 2
         else:
