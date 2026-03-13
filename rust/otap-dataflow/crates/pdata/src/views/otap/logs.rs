@@ -30,8 +30,6 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 
-
-
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
     columns: LogsArrays<'a>,                       // ~220 bytes
@@ -810,9 +808,11 @@ const fn get_schema_url_for_scope<'a>(_batch: &'a RecordBatch, _scope_id: u16) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array, Int64Array, StringArray, UInt8Array, UInt16Array};
+    use arrow::array::{
+        ArrayRef, Int32Array, Int64Array, StringArray, StructArray, UInt8Array, UInt16Array,
+    };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otap_df_pdata_views::views::common::AnyValueView;
+    use otap_df_pdata_views::views::common::{AnyValueView, AttributeView};
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column

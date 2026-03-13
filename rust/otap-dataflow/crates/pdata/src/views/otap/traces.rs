@@ -1669,8 +1669,9 @@ mod tests {
 
     #[test]
     fn test_missing_optional_columns() {
-        // Create a minimal batch with only required columns
+        // Create a minimal batch with only required columns (id, resource, scope, start_time)
         let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt16, true),
             Field::new(
                 "resource",
                 DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
@@ -1688,6 +1689,7 @@ mod tests {
             ),
         ]));
 
+        let id_array = UInt16Array::from(vec![0]);
         let resource_struct = StructArray::from(vec![(
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
@@ -1701,6 +1703,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
+                Arc::new(id_array) as ArrayRef,
                 Arc::new(resource_struct) as ArrayRef,
                 Arc::new(scope_struct) as ArrayRef,
                 Arc::new(start_time) as ArrayRef,
@@ -1827,14 +1830,17 @@ mod tests {
                 Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
                 Arc::new(
                     FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-                        vec![Some(vec![1; 16])],
+                        vec![Some(vec![1; 16])].into_iter(),
                         16,
                     )
                     .unwrap(),
                 ) as ArrayRef,
                 Arc::new(
-                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(vec![Some(vec![2; 8])], 8)
-                        .unwrap(),
+                    FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                        vec![Some(vec![2; 8])].into_iter(),
+                        8,
+                    )
+                    .unwrap(),
                 ) as ArrayRef,
             ],
         )

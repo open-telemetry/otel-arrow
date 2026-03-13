@@ -472,6 +472,63 @@ fn group_by_id_column(
         .collect()
 }
 
+// ===== Shared Helpers =====
+
+/// Build an inverted index from parent_id to list of row indices.
+/// This is used for attribute batches where parent_id links back to the parent entity.
+pub(crate) fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
+    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
+        Some(col) => col,
+        None => return BTreeMap::new(),
+    };
+
+    let mut index: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
+
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(&parent_id_col.clone()) {
+        for i in 0..batch.num_rows() {
+            if let Some(pid) = accessor.value_at(i) {
+                index.entry(pid).or_default().push(i);
+            }
+        }
+        return index;
+    }
+
+    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt16Array>() {
+        for i in 0..batch.num_rows() {
+            if parent_id_array.is_valid(i) {
+                let pid = parent_id_array.value(i);
+                index.entry(pid).or_default().push(i);
+            }
+        }
+    }
+
+    index
+}
+
+/// Build an inverted index from u32 parent_id to list of row indices.
+pub(crate) fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Vec<usize>> {
+    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
+        Some(col) => col,
+        None => return BTreeMap::new(),
+    };
+
+    let mut index: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+
+    if let Some(parent_id_array) = parent_id_col
+        .as_any()
+        .downcast_ref::<arrow::array::UInt32Array>()
+    {
+        for i in 0..batch.num_rows() {
+            if parent_id_array.is_valid(i) {
+                let pid = parent_id_array.value(i);
+                index.entry(pid).or_default().push(i);
+            }
+        }
+    }
+
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,9 +586,9 @@ mod tests {
         assert_eq!(v_int.as_int64(), Some(42));
         assert_eq!(v_int.as_string(), None);
 
-        let v_double = OtapAnyValueView::Double(3.14);
+        let v_double = OtapAnyValueView::Double(3.125);
         assert_eq!(v_double.value_type(), ValueType::Double);
-        assert_eq!(v_double.as_double(), Some(3.14));
+        assert_eq!(v_double.as_double(), Some(3.125));
 
         let v_bool = OtapAnyValueView::Bool(true);
         assert_eq!(v_bool.value_type(), ValueType::Bool);
@@ -553,61 +610,4 @@ mod tests {
         let val = attr.value().unwrap();
         assert_eq!(val.as_string(), Some(b"my-service".as_slice()));
     }
-}
-
-// ===== Shared Helpers =====
-
-/// Build an inverted index from parent_id to list of row indices.
-/// This is used for attribute batches where parent_id links back to the parent entity.
-pub(crate) fn build_attribute_index(batch: &RecordBatch) -> BTreeMap<u16, Vec<usize>> {
-    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
-        Some(col) => col,
-        None => return BTreeMap::new(),
-    };
-
-    let mut index: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
-
-    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(&parent_id_col.clone()) {
-        for i in 0..batch.num_rows() {
-            if let Some(pid) = accessor.value_at(i) {
-                index.entry(pid).or_default().push(i);
-            }
-        }
-        return index;
-    }
-
-    if let Some(parent_id_array) = parent_id_col.as_any().downcast_ref::<UInt16Array>() {
-        for i in 0..batch.num_rows() {
-            if parent_id_array.is_valid(i) {
-                let pid = parent_id_array.value(i);
-                index.entry(pid).or_default().push(i);
-            }
-        }
-    }
-
-    index
-}
-
-/// Build an inverted index from u32 parent_id to list of row indices.
-pub(crate) fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Vec<usize>> {
-    let parent_id_col = match batch.column_by_name(consts::PARENT_ID) {
-        Some(col) => col,
-        None => return BTreeMap::new(),
-    };
-
-    let mut index: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-
-    if let Some(parent_id_array) = parent_id_col
-        .as_any()
-        .downcast_ref::<arrow::array::UInt32Array>()
-    {
-        for i in 0..batch.num_rows() {
-            if parent_id_array.is_valid(i) {
-                let pid = parent_id_array.value(i);
-                index.entry(pid).or_default().push(i);
-            }
-        }
-    }
-
-    index
 }
