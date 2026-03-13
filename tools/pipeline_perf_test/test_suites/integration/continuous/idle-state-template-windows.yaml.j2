@@ -54,6 +54,8 @@ tests:
                   url: http://localhost:{{port}}/telemetry/metrics?reset=false
                   method: GET
                   expected_status_code: 200
+                  max_retries: 30
+                  retry_interval: 2
 
       - name: Wait for Startup Stabilization
         action:
