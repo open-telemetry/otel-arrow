@@ -229,7 +229,7 @@ impl LogsIngestionClient {
         let body_len = body.len();
         let start = Instant::now();
 
-        let response = self
+        let response = match self
             .http_client
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
@@ -238,7 +238,13 @@ impl LogsIngestionClient {
             .body(body)
             .send()
             .await
-            .map_err(Error::network)?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                self.metrics.borrow_mut().add_network_error();
+                return Err(Error::network(e));
+            }
+        };
 
         let status_code = response.status().as_u16();
         let elapsed = start.elapsed();
