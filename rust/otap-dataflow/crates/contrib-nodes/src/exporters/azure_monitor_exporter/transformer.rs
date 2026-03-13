@@ -152,45 +152,60 @@ impl Transformer {
         })
     }
 
-    /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
-    /// Now accepts any type implementing `LogsDataView` (both `OtapLogsView` and `RawLogsData`).
+    /// High-perf, single-threaded: pre-serializes resource+scope fields once per ScopeLogs,
+    /// then writes per-record fields directly to the buffer — no Map cloning or re-serialization.
+    /// Assumes non-overlapping mappings across resource, scope, and log record levels.
     #[must_use]
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
         let mut results = Vec::with_capacity(1024);
         let mut buf = BytesMut::with_capacity(2048);
-        let mut record_map = serde_json::Map::new();
+        let mut base_map = serde_json::Map::new();
+        let mut record_buf = Vec::with_capacity(512);
 
         for resource_logs in logs_view.resources() {
+            base_map.clear();
+            if let Some(r) = resource_logs.resource() {
+                self.apply_resource_mapping(&r, &mut base_map);
+            }
+
             for scope_logs in resource_logs.scopes() {
+                // Clone resource base once per ScopeLogs, add scope mappings
+                let mut scope_map = base_map.clone();
+                if let Some(s) = scope_logs.scope() {
+                    self.apply_scope_mapping(&s, &mut scope_map);
+                }
+
+                // Pre-serialize resource+scope as JSON bytes (once per ScopeLogs)
+                // Safety: base_map only contains valid JSON values from convert_any_value
+                let base_json = serde_json::to_vec(&scope_map).unwrap_or_default();
+                let has_base = base_json.len() > 2; // more than just "{}"
+                // Strip trailing '}' to allow appending record fields
+                let base_prefix = &base_json[..base_json.len() - 1];
+
                 for log_record in scope_logs.log_records() {
-                    record_map.clear();
+                    record_buf.clear();
 
-                    // normally config should be validated to avoid duplicate keys, but if that
-                    // ever happens for any reason such as a bug, then the logic below ensures that
-                    // the lowest level fields override the higher level ones.
-
-                    // apply resource mapping first to allow scope to override if needed
-                    if let Some(r) = resource_logs.resource() {
-                        self.apply_resource_mapping(&r, &mut record_map);
-                    }
-
-                    // apply scope mapping next to allow log record to override if needed
-                    if let Some(s) = scope_logs.scope() {
-                        self.apply_scope_mapping(&s, &mut record_map);
-                    }
-
-                    self.transform_log_record_to_map(&log_record, &mut record_map);
+                    let has_record =
+                        self.write_record_fields_json(&log_record, &mut record_buf);
 
                     buf.clear();
-                    {
-                        let writer = (&mut buf).writer();
-                        let mut ser = serde_json::Serializer::new(writer);
-                        if let Err(e) = record_map.serialize(&mut ser) {
-                            otel_warn!("azure_monitor_exporter.transform.serialize_failed",
-                                error = %e,
-                                message = "failed to serialize log record to JSON, skipping this record");
-                            self.metrics.borrow_mut().add_transform_failures(1);
-                            continue;
+                    match (has_base, has_record) {
+                        (true, true) => {
+                            buf.extend_from_slice(base_prefix);
+                            buf.put_u8(b',');
+                            buf.extend_from_slice(&record_buf);
+                            buf.put_u8(b'}');
+                        }
+                        (true, false) => {
+                            buf.extend_from_slice(&base_json);
+                        }
+                        (false, true) => {
+                            buf.put_u8(b'{');
+                            buf.extend_from_slice(&record_buf);
+                            buf.put_u8(b'}');
+                        }
+                        (false, false) => {
+                            buf.extend_from_slice(b"{}");
                         }
                     }
 
@@ -200,6 +215,185 @@ impl Transformer {
         }
 
         results
+    }
+
+    /// Write log record fields directly as JSON key:value pairs (no braces) to a byte buffer.
+    /// Returns true if any fields were written.
+    fn write_record_fields_json<R: LogRecordView>(
+        &self,
+        log_record: &R,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let mut has_field = false;
+
+        for fm in &self.schema.field_mappings {
+            if has_field {
+                out.push(b',');
+            }
+            has_field = true;
+            // Write key
+            Self::write_json_string(fm.dest.as_bytes(), out);
+            out.push(b':');
+            // Write value directly — avoids Value allocation for simple types
+            Self::write_field_value_json(fm.source, log_record, out);
+        }
+
+        if !self.schema.attribute_mapping.is_empty() {
+            for attr in log_record.attributes() {
+                let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+                if let Some(dest) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
+                    if let Some(val) = attr.value() {
+                        if has_field {
+                            out.push(b',');
+                        }
+                        has_field = true;
+                        Self::write_json_string(dest.as_bytes(), out);
+                        out.push(b':');
+                        Self::write_any_value_json(&val, out);
+                    }
+                }
+            }
+        }
+
+        has_field
+    }
+
+    /// Write a field value directly to JSON bytes, avoiding intermediate Value allocation.
+    #[inline]
+    fn write_field_value_json<R: LogRecordView>(
+        field: LogRecordField,
+        log_record: &R,
+        out: &mut Vec<u8>,
+    ) {
+        match field {
+            LogRecordField::TimeUnixNano => {
+                let ts = Self::format_timestamp(log_record.time_unix_nano().unwrap_or(0));
+                Self::write_json_string(ts.as_bytes(), out);
+            }
+            LogRecordField::ObservedTimeUnixNano => {
+                let ts =
+                    Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0));
+                Self::write_json_string(ts.as_bytes(), out);
+            }
+            LogRecordField::TraceId => match log_record.trace_id() {
+                Some(id) => Self::write_json_hex(id, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::SpanId => match log_record.span_id() {
+                Some(id) => Self::write_json_hex(id, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::Flags => {
+                Self::write_u64(log_record.flags().unwrap_or(0).into(), out);
+            }
+            LogRecordField::SeverityNumber => {
+                Self::write_u64(
+                    log_record.severity_number().unwrap_or(0) as u64,
+                    out,
+                );
+            }
+            LogRecordField::SeverityText => {
+                Self::write_json_string(log_record.severity_text().unwrap_or(b""), out);
+            }
+            LogRecordField::Body => match log_record.body() {
+                Some(b) => {
+                    let s = Self::extract_string_value(&b);
+                    Self::write_json_string(s.as_bytes(), out);
+                }
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::EventName => {
+                Self::write_json_string(log_record.event_name().unwrap_or(b""), out);
+            }
+        }
+    }
+
+    /// Write an AnyValueView directly as JSON bytes.
+    fn write_any_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
+        match value.value_type() {
+            ValueType::String => {
+                Self::write_json_string(value.as_string().unwrap_or(b""), out);
+            }
+            ValueType::Int64 => {
+                let n = value.as_int64().unwrap_or(0);
+                Self::write_i64(n, out);
+            }
+            ValueType::Double => {
+                let d = value.as_double().unwrap_or(0.0);
+                if d.is_finite() {
+                    // Use ryu for fast float formatting
+                    let mut ryu_buf = ryu::Buffer::new();
+                    out.extend_from_slice(ryu_buf.format(d).as_bytes());
+                } else {
+                    out.extend_from_slice(b"null");
+                }
+            }
+            ValueType::Bool => {
+                if value.as_bool().unwrap_or(false) {
+                    out.extend_from_slice(b"true");
+                } else {
+                    out.extend_from_slice(b"false");
+                }
+            }
+            ValueType::Bytes => {
+                Self::write_json_hex(value.as_bytes().unwrap_or(&[]), out);
+            }
+            ValueType::Array | ValueType::KeyValueList => {
+                // Fallback to serde for complex nested types
+                let v = Self::convert_any_value(value);
+                // unwrap is safe: convert_any_value produces valid JSON values
+                _ = serde_json::to_writer(&mut *out, &v);
+            }
+            ValueType::Empty => out.extend_from_slice(b"null"),
+        }
+    }
+
+    /// Write a JSON-escaped string with quotes directly to output bytes.
+    #[inline]
+    fn write_json_string(s: &[u8], out: &mut Vec<u8>) {
+        out.push(b'"');
+        for &b in s {
+            match b {
+                b'"' => out.extend_from_slice(b"\\\""),
+                b'\\' => out.extend_from_slice(b"\\\\"),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\t' => out.extend_from_slice(b"\\t"),
+                b if b < 0x20 => {
+                    // Control characters: \u00XX
+                    out.extend_from_slice(b"\\u00");
+                    out.push(HEX_CHARS[(b >> 4) as usize]);
+                    out.push(HEX_CHARS[(b & 0x0f) as usize]);
+                }
+                _ => out.push(b),
+            }
+        }
+        out.push(b'"');
+    }
+
+    /// Write hex-encoded bytes as a JSON string directly.
+    #[inline]
+    fn write_json_hex(bytes: &[u8], out: &mut Vec<u8>) {
+        out.push(b'"');
+        for &byte in bytes {
+            out.push(HEX_CHARS[(byte >> 4) as usize]);
+            out.push(HEX_CHARS[(byte & 0x0f) as usize]);
+        }
+        out.push(b'"');
+    }
+
+    /// Write a u64 as decimal to output bytes.
+    #[inline]
+    fn write_u64(n: u64, out: &mut Vec<u8>) {
+        let mut itoa_buf = itoa::Buffer::new();
+        out.extend_from_slice(itoa_buf.format(n).as_bytes());
+    }
+
+    /// Write an i64 as decimal to output bytes.
+    #[inline]
+    fn write_i64(n: i64, out: &mut Vec<u8>) {
+        let mut itoa_buf = itoa::Buffer::new();
+        out.extend_from_slice(itoa_buf.format(n).as_bytes());
     }
 
     /// Apply resource mapping based on configuration
