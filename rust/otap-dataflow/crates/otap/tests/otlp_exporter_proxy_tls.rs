@@ -16,7 +16,6 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceR
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
     LogsService, LogsServiceServer,
 };
-use otap_df_telemetry::otel_debug;
 use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use prost::Message;
 use rustls_pki_types::pem::PemObject;
@@ -153,9 +152,7 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
 }
 
 async fn start_tls_connect_proxy(target_hits: Arc<AtomicUsize>) -> (SocketAddr, String) {
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
-        otel_debug!("provider.installation.failed", error = ?err, "rustls default provider installation failed in test");
-    }
+    otap_df_otap::crypto::ensure_crypto_provider();
 
     let proxy_ca = generate_ca("Proxy CA");
     let proxy_ca_pem = proxy_ca.cert_pem.clone();
@@ -289,10 +286,7 @@ async fn start_tls_logs_server() -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<()>,
 ) {
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
-        // It's fine if the provider is already installed (e.g. by another test)
-        otel_debug!("provider.installation.failed", error = ?err, "rustls default provider installation failed in test");
-    }
+    otap_df_otap::crypto::ensure_crypto_provider();
 
     let ca = generate_ca("Test CA");
     let ca_pem = ca.cert_pem.clone();

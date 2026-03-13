@@ -224,7 +224,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline.
     #[test]
     fn tls_no_processor() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
@@ -276,7 +276,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
     fn mtls_no_processor() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();

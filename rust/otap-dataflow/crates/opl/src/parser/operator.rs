@@ -433,6 +433,7 @@ pub(crate) fn parse_apply_operator_call(
                     ValueAccessor::new(),
                 )),
             )),
+            DataExpression::Conditional(c) => PipelineFunctionExpression::Conditional(c),
             DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
             other => {
                 return Err(ParserError::SyntaxNotSupported(
