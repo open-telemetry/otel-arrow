@@ -1,4 +1,4 @@
-name: Nightly - Syslog
+name: Nightly - Syslog TCP
 components:
   load-generator:
     deployment:
@@ -7,7 +7,7 @@ components:
         network: testbed
         command: ["--serve"]
         environment:
-          # overriden in test steps
+          # overridden in test steps
           - SYSLOG_SERVER=df-engine
           - SYSLOG_PORT=4317
         ports:
@@ -69,45 +69,49 @@ components:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: SYSLOG-3164-ATTR-OTAP
+  - name: SYSLOG-TCP-3164-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_syslog"
+        result_dir: "nightly_syslog_tcp"
         engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otap
         exporter: otap
+        syslog_transport: tcp
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
         observation_interval: 60
-  - name: SYSLOG-3164-ATTR-OTLP
+  - name: SYSLOG-TCP-3164-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_syslog"
+        result_dir: "nightly_syslog_tcp"
         engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otlp
         exporter: otlp
+        syslog_transport: tcp
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
         observation_interval: 60
-  - name: SYSLOG-3164-CEF-ATTR-OTLP
+  - name: SYSLOG-TCP-3164-CEF-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_syslog"
+        result_dir: "nightly_syslog_tcp"
         engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otlp
         exporter: otlp
+        syslog_transport: tcp
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
         observation_interval: 60
-  - name: SYSLOG-3164-CEF-ATTR-OTAP
+  - name: SYSLOG-TCP-3164-CEF-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_syslog"
+        result_dir: "nightly_syslog_tcp"
         engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otap
         exporter: otap
+        syslog_transport: tcp
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
         observation_interval: 60
