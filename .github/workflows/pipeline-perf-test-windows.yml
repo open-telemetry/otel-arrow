@@ -53,7 +53,7 @@ jobs:
         working-directory: ./rust/otap-dataflow
         run: cargo build --release --features mimalloc
         env:
-          RUSTFLAGS: "-C target-cpu=native"
+          RUSTFLAGS: "-C target-cpu=native -C target-feature=+crt-static"
 
       - name: Build Windows Docker image
         shell: pwsh
