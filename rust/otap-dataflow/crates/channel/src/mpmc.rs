@@ -1052,7 +1052,7 @@ mod tests {
         let handle = local.spawn_local(async {
             let (tx, rx) = Channel::<i32>::new(NonZeroUsize::new(10).unwrap());
 
-            // Sender alive — not closed
+            // Sender alive - not closed
             assert!(!rx.is_closed());
 
             // Explicitly close

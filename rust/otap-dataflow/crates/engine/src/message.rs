@@ -279,7 +279,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
             // When pdata is guarded (!accept_pdata), detect a closed pdata
             // channel eagerly so we don't block forever on control-only select.
-            // We use is_closed() — a non-consuming check — to avoid a TOCTOU
+            // We use is_closed() - a non-consuming check - to avoid a TOCTOU
             // race where try_recv() could dequeue (and lose) a message that
             // arrived between an is_empty() guard and the try_recv() call.
             // We also require is_empty() so we don't trigger shutdown while

@@ -1109,7 +1109,7 @@ mod tests {
     }
 
     /// recv_when(false) on a shared channel that is closed but still has
-    /// buffered data should NOT trigger a synthetic shutdown — the data
+    /// buffered data should NOT trigger a synthetic shutdown - the data
     /// must be drained first.  This is the shared-channel counterpart of
     /// `test_recv_when_false_closed_with_buffered_data` (which uses local
     /// channels where the race cannot occur).
@@ -1121,12 +1121,12 @@ mod tests {
         pdata_tx.send("buffered".to_owned()).await.unwrap();
         drop(pdata_tx);
 
-        // recv_when(false) must block — pdata is buffered, no control available.
+        // recv_when(false) must block - pdata is buffered, no control available.
         let result =
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(
             result.is_err(),
-            "should block — shared pdata channel is closed but data is still buffered"
+            "should block - shared pdata channel is closed but data is still buffered"
         );
 
         // Drain the buffered data
@@ -1161,7 +1161,7 @@ mod tests {
         // The pdata message must still be retrievable
         let msg = tokio::time::timeout(Duration::from_millis(50), channel.recv_when(true))
             .await
-            .expect("should not block — pdata is buffered")
+            .expect("should not block - pdata is buffered")
             .unwrap();
         assert!(
             matches!(msg, Message::PData(ref s) if s == "msg1"),
