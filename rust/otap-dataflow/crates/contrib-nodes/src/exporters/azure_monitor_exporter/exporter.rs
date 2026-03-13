@@ -510,7 +510,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         loop {
             // We have a valid token when it won't expire within the buffer window
-            let has_token = token_expiry_at > tokio::time::Instant::now() + tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
+            let has_token = token_expiry_at
+                > tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
             let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
             let accepting_pdata = has_token && !at_capacity;
 
