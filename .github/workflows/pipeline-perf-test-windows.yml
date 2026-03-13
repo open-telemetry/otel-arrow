@@ -77,11 +77,12 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          # Note: --require-hashes is omitted because the lock files were
-          # generated on Linux and lack the Windows-only transitive dependency
-          # pywin32 (required by the docker package). Versions are still pinned.
-          python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
-          python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
+          # Use plain requirements.txt (not .lock.txt) on Windows because the
+          # lock files contain --hash directives that trigger pip hash-checking
+          # mode, which rejects the Windows-only transitive dep pywin32 (not in
+          # the Linux-generated lock file).
+          python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
+          python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
 
       - name: Run idle state test
         if: ${{ !cancelled() }}
