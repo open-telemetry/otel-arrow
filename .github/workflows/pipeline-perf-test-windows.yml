@@ -134,6 +134,8 @@ jobs:
       - name: Analyze memory scaling
         if: ${{ !cancelled() }}
         shell: pwsh
+        env:
+          PYTHONUTF8: "1"
         run: |
           python .github/workflows/scripts/analyze-idle-state-scaling.py `
             tools/pipeline_perf_test/results `
