@@ -70,3 +70,4 @@ tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
 venv
 # Environment secrets
 .env
+.aider*

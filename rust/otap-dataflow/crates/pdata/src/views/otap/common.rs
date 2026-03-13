@@ -457,4 +457,87 @@ fn group_by_id_column(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_row_group_contiguous() {
+        let rg = RowGroup::Contiguous(5..8);
+        assert_eq!(rg.len(), 3);
+        assert!(!rg.is_empty());
+        
+        let indices: Vec<usize> = rg.iter().collect();
+        assert_eq!(indices, vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn test_row_group_scattered() {
+        let rg = RowGroup::Scattered(vec![1, 5, 9]);
+        assert_eq!(rg.len(), 3);
+        assert!(!rg.is_empty());
+
+        let indices: Vec<usize> = rg.iter().collect();
+        assert_eq!(indices, vec![1, 5, 9]);
+    }
+
+    #[test]
+    fn test_row_group_empty() {
+        let rg = RowGroup::Contiguous(5..5);
+        assert_eq!(rg.len(), 0);
+        assert!(rg.is_empty());
+
+        let rg2 = RowGroup::Scattered(vec![]);
+        assert_eq!(rg2.len(), 0);
+        assert!(rg2.is_empty());
+    }
+
+    #[test]
+    fn test_any_value_view_types() {
+        let v_empty = OtapAnyValueView::Empty;
+        assert_eq!(v_empty.value_type(), ValueType::Empty);
+        assert_eq!(v_empty.as_string(), None);
+        assert_eq!(v_empty.as_int64(), None);
+        assert_eq!(v_empty.as_double(), None);
+        assert_eq!(v_empty.as_bool(), None);
+        assert_eq!(v_empty.as_bytes(), None);
+        // assert!(v_empty.as_array().unwrap().next().is_none());
+        // assert!(v_empty.as_kvlist().unwrap().next().is_none());
+
+        let v_str = OtapAnyValueView::Str(b"hello");
+        assert_eq!(v_str.value_type(), ValueType::String);
+        assert_eq!(v_str.as_string(), Some(b"hello".as_slice()));
+        assert_eq!(v_str.as_int64(), None);
+
+        let v_int = OtapAnyValueView::Int(42);
+        assert_eq!(v_int.value_type(), ValueType::Int64);
+        assert_eq!(v_int.as_int64(), Some(42));
+        assert_eq!(v_int.as_string(), None);
+
+        let v_double = OtapAnyValueView::Double(3.14);
+        assert_eq!(v_double.value_type(), ValueType::Double);
+        assert_eq!(v_double.as_double(), Some(3.14));
+
+        let v_bool = OtapAnyValueView::Bool(true);
+        assert_eq!(v_bool.value_type(), ValueType::Bool);
+        assert_eq!(v_bool.as_bool(), Some(true));
+
+        let v_bytes = OtapAnyValueView::Bytes(b"raw");
+        assert_eq!(v_bytes.value_type(), ValueType::Bytes);
+        assert_eq!(v_bytes.as_bytes(), Some(b"raw".as_slice()));
+    }
+
+    #[test]
+    fn test_attribute_view() {
+        let attr = OtapAttributeView {
+            key: b"service.name",
+            value: OtapAnyValueView::Str(b"my-service"),
+        };
+
+        assert_eq!(attr.key(), b"service.name".as_slice());
+        let val = attr.value().unwrap();
+        assert_eq!(val.as_string(), Some(b"my-service".as_slice()));
+    }
+}
                                                                                                                                                                         
