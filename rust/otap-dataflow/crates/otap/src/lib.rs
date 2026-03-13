@@ -23,9 +23,6 @@ pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
-/// Batch processor
-pub mod batch_processor;
-
 // Retry processor that is aware of the OTAP PData/context.
 pub mod retry_processor;
 
@@ -43,11 +40,6 @@ pub mod parquet_exporter;
 
 pub mod perf_exporter;
 
-pub mod filter_processor;
-
-/// Fan-out processor to clone data to multiple downstream outputs.
-pub mod fanout_processor;
-
 /// testing utilities
 #[cfg(test)]
 mod otap_mock;
@@ -59,9 +51,6 @@ mod fixtures;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
-
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
 
 /// Content-based router processor (routes by resource attribute value)
 pub mod content_router;

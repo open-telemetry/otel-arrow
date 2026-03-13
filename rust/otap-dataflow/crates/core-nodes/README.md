@@ -16,8 +16,12 @@ Each component lives in its own subfolder within a category:
         noop_exporter/
       processors/
         mod.rs (category exports)
+        batch_processor/
         debug_processor/
         delay_processor/
+        fanout_processor/
+        filter_processor/
+        signal_type_router/
       receivers/
         mod.rs (category exports)
         fake_data_generator/
@@ -52,8 +56,18 @@ Each component lives in its own subfolder within a category:
 
 | Node | URN | Module |
 | ---- | --- | ------ |
+| batch_processor | `urn:otel:processor:batch` | `src/processors/batch_processor/` |
 | debug_processor | `urn:otel:processor:debug` | `src/processors/debug_processor/` |
 | delay_processor | `urn:otel:processor:delay` | `src/processors/delay_processor/` |
+| fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
+| filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
+| signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
+
+#### batch_processor
+
+- Batches OTAP and OTLP payloads by size and/or time-based flush criteria
+- Supports preserve/force format modes and ack-aware request tracking
+- Useful for throughput optimization and controlled downstream pressure
 
 #### debug_processor
 
@@ -67,6 +81,24 @@ Each component lives in its own subfolder within a category:
 - Introduces artificial delays between signal processing
 - Configured via humantime duration strings
 - Used for testing timeout handling and rate control
+
+#### fanout_processor
+
+- Clones incoming data to multiple downstream outputs
+- Supports parallel or sequential delivery modes with configurable ack policies
+- Supports fallback chains and timeout handling per destination
+
+#### filter_processor
+
+- Filters OTAP signals according to configured trace/log filter rules
+- Tracks consumed and filtered signal metrics for telemetry
+- Useful for reducing data volume before downstream processing
+
+#### signal_type_router
+
+- Routes signals by type (logs, metrics, traces) to named output ports
+- Falls back to default routing when a type-specific port is not connected
+- Exposes per-signal routing and drop telemetry counters
 
 ### Receivers
 
