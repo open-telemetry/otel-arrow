@@ -7,7 +7,7 @@ components:
         network: testbed
         command: ["--serve"]
         environment:
-          # overriden in test steps
+          # overridden in test steps
           - SYSLOG_SERVER=df-engine
           - SYSLOG_PORT=4317
         ports:
