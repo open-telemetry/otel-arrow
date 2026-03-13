@@ -415,6 +415,7 @@ mod tests {
     use crate::message;
     use crate::message::Message;
     use crate::shared::exporter as shared;
+    use crate::shared::message::SharedReceiver;
     use crate::terminal_state::TerminalState;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
@@ -995,6 +996,64 @@ mod tests {
 
         // Now recv_when(false) should detect closed+empty and return shutdown
         let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// Helper that creates a MessageChannel with shared (tokio mpsc) pdata channel.
+    fn make_shared_chan() -> (
+        tokio::sync::mpsc::Sender<NodeControlMsg<String>>,
+        tokio::sync::mpsc::Sender<String>,
+        message::MessageChannel<String>,
+    ) {
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(10);
+        let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel::<String>(10);
+        (
+            control_tx,
+            pdata_tx,
+            message::MessageChannel::new(
+                message::Receiver::Shared(SharedReceiver::mpsc(control_rx)),
+                message::Receiver::Shared(SharedReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
+    }
+
+    /// recv_when(false) on a shared channel with an empty but alive pdata channel
+    /// should NOT trigger a synthetic shutdown. This is the regression test for the
+    /// bug where SharedReceiver::try_recv mapped Empty to Closed.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_empty_alive_no_shutdown() {
+        let (_control_tx, _pdata_tx, mut channel) = make_shared_chan();
+
+        // Channel is empty but sender is alive.
+        // recv_when(false) should block waiting for control — NOT return a shutdown.
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "recv_when(false) on empty alive shared channel should block, not trigger shutdown"
+        );
+    }
+
+    /// recv_when(false) on a shared channel with a closed pdata channel
+    /// should correctly detect closure and return a synthetic shutdown.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_closed_detects_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Close the pdata channel
+        drop(pdata_tx);
+
+        // recv_when(false) should detect the closed channel and return a synthetic Shutdown
+        let msg = tokio::time::timeout(Duration::from_millis(100), channel.recv_when(false))
+            .await
+            .expect("recv_when(false) should not block when shared pdata channel is closed")
+            .unwrap();
+
         assert!(matches!(
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
