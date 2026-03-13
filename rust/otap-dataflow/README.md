@@ -125,7 +125,6 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 ### OTAP: OTel-Arrow Protocol pipeline data
 
 [See crate README.](./crates/otap/README.md)
-
 The OTAP pipeline data type is defined here, therefore all of our
 built-in components are provided here as well.  The main entry point
 into this crate is the `otap_df_otap::pdata::OtapPdata` type with its
@@ -257,10 +256,11 @@ ongoing refactor.
 
 Current status:
 
-- 10 core node components are implemented in `otap-df-core-nodes`.
 - Exporters: `console_exporter`, `error_exporter`, `noop_exporter`
-- Processors: `batch_processor`, `debug_processor`, `delay_processor`,
-  `fanout_processor`, `filter_processor`, `signal_type_router`
+- Processors: `attributes_processor`, `batch_processor`,
+  `content_router`, `debug_processor`, `delay_processor`,
+  `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
+  `retry_processor`, `signal_type_router`, `transform_processor`
 - Receivers: `fake_data_generator`
 
 ### Contrib Nodes

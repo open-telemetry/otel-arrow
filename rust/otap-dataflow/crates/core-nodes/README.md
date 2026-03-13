@@ -16,12 +16,17 @@ Each component lives in its own subfolder within a category:
         noop_exporter/
       processors/
         mod.rs (category exports)
+        attributes_processor/
         batch_processor/
+        content_router/
         debug_processor/
         delay_processor/
+        durable_buffer_processor/
         fanout_processor/
         filter_processor/
+        retry_processor/
         signal_type_router/
+        transform_processor/
       receivers/
         mod.rs (category exports)
         fake_data_generator/
@@ -56,12 +61,27 @@ Each component lives in its own subfolder within a category:
 
 | Node | URN | Module |
 | ---- | --- | ------ |
+| attributes_processor | `urn:otel:processor:attribute` | `src/processors/attributes_processor/` |
 | batch_processor | `urn:otel:processor:batch` | `src/processors/batch_processor/` |
+| content_router | `urn:otel:processor:content_router` | `src/processors/content_router/` |
 | debug_processor | `urn:otel:processor:debug` | `src/processors/debug_processor/` |
 | delay_processor | `urn:otel:processor:delay` | `src/processors/delay_processor/` |
+| durable_buffer_processor | `urn:otel:processor:durable_buffer` | `src/processors/durable_buffer_processor/` |
 | fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
 | filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
+| retry_processor | `urn:otel:processor:retry` | `src/processors/retry_processor/` |
 | signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
+| transform_processor | `urn:otel:processor:transform` | `src/processors/transform_processor/` |
+
+#### attributes_processor
+
+- Adds, updates, renames, and deletes OpenTelemetry attributes
+- Works directly on OTAP-native data structures for low-copy mutations
+
+#### content_router
+
+- Routes telemetry to named output ports based on resource attribute values
+- Supports default routing and mixed-batch validation
 
 #### batch_processor
 
@@ -82,6 +102,11 @@ Each component lives in its own subfolder within a category:
 - Configured via humantime duration strings
 - Used for testing timeout handling and rate control
 
+#### durable_buffer_processor
+
+- Persists telemetry to WAL and segment storage before forwarding downstream
+- Supports crash recovery, retry backoff, and bounded retention policies
+
 #### fanout_processor
 
 - Clones incoming data to multiple downstream outputs
@@ -94,11 +119,21 @@ Each component lives in its own subfolder within a category:
 - Tracks consumed and filtered signal metrics for telemetry
 - Useful for reducing data volume before downstream processing
 
+#### retry_processor
+
+- Retries downstream delivery with exponential backoff using Ack/Nack handling
+- Preserves retry state in call data instead of external durable state
+
 #### signal_type_router
 
 - Routes signals by type (logs, metrics, traces) to named output ports
 - Falls back to default routing when a type-specific port is not connected
 - Exposes per-signal routing and drop telemetry counters
+
+#### transform_processor
+
+- Applies KQL or OPL transformations to OTAP batches via the query engine
+- Supports routed outputs while preserving upstream Ack/Nack semantics
 
 ### Receivers
 

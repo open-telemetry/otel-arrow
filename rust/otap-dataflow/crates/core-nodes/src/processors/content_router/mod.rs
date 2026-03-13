@@ -37,8 +37,6 @@
 //!   where all resources are consistently unmatched (missing key / no match)
 //!   are **not** considered mixed and are routed to the default output.
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -56,6 +54,8 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
 };
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::metrics::{MetricsView, ResourceMetricsView};
@@ -1366,7 +1366,6 @@ mod tests {
 
     mod telemetry {
         use super::*;
-        use crate::pdata::OtapPdata;
         use otap_df_channel::mpsc;
         use otap_df_engine::context::ControllerContext;
         use otap_df_engine::control::NodeControlMsg;
@@ -1376,6 +1375,7 @@ mod tests {
         };
         use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
+        use otap_df_otap::pdata::OtapPdata;
         use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
