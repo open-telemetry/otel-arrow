@@ -236,18 +236,14 @@ impl<T> SharedReceiver<T> {
     /// Tries to receive a message from the channel.
     pub fn try_recv(&mut self) -> Result<T, RecvError> {
         let result = match &mut self.inner {
-            SharedReceiverInner::Mpsc(receiver) => {
-                receiver.try_recv().map_err(|e| match e {
-                    tokio::sync::mpsc::error::TryRecvError::Empty => RecvError::Empty,
-                    tokio::sync::mpsc::error::TryRecvError::Disconnected => RecvError::Closed,
-                })
-            }
-            SharedReceiverInner::Mpmc(receiver) => {
-                receiver.try_recv().map_err(|e| match e {
-                    flume::TryRecvError::Empty => RecvError::Empty,
-                    flume::TryRecvError::Disconnected => RecvError::Closed,
-                })
-            }
+            SharedReceiverInner::Mpsc(receiver) => receiver.try_recv().map_err(|e| match e {
+                tokio::sync::mpsc::error::TryRecvError::Empty => RecvError::Empty,
+                tokio::sync::mpsc::error::TryRecvError::Disconnected => RecvError::Closed,
+            }),
+            SharedReceiverInner::Mpmc(receiver) => receiver.try_recv().map_err(|e| match e {
+                flume::TryRecvError::Empty => RecvError::Empty,
+                flume::TryRecvError::Disconnected => RecvError::Closed,
+            }),
         };
 
         if let Some(metrics) = &self.metrics {
@@ -270,5 +266,55 @@ impl<T> SharedReceiver<T> {
             SharedReceiverInner::Mpsc(receiver) => receiver.is_empty(),
             SharedReceiverInner::Mpmc(receiver) => receiver.is_empty(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_channel::error::RecvError;
+
+    #[test]
+    fn test_mpsc_try_recv_empty_returns_empty_not_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(10);
+        let mut receiver = SharedReceiver::mpsc(rx);
+
+        // Channel is empty but sender is alive — should return Empty
+        let result = receiver.try_recv();
+        assert!(
+            matches!(result, Err(RecvError::Empty)),
+            "expected Empty, got {result:?}"
+        );
+
+        drop(tx);
+
+        // Now channel is closed — should return Closed
+        let result = receiver.try_recv();
+        assert!(
+            matches!(result, Err(RecvError::Closed)),
+            "expected Closed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_mpmc_try_recv_empty_returns_empty_not_closed() {
+        let (tx, rx) = flume::bounded::<String>(10);
+        let mut receiver = SharedReceiver::mpmc(rx);
+
+        // Channel is empty but sender is alive — should return Empty
+        let result = receiver.try_recv();
+        assert!(
+            matches!(result, Err(RecvError::Empty)),
+            "expected Empty, got {result:?}"
+        );
+
+        drop(tx);
+
+        // Now channel is closed — should return Closed
+        let result = receiver.try_recv();
+        assert!(
+            matches!(result, Err(RecvError::Closed)),
+            "expected Closed, got {result:?}"
+        );
     }
 }
