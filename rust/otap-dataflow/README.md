@@ -255,6 +255,14 @@ The `otap-df-core-nodes` crate is the destination for core-node
 implementations as they are split out from `otap-df-otap` during the
 ongoing refactor.
 
+Current status:
+
+- 10 core node components are implemented in `otap-df-core-nodes`.
+- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`
+- Processors: `batch_processor`, `debug_processor`, `delay_processor`,
+  `fanout_processor`, `filter_processor`, `signal_type_router`
+- Receivers: `fake_data_generator`
+
 ### Contrib Nodes
 
 [See crate README.](./crates/contrib-nodes/README.md)
