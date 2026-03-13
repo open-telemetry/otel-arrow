@@ -83,3 +83,12 @@ tests:
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         max_batch_size: 1000
+  - name: OTLP-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-windows.yaml
+      variables:
+        result_dir: windows_100klrps
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 1000
