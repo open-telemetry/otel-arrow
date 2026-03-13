@@ -2,7 +2,7 @@
 # This template is used to generate both single-core and full-cores tests.
 # Differences from the Linux template:
 #   - Uses df_engine_win:latest (Windows container image)
-#   - Volume mount target uses Windows path (C:/dataflow/config.yaml)
+#   - Volume mounts the config directory (Windows containers cannot bind-mount files)
 name: Continuous - Idle State Performance (Windows) - {{core_label}}
 components:
   df-engine:
@@ -13,10 +13,10 @@ components:
         ports:
           - "{{port}}:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:C:/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/engine:C:/dataflow/config:ro'
         command:
           - "--config"
-          - "./config.yaml"
+          - "C:/dataflow/config/config.rendered.yaml"
 {% if core_range is defined %}
           - "--core-id-range"
           - "{{core_range}}"
