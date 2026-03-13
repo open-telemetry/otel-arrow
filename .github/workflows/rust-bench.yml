@@ -52,6 +52,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
-      - name: cargo bench contrib-nodes (azure-monitor-exporter)
-        run: cargo bench -p otap-df-contrib-nodes --features azure-monitor-exporter
+      - name: cargo bench contrib-nodes (all features)
+        run: cargo bench -p otap-df-contrib-nodes --all-features
         working-directory: ./rust/otap-dataflow
