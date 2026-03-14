@@ -13,6 +13,7 @@
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
+use std::time::Instant;
 
 /// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
@@ -529,6 +530,49 @@ impl Mmsc {
     #[inline]
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Merge another Mmsc into this.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        if other.count == 0 {
+            return;
+        }
+        if other.min < self.min {
+            self.min = other.min;
+        }
+        if other.max > self.max {
+            self.max = other.max;
+        }
+        self.sum += other.sum;
+        self.count += other.count;
+    }
+}
+
+/// A lightweight wall-clock timer.
+///
+/// Call [`Timer::start`] to capture the current instant, then call
+/// [`Timer::elapsed_nanos`] to get the elapsed duration.
+#[must_use]
+pub struct Timer {
+    start: Instant,
+}
+
+impl Timer {
+    /// Capture the current instant.
+    #[inline]
+    pub fn start() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+
+    /// Consume the timer and return the elapsed wall-clock duration
+    /// in nanoseconds as an f64.
+    #[inline]
+    #[must_use]
+    pub fn elapsed_nanos(self) -> f64 {
+        self.start.elapsed().as_nanos() as f64
     }
 }
 

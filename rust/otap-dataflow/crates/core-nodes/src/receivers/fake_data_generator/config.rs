@@ -379,14 +379,8 @@ fn default_resource_weight() -> NonZeroU32 {
 /// Precompute the rotation index table from a slice of weighted attribute sets.
 ///
 /// Each entry at position `i` contributes `entry.weight` copies of `i` to the
-/// table.  The hot path is then:
-/// ```
-/// slot = rotation[batch_index % rotation.len()]
-/// attrs = &entries[slot].attrs
-/// ```
-/// An empty table means no custom attributes are configured.
+/// table. An empty table means no custom attributes are configured.
 ///
-/// # Example
 /// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
 ///
 /// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.

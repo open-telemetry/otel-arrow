@@ -27,6 +27,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -157,6 +158,7 @@ impl Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
+    compute_duration: ComputeDuration,
 }
 
 enum CachedAttributeValue {
@@ -174,12 +176,12 @@ fn engine_err(msg: &str) -> Error {
 
 /// Factory function to create a Condense Attributes processor
 pub fn create_condense_attributes_processor(
-    _: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let processor = CondenseAttributesProcessor::from_config(&node_config.config)?;
+    let processor = CondenseAttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
 
     otel_info!("condense_attributes_processor.ready");
 
@@ -208,20 +210,36 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
     };
 
 impl CondenseAttributesProcessor {
-    /// Creates a new CondenseAttributesProcessor instance
-    #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    /// Creates a new CondenseAttributesProcessor instance from configuration
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
+        Ok(Self {
+            config: Config::from_config(config)?,
+            compute_duration,
+        })
     }
 
-    /// Creates a new CondenseAttributesProcessor instance from configuration
-    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
-        Ok(Self::new(Config::from_config(config)?))
+    /// Creates a new CondenseAttributesProcessor from configuration for testing.
+    #[cfg(test)]
+    fn from_config_for_test(config: &Value) -> Result<Self, ConfigError> {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_grp".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+        Self::from_config(pipeline_ctx, config)
     }
 
     /// Condenses attributes in the given record batch according to the processor configuration.
     /// Returns the number of individual attributes that were condensed.
-    fn condense(&mut self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
+    fn condense(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
             None => {
@@ -598,6 +616,12 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                         }
                         Ok(())
                     }
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => {
+                        self.compute_duration.report(&mut metrics_reporter);
+                        Ok(())
+                    }
                     _ => Ok(()),
                 }
             }
@@ -616,13 +640,16 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let result = match signal {
-                    SignalType::Logs => self.condense(&mut records),
-                    _ => Err(Error::InternalError {
-                        message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
-                            .to_string(),
-                    }),
-                };
+                let result = self
+                    .compute_duration
+                    .timed(effect_handler.node_interests(), || match signal {
+                        SignalType::Logs => self.condense(&mut records),
+                        _ => Err(Error::InternalError {
+                            message:
+                                "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                                    .to_string(),
+                        }),
+                    });
 
                 match result {
                     Ok(condensed) => {
@@ -861,7 +888,8 @@ mod condense_tests {
             "source_keys": ["nonexistent1", "nonexistent2"]
         });
 
-        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
 
         let mut bytes = BytesMut::new();
         input.encode(&mut bytes).expect("encode input");
@@ -893,7 +921,8 @@ mod condense_tests {
             "destination_key": "condensed",
             "delimiter": ";"
         });
-        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         let mut records = OtapArrowRecords::from(Logs::default());
 
         let condensed_count = processor
@@ -1354,7 +1383,8 @@ mod config_tests {
             "source_keys": ["key1", "key2", "key3"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed");
         assert_eq!(processor.config.delimiter, '|');
         assert!(processor.config.exclude_keys.is_none());
@@ -1378,7 +1408,8 @@ mod config_tests {
             "exclude_keys": ["id", "timestamp"]
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "condensed_attr");
         assert_eq!(processor.config.delimiter, ',');
         assert!(processor.config.source_keys.is_none());
@@ -1400,7 +1431,8 @@ mod config_tests {
             "delimiter": ";"
         });
 
-        let processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
         assert_eq!(processor.config.destination_key, "all_condensed");
         assert_eq!(processor.config.delimiter, ';');
         assert!(processor.config.source_keys.is_none());
@@ -1414,7 +1446,7 @@ mod config_tests {
             "source_keys": ["key1"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1431,7 +1463,7 @@ mod config_tests {
             "source_keys": ["key1"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1449,7 +1481,7 @@ mod config_tests {
             "source_keys": ["key1", "key2"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1468,7 +1500,7 @@ mod config_tests {
             "exclude_keys": ["key2"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1486,7 +1518,7 @@ mod config_tests {
             "source_keys": "not_an_array"
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1504,7 +1536,7 @@ mod config_tests {
             "exclude_keys": "not_an_array"
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1522,7 +1554,7 @@ mod config_tests {
             "source_keys": ["attr1", "condensed"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
@@ -1541,7 +1573,7 @@ mod config_tests {
             "exclude_keys": ["attr1", "condensed"]
         });
 
-        let result = CondenseAttributesProcessor::from_config(&cfg);
+        let result = CondenseAttributesProcessor::from_config_for_test(&cfg);
         assert!(result.is_err());
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {

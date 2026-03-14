@@ -1,0 +1,98 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Opt-in compute-duration timing for processors.
+//!
+//! Processors that perform meaningful synchronous compute can add a
+//! [`ComputeDuration`] field and call [`ComputeDuration::timed`] to
+//! measure the wall-clock duration of that work.  Timing is gated on
+//! the `PROCESS_DURATION` interest at the normal metric level.
+//!
+//! The closure-based API structurally prevents timing from spanning
+//! `.await` points.
+
+use std::cell::Cell;
+use std::rc::Rc;
+
+use crate::Interests;
+use otap_df_telemetry::instrument::{Mmsc, Timer};
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::metric_set;
+
+use crate::context::PipelineContext;
+
+/// Metric set containing a single compute-duration instrument.
+#[metric_set(name = "processor.compute")]
+#[derive(Debug, Default, Clone)]
+pub struct ComputeDurationMetrics {
+    /// Wall-clock duration of the processor compute section, in nanoseconds.
+    #[metric(name = "compute.duration", unit = "ns")]
+    pub compute_duration: Mmsc,
+}
+
+/// Wrapper providing interests-gated duration recording and reporting.
+pub struct ComputeDuration {
+    metrics: MetricSet<ComputeDurationMetrics>,
+    /// Shared accumulator written by [`TimingGuard`] on drop.
+    accumulator: Rc<Cell<Mmsc>>,
+}
+
+impl ComputeDuration {
+    /// Register a new compute-duration metric set on the given pipeline.
+    #[must_use]
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            metrics: pipeline_ctx.register_metrics::<ComputeDurationMetrics>(),
+            accumulator: Rc::new(Cell::new(Mmsc::default())),
+        }
+    }
+
+    /// Time a synchronous closure if interests includes
+    /// `PROCESS_DURATION`, otherwise just call `f` directly.
+    ///
+    /// The closure-based API structurally prevents the timer from
+    /// being held across `.await` — the closure is `FnOnce`, not
+    /// async, so the compiler enforces that only synchronous work is
+    /// measured.
+    #[inline]
+    pub fn timed<T>(&self, interests: Interests, f: impl FnOnce() -> T) -> T {
+        if interests.contains(Interests::PROCESS_DURATION) {
+            let _guard = TimingGuard {
+                timer: Some(Timer::start()),
+                accumulator: Rc::clone(&self.accumulator),
+            };
+            f()
+        } else {
+            f()
+        }
+    }
+
+    /// Report accumulated duration metrics to the collector.
+    ///
+    /// Drains the shared accumulator into the metric set, then reports
+    /// and resets as usual.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) {
+        let acc = self.accumulator.replace(Mmsc::default());
+        self.metrics.compute_duration.merge(acc);
+        let _ = reporter.report(&mut self.metrics);
+    }
+}
+
+/// RAII guard that records the elapsed duration into the shared
+/// accumulator when dropped.
+struct TimingGuard {
+    timer: Option<Timer>,
+    accumulator: Rc<Cell<Mmsc>>,
+}
+
+impl Drop for TimingGuard {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            let nanos = timer.elapsed_nanos();
+            let mut mmsc = self.accumulator.get();
+            mmsc.record(nanos);
+            self.accumulator.set(mmsc);
+        }
+    }
+}
