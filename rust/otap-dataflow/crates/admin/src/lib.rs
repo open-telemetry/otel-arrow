@@ -43,6 +43,8 @@ pub enum ControlPlaneError {
     },
     /// The requested rollout could not be found.
     RolloutNotFound,
+    /// The requested shutdown could not be found.
+    ShutdownNotFound,
     /// Unexpected internal failure while processing the request.
     Internal {
         /// Human-readable internal failure detail.
@@ -112,6 +114,46 @@ pub struct PipelineRolloutStatus {
     pub cores: Vec<RolloutCoreStatus>,
 }
 
+/// Detailed per-core shutdown progress.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShutdownCoreStatus {
+    /// Target core being drained.
+    pub core_id: usize,
+    /// Deployment generation targeted for shutdown on this core.
+    pub deployment_generation: u64,
+    /// Current lifecycle state for this core shutdown step.
+    pub state: String,
+    /// RFC3339 timestamp for the latest step transition.
+    pub updated_at: String,
+    /// Optional human-readable detail for failures or waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Detailed shutdown status returned by shutdown endpoints.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineShutdownStatus {
+    /// Controller-assigned shutdown identifier.
+    pub shutdown_id: String,
+    /// Logical target pipeline group id.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Logical target pipeline id.
+    pub pipeline_id: PipelineId,
+    /// Current shutdown lifecycle state.
+    pub state: String,
+    /// RFC3339 timestamp for shutdown creation.
+    pub started_at: String,
+    /// RFC3339 timestamp for the latest shutdown transition.
+    pub updated_at: String,
+    /// Optional failure reason when shutdown does not complete cleanly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Per-core shutdown progress entries.
+    pub cores: Vec<ShutdownCoreStatus>,
+}
+
 /// Live logical pipeline view returned by `GET /pipeline-groups/{group}/pipelines/{id}`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,7 +186,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<(), ControlPlaneError>;
+    ) -> Result<PipelineShutdownStatus, ControlPlaneError>;
 
     /// Creates or replaces a logical pipeline and returns the rollout job snapshot.
     fn replace_pipeline(
@@ -168,6 +210,14 @@ pub trait ControlPlane: Send + Sync {
         pipeline_id: &str,
         rollout_id: &str,
     ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError>;
+
+    /// Returns the detailed status for a shutdown job.
+    fn shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError>;
 }
 
 /// Shared state for the HTTP admin server.

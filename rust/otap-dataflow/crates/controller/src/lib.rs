@@ -48,7 +48,7 @@ use chrono::Utc;
 use core_affinity::CoreId;
 use otap_df_admin::{
     ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
-    ReplacePipelineRequest, RolloutCoreStatus,
+    PipelineShutdownStatus, ReplacePipelineRequest, RolloutCoreStatus, ShutdownCoreStatus,
 };
 use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
@@ -193,6 +193,25 @@ impl RolloutLifecycleState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownLifecycleState {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl ShutdownLifecycleState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RolloutCoreProgress {
     core_id: usize,
@@ -283,6 +302,71 @@ impl RolloutRecord {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ShutdownCoreProgress {
+    core_id: usize,
+    deployment_generation: u64,
+    state: String,
+    updated_at: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ShutdownRecord {
+    shutdown_id: String,
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+    state: ShutdownLifecycleState,
+    started_at: String,
+    updated_at: String,
+    failure_reason: Option<String>,
+    cores: Vec<ShutdownCoreProgress>,
+}
+
+impl ShutdownRecord {
+    fn new(
+        shutdown_id: String,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        cores: Vec<ShutdownCoreProgress>,
+    ) -> Self {
+        let now = timestamp_now();
+        Self {
+            shutdown_id,
+            pipeline_group_id,
+            pipeline_id,
+            state: ShutdownLifecycleState::Pending,
+            started_at: now.clone(),
+            updated_at: now,
+            failure_reason: None,
+            cores,
+        }
+    }
+
+    fn status(&self) -> PipelineShutdownStatus {
+        PipelineShutdownStatus {
+            shutdown_id: self.shutdown_id.clone(),
+            pipeline_group_id: self.pipeline_group_id.clone(),
+            pipeline_id: self.pipeline_id.clone(),
+            state: self.state.as_str().to_owned(),
+            started_at: self.started_at.clone(),
+            updated_at: self.updated_at.clone(),
+            failure_reason: self.failure_reason.clone(),
+            cores: self
+                .cores
+                .iter()
+                .map(|core| ShutdownCoreStatus {
+                    core_id: core.core_id,
+                    deployment_generation: core.deployment_generation,
+                    state: core.state.clone(),
+                    updated_at: core.updated_at.clone(),
+                    detail: core.detail.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 struct RuntimeInstanceRecord {
     // The controller drops this sender once shutdown is requested so the
     // pipeline control loop can observe channel closure after node tasks exit.
@@ -321,9 +405,12 @@ struct ControllerRuntimeState {
     runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     rollouts: HashMap<String, RolloutRecord>,
     active_rollouts: HashMap<PipelineKey, String>,
+    shutdowns: HashMap<String, ShutdownRecord>,
+    active_shutdowns: HashMap<PipelineKey, String>,
     generation_counters: HashMap<PipelineKey, u64>,
     active_instances: usize,
     next_rollout_id: u64,
+    next_shutdown_id: u64,
     next_thread_id: usize,
     first_error: Option<String>,
 }
@@ -368,6 +455,14 @@ struct CandidateRolloutPlan {
     rollout: RolloutRecord,
     step_timeout_secs: u64,
     drain_timeout_secs: u64,
+}
+
+#[derive(Debug)]
+struct CandidateShutdownPlan {
+    pipeline_key: PipelineKey,
+    shutdown: ShutdownRecord,
+    target_instances: Vec<DeployedPipelineKey>,
+    timeout_secs: u64,
 }
 
 fn timestamp_now() -> String {
@@ -525,9 +620,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 runtime_instances: HashMap::new(),
                 rollouts: HashMap::new(),
                 active_rollouts: HashMap::new(),
+                shutdowns: HashMap::new(),
+                active_shutdowns: HashMap::new(),
                 generation_counters: HashMap::new(),
                 active_instances: 0,
                 next_rollout_id: 0,
+                next_shutdown_id: 0,
                 next_thread_id: 1,
                 first_error: None,
             }),
@@ -675,7 +773,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             if !state.live_config.groups.contains_key(&pipeline_group_id) {
                 return Err(ControlPlaneError::GroupNotFound);
             }
-            if state.active_rollouts.contains_key(&pipeline_key) {
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             (
@@ -760,7 +860,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.active_rollouts.contains_key(&pipeline_key) {
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             let rollout_id = format!("rollout-{}", state.next_rollout_id);
@@ -824,7 +926,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.active_rollouts.contains_key(pipeline_key) {
+            if state.active_rollouts.contains_key(pipeline_key)
+                || state.active_shutdowns.contains_key(pipeline_key)
+            {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             _ = state
@@ -879,6 +983,150 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.rollouts.get(rollout_id).map(RolloutRecord::status)
+    }
+
+    fn prepare_shutdown_plan(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<CandidateShutdownPlan, ControlPlaneError> {
+        let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
+        let pipeline_id: PipelineId = pipeline_id.to_owned().into();
+        let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+
+        let target_instances = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state.live_config.groups.contains_key(&pipeline_group_id) {
+                return Err(ControlPlaneError::GroupNotFound);
+            }
+            if !state.logical_pipelines.contains_key(&pipeline_key) {
+                return Err(ControlPlaneError::PipelineNotFound);
+            }
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+
+            let targets: Vec<_> = state
+                .runtime_instances
+                .iter()
+                .filter_map(|(deployed_key, instance)| {
+                    if deployed_key.pipeline_group_id == pipeline_group_id
+                        && deployed_key.pipeline_id == pipeline_id
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    {
+                        Some(deployed_key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if targets.is_empty() {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "pipeline {}:{} is already stopped",
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref()
+                    ),
+                });
+            }
+            targets
+        };
+
+        let shutdown_id = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            let shutdown_id = format!("shutdown-{}", state.next_shutdown_id);
+            state.next_shutdown_id += 1;
+            shutdown_id
+        };
+
+        let shutdown = ShutdownRecord::new(
+            shutdown_id,
+            pipeline_group_id,
+            pipeline_id,
+            target_instances
+                .iter()
+                .map(|instance| ShutdownCoreProgress {
+                    core_id: instance.core_id,
+                    deployment_generation: instance.deployment_generation,
+                    state: "pending".to_owned(),
+                    updated_at: timestamp_now(),
+                    detail: None,
+                })
+                .collect(),
+        );
+
+        Ok(CandidateShutdownPlan {
+            pipeline_key,
+            shutdown,
+            target_instances,
+            timeout_secs: timeout_secs.max(1),
+        })
+    }
+
+    fn insert_shutdown(
+        &self,
+        pipeline_key: &PipelineKey,
+        shutdown: ShutdownRecord,
+    ) -> Result<(), ControlPlaneError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active_rollouts.contains_key(pipeline_key)
+            || state.active_shutdowns.contains_key(pipeline_key)
+        {
+            return Err(ControlPlaneError::RolloutConflict);
+        }
+        _ = state
+            .active_shutdowns
+            .insert(pipeline_key.clone(), shutdown.shutdown_id.clone());
+        _ = state
+            .shutdowns
+            .insert(shutdown.shutdown_id.clone(), shutdown);
+        Ok(())
+    }
+
+    fn update_shutdown<F>(&self, pipeline_key: &PipelineKey, shutdown_id: &str, update: F)
+    where
+        F: FnOnce(&mut ShutdownRecord),
+    {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) else {
+            return;
+        };
+        update(shutdown);
+        shutdown.updated_at = timestamp_now();
+        if matches!(
+            shutdown.state,
+            ShutdownLifecycleState::Succeeded | ShutdownLifecycleState::Failed
+        ) {
+            let _ = state.active_shutdowns.remove(pipeline_key);
+        }
+    }
+
+    fn shutdown_status_snapshot(&self, shutdown_id: &str) -> Option<PipelineShutdownStatus> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutdowns.get(shutdown_id).map(ShutdownRecord::status)
     }
 
     fn pipeline_details_snapshot(
@@ -941,6 +1189,37 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(initial_status)
     }
 
+    fn spawn_shutdown(
+        self: &Arc<Self>,
+        plan: CandidateShutdownPlan,
+    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+        let shutdown_id = plan.shutdown.shutdown_id.clone();
+        let pipeline_key = plan.pipeline_key.clone();
+        let initial_status = plan.shutdown.status();
+        self.insert_shutdown(&pipeline_key, plan.shutdown.clone())?;
+        let runtime = Arc::clone(self);
+        let shutdown_runtime = Arc::clone(&runtime);
+        let _shutdown_handle = thread::Builder::new()
+            .name(format!(
+                "shutdown-{}-{}",
+                pipeline_key.pipeline_group_id().as_ref(),
+                pipeline_key.pipeline_id().as_ref()
+            ))
+            .spawn(move || {
+                shutdown_runtime.run_shutdown(plan);
+            })
+            .map_err(|err| {
+                runtime.update_shutdown(&pipeline_key, &shutdown_id, |shutdown| {
+                    shutdown.state = ShutdownLifecycleState::Failed;
+                    shutdown.failure_reason = Some(err.to_string());
+                });
+                ControlPlaneError::Internal {
+                    message: err.to_string(),
+                }
+            })?;
+        Ok(initial_status)
+    }
+
     fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
@@ -973,6 +1252,130 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
 
         self.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
+    }
+
+    fn run_shutdown(self: Arc<Self>, plan: CandidateShutdownPlan) {
+        self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+            shutdown.state = ShutdownLifecycleState::Running;
+        });
+
+        for deployed_key in &plan.target_instances {
+            if let Err(message) =
+                self.request_instance_shutdown(deployed_key, plan.timeout_secs, "pipeline shutdown")
+            {
+                self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+                    shutdown.state = ShutdownLifecycleState::Failed;
+                    shutdown.failure_reason = Some(message.clone());
+                    if let Some(core) = shutdown.cores.iter_mut().find(|core| {
+                        core.core_id == deployed_key.core_id
+                            && core.deployment_generation == deployed_key.deployment_generation
+                    }) {
+                        core.state = "failed".to_owned();
+                        core.updated_at = timestamp_now();
+                        core.detail = Some(message.clone());
+                    }
+                });
+                return;
+            }
+
+            self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+                if let Some(core) = shutdown.cores.iter_mut().find(|core| {
+                    core.core_id == deployed_key.core_id
+                        && core.deployment_generation == deployed_key.deployment_generation
+                }) {
+                    core.state = "shutdown_requested".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(plan.timeout_secs);
+        let mut remaining: HashSet<_> = plan.target_instances.iter().cloned().collect();
+        while !remaining.is_empty() {
+            let mut completed = Vec::new();
+            for deployed_key in &remaining {
+                match self.instance_exit(deployed_key) {
+                    Some(RuntimeInstanceExit::Success) => {
+                        completed.push(deployed_key.clone());
+                    }
+                    Some(RuntimeInstanceExit::Error(message)) => {
+                        self.update_shutdown(
+                            &plan.pipeline_key,
+                            &plan.shutdown.shutdown_id,
+                            |shutdown| {
+                                shutdown.state = ShutdownLifecycleState::Failed;
+                                shutdown.failure_reason = Some(message.clone());
+                                if let Some(core) = shutdown.cores.iter_mut().find(|core| {
+                                    core.core_id == deployed_key.core_id
+                                        && core.deployment_generation
+                                            == deployed_key.deployment_generation
+                                }) {
+                                    core.state = "failed".to_owned();
+                                    core.updated_at = timestamp_now();
+                                    core.detail = Some(message.clone());
+                                }
+                            },
+                        );
+                        return;
+                    }
+                    None => {}
+                }
+            }
+
+            for deployed_key in completed {
+                let _ = remaining.remove(&deployed_key);
+                self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+                    if let Some(core) = shutdown.cores.iter_mut().find(|core| {
+                        core.core_id == deployed_key.core_id
+                            && core.deployment_generation == deployed_key.deployment_generation
+                    }) {
+                        core.state = "exited".to_owned();
+                        core.updated_at = timestamp_now();
+                    }
+                });
+            }
+
+            if remaining.is_empty() {
+                break;
+            }
+
+            if Instant::now() >= deadline {
+                let failure_reason = remaining
+                    .iter()
+                    .next()
+                    .map(|deployed_key| {
+                        format!(
+                            "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                            deployed_key.pipeline_group_id.as_ref(),
+                            deployed_key.pipeline_id.as_ref(),
+                            deployed_key.core_id,
+                            deployed_key.deployment_generation
+                        )
+                    })
+                    .unwrap_or_else(|| "shutdown timed out".to_owned());
+                self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+                    shutdown.state = ShutdownLifecycleState::Failed;
+                    shutdown.failure_reason = Some(failure_reason.clone());
+                    for deployed_key in &remaining {
+                        if let Some(core) = shutdown.cores.iter_mut().find(|core| {
+                            core.core_id == deployed_key.core_id
+                                && core.deployment_generation == deployed_key.deployment_generation
+                        }) {
+                            core.state = "failed".to_owned();
+                            core.updated_at = timestamp_now();
+                            core.detail = Some(failure_reason.clone());
+                        }
+                    }
+                });
+                return;
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
+            shutdown.state = ShutdownLifecycleState::Succeeded;
+        });
     }
 
     fn run_create_rollout(
@@ -1421,7 +1824,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             })
     }
 
-    fn shutdown_instance(
+    fn request_instance_shutdown(
         &self,
         deployed_key: &DeployedPipelineKey,
         timeout_secs: u64,
@@ -1441,6 +1844,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     deployed_key.deployment_generation
                 ));
             };
+
+            match &instance.lifecycle {
+                RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Success) => return Ok(()),
+                RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(message)) => {
+                    return Err(message.clone());
+                }
+                RuntimeInstanceLifecycle::Active => {}
+            }
+
             instance.control_sender.clone().ok_or_else(|| {
                 format!(
                     "shutdown already requested for pipeline {}:{} core={} generation={}",
@@ -1452,15 +1864,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             })?
         };
 
-        sender
-            .try_send_shutdown(
-                Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-                reason.to_owned(),
-            )
-            .map_err(|err| err.to_string())?;
+        if let Err(err) = sender.try_send_shutdown(
+            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+            reason.to_owned(),
+        ) {
+            return match self.instance_exit(deployed_key) {
+                Some(RuntimeInstanceExit::Success) => Ok(()),
+                Some(RuntimeInstanceExit::Error(message)) => Err(message),
+                None => Err(err.to_string()),
+            };
+        }
         self.release_instance_control_sender(deployed_key);
+        Ok(())
+    }
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+    fn wait_for_instance_exit(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        deadline: Instant,
+    ) -> Result<(), String> {
         loop {
             if let Some(exit) = self.instance_exit(deployed_key) {
                 return match exit {
@@ -1479,6 +1901,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    fn shutdown_instance(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        timeout_secs: u64,
+        reason: &str,
+    ) -> Result<(), String> {
+        self.request_instance_shutdown(deployed_key, timeout_secs, reason)?;
+        self.wait_for_instance_exit(
+            deployed_key,
+            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+        )
     }
 
     fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
@@ -1525,74 +1960,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     }
 
     fn request_shutdown_pipeline(
-        &self,
+        self: &Arc<Self>,
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<(), ControlPlaneError> {
-        let pipeline_key = PipelineKey::new(
-            pipeline_group_id.to_owned().into(),
-            pipeline_id.to_owned().into(),
-        );
-        let senders: Vec<_> = {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !state
-                .live_config
-                .groups
-                .contains_key(pipeline_key.pipeline_group_id())
-            {
-                return Err(ControlPlaneError::GroupNotFound);
-            }
-            if !state.logical_pipelines.contains_key(&pipeline_key) {
-                return Err(ControlPlaneError::PipelineNotFound);
-            }
-            if state.active_rollouts.contains_key(&pipeline_key) {
-                return Err(ControlPlaneError::RolloutConflict);
-            }
-
-            let senders: Vec<_> = state
-                .runtime_instances
-                .iter()
-                .filter_map(|(deployed_key, instance)| {
-                    if deployed_key.pipeline_group_id == *pipeline_key.pipeline_group_id()
-                        && deployed_key.pipeline_id == *pipeline_key.pipeline_id()
-                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                    {
-                        instance
-                            .control_sender
-                            .as_ref()
-                            .map(|sender| (deployed_key.clone(), sender.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if senders.is_empty() {
-                return Err(ControlPlaneError::InvalidRequest {
-                    message: format!(
-                        "pipeline {}:{} is already stopped",
-                        pipeline_group_id, pipeline_id
-                    ),
-                });
-            }
-            senders
-        };
-
-        for (deployed_key, sender) in senders {
-            sender
-                .try_send_shutdown(
-                    Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-                    "pipeline shutdown".to_owned(),
-                )
-                .map_err(|err| ControlPlaneError::Internal {
-                    message: err.to_string(),
-                })?;
-            self.release_instance_control_sender(&deployed_key);
-        }
-        Ok(())
+    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+        let plan = self.prepare_shutdown_plan(pipeline_group_id, pipeline_id, timeout_secs)?;
+        self.spawn_shutdown(plan)
     }
 
     fn wait_until_all_instances_exit(&self) {
@@ -1634,7 +2008,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<(), ControlPlaneError> {
+    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
         self.runtime
             .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
     }
@@ -1679,6 +2053,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             PipelineKey::new(status.pipeline_group_id.clone(), status.pipeline_id.clone());
         if actual_key != expected_key {
             return Err(ControlPlaneError::RolloutNotFound);
+        }
+        Ok(Some(status))
+    }
+
+    fn shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError> {
+        let expected_key = PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        );
+        let Some(status) = self.runtime.shutdown_status_snapshot(shutdown_id) else {
+            return Ok(None);
+        };
+        let actual_key =
+            PipelineKey::new(status.pipeline_group_id.clone(), status.pipeline_id.clone());
+        if actual_key != expected_key {
+            return Err(ControlPlaneError::ShutdownNotFound);
         }
         Ok(Some(status))
     }
@@ -3460,6 +3855,44 @@ groups:
         rx
     }
 
+    fn wait_for_shutdown_state(
+        runtime: &ControllerRuntime<()>,
+        shutdown_id: &str,
+        expected_state: &str,
+    ) -> PipelineShutdownStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = runtime
+                .shutdown_status_snapshot(shutdown_id)
+                .expect("shutdown should exist");
+            if status.state == expected_state {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for shutdown {shutdown_id} to reach state {expected_state}, current state: {}",
+                status.state
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_shutdown_message(
+        receiver: &mut PipelineCtrlMsgReceiver<()>,
+    ) -> PipelineControlMsg<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(message) = receiver.try_recv() {
+                return message;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for shutdown control message"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     #[test]
     fn prepare_rollout_plan_rejects_core_allocation_change() {
         let config = engine_config_with_pipeline(
@@ -3856,6 +4289,48 @@ connections:
     }
 
     #[test]
+    fn request_shutdown_pipeline_rejects_active_shutdown() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        let shutdown = ShutdownRecord::new(
+            "shutdown-0".to_owned(),
+            "g1".into(),
+            "p1".into(),
+            vec![ShutdownCoreProgress {
+                core_id: 0,
+                deployment_generation: 0,
+                state: "pending".to_owned(),
+                updated_at: timestamp_now(),
+                detail: None,
+            }],
+        );
+        runtime
+            .insert_shutdown(&pipeline_key, shutdown)
+            .expect("shutdown should register");
+
+        let err = runtime
+            .request_shutdown_pipeline("g1", "p1", 5)
+            .expect_err("active shutdown should conflict");
+
+        assert_eq!(err, ControlPlaneError::RolloutConflict);
+    }
+
+    #[test]
     fn request_shutdown_pipeline_rejects_already_stopped_pipeline() {
         let config = engine_config_with_pipeline(
             r#"
@@ -3948,16 +4423,16 @@ groups:
         let mut p2_core0 =
             register_runtime_instance(&runtime, "g1", "p2", 3, 0, RuntimeInstanceLifecycle::Active);
 
-        runtime
+        let _shutdown = runtime
             .request_shutdown_pipeline("g1", "p1", 5)
             .expect("shutdown request should be accepted");
 
         assert!(matches!(
-            p1_core0.try_recv().expect("core 0 should receive shutdown"),
+            wait_for_shutdown_message(&mut p1_core0),
             PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
         assert!(matches!(
-            p1_core1.try_recv().expect("core 1 should receive shutdown"),
+            wait_for_shutdown_message(&mut p1_core1),
             PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
         assert!(
@@ -3968,13 +4443,13 @@ groups:
             p2_core0.try_recv().is_err(),
             "other pipelines must not receive shutdown"
         );
-
-        let state = runtime
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert!(
-            state
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let p1_core0_released = state
                 .runtime_instances
                 .get(&DeployedPipelineKey {
                     pipeline_group_id: "g1".into(),
@@ -3983,10 +4458,8 @@ groups:
                     deployment_generation: 0,
                 })
                 .and_then(|instance| instance.control_sender.as_ref())
-                .is_none()
-        );
-        assert!(
-            state
+                .is_none();
+            let p1_core1_released = state
                 .runtime_instances
                 .get(&DeployedPipelineKey {
                     pipeline_group_id: "g1".into(),
@@ -3995,10 +4468,8 @@ groups:
                     deployment_generation: 0,
                 })
                 .and_then(|instance| instance.control_sender.as_ref())
-                .is_none()
-        );
-        assert!(
-            state
+                .is_none();
+            let p2_core0_retained = state
                 .runtime_instances
                 .get(&DeployedPipelineKey {
                     pipeline_group_id: "g1".into(),
@@ -4007,8 +4478,136 @@ groups:
                     deployment_generation: 0,
                 })
                 .and_then(|instance| instance.control_sender.as_ref())
-                .is_some()
+                .is_some();
+            drop(state);
+
+            if p1_core0_released && p1_core1_released && p2_core0_retained {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for targeted control senders to be released"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_tracks_completion() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
         );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let mut core0 =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+        let mut core1 =
+            register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+
+        let shutdown = runtime
+            .request_shutdown_pipeline("g1", "p1", 5)
+            .expect("shutdown request should be accepted");
+        assert_eq!(shutdown.state, "pending");
+
+        assert!(matches!(
+            wait_for_shutdown_message(&mut core0),
+            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+        ));
+        assert!(matches!(
+            wait_for_shutdown_message(&mut core1),
+            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+        ));
+
+        runtime.note_instance_exit(
+            DeployedPipelineKey {
+                pipeline_group_id: "g1".into(),
+                pipeline_id: "p1".into(),
+                core_id: 0,
+                deployment_generation: 0,
+            },
+            RuntimeInstanceExit::Success,
+        );
+        runtime.note_instance_exit(
+            DeployedPipelineKey {
+                pipeline_group_id: "g1".into(),
+                pipeline_id: "p1".into(),
+                core_id: 1,
+                deployment_generation: 0,
+            },
+            RuntimeInstanceExit::Success,
+        );
+
+        let status = wait_for_shutdown_state(&runtime, &shutdown.shutdown_id, "succeeded");
+        assert_eq!(status.cores.len(), 2);
+        assert!(status.cores.iter().all(|core| core.state == "exited"));
+
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            !state
+                .active_shutdowns
+                .contains_key(&PipelineKey::new("g1".into(), "p1".into()))
+        );
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_tracks_timeout_failure() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let mut core0 =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+        let shutdown = runtime
+            .request_shutdown_pipeline("g1", "p1", 1)
+            .expect("shutdown request should be accepted");
+        assert!(matches!(
+            wait_for_shutdown_message(&mut core0),
+            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+        ));
+
+        let status = wait_for_shutdown_state(&runtime, &shutdown.shutdown_id, "failed");
+        assert!(
+            status
+                .failure_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("timed out waiting"))
+        );
+        assert_eq!(status.cores.len(), 1);
+        assert_eq!(status.cores[0].state, "failed");
     }
 
     #[test]
