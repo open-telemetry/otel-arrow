@@ -27,7 +27,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ProcessDuration;
+use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -158,7 +158,7 @@ impl Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
-    process_duration: ProcessDuration,
+    compute_duration: ComputeDuration,
 }
 
 enum CachedAttributeValue {
@@ -212,10 +212,10 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
 impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance from configuration
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let process_duration = ProcessDuration::new(&pipeline_ctx);
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         Ok(Self {
             config: Config::from_config(config)?,
-            process_duration,
+            compute_duration,
         })
     }
 
@@ -619,7 +619,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
-                        self.process_duration.report(&mut metrics_reporter);
+                        self.compute_duration.report(&mut metrics_reporter);
                         Ok(())
                     }
                     _ => Ok(()),
@@ -640,15 +640,16 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let _timing = self.process_duration.start(effect_handler.node_interests());
-
-                let result = match signal {
-                    SignalType::Logs => self.condense(&mut records),
-                    _ => Err(Error::InternalError {
-                        message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
-                            .to_string(),
-                    }),
-                };
+                let result = self
+                    .compute_duration
+                    .timed(effect_handler.node_interests(), || match signal {
+                        SignalType::Logs => self.condense(&mut records),
+                        _ => Err(Error::InternalError {
+                            message:
+                                "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                                    .to_string(),
+                        }),
+                    });
 
                 match result {
                     Ok(condensed) => {

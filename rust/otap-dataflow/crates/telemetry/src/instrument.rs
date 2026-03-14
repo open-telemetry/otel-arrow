@@ -532,26 +532,6 @@ impl Mmsc {
         *self = Self::default();
     }
 
-    /// Times a synchronous closure, recording the elapsed wall-clock
-    /// duration in nanoseconds as an observation.
-    #[inline]
-    pub fn timed<F, R>(&mut self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let timer = Timer::start();
-        let result = f();
-        self.record_timer(timer);
-        result
-    }
-
-    /// Consume a [`Timer`], recording its elapsed wall-clock duration
-    /// in nanoseconds as an observation.
-    #[inline]
-    pub fn record_timer(&mut self, timer: Timer) {
-        self.record(timer.elapsed_nanos());
-    }
-
     /// Merge another Mmsc into this.
     #[inline]
     pub fn merge(&mut self, other: Self) {
@@ -571,8 +551,8 @@ impl Mmsc {
 
 /// A lightweight wall-clock timer.
 ///
-/// Call Timer::start to capture the current instant, then pass the
-/// timer to Mmsc::record_timer to record the elapsed duration.
+/// Call [`Timer::start`] to capture the current instant, then call
+/// [`Timer::elapsed_nanos`] to get the elapsed duration.
 #[must_use]
 pub struct Timer {
     start: Instant,
@@ -717,18 +697,5 @@ mod tests {
         assert_eq!(snap.max, -1.0);
         assert_eq!(snap.sum, -16.0);
         assert_eq!(snap.count, 3);
-    }
-
-    #[test]
-    fn test_mmsc_timed() {
-        let mut mmsc = Mmsc::default();
-        let result = mmsc.timed(|| {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            42
-        });
-        assert_eq!(result, 42);
-        let snap = mmsc.get();
-        assert_eq!(snap.count, 1);
-        assert!(snap.min > 0.0, "timed duration should be positive");
     }
 }

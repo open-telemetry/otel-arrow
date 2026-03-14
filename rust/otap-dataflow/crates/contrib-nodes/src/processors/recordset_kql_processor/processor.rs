@@ -22,7 +22,7 @@ use otap_df_engine::{
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
-    process_duration::ProcessDuration,
+    process_duration::ComputeDuration,
 };
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
@@ -43,7 +43,7 @@ pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = Proces
 pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
-    process_duration: ProcessDuration,
+    compute_duration: ComputeDuration,
 }
 
 impl RecordsetKqlProcessor {
@@ -61,14 +61,14 @@ impl RecordsetKqlProcessor {
             error: format!("Failed to parse KQL query: {:?}", errors),
         })?;
 
-        let process_duration = ProcessDuration::new(&pipeline_ctx);
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
 
         otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
 
         Ok(Self {
             config,
             pipeline,
-            process_duration,
+            compute_duration,
         })
     }
 
@@ -131,24 +131,24 @@ impl RecordsetKqlProcessor {
         let (ctx, payload) = data.into_parts();
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
-        let _timing = self.process_duration.start(effect_handler.node_interests());
-
-        // Process based on signal type
-        let result = match otlp_bytes {
-            OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                otap_df_telemetry::otel_debug!(
-                    "recordset_kql_processor.processing_logs",
-                    input_items
-                );
-                self.process_logs(bytes, signal)
-            }
-            OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
-                message: "Metrics processing not yet implemented in KQL bridge".to_string(),
-            }),
-            OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
-                message: "Traces processing not yet implemented in KQL bridge".to_string(),
-            }),
-        };
+        // Process based on signal type (timed)
+        let result = self
+            .compute_duration
+            .timed(effect_handler.node_interests(), || match otlp_bytes {
+                OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                    otap_df_telemetry::otel_debug!(
+                        "recordset_kql_processor.processing_logs",
+                        input_items
+                    );
+                    self.process_logs(bytes, signal)
+                }
+                OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
+                    message: "Metrics processing not yet implemented in KQL bridge".to_string(),
+                }),
+                OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
+                    message: "Traces processing not yet implemented in KQL bridge".to_string(),
+                }),
+            });
 
         match result {
             Ok(processed_bytes) => {
@@ -279,7 +279,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
-                        self.process_duration.report(&mut metrics_reporter);
+                        self.compute_duration.report(&mut metrics_reporter);
                         Ok(())
                     }
                     _ => Ok(()),
