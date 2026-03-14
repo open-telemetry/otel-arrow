@@ -1107,6 +1107,18 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             move |cancellation_token| obs_state_store.run(cancellation_token),
         )?;
 
+        let log_tap_handle = telemetry_system.log_tap_handle();
+        let log_tap_runtime_handle = telemetry_system
+            .take_log_tap_runtime()
+            .map(|runtime| {
+                spawn_thread_local_task(
+                    "internal-log-tap",
+                    admin_tracing_setup.clone(),
+                    move |cancellation_token| runtime.run(cancellation_token),
+                )
+            })
+            .transpose()?;
+
         // Start the engine-wide metrics collection task.
         // This samples engine-level metrics (e.g. RSS) on a fixed interval and
         // reports them once per engine, rather than duplicating across pipelines.
@@ -1276,6 +1288,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_state_handle,
                     admin_senders,
                     telemetry_registry,
+                    log_tap_handle,
                     cancellation_token,
                 )
             },
@@ -1335,6 +1348,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
+            handle.shutdown_and_join()?;
+        }
+        if let Some(handle) = log_tap_runtime_handle {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
