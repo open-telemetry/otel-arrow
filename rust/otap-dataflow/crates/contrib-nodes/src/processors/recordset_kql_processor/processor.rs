@@ -131,24 +131,29 @@ impl RecordsetKqlProcessor {
         let (ctx, payload) = data.into_parts();
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
-        // Process based on signal type (timed)
-        let result = self
-            .compute_duration
-            .timed(effect_handler.node_interests(), || match otlp_bytes {
-                OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                    otap_df_telemetry::otel_debug!(
-                        "recordset_kql_processor.processing_logs",
-                        input_items
-                    );
-                    self.process_logs(bytes, signal)
-                }
-                OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
-                    message: "Metrics processing not yet implemented in KQL bridge".to_string(),
-                }),
-                OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
-                    message: "Traces processing not yet implemented in KQL bridge".to_string(),
-                }),
-            });
+        // Process based on signal type (timed).
+        // Destructure to get disjoint borrows: `compute_duration` for
+        // timing and `pipeline` for the closure's `process_logs` call.
+        let Self {
+            compute_duration,
+            pipeline,
+            ..
+        } = self;
+        let result = compute_duration.timed(effect_handler.node_interests(), || match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                otap_df_telemetry::otel_debug!(
+                    "recordset_kql_processor.processing_logs",
+                    input_items
+                );
+                Self::process_logs_on(pipeline, bytes, signal)
+            }
+            OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
+                message: "Metrics processing not yet implemented in KQL bridge".to_string(),
+            }),
+            OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
+                message: "Traces processing not yet implemented in KQL bridge".to_string(),
+            }),
+        });
 
         match result {
             Ok(processed_bytes) => {
@@ -188,13 +193,13 @@ impl RecordsetKqlProcessor {
         }
     }
 
-    fn process_logs(
-        &mut self,
+    fn process_logs_on(
+        pipeline: &mut BridgePipeline,
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
         let response = process_protobuf_otlp_export_logs_service_request_using_pipeline(
-            &self.pipeline,
+            pipeline,
             RecordSetEngineDiagnosticLevel::Warn,
             &bytes,
         )
