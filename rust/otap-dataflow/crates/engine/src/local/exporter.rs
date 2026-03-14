@@ -88,7 +88,7 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<TerminalState, Error>;
+    ) -> Result<(TerminalState, MessageChannel<PData>), Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.

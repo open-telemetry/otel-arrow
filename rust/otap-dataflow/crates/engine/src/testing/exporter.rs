@@ -190,7 +190,7 @@ pub struct ValidationPhase<PData> {
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 }
 
-impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
+impl<PData: Clone + Debug + crate::Unwindable + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
@@ -285,7 +285,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+impl<PData: Clone + Debug + crate::Unwindable + 'static> Default for TestRuntime<PData> {
     fn default() -> Self {
         Self::new()
     }

@@ -36,6 +36,16 @@ impl crate::ReceivedAtNode for TestMsg {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
 }
 
+impl crate::Unwindable for TestMsg {
+    fn has_frames(&self) -> bool {
+        false
+    }
+    fn pop_frame(&mut self) -> Option<crate::control::Frame> {
+        None
+    }
+    fn drop_payload(&mut self) {}
+}
+
 impl TestMsg {
     /// Creates a new test message with the given content.
     pub fn new<S: Into<String>>(content: S) -> Self {

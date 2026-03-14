@@ -80,7 +80,7 @@ impl Exporter<OtapPdata> for ErrorExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
@@ -95,7 +95,7 @@ impl Exporter<OtapPdata> for ErrorExporter {
             }
         }
 
-        Ok(TerminalState::default())
+        Ok((TerminalState::default(), msg_chan))
     }
 }
 

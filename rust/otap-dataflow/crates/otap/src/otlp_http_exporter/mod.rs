@@ -204,7 +204,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, EngineError> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), EngineError> {
         let logs_endpoint = Rc::new(
             self.config
                 .logs_endpoint
@@ -314,7 +314,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     }
                     _ = telemetry_timer_cancel.cancel().await;
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                    return Ok((TerminalState::new(deadline, [self.pdata_metrics]), msg_chan));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,

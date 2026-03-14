@@ -151,7 +151,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, EngineError> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), EngineError> {
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
@@ -164,7 +164,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    return Ok(TerminalState::new(deadline, [self.metrics]));
+                    return Ok((TerminalState::new(deadline, [self.metrics]), msg_chan));
                 }
                 Message::PData(pdata) => {
                     let time_elapsed = time.elapsed();

@@ -153,7 +153,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store =
             crate::object_store::from_storage_type(&self.config.storage).map_err(|e| {
@@ -264,7 +264,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             }),
-                        _ = flush_all => Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics)),
+                        _ = flush_all => Ok((Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics), msg_chan)),
                     };
                 }
 

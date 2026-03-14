@@ -177,6 +177,16 @@ impl<T> Receiver<T> {
             Receiver::Shared(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` if the sender side has been closed.
+    /// There may still be buffered items to drain.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Receiver::Local(receiver) => receiver.is_closed(),
+            Receiver::Shared(receiver) => receiver.is_closed(),
+        }
+    }
 }
 
 /// A channel for receiving control and pdata messages.
@@ -199,6 +209,10 @@ pub struct MessageChannel<PData> {
     node_id: usize,
     /// Node interests for entry-frame stamping via `ReceivedAtNode`.
     interests: Interests,
+    /// Buffered pdata drained from the channel during shutdown.
+    /// Pdata that was left unprocessed in the channel when shutdown occurred.
+    /// Retrieved via `take_orphaned_pdata()` and auto-nacked by the engine.
+    orphaned_pdata: Vec<PData>,
 }
 
 impl<PData> MessageChannel<PData> {
@@ -217,7 +231,18 @@ impl<PData> MessageChannel<PData> {
             pending_shutdown: None,
             node_id,
             interests,
+            orphaned_pdata: Vec::new(),
         }
+    }
+    /// Take any pdata that was left unprocessed in the channel at shutdown time.
+    ///
+    /// During shutdown, `recv_when` drains remaining pdata from the channel
+    /// into an internal buffer before closing it. The engine auto-nacks
+    /// these back to upstream so they know the data was not exported.
+    ///
+    /// Returns an empty `Vec` if all data was processed before shutdown.
+    pub fn take_orphaned_pdata(&mut self) -> Vec<PData> {
+        std::mem::take(&mut self.orphaned_pdata)
     }
 }
 
@@ -268,29 +293,26 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                 return Err(RecvError::Closed);
             }
 
-            // When pdata is guarded (!accept_pdata), detect a closed pdata
-            // channel eagerly so we don't block forever on control-only select.
-            // We only probe when the buffer is empty — try_recv on an empty
-            // channel distinguishes Closed from Empty without consuming data.
-            if !accept_pdata
-                && self
-                    .pdata_rx
-                    .as_ref()
-                    .expect("pdata_rx must exist")
-                    .is_empty()
-            {
-                if let Err(RecvError::Closed) = self
-                    .pdata_rx
-                    .as_mut()
-                    .expect("pdata_rx must exist")
-                    .try_recv()
-                {
-                    self.shutdown();
-                    return Ok(Message::Control(NodeControlMsg::Shutdown {
-                        deadline: Instant::now().add(Duration::from_secs(1)),
-                        reason: "pdata channel closed".to_owned(),
-                    }));
-                }
+            // When pdata is guarded (!accept_pdata) and we are NOT already in
+            // draining mode, detect a closed-and-empty pdata channel eagerly so
+            // we don't block forever on control-only select.
+            // We use is_closed() - a non-consuming check - to avoid a TOCTOU
+            // race where try_recv() could dequeue (and lose) a message that
+            // arrived between an is_empty() guard and the try_recv() call.
+            // We also require is_empty() so we don't trigger shutdown while
+            // there is still buffered data waiting to be drained.
+            // We skip this when shutting_down_deadline is set because the
+            // draining-mode block below already handles channel closure and
+            // preserves the caller-provided deadline and reason.
+            if !accept_pdata && self.shutting_down_deadline.is_none() && {
+                let pdata = self.pdata_rx.as_ref().expect("pdata_rx must exist");
+                pdata.is_closed() && pdata.is_empty()
+            } {
+                self.shutdown();
+                return Ok(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    reason: "pdata channel closed".to_owned(),
+                }));
             }
 
             // Draining mode: Shutdown pending
@@ -407,6 +429,13 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     fn shutdown(&mut self) {
         self.shutting_down_deadline = None;
         drop(self.control_rx.take().expect("control_rx must exist"));
-        drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+        // Drain any unprocessed pdata before dropping the receiver.
+        // The engine auto-nacks these via take_orphaned_pdata().
+        if let Some(mut pdata_rx) = self.pdata_rx.take() {
+            while let Ok(pdata) = pdata_rx.try_recv() {
+                self.orphaned_pdata.push(pdata);
+            }
+            drop(pdata_rx);
+        }
     }
 }

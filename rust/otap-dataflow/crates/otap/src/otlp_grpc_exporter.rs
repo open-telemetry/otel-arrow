@@ -119,7 +119,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         otel_info!(
             "otlp.exporter.grpc.start",
             grpc_endpoint = self.config.grpc.grpc_endpoint.as_str()
@@ -243,7 +243,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         }
                     }
                     _ = timer_cancel_handle.cancel().await;
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                    return Ok((TerminalState::new(deadline, [self.pdata_metrics]), msg_chan));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,

@@ -128,7 +128,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
 
@@ -157,7 +157,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     _ = timer_cancel_handle.cancel().await;
-                    return Ok(self.terminal_state(deadline));
+                    return Ok((self.terminal_state(deadline), msg_chan));
                 }
                 Message::PData(mut pdata) => {
                     // Capture signal type before moving pdata into try_from

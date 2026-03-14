@@ -90,7 +90,7 @@ impl Exporter<OtapPdata> for CountingExporter {
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
@@ -107,6 +107,6 @@ impl Exporter<OtapPdata> for CountingExporter {
                 _ => {}
             }
         }
-        Ok(TerminalState::default())
+        Ok((TerminalState::default(), msg_chan))
     }
 }

@@ -613,7 +613,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<(TerminalState, MessageChannel<OtapPdata>), Error> {
         otel_info!(
             "geneva_exporter.start",
             endpoint = self.config.endpoint,
@@ -638,9 +638,12 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     );
 
                     _ = timer_cancel_handle.cancel().await;
-                    return Ok(TerminalState::new(
-                        deadline,
-                        [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
+                    return Ok((
+                        TerminalState::new(
+                            deadline,
+                            [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
+                        ),
+                        msg_chan,
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
