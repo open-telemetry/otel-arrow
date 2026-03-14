@@ -23,7 +23,7 @@ use otap_df_telemetry_macros::metric_set;
 use crate::context::PipelineContext;
 
 /// Metric set containing a single compute-duration instrument.
-#[metric_set(name = "processor")]
+#[metric_set(name = "processor.compute")]
 #[derive(Debug, Default, Clone)]
 pub struct ComputeDurationMetrics {
     /// Wall-clock duration of the processor compute section, in nanoseconds.
