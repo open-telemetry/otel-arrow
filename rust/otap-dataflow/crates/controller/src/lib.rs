@@ -64,7 +64,7 @@ use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
+    PipelineAdminSender, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
@@ -1256,21 +1256,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
+        // Convert the concrete senders to trait objects once, shared by both the
+        // admin HTTP server and the OS-signal handler for graceful shutdown.
+        let admin_senders: Vec<Arc<dyn PipelineAdminSender>> = ctrl_msg_senders
+            .into_iter()
+            .map(|sender| Arc::new(sender) as Arc<dyn PipelineAdminSender>)
+            .collect();
+        let signal_senders = admin_senders.clone();
+
         // Start the admin HTTP server
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
             move |cancellation_token| {
-                // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
-                    ctrl_msg_senders
-                        .into_iter()
-                        .map(|sender| {
-                            Arc::new(sender)
-                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                        })
-                        .collect();
-
                 otap_df_admin::run(
                     admin_settings,
                     obs_state_handle,
@@ -1280,6 +1278,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 )
             },
         )?;
+
+        // Start the OS-signal listener on a dedicated background thread so it
+        // runs concurrently with the pipeline join loop below. When the first
+        // SIGINT/SIGTERM arrives it sends shutdown messages to all pipelines,
+        // which causes them to drain and their threads to exit, unblocking the
+        // join loop.
+        if run_mode == RunMode::ParkMainThread {
+            Self::spawn_shutdown_signal_listener(signal_senders);
+        }
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
@@ -1325,11 +1332,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             return Err(err);
         }
 
-        // In standard engine mode we keep the main thread parked after startup.
-        if run_mode == RunMode::ParkMainThread {
-            thread::park();
-        }
-
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         engine_metrics_handle.shutdown_and_join()?;
         admin_server_handle.shutdown_and_join()?;
@@ -1341,6 +1343,118 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         telemetry_system.shutdown_otel()?;
 
         Ok(())
+    }
+
+    /// Spawns a dedicated background thread that listens for OS termination
+    /// signals (SIGINT / SIGTERM on Unix, Ctrl-C on all platforms) and sends
+    /// graceful shutdown messages to every pipeline.
+    ///
+    /// Follows the same double-signal convention used by the OpenTelemetry
+    /// Collector (Go):
+    /// - **First signal** → initiates graceful shutdown (drain pipelines).
+    /// - **Second signal** → forces immediate process exit (`std::process::exit(1)`).
+    ///
+    /// This allows Kubernetes (or any process manager that sends SIGTERM) to
+    /// trigger an orderly drain of in-flight telemetry data before the pod is
+    /// killed. If the graceful drain hangs, a second signal provides an escape
+    /// hatch.
+    ///
+    /// The spawned thread is intentionally detached — it will be cleaned up
+    /// when the process exits normally or is force-killed by the second signal.
+    fn spawn_shutdown_signal_listener(senders: Vec<Arc<dyn PipelineAdminSender>>) {
+        // The JoinHandle is intentionally dropped — the thread is detached and
+        // will be cleaned up when the process exits.
+        drop(
+            thread::Builder::new()
+                .name("signal-handler".into())
+                .spawn(move || {
+                    // Build a lightweight single-threaded runtime for signal handling.
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to create signal-handler runtime");
+
+                    rt.block_on(async {
+                        // ── First signal: graceful shutdown ─────────────────
+                        let signal_name = Self::recv_termination_signal().await;
+
+                        otel_info!(
+                            "shutdown.signal_received",
+                            signal = signal_name,
+                            message = "OS termination signal received, initiating graceful \
+                                   shutdown. Send the signal again to force immediate exit."
+                        );
+
+                        // Give pipelines a generous deadline to drain (60 s by default —
+                        // matches the default Kubernetes terminationGracePeriodSeconds).
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(60);
+
+                        let mut errors = Vec::new();
+                        for sender in &senders {
+                            if let Err(e) = sender.try_send_shutdown(
+                                deadline,
+                                format!("Shutdown requested via OS signal ({signal_name})."),
+                            ) {
+                                errors.push(e.to_string());
+                            }
+                        }
+
+                        if errors.is_empty() {
+                            otel_info!(
+                                "shutdown.signal_dispatched",
+                                pipeline_count = senders.len(),
+                                message = "Shutdown message sent to all pipelines"
+                            );
+                        } else {
+                            otel_error!(
+                                "shutdown.signal_dispatch_failed",
+                                error_count = errors.len(),
+                                message = "Some pipelines could not be notified of shutdown"
+                            );
+                        }
+
+                        // ── Second signal: force exit ───────────────────────
+                        let signal_name = Self::recv_termination_signal().await;
+                        otel_error!(
+                            "shutdown.force_exit",
+                            signal = signal_name,
+                            message = "Second termination signal received, forcing immediate exit"
+                        );
+                        std::process::exit(1);
+                    });
+                })
+                .expect("failed to spawn signal-handler thread"),
+        );
+    }
+
+    /// Awaits the first OS termination signal and returns its name.
+    ///
+    /// On Unix this listens for both SIGINT and SIGTERM.
+    /// On other platforms only Ctrl-C (SIGINT equivalent) is supported.
+    async fn recv_termination_signal() -> &'static str {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => "SIGTERM",
+                _ = sigint.recv() => "SIGINT",
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
+        }
     }
 
     /// Selects which CPU cores to use based on the given allocation.
