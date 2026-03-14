@@ -13,12 +13,11 @@ use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 use super::metrics::AzureMonitorExporterMetricsRc;
 
-/// Minimum delay between token refresh retry attempts in seconds.
-const MIN_RETRY_DELAY_SECS: f64 = 5.0;
-/// Maximum delay between token refresh retry attempts in seconds.
-const MAX_RETRY_DELAY_SECS: f64 = 30.0;
-/// Maximum jitter percentage (±10%) to add to retry delays.
-const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
+/// Brief pause between outer retry loops.
+/// The Azure SDK already performs exponential backoff internally
+/// (e.g., 6 retries over ~72s for IMDS), so this is just a short
+/// breather before the next SDK retry cycle.
+const RETRY_PAUSE: tokio::time::Duration = tokio::time::Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
@@ -132,33 +131,22 @@ impl Auth {
                 Err(e) => {
                     let error_msg = e.to_string();
                     let first_line = error_msg.lines().next().unwrap_or(&error_msg);
-                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %first_line);
+
+                    otel_warn!(
+                        "azure_monitor_exporter.auth.get_token_failed",
+                        message = "Token acquisition failed. Will keep retrying. The error may mention retries being exhausted; that refers to an internal retry layer, not this outer loop.",
+                        attempt = attempt,
+                        error = %first_line
+                    );
                     otel_debug!("azure_monitor_exporter.auth.get_token_failed.details", attempt = attempt, error = %e);
                     self.metrics.borrow_mut().add_auth_failure();
+
+                    // The Azure SDK already retries internally with exponential
+                    // backoff (e.g., 6 retries over ~72s for IMDS). This short
+                    // pause just prevents a tight spin before the next SDK cycle.
+                    tokio::time::sleep(RETRY_PAUSE).await;
                 }
             }
-
-            // Calculate exponential backoff: 5s, 10s, 20s, 30s (capped)
-            let base_delay_secs = MIN_RETRY_DELAY_SECS * 2.0_f64.powi(attempt - 1);
-            let capped_delay_secs = base_delay_secs.min(MAX_RETRY_DELAY_SECS);
-
-            // Add jitter: random value between -10% and +10% of the delay
-            let jitter_range = capped_delay_secs * MAX_RETRY_JITTER_RATIO;
-            let jitter = if jitter_range > 0.0 {
-                let random_factor = rand::random::<f64>() * 2.0 - 1.0;
-                random_factor * jitter_range
-            } else {
-                0.0
-            };
-
-            let delay_secs = (capped_delay_secs + jitter).max(1.0);
-            let delay = tokio::time::Duration::from_secs_f64(delay_secs);
-
-            otel_warn!(
-                "azure_monitor_exporter.auth.retry_scheduled",
-                delay_secs = %delay_secs
-            );
-            tokio::time::sleep(delay).await;
         }
     }
 

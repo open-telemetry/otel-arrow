@@ -14,7 +14,7 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
-use crate::pdata::OtapPdata;
+use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -319,7 +319,7 @@ impl RetryProcessorMetrics {
 
 /// OTAP RetryProcessor
 #[allow(unsafe_code)]
-#[distributed_slice(crate::OTAP_PROCESSOR_FACTORIES)]
+#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
@@ -679,8 +679,6 @@ impl RetryProcessor {
 #[cfg(test)]
 mod test {
     use super::{RETRY_PROCESSOR_URN, RetryConfig};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
@@ -689,6 +687,8 @@ mod test {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::{Interests, message::Message};
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
@@ -850,7 +850,7 @@ mod test {
         let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
         node_config.config = config;
 
-        let proc = crate::retry_processor::create_retry_processor(
+        let proc = crate::processors::retry_processor::create_retry_processor(
             pipeline_ctx,
             node,
             Arc::new(node_config),
