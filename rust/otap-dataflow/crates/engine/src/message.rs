@@ -208,7 +208,8 @@ pub struct MessageChannel<PData> {
     /// Node ID for entry-frame stamping via `ReceivedAtNode`.
     node_id: usize,
     /// Node interests for entry-frame stamping via `ReceivedAtNode`.
-    interests: Interests,    /// Buffered pdata drained from the channel during shutdown.
+    interests: Interests,
+    /// Buffered pdata drained from the channel during shutdown.
     /// Pdata that was left unprocessed in the channel when shutdown occurred.
     /// Retrieved via `take_orphaned_pdata()` and auto-nacked by the engine.
     orphaned_pdata: Vec<PData>,

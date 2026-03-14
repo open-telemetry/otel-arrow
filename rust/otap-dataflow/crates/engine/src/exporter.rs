@@ -12,7 +12,9 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{
+    Controllable, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgSender,
+};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
@@ -1265,7 +1267,10 @@ mod tests {
 
         // Shutdown returned
         let msg = channel.recv_when(true).await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         // All data was drained normally, so no buffered pdata
         let buffered = channel.take_orphaned_pdata();
@@ -1296,7 +1301,10 @@ mod tests {
         // recv_when(false) — the exporter is not accepting pdata (auth outage)
         // Immediate deadline → Shutdown returned immediately
         let msg = channel.recv_when(false).await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         // The channel's shutdown() should have drained buffered pdata
         let buffered = channel.take_orphaned_pdata();
@@ -1306,7 +1314,10 @@ mod tests {
 
         // Second call returns empty
         let buffered = channel.take_orphaned_pdata();
-        assert!(buffered.is_empty(), "take_orphaned_pdata should drain on first call");
+        assert!(
+            buffered.is_empty(),
+            "take_orphaned_pdata should drain on first call"
+        );
     }
 
     /// Validates that take_orphaned_pdata() returns empty when the channel
@@ -1331,7 +1342,10 @@ mod tests {
             .unwrap();
 
         let msg = channel.recv_when(true).await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         // Nothing was left unread
         let buffered = channel.take_orphaned_pdata();
@@ -1355,7 +1369,10 @@ mod tests {
             .unwrap();
 
         let msg = channel.recv().await.unwrap();
-        assert!(matches!(msg, Message::Control(NodeControlMsg::Shutdown { .. })));
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
 
         let buffered = channel.take_orphaned_pdata();
         assert_eq!(buffered.len(), 1);

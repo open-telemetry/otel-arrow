@@ -638,10 +638,13 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     );
 
                     _ = timer_cancel_handle.cancel().await;
-                    return Ok((TerminalState::new(
-                        deadline,
-                        [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
-                    ), msg_chan));
+                    return Ok((
+                        TerminalState::new(
+                            deadline,
+                            [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
+                        ),
+                        msg_chan,
+                    ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,

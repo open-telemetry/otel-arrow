@@ -80,8 +80,10 @@ pub struct MessageChannel<PData> {
     /// Node ID for entry-frame stamping via `ReceivedAtNode`.
     node_id: usize,
     /// Node interests for entry-frame stamping via `ReceivedAtNode`.
-    interests: Interests,    /// Pdata that was left unprocessed in the channel when shutdown occurred.
-    orphaned_pdata: Vec<PData>,}
+    interests: Interests,
+    /// Pdata that was left unprocessed in the channel when shutdown occurred.
+    orphaned_pdata: Vec<PData>,
+}
 
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
