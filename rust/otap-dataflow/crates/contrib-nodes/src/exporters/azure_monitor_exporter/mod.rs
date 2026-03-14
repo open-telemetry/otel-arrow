@@ -20,13 +20,15 @@ use otap_df_otap::pdata::OtapPdata;
 
 mod auth;
 mod client;
-mod config;
+/// Configuration types for the Azure Monitor Exporter.
+pub mod config;
 mod error;
 mod exporter;
 mod gzip_batcher;
 mod heartbeat;
 mod in_flight_exports;
-mod metrics;
+/// Metrics types for the Azure Monitor Exporter.
+pub mod metrics;
 mod state;
 mod transformer;
 
