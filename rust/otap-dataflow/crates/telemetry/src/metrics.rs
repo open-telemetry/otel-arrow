@@ -232,22 +232,6 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
     }
 }
 
-impl<M: MetricSetHandler + Default> Default for MetricSet<M> {
-    /// Creates an unregistered metric set with default values.
-    ///
-    /// The resulting instance is not connected to any telemetry
-    /// registry.  Calling `report` on it will be a no-op because
-    /// `needs_flush` will return `false` until values are recorded
-    /// *and* there is a valid registry key.
-    fn default() -> Self {
-        Self {
-            key: MetricSetKey::default(),
-            entity_key: EntityKey::default(),
-            metrics: M::default(),
-        }
-    }
-}
-
 /// Immutable snapshot of a metric set's current values.
 #[derive(Debug)]
 pub struct MetricSetSnapshot {

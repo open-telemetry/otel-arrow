@@ -139,9 +139,9 @@ pub struct AttributesProcessor {
     has_resource_domain: bool,
     has_scope_domain: bool,
     has_signal_domain: bool,
-    // Metrics handle (set at runtime in factory; None when parsed-only)
-    metrics: Option<MetricSet<AttributesProcessorMetrics>>,
-    // Opt-in compute-duration timing (default no-op; replaced in factory)
+    // Metrics handle
+    metrics: MetricSet<AttributesProcessorMetrics>,
+    // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
 }
 
@@ -151,16 +151,22 @@ impl AttributesProcessor {
     /// Transforms the Go collector-style configuration into the operations
     /// supported by the underlying Arrow attribute transform API.
     #[must_use = "AttributesProcessor creation may fail and return a ConfigError"]
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &Value,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse AttributesProcessor configuration: {e}"),
             })?;
-        Self::new(cfg)
+        Self::new(pipeline_ctx, cfg)
     }
 
     /// Creates a new AttributesProcessor with the given parsed configuration.
-    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    fn new(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+    ) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
@@ -236,8 +242,8 @@ impl AttributesProcessor {
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
-            metrics: None,
-            compute_duration: ComputeDuration::default(),
+            metrics: pipeline_ctx.register_metrics::<AttributesProcessorMetrics>(),
+            compute_duration: ComputeDuration::new(&pipeline_ctx),
         })
     }
 
@@ -339,9 +345,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    if let Some(metrics) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(metrics);
-                    }
+                    let _ = metrics_reporter.report(&mut self.metrics);
                     self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
@@ -363,16 +367,14 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
                 // Update domain counters (count once per message when domains are enabled)
-                if let Some(m) = self.metrics.as_mut() {
-                    if self.has_resource_domain {
-                        m.domains_resource.inc();
-                    }
-                    if self.has_scope_domain {
-                        m.domains_scope.inc();
-                    }
-                    if self.has_signal_domain {
-                        m.domains_signal.inc();
-                    }
+                if self.has_resource_domain {
+                    self.metrics.domains_resource.inc();
+                }
+                if self.has_scope_domain {
+                    self.metrics.domains_scope.inc();
+                }
+                if self.has_signal_domain {
+                    self.metrics.domains_signal.inc();
                 }
                 // Apply transform across selected domains and collect exact stats.
                 let result = self
@@ -382,25 +384,21 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     });
                 match result {
                     Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
-                        if let Some(m) = self.metrics.as_mut() {
-                            if deleted_total > 0 {
-                                m.deleted_entries.add(deleted_total);
-                            }
-                            if renamed_total > 0 {
-                                m.renamed_entries.add(renamed_total);
-                            }
-                            if inserted_total > 0 {
-                                m.inserted_entries.add(inserted_total);
-                            }
-                            if upserted_total > 0 {
-                                m.upserted_entries.add(upserted_total);
-                            }
+                        if deleted_total > 0 {
+                            self.metrics.deleted_entries.add(deleted_total);
+                        }
+                        if renamed_total > 0 {
+                            self.metrics.renamed_entries.add(renamed_total);
+                        }
+                        if inserted_total > 0 {
+                            self.metrics.inserted_entries.add(inserted_total);
+                        }
+                        if upserted_total > 0 {
+                            self.metrics.upserted_entries.add(upserted_total);
                         }
                     }
                     Err(e) => {
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.transform_failed.inc();
-                        }
+                        self.metrics.transform_failed.inc();
                         return Err(e);
                     }
                 }
@@ -468,9 +466,7 @@ pub fn create_attributes_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let mut proc = AttributesProcessor::from_config(&node_config.config)?;
-    proc.metrics = Some(pipeline_ctx.register_metrics::<AttributesProcessorMetrics>());
-    proc.compute_duration = ComputeDuration::new(&pipeline_ctx);
+    let proc = AttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -633,7 +629,11 @@ mod tests {
                 {"action": "delete", "key": "x"}
             ]
         });
-        let parsed = AttributesProcessor::from_config(&cfg).expect("config parse");
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let parsed = AttributesProcessor::from_config(pipeline_ctx, &cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
         // default apply_to should include Signal
