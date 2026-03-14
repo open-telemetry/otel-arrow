@@ -1,0 +1,174 @@
+# Windows-specific test steps for 100kLRPS load generator tests.
+# Differences from the Linux template:
+#   - Volume mounts use directories (Windows containers cannot bind-mount files)
+#   - Config paths use C:/dataflow/config/ inside the container
+#   - Ready checks have higher retry counts for Windows container startup
+steps:
+  - name: Deploy Backend Engine
+    action:
+      component_action:
+        phase: deploy
+        target: backend-service
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/backend/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/backend/config.rendered.yaml
+              variables:
+                backend_receiver_type: '{{backend_receiver_type}}'
+        post:
+          - ready_check_http:
+              url: http://localhost:8087/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+              max_retries: 30
+              retry_interval: 2
+  - name: Deploy Dataflow Engine
+    action:
+      component_action:
+        phase: deploy
+        target: df-engine
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{engine_config_template}}'
+              output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
+              variables:
+                backend_hostname: backend-service
+        post:
+          - ready_check_http:
+              url: http://localhost:8086/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+              max_retries: 30
+              retry_interval: 2
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              variables:
+                max_batch_size: {{max_batch_size | default(1000)}}
+                signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
+                metric_weight: {{metric_weight | default(0)}}
+                trace_weight: {{trace_weight | default(0)}}
+                log_weight: {{log_weight | default(100)}}
+                engine_hostname: df-engine
+                loadgen_exporter_type: '{{loadgen_exporter_type}}'
+        post:
+          - ready_check_http:
+              url: http://localhost:8085/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+              max_retries: 30
+              retry_interval: 2
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  - name: Wait for data
+    action:
+      wait:
+        delay_seconds: {{wait_for_data_interval | default(5)}}
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: {{observation_interval | default(20)}}
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+    action:
+      no_op: {}
+  - name: Stop Engine
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8086/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+    action:
+      no_op: {}
+  - name: Stop Backend
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8087/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+    action:
+      no_op: {}
+  - name: Wait For Metrics Update
+    action:
+      wait:
+        delay_seconds: 1
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - df-engine
+          - backend-service
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - print_container_logs: {}
+          - sql_report:
+              name: Integration Report - Logs (Windows)
+              report_config_file: {{report_config | default('./test_suites/integration/configs/integration_report_logs.yaml')}}
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: results/{{result_dir | default('windows_integration')}}/gh-actions-benchmark

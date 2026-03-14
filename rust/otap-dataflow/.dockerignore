@@ -1,4 +1,5 @@
 target
+!target/release/df_engine.exe
 Cargo.lock
 docs
 configs

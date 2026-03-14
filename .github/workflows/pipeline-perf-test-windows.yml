@@ -1,0 +1,138 @@
+name: Pipeline Performance Tests - Windows
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pipeline-perf-test-windows.yml'
+      - 'rust/otap-dataflow/**'
+      - 'tools/pipeline_perf_test/**'
+  workflow_dispatch:
+
+jobs:
+  pipeline-perf-test-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+
+      - name: Free disk space
+        shell: pwsh
+        run: |
+          Write-Host "disk usage before"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
+          if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
+          if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
+          if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
+          Write-Host "disk usage after"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
+
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start Docker service
+        shell: pwsh
+        run: |
+          Start-Service docker
+          docker info
+
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - name: Build df_engine.exe
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: cargo build --release --features mimalloc
+        env:
+          RUSTFLAGS: "-C target-cpu=native -C target-feature=+crt-static"
+
+      - name: Build Windows Docker image
+        shell: pwsh
+        working-directory: ./rust/otap-dataflow
+        run: docker build -f Dockerfile.windows -t df_engine_win .
+
+      - name: Verify Docker image
+        shell: pwsh
+        run: |
+          docker images df_engine_win
+          docker run --rm df_engine_win --version
+
+      - name: Install Python dependencies
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          # Use plain requirements.txt (not .lock.txt) on Windows because the
+          # lock files contain --hash directives that trigger pip hash-checking
+          # mode, which rejects the Windows-only transitive dep pywin32 (not in
+          # the Linux-generated lock file).
+          python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
+          python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+
+      - name: Run idle state test (1 core)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/idle-state-docker.yaml
+
+      - name: Run idle state test (2 cores)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/idle-state-2cores-docker.yaml
+
+      - name: Run idle state test (4 cores)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/idle-state-4cores-docker.yaml
+
+      - name: Analyze memory scaling
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python .github/workflows/scripts/analyze-idle-state-scaling.py `
+            tools/pipeline_perf_test/results `
+            tools/pipeline_perf_test/results/windows-idle-memory-scaling.json `
+            | Tee-Object -Variable scalingReport
+          # Add to job summary
+          echo "### Windows Idle State Memory Scaling Analysis" >> $env:GITHUB_STEP_SUMMARY
+          echo '```' >> $env:GITHUB_STEP_SUMMARY
+          $scalingReport >> $env:GITHUB_STEP_SUMMARY
+          echo '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Run 100kLRPS OTLP-OTLP test
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/100klrps-docker.yaml
+
+      - name: Upload idle state results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-idle-state-results
+          path: |
+            tools/pipeline_perf_test/results/windows_idle_state_*/gh-actions-benchmark/*.json
+            tools/pipeline_perf_test/results/windows-idle-memory-scaling.json
+
+      - name: Upload 100kLRPS results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-100klrps-results
+          path: tools/pipeline_perf_test/results/windows_100klrps/gh-actions-benchmark/*.json

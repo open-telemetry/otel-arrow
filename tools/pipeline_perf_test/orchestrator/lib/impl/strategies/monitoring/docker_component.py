@@ -335,20 +335,32 @@ def monitor(
                     cpu_stats["cpu_usage"]["total_usage"]
                     - precpu_stats["cpu_usage"]["total_usage"]
                 )
-                system_delta = (
-                    cpu_stats["system_cpu_usage"] - precpu_stats["system_cpu_usage"]
-                )
 
                 cpu_usage = 0.0
-                if system_delta > 0.0 and cpu_delta > 0.0:
-                    num_cpus = (
-                        len(cpu_stats["cpu_usage"].get("percpu_usage", []))
-                        or cpu_stats["online_cpus"]
+                # Windows containers do not report system_cpu_usage.
+                # Use a time-based approximation instead.
+                if "system_cpu_usage" in cpu_stats:
+                    system_delta = (
+                        cpu_stats["system_cpu_usage"]
+                        - precpu_stats["system_cpu_usage"]
                     )
-                    cpu_usage = (cpu_delta / system_delta) * num_cpus
+                    if system_delta > 0.0 and cpu_delta > 0.0:
+                        num_cpus = (
+                            len(cpu_stats["cpu_usage"].get("percpu_usage", []))
+                            or cpu_stats.get("online_cpus", 1)
+                        )
+                        cpu_usage = (cpu_delta / system_delta) * num_cpus
+                else:
+                    # Windows: cpu_delta is in 100-nanosecond units.
+                    # Convert to number-of-cores over the poll interval.
+                    num_cpus = cpu_stats.get("online_cpus", 1)
+                    if cpu_delta > 0 and interval > 0:
+                        # 10_000_000 = 100-ns units per second
+                        cpu_usage = cpu_delta / (interval * 10_000_000)
 
                 # Memory usage in Bytes
-                mem_usage = stat_data["memory_stats"]["usage"]
+                mem_stats = stat_data.get("memory_stats", {})
+                mem_usage = mem_stats.get("usage", mem_stats.get("privateworkingset", 0))
                 cpu_usage_gauge.set(cpu_usage, labels)
                 memory_usage_gauge.set(mem_usage, labels)
 
