@@ -451,6 +451,10 @@ struct CandidateRolloutPlan {
     resolved_pipeline: ResolvedPipelineConfig,
     current_record: Option<LogicalPipelineRecord>,
     current_assigned_cores: Vec<usize>,
+    target_assigned_cores: Vec<usize>,
+    common_assigned_cores: Vec<usize>,
+    added_assigned_cores: Vec<usize>,
+    removed_assigned_cores: Vec<usize>,
     target_generation: u64,
     rollout: RolloutRecord,
     step_timeout_secs: u64,
@@ -841,15 +845,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         } else {
             Vec::new()
         };
-        let candidate_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        let target_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
+        let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
+        let common_assigned_cores: Vec<_> = target_assigned_cores
+            .iter()
+            .copied()
+            .filter(|core_id| current_core_set.contains(core_id))
+            .collect();
+        let added_assigned_cores: Vec<_> = target_assigned_cores
+            .iter()
+            .copied()
+            .filter(|core_id| !current_core_set.contains(core_id))
+            .collect();
+        let removed_assigned_cores: Vec<_> = current_assigned_cores
+            .iter()
+            .copied()
+            .filter(|core_id| !target_core_set.contains(core_id))
+            .collect();
         let action = if current_record.is_some() {
-            if current_assigned_cores != candidate_assigned_cores {
-                return Err(ControlPlaneError::InvalidRequest {
-                    message:
-                        "request changes the effective core allocation for an existing pipeline"
-                            .to_owned(),
-                });
-            }
             RolloutAction::Replace
         } else {
             RolloutAction::Create
@@ -876,13 +890,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             (rollout_id, target_generation)
         };
 
-        let cores = candidate_assigned_cores
-            .iter()
+        let mut rollout_core_ids = target_assigned_cores.clone();
+        rollout_core_ids.extend(removed_assigned_cores.iter().copied());
+        let cores = rollout_core_ids
+            .into_iter()
             .map(|core_id| RolloutCoreProgress {
-                core_id: *core_id,
-                previous_generation: current_record
-                    .as_ref()
-                    .map(|record| record.active_generation),
+                core_id,
+                previous_generation: if current_core_set.contains(&core_id) {
+                    current_record
+                        .as_ref()
+                        .map(|record| record.active_generation)
+                } else {
+                    None
+                },
                 target_generation,
                 state: "pending".to_owned(),
                 updated_at: timestamp_now(),
@@ -908,7 +928,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             action,
             resolved_pipeline,
             current_record,
-            current_assigned_cores: candidate_assigned_cores,
+            current_assigned_cores,
+            target_assigned_cores,
+            common_assigned_cores,
+            added_assigned_cores,
+            removed_assigned_cores,
             target_generation,
             rollout,
             step_timeout_secs: request.step_timeout_secs.max(1),
@@ -963,6 +987,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .set_pipeline_rollout_summary(pipeline_key.clone(), summary);
     }
 
+    fn update_rollout_core_state(
+        &self,
+        pipeline_key: &PipelineKey,
+        rollout_id: &str,
+        core_id: usize,
+        state: &str,
+        detail: Option<String>,
+    ) {
+        self.update_rollout(pipeline_key, rollout_id, |rollout| {
+            if let Some(core) = rollout
+                .cores
+                .iter_mut()
+                .find(|core| core.core_id == core_id)
+            {
+                core.state = state.to_owned();
+                core.updated_at = timestamp_now();
+                core.detail = detail;
+            }
+        });
+    }
+
     fn finish_rollout(&self, pipeline_key: &PipelineKey, rollout_id: &str) {
         let mut state = self
             .state
@@ -983,6 +1028,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.rollouts.get(rollout_id).map(RolloutRecord::status)
+    }
+
+    fn clear_pipeline_serving_generations<I>(&self, pipeline_key: &PipelineKey, core_ids: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        for core_id in core_ids {
+            self.observed_state_store
+                .clear_pipeline_serving_generation(pipeline_key.clone(), core_id);
+        }
     }
 
     fn prepare_shutdown_plan(
@@ -1384,17 +1439,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     ) -> Result<(), RolloutExecutionError> {
         let mut launched = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
-        for core_id in &plan.current_assigned_cores {
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "starting".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+        for core_id in &plan.target_assigned_cores {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "starting",
+                None,
+            );
             let deployed_key = self
                 .launch_regular_pipeline_instance(
                     &plan.resolved_pipeline,
@@ -1411,16 +1463,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     let _ = self.shutdown_instances(&launched, plan.drain_timeout_secs);
                     RolloutExecutionError::Failed(reason)
                 })?;
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == deployed_key.core_id)
-                {
-                    core.state = "ready".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                deployed_key.core_id,
+                "ready",
+                None,
+            );
         }
 
         {
@@ -1464,18 +1513,18 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             );
         }
 
-        let mut switched_cores = Vec::new();
-        for core_id in &plan.current_assigned_cores {
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "starting".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+        let mut activated_added_cores = Vec::new();
+        let mut switched_common_cores = Vec::new();
+        let mut retired_removed_cores = Vec::new();
+
+        for core_id in &plan.added_assigned_cores {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "starting",
+                None,
+            );
 
             let new_key = self
                 .launch_regular_pipeline_instance(
@@ -1487,19 +1536,65 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
                 let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
-                return self.rollback_replace_rollout(plan, &switched_cores, reason);
+                return self.rollback_replace_rollout(
+                    plan,
+                    &switched_common_cores,
+                    &activated_added_cores,
+                    &retired_removed_cores,
+                    reason,
+                );
             }
 
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "draining_old".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                *core_id,
+                plan.target_generation,
+            );
+            activated_added_cores.push(*core_id);
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "switched",
+                None,
+            );
+        }
+
+        for core_id in &plan.common_assigned_cores {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "starting",
+                None,
+            );
+
+            let new_key = self
+                .launch_regular_pipeline_instance(
+                    &plan.resolved_pipeline,
+                    *core_id,
+                    plan.target_generation,
+                )
+                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
+                let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
+                return self.rollback_replace_rollout(
+                    plan,
+                    &switched_common_cores,
+                    &activated_added_cores,
+                    &retired_removed_cores,
+                    reason,
+                );
+            }
+
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "draining_old",
+                None,
+            );
 
             let old_key = DeployedPipelineKey {
                 pipeline_group_id: plan.pipeline_group_id.clone(),
@@ -1513,7 +1608,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 "blue/green rollout drain",
             ) {
                 let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
-                return self.rollback_replace_rollout(plan, &switched_cores, reason);
+                return self.rollback_replace_rollout(
+                    plan,
+                    &switched_common_cores,
+                    &activated_added_cores,
+                    &retired_removed_cores,
+                    reason,
+                );
             }
 
             self.observed_state_store.set_pipeline_serving_generation(
@@ -1521,17 +1622,55 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 *core_id,
                 plan.target_generation,
             );
-            switched_cores.push(*core_id);
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "switched".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+            switched_common_cores.push(*core_id);
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "switched",
+                None,
+            );
+        }
+
+        for core_id in &plan.removed_assigned_cores {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "draining_old",
+                None,
+            );
+
+            let old_key = DeployedPipelineKey {
+                pipeline_group_id: plan.pipeline_group_id.clone(),
+                pipeline_id: plan.pipeline_id.clone(),
+                core_id: *core_id,
+                deployment_generation: previous_generation,
+            };
+            if let Err(reason) = self.shutdown_instance(
+                &old_key,
+                plan.drain_timeout_secs,
+                "resource policy rollout drain",
+            ) {
+                return self.rollback_replace_rollout(
+                    plan,
+                    &switched_common_cores,
+                    &activated_added_cores,
+                    &retired_removed_cores,
+                    reason,
+                );
+            }
+
+            self.observed_state_store
+                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
+            retired_removed_cores.push(*core_id);
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "retired",
+                None,
+            );
         }
 
         {
@@ -1555,17 +1694,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
         self.observed_state_store
             .set_pipeline_active_generation(plan.pipeline_key.clone(), plan.target_generation);
-        for core_id in &plan.current_assigned_cores {
-            self.observed_state_store
-                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
-        }
+        self.clear_pipeline_serving_generations(
+            &plan.pipeline_key,
+            plan.current_assigned_cores
+                .iter()
+                .chain(plan.target_assigned_cores.iter())
+                .copied(),
+        );
         Ok(())
     }
 
     fn rollback_replace_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
-        switched_cores: &[usize],
+        switched_common_cores: &[usize],
+        activated_added_cores: &[usize],
+        retired_removed_cores: &[usize],
         failure_reason: String,
     ) -> Result<(), RolloutExecutionError> {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
@@ -1578,17 +1722,43 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .expect("replace rollouts always have a current record");
         let previous_generation = previous.active_generation;
 
-        for core_id in switched_cores.iter().rev() {
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "rollback_starting".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+        for core_id in retired_removed_cores.iter().rev() {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rollback_starting",
+                None,
+            );
+
+            let old_key = self
+                .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
+                .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
+            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            self.wait_for_pipeline_ready(&old_key, ready_deadline)
+                .map_err(RolloutExecutionError::RollbackFailed)?;
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                *core_id,
+                previous_generation,
+            );
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rolled_back",
+                None,
+            );
+        }
+
+        for core_id in switched_common_cores.iter().rev() {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rollback_starting",
+                None,
+            );
 
             let old_key = self
                 .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
@@ -1610,22 +1780,49 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 *core_id,
                 previous_generation,
             );
-            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
-                if let Some(core) = rollout
-                    .cores
-                    .iter_mut()
-                    .find(|core| core.core_id == *core_id)
-                {
-                    core.state = "rolled_back".to_owned();
-                    core.updated_at = timestamp_now();
-                }
-            });
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rolled_back",
+                None,
+            );
         }
 
-        for core_id in &plan.current_assigned_cores {
+        for core_id in activated_added_cores.iter().rev() {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rollback_starting",
+                None,
+            );
+
+            let new_key = DeployedPipelineKey {
+                pipeline_group_id: plan.pipeline_group_id.clone(),
+                pipeline_id: plan.pipeline_id.clone(),
+                core_id: *core_id,
+                deployment_generation: plan.target_generation,
+            };
+            self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
+                .map_err(RolloutExecutionError::RollbackFailed)?;
             self.observed_state_store
                 .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                *core_id,
+                "rolled_back",
+                None,
+            );
         }
+        self.clear_pipeline_serving_generations(
+            &plan.pipeline_key,
+            plan.current_assigned_cores
+                .iter()
+                .chain(plan.target_assigned_cores.iter())
+                .copied(),
+        );
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
@@ -3894,7 +4091,7 @@ groups:
     }
 
     #[test]
-    fn prepare_rollout_plan_rejects_core_allocation_change() {
+    fn prepare_rollout_plan_accepts_core_allocation_scale_up() {
         let config = engine_config_with_pipeline(
             r#"
         policies:
@@ -3940,7 +4137,7 @@ connections:
         )
         .expect("replacement should parse");
 
-        let err = runtime
+        let plan = runtime
             .prepare_rollout_plan(
                 "g1",
                 "p1",
@@ -3950,14 +4147,97 @@ connections:
                     drain_timeout_secs: 60,
                 },
             )
-            .expect_err("core allocation changes should be rejected");
+            .expect("core allocation changes should be planned");
 
-        match err {
-            ControlPlaneError::InvalidRequest { message } => {
-                assert!(message.contains("effective core allocation"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_eq!(plan.action, RolloutAction::Replace);
+        assert_eq!(plan.current_assigned_cores, vec![0]);
+        assert_eq!(plan.target_assigned_cores, vec![0, 1]);
+        assert_eq!(plan.common_assigned_cores, vec![0]);
+        assert_eq!(plan.added_assigned_cores, vec![1]);
+        assert!(plan.removed_assigned_cores.is_empty());
+        assert_eq!(
+            plan.rollout
+                .cores
+                .iter()
+                .map(|core| core.core_id)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn prepare_rollout_plan_accepts_core_allocation_scale_down() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("core allocation changes should be planned");
+
+        assert_eq!(plan.action, RolloutAction::Replace);
+        assert_eq!(plan.current_assigned_cores, vec![0, 1]);
+        assert_eq!(plan.target_assigned_cores, vec![0]);
+        assert_eq!(plan.common_assigned_cores, vec![0]);
+        assert!(plan.added_assigned_cores.is_empty());
+        assert_eq!(plan.removed_assigned_cores, vec![1]);
+        assert_eq!(
+            plan.rollout
+                .cores
+                .iter()
+                .map(|core| core.core_id)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 
     #[test]
