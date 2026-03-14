@@ -89,24 +89,26 @@ pub enum ProviderSetup {
 }
 
 impl ProviderSetup {
-    /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(&self, log_level: &LogLevel, context_fn: LogContextFn) -> Dispatch {
-        let filter = || create_env_filter(log_level);
-
+    fn build_dispatch_with_filter(&self, filter: EnvFilter, context_fn: LogContextFn) -> Dispatch {
         match self {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => Dispatch::new(
                 Registry::default()
-                    .with(filter())
+                    .with(filter)
                     .with(RawLoggingLayer::new(ConsoleWriter::color(), context_fn)),
             ),
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = ConsoleAsyncLayer::new(reporter, context_fn);
-                Dispatch::new(Registry::default().with(filter()).with(layer))
+                Dispatch::new(Registry::default().with(filter).with(layer))
             }
         }
+    }
+
+    /// Build a `Dispatch` for this provider setup with the given log level.
+    fn build_dispatch(&self, log_level: &LogLevel, context_fn: LogContextFn) -> Dispatch {
+        self.build_dispatch_with_filter(create_env_filter(log_level), context_fn)
     }
 
     /// Initialize this setup as the global tracing subscriber.
@@ -172,8 +174,31 @@ mod tests {
         (reporter, rx)
     }
 
-    fn test_setup(p: ProviderSetup, l: LogLevel) -> TracingSetup {
-        TracingSetup::new(p, l, LogContext::new)
+    struct TestTracingSetup {
+        provider: ProviderSetup,
+        log_level: LogLevel,
+        context_fn: LogContextFn,
+    }
+
+    impl TestTracingSetup {
+        fn with_subscriber<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            let dispatch = self.provider.build_dispatch_with_filter(
+                EnvFilter::new(self.log_level.as_str()),
+                self.context_fn,
+            );
+            tracing::dispatcher::with_default(&dispatch, f)
+        }
+    }
+
+    fn test_setup(p: ProviderSetup, l: LogLevel) -> TestTracingSetup {
+        TestTracingSetup {
+            provider: p,
+            log_level: l,
+            context_fn: LogContext::new,
+        }
     }
 
     fn level(s: &str) -> LogLevel {
@@ -241,7 +266,6 @@ mod tests {
             otel_info!("async_log");
         });
 
-        // Verify the log was sent through the channel
         let event = receiver.try_recv().expect("should receive log event");
         assert!(
             matches!(event, ObservedEvent::Log(_)),
@@ -301,7 +325,6 @@ mod tests {
             otel_warn!("not_filtered");
         });
 
-        // Should only receive the warn
         let event = receiver.try_recv().expect("should receive warn");
         assert!(matches!(event, ObservedEvent::Log(_)));
         assert!(receiver.try_recv().is_err(), "should only have one event");
@@ -351,7 +374,6 @@ mod tests {
             otel_error!("e");
         });
 
-        // Should receive all 4
         for _ in 0..4 {
             let _ = receiver.try_recv().expect("should receive log");
         }
@@ -377,16 +399,23 @@ mod tests {
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
         let info = level("info");
-        ProviderSetup::Noop.with_subscriber(&info, LogContext::new, || {
+
+        let noop_dispatch = ProviderSetup::Noop
+            .build_dispatch_with_filter(EnvFilter::new(info.as_str()), LogContext::new);
+        tracing::dispatcher::with_default(&noop_dispatch, || {
             otel_info!("noop");
         });
 
-        ProviderSetup::ConsoleDirect.with_subscriber(&info, LogContext::new, || {
+        let console_dispatch = ProviderSetup::ConsoleDirect
+            .build_dispatch_with_filter(EnvFilter::new(info.as_str()), LogContext::new);
+        tracing::dispatcher::with_default(&console_dispatch, || {
             otel_info!("console_direct");
         });
 
         let (reporter, _rx) = test_reporter();
-        ProviderSetup::InternalAsync { reporter }.with_subscriber(&info, LogContext::new, || {
+        let async_dispatch = ProviderSetup::InternalAsync { reporter }
+            .build_dispatch_with_filter(EnvFilter::new(info.as_str()), LogContext::new);
+        tracing::dispatcher::with_default(&async_dispatch, || {
             otel_info!("console_async");
         });
     }
@@ -435,12 +464,9 @@ mod tests {
         });
 
         assert_eq!(result, 100);
-
-        // Outer should receive 2, inner should receive 1 and no more.
         assert!(receiver1.try_recv().is_ok());
         assert!(receiver2.try_recv().is_ok());
         assert!(receiver1.try_recv().is_ok());
-
         assert!(receiver1.try_recv().is_err());
         assert!(receiver2.try_recv().is_err());
     }

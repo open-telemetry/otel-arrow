@@ -2,36 +2,62 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline endpoints.
-//! Status: Not implemented.
 //!
 //! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Get the configuration of the specified pipeline.
 //! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
 //!   Get the status of the specified pipeline.
+//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+//!   Get the status of a specific rollout job for the logical pipeline.
+//! - PUT `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//!   Create or replace a pipeline and return a rollout job status snapshot.
 //! - POST `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
-//!   Shutdown a specific pipeline
+//!   Shutdown a specific logical pipeline
+//!   - Query parameters:
+//!     - `wait` (bool, default: false) - if true, block until the pipeline stops
+//!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
+//!   - 200 OK if `wait=true` and the pipeline stopped successfully
 //!   - 202 Accepted if the stop request was accepted and is being processed (async operation)
 //!   - 400 Bad Request if the pipeline is already stopped
-//!   - 404 Not Found if the pipeline does not exist
+//!   - 404 Not Found if the group or pipeline does not exist
+//!   - 409 Conflict if a rollout is active for the pipeline
+//!   - 500 Internal Server Error if the stop request could not be processed
+//!   - 504 Gateway Timeout if `wait=true` and the pipeline did not stop within timeout
 //!
 //! ToDo Alternative -> avoid verb-y subpaths and support PATCH /.../pipelines/{pipelineId} with a body like {"status":"stopped"}. Use 409 if already stopping/stopped.
 
 use crate::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use otap_df_config::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
+use otap_df_telemetry::otel_info;
+use serde::Deserialize;
+use serde::Serialize;
+use std::time::{Duration, Instant};
 
 /// All the routes for pipelines.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}",
+            get(show_pipeline).put(put_pipeline),
+        )
         // Returns the status of a specific pipeline.
         .route(
             "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
             get(show_status),
+        )
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}",
+            get(show_rollout),
+        )
+        .route(
+            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown",
+            post(shutdown_pipeline),
         )
         // liveness and readiness probes.
         .route(
@@ -42,6 +68,217 @@ pub(crate) fn routes() -> Router<AppState> {
             "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz",
             get(readiness),
         )
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WaitParams {
+    #[serde(default)]
+    wait: bool,
+    #[serde(default = "default_timeout_secs")]
+    timeout_secs: u64,
+}
+
+const fn default_timeout_secs() -> u64 {
+    60
+}
+
+#[derive(Serialize)]
+struct ShutdownResponse {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    errors: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+}
+
+fn rollout_is_terminal(state: &str) -> bool {
+    matches!(state, "succeeded" | "failed" | "rollback_failed")
+}
+
+fn rollout_is_success(state: &str) -> bool {
+    state == "succeeded"
+}
+
+pub async fn show_pipeline(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<crate::PipelineDetails>, StatusCode> {
+    match state
+        .controller
+        .pipeline_details(&pipeline_group_id, &pipeline_id)
+    {
+        Ok(Some(details)) => Ok(Json(details)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(
+            crate::ControlPlaneError::PipelineNotFound | crate::ControlPlaneError::GroupNotFound,
+        ) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+pub async fn put_pipeline(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    Query(params): Query<WaitParams>,
+    State(state): State<AppState>,
+    Json(request): Json<crate::ReplacePipelineRequest>,
+) -> impl IntoResponse {
+    let rollout = match state
+        .controller
+        .replace_pipeline(&pipeline_group_id, &pipeline_id, request)
+    {
+        Ok(rollout) => rollout,
+        Err(crate::ControlPlaneError::GroupNotFound) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(crate::ControlPlaneError::RolloutConflict) => {
+            return StatusCode::CONFLICT.into_response();
+        }
+        Err(crate::ControlPlaneError::InvalidRequest { message }) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(message)).into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    if !params.wait {
+        return (StatusCode::ACCEPTED, Json(rollout)).into_response();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
+    loop {
+        match state
+            .controller
+            .rollout_status(&pipeline_group_id, &pipeline_id, &rollout.rollout_id)
+        {
+            Ok(Some(current)) if rollout_is_terminal(&current.state) => {
+                let status = if rollout_is_success(&current.state) {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CONFLICT
+                };
+                return (status, Json(current)).into_response();
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(crate::ControlPlaneError::RolloutNotFound) => {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+
+        if Instant::now() >= deadline {
+            return StatusCode::GATEWAY_TIMEOUT.into_response();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn show_rollout(
+    Path((pipeline_group_id, pipeline_id, rollout_id)): Path<(String, String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<crate::PipelineRolloutStatus>, StatusCode> {
+    match state
+        .controller
+        .rollout_status(&pipeline_group_id, &pipeline_id, &rollout_id)
+    {
+        Ok(Some(status)) => Ok(Json(status)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(crate::ControlPlaneError::RolloutNotFound) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+pub async fn shutdown_pipeline(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    Query(params): Query<WaitParams>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let start_time = Instant::now();
+
+    otel_info!(
+        "pipeline.shutdown.requested",
+        pipeline_group_id = pipeline_group_id.as_str(),
+        pipeline_id = pipeline_id.as_str(),
+        wait = params.wait,
+        timeout_secs = params.timeout_secs
+    );
+
+    match state
+        .controller
+        .shutdown_pipeline(&pipeline_group_id, &pipeline_id, params.timeout_secs)
+    {
+        Ok(()) => {}
+        Err(
+            crate::ControlPlaneError::GroupNotFound | crate::ControlPlaneError::PipelineNotFound,
+        ) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(crate::ControlPlaneError::RolloutConflict) => {
+            return StatusCode::CONFLICT.into_response();
+        }
+        Err(crate::ControlPlaneError::InvalidRequest { message }) => {
+            return (StatusCode::BAD_REQUEST, Json(message)).into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ShutdownResponse {
+                    status: "failed",
+                    errors: Some(vec![format!("{err:?}")]),
+                    duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    if !params.wait {
+        return (
+            StatusCode::ACCEPTED,
+            Json(ShutdownResponse {
+                status: "accepted",
+                errors: None,
+                duration_ms: None,
+            }),
+        )
+            .into_response();
+    }
+
+    let pipeline_key =
+        PipelineKey::new(pipeline_group_id.clone().into(), pipeline_id.clone().into());
+    let timeout = Duration::from_secs(params.timeout_secs);
+    let poll_interval = Duration::from_millis(100);
+
+    loop {
+        if start_time.elapsed() > timeout {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(ShutdownResponse {
+                    status: "timeout",
+                    errors: Some(vec![format!(
+                        "Shutdown did not complete within {} seconds",
+                        params.timeout_secs
+                    )]),
+                    duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                }),
+            )
+                .into_response();
+        }
+
+        if let Some(status) = state.observed_state_store.pipeline_status(&pipeline_key) {
+            if status.is_terminated() {
+                return (
+                    StatusCode::OK,
+                    Json(ShutdownResponse {
+                        status: "completed",
+                        errors: None,
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 pub async fn show_status(

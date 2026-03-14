@@ -377,6 +377,9 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use prost::Message;
+    use std::time::Duration;
+    use tracing::Dispatch;
+    use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
     fn test_reporter() -> ObservedEventReporter {
         let (sender, _receiver) = flume::bounded(16);
@@ -391,6 +394,33 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    fn with_test_subscriber<F, R>(setup: &TracingSetup, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let dispatch = match &setup.provider {
+            ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
+            ProviderSetup::ConsoleDirect => Dispatch::new(
+                Registry::default()
+                    .with(EnvFilter::new(setup.log_level.as_str()))
+                    .with(self_tracing::RawLoggingLayer::new(
+                        self_tracing::ConsoleWriter::color(),
+                        setup.context_fn,
+                    )),
+            ),
+            ProviderSetup::InternalAsync { reporter } => Dispatch::new(
+                Registry::default()
+                    .with(EnvFilter::new(setup.log_level.as_str()))
+                    .with(tracing_init::ConsoleAsyncLayer::new(
+                        reporter,
+                        setup.context_fn,
+                    )),
+            ),
+        };
+
+        tracing::dispatcher::with_default(&dispatch, f)
     }
 
     #[test]
@@ -429,12 +459,15 @@ mod tests {
         assert!(rx.is_empty(), "receiver starts empty");
 
         // Emit a log using the engine tracing setup (which uses ITS)
-        its.engine_tracing_setup().with_subscriber(|| {
+        let tracing_setup = its.engine_tracing_setup();
+        with_test_subscriber(&tracing_setup, || {
             crate::otel_info!("test log message");
         });
 
         // Receiver should have the log
-        let recv = rx.recv().expect("receiver should have log after emit");
+        let recv = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("receiver should have log after emit");
         assert!(matches!(recv, ObservedEvent::Log(_)));
         let text = recv.to_string();
         assert!(text.contains("test log message"), "log message is {}", text);

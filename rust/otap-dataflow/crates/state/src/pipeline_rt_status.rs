@@ -263,22 +263,31 @@ impl PipelineRuntimeStatus {
         }
     }
 
+    /// Returns the current Accepted condition for this runtime instance.
     #[must_use]
-    pub(crate) const fn accepted_condition(&self) -> &ConditionState {
+    pub const fn accepted_condition(&self) -> &ConditionState {
         &self.accepted_condition
     }
 
     #[must_use]
-    pub(crate) const fn ready_condition(&self) -> &ConditionState {
+    /// Returns the current Ready condition for this runtime instance.
+    pub const fn ready_condition(&self) -> &ConditionState {
         &self.ready_condition
     }
 
     #[must_use]
-    pub(crate) fn conditions(&self) -> [Condition; 2] {
+    /// Returns the serialized condition pair for this runtime instance.
+    pub fn conditions(&self) -> [Condition; 2] {
         [
             Condition::from_state(ConditionKind::Accepted, &self.accepted_condition),
             Condition::from_state(ConditionKind::Ready, &self.ready_condition),
         ]
+    }
+
+    /// Returns the current phase for this runtime instance.
+    #[must_use]
+    pub const fn phase(&self) -> PipelinePhase {
+        self.phase
     }
 
     /// Apply a single observed event to this pipeline.

@@ -104,30 +104,13 @@ async fn shutdown_all_pipelines(
         timeout_secs = params.timeout_secs
     );
 
-    // Send shutdown message to all pipelines
-    let errors: Vec<_> = (*state.ctrl_msg_senders.lock().await)
-        .drain(..)
-        .filter_map(|sender| {
-            // Use the timeout from params for the shutdown deadline
-            let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
-            sender
-                .try_send_shutdown(
-                    deadline,
-                    "Shutdown requested via the `/pipeline-groups/shutdown` endpoint.".to_owned(),
-                )
-                .err()
-        })
-        .map(|e| e.to_string())
-        .collect();
-
-    // If there were errors sending shutdown messages, return immediately
-    if !errors.is_empty() {
-        otel_info!("shutdown.failed", error_count = errors.len());
+    if let Err(err) = state.controller.shutdown_all(params.timeout_secs) {
+        otel_info!("shutdown.failed", error = ?err);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ShutdownResponse {
                 status: "failed",
-                errors: Some(errors),
+                errors: Some(vec![format!("{err:?}")]),
                 duration_ms: Some(start_time.elapsed().as_millis() as u64),
             }),
         );

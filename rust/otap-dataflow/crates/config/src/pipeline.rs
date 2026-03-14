@@ -594,6 +594,15 @@ impl PipelineConfig {
         }
     }
 
+    /// Normalizes plugin URNs for runtime use.
+    pub fn canonicalize_for_pipeline(
+        &mut self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
+        self.canonicalize_plugin_urns(pipeline_group_id, pipeline_id)
+    }
+
     /// Normalize plugin URNs for pipeline nodes.
     fn canonicalize_plugin_urns(
         &mut self,

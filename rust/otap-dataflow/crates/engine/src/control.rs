@@ -31,7 +31,7 @@ thread_local! {
 #[must_use]
 pub fn nanos_since_birth() -> u64 {
     let birth = BIRTH_KEY.get();
-    Instant::now().duration_since(birth).as_nanos() as u64
+    Instant::now().duration_since(birth).as_nanos().max(1) as u64
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data

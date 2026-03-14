@@ -108,6 +108,7 @@ pub struct ControllerContext {
 pub struct PipelineContext {
     controller_context: ControllerContext,
     core_id: usize,
+    deployment_generation: u64,
     /// Total number of cores allocated to this pipeline.
     /// Used by nodes that need to share resources across cores (e.g., disk budgets).
     num_cores: usize,
@@ -156,6 +157,27 @@ impl ControllerContext {
         num_cores: usize,
         thread_id: usize,
     ) -> PipelineContext {
+        self.pipeline_context_with_generation(
+            pipeline_group_id,
+            pipeline_id,
+            core_id,
+            num_cores,
+            thread_id,
+            0,
+        )
+    }
+
+    /// Returns a new pipeline context with an explicit deployment generation.
+    #[must_use]
+    pub fn pipeline_context_with_generation(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        core_id: usize,
+        num_cores: usize,
+        thread_id: usize,
+        deployment_generation: u64,
+    ) -> PipelineContext {
         PipelineContext::new(
             self.clone(),
             pipeline_group_id,
@@ -163,6 +185,7 @@ impl ControllerContext {
             core_id,
             num_cores,
             thread_id,
+            deployment_generation,
         )
     }
 
@@ -198,12 +221,14 @@ impl PipelineContext {
         core_id: usize,
         num_cores: usize,
         thread_id: usize,
+        deployment_generation: u64,
     ) -> Self {
         Self {
             controller_context: parent_ctx,
             pipeline_id,
             pipeline_group_id,
             core_id,
+            deployment_generation,
             num_cores,
             thread_id,
             node_id: Default::default(),
@@ -233,6 +258,12 @@ impl PipelineContext {
     #[must_use]
     pub const fn core_id(&self) -> usize {
         self.core_id
+    }
+
+    /// Returns the deployment generation associated with this pipeline runtime.
+    #[must_use]
+    pub const fn deployment_generation(&self) -> u64 {
+        self.deployment_generation
     }
 
     /// Returns the total number of cores allocated to this pipeline.
@@ -432,6 +463,7 @@ impl PipelineContext {
             engine_attrs: self.engine_attribute_set(),
             pipeline_id: self.pipeline_id.clone(),
             pipeline_group_id: self.pipeline_group_id.clone(),
+            deployment_generation: self.deployment_generation,
         }
     }
 
@@ -527,6 +559,7 @@ impl PipelineContext {
             thread_id: self.thread_id,
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
+            deployment_generation: self.deployment_generation,
             pipeline_telemetry_attrs: self.pipeline_telemetry_attrs.clone(),
             node_id,
             node_urn,

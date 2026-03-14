@@ -44,7 +44,12 @@
 
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
+use chrono::Utc;
 use core_affinity::CoreId;
+use otap_df_admin::{
+    ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
+    ReplacePipelineRequest, RolloutCoreStatus,
+};
 use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -64,16 +69,19 @@ use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
+    PipelineAdminSender, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
-use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
+use otap_df_state::conditions::ConditionStatus;
+use otap_df_state::phase::PipelinePhase;
+use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -84,9 +92,11 @@ use otap_df_telemetry::{
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::io;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -132,6 +142,236 @@ impl InferredTopicMode {
             Self::BroadcastOnly => "broadcast_only",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutAction {
+    Create,
+    Replace,
+}
+
+impl RolloutAction {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Replace => "replace",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutLifecycleState {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    RollingBack,
+    RollbackFailed,
+}
+
+impl RolloutLifecycleState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::RollingBack => "rolling_back",
+            Self::RollbackFailed => "rollback_failed",
+        }
+    }
+
+    const fn as_pipeline_rollout_state(self) -> PipelineRolloutState {
+        match self {
+            Self::Pending => PipelineRolloutState::Pending,
+            Self::Running => PipelineRolloutState::Running,
+            Self::Succeeded => PipelineRolloutState::Succeeded,
+            Self::Failed => PipelineRolloutState::Failed,
+            Self::RollingBack => PipelineRolloutState::RollingBack,
+            Self::RollbackFailed => PipelineRolloutState::RollbackFailed,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RolloutCoreProgress {
+    core_id: usize,
+    previous_generation: Option<u64>,
+    target_generation: u64,
+    state: String,
+    updated_at: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RolloutRecord {
+    rollout_id: String,
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+    action: RolloutAction,
+    state: RolloutLifecycleState,
+    target_generation: u64,
+    previous_generation: Option<u64>,
+    started_at: String,
+    updated_at: String,
+    failure_reason: Option<String>,
+    cores: Vec<RolloutCoreProgress>,
+}
+
+impl RolloutRecord {
+    fn new(
+        rollout_id: String,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        action: RolloutAction,
+        target_generation: u64,
+        previous_generation: Option<u64>,
+        cores: Vec<RolloutCoreProgress>,
+    ) -> Self {
+        let now = timestamp_now();
+        Self {
+            rollout_id,
+            pipeline_group_id,
+            pipeline_id,
+            action,
+            state: RolloutLifecycleState::Pending,
+            target_generation,
+            previous_generation,
+            started_at: now.clone(),
+            updated_at: now,
+            failure_reason: None,
+            cores,
+        }
+    }
+
+    fn summary(&self) -> PipelineRolloutSummary {
+        PipelineRolloutSummary {
+            rollout_id: self.rollout_id.clone(),
+            state: self.state.as_pipeline_rollout_state(),
+            target_generation: self.target_generation,
+            started_at: self.started_at.clone(),
+            updated_at: self.updated_at.clone(),
+            failure_reason: self.failure_reason.clone(),
+        }
+    }
+
+    fn status(&self) -> PipelineRolloutStatus {
+        PipelineRolloutStatus {
+            rollout_id: self.rollout_id.clone(),
+            pipeline_group_id: self.pipeline_group_id.clone(),
+            pipeline_id: self.pipeline_id.clone(),
+            action: self.action.as_str().to_owned(),
+            state: self.state.as_str().to_owned(),
+            target_generation: self.target_generation,
+            previous_generation: self.previous_generation,
+            started_at: self.started_at.clone(),
+            updated_at: self.updated_at.clone(),
+            failure_reason: self.failure_reason.clone(),
+            cores: self
+                .cores
+                .iter()
+                .map(|core| RolloutCoreStatus {
+                    core_id: core.core_id,
+                    previous_generation: core.previous_generation,
+                    target_generation: core.target_generation,
+                    state: core.state.clone(),
+                    updated_at: core.updated_at.clone(),
+                    detail: core.detail.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+struct RuntimeInstanceRecord {
+    // The controller drops this sender once shutdown is requested so the
+    // pipeline control loop can observe channel closure after node tasks exit.
+    control_sender: Option<Arc<dyn PipelineAdminSender>>,
+    lifecycle: RuntimeInstanceLifecycle,
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeInstanceLifecycle {
+    Active,
+    Exited(RuntimeInstanceExit),
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeInstanceExit {
+    Success,
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+struct LogicalPipelineRecord {
+    resolved: ResolvedPipelineConfig,
+    active_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TopicRuntimeProfile {
+    backend: TopicBackendKind,
+    policies: otap_df_config::topic::TopicPolicies,
+    selected_mode: InferredTopicMode,
+}
+
+struct ControllerRuntimeState {
+    live_config: OtelDataflowSpec,
+    logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
+    runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    rollouts: HashMap<String, RolloutRecord>,
+    active_rollouts: HashMap<PipelineKey, String>,
+    generation_counters: HashMap<PipelineKey, u64>,
+    active_instances: usize,
+    next_rollout_id: u64,
+    next_thread_id: usize,
+    first_error: Option<String>,
+}
+
+struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
+    pipeline_factory: &'static PipelineFactory<PData>,
+    controller_context: ControllerContext,
+    observed_state_store: ObservedStateStore,
+    observed_state_handle: otap_df_state::store::ObservedStateHandle,
+    engine_event_reporter: ObservedEventReporter,
+    metrics_reporter: MetricsReporter,
+    declared_topics: DeclaredTopics<PData>,
+    available_core_ids: Vec<CoreId>,
+    engine_tracing_setup: TracingSetup,
+    state: Mutex<ControllerRuntimeState>,
+    state_changed: Condvar,
+}
+
+struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
+    runtime: Arc<ControllerRuntime<PData>>,
+}
+
+struct LaunchedPipelineThread<PData> {
+    thread_name: String,
+    thread_id: usize,
+    pipeline_key: DeployedPipelineKey,
+    control_sender: Arc<dyn PipelineAdminSender>,
+    join_handle: thread::JoinHandle<Result<Vec<()>, Error>>,
+    _marker: std::marker::PhantomData<PData>,
+}
+
+#[derive(Debug)]
+struct CandidateRolloutPlan {
+    pipeline_key: PipelineKey,
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+    action: RolloutAction,
+    resolved_pipeline: ResolvedPipelineConfig,
+    current_record: Option<LogicalPipelineRecord>,
+    current_assigned_cores: Vec<usize>,
+    target_generation: u64,
+    rollout: RolloutRecord,
+    step_timeout_secs: u64,
+    drain_timeout_secs: u64,
+}
+
+fn timestamp_now() -> String {
+    Utc::now().to_rfc3339()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,11 +494,1297 @@ fn engine_context() -> LogContext {
 }
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
+    ControllerRuntime<PData>
+{
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        controller_context: ControllerContext,
+        observed_state_store: ObservedStateStore,
+        observed_state_handle: otap_df_state::store::ObservedStateHandle,
+        engine_event_reporter: ObservedEventReporter,
+        metrics_reporter: MetricsReporter,
+        declared_topics: DeclaredTopics<PData>,
+        available_core_ids: Vec<CoreId>,
+        engine_tracing_setup: TracingSetup,
+        live_config: OtelDataflowSpec,
+    ) -> Self {
+        Self {
+            pipeline_factory,
+            controller_context,
+            observed_state_store,
+            observed_state_handle,
+            engine_event_reporter,
+            metrics_reporter,
+            declared_topics,
+            available_core_ids,
+            engine_tracing_setup,
+            state: Mutex::new(ControllerRuntimeState {
+                live_config,
+                logical_pipelines: HashMap::new(),
+                runtime_instances: HashMap::new(),
+                rollouts: HashMap::new(),
+                active_rollouts: HashMap::new(),
+                generation_counters: HashMap::new(),
+                active_instances: 0,
+                next_rollout_id: 0,
+                next_thread_id: 1,
+                first_error: None,
+            }),
+            state_changed: Condvar::new(),
+        }
+    }
+
+    fn register_committed_pipeline(&self, resolved: ResolvedPipelineConfig, generation: u64) {
+        let pipeline_key = PipelineKey::new(
+            resolved.pipeline_group_id.clone(),
+            resolved.pipeline_id.clone(),
+        );
+        self.observed_state_store
+            .set_pipeline_active_generation(pipeline_key.clone(), generation);
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .generation_counters
+            .insert(pipeline_key.clone(), generation + 1);
+        _ = state.logical_pipelines.insert(
+            pipeline_key,
+            LogicalPipelineRecord {
+                resolved,
+                active_generation: generation,
+            },
+        );
+    }
+
+    fn next_thread_id(&self) -> usize {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let thread_id = state.next_thread_id;
+        state.next_thread_id += 1;
+        thread_id
+    }
+
+    fn assigned_cores_for_resolved(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+    ) -> Result<Vec<usize>, ControlPlaneError> {
+        Controller::<PData>::select_cores_for_allocation(
+            self.available_core_ids.clone(),
+            &resolved_pipeline
+                .policies
+                .effective_resources()
+                .core_allocation,
+        )
+        .map(|cores| cores.into_iter().map(|core| core.id).collect())
+        .map_err(|err| ControlPlaneError::InvalidRequest {
+            message: err.to_string(),
+        })
+    }
+
+    fn pipeline_topic_profiles(
+        config: &OtelDataflowSpec,
+    ) -> Result<HashMap<TopicName, TopicRuntimeProfile>, ControlPlaneError> {
+        let (global_names, group_names) =
+            Controller::<PData>::build_declared_topic_name_maps(config).map_err(|err| {
+                ControlPlaneError::InvalidRequest {
+                    message: err.to_string(),
+                }
+            })?;
+        Controller::<PData>::validate_topic_wiring_acyclic(config, &global_names, &group_names)
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        let (inferred_modes, _) =
+            Controller::<PData>::infer_topic_modes(config, &global_names, &group_names);
+        let default_selection_policy = config.engine.topics.impl_selection;
+
+        let mut profiles = HashMap::new();
+        for (topic_name, spec) in &config.topics {
+            let declared_name = global_names
+                .get(topic_name)
+                .expect("global topic declaration must resolve")
+                .clone();
+            let topology_mode = inferred_modes
+                .get(&declared_name)
+                .copied()
+                .unwrap_or(InferredTopicMode::Mixed);
+            let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+            let selected_mode = Controller::<PData>::apply_topic_impl_selection_policy(
+                topology_mode,
+                selection_policy,
+            );
+            _ = profiles.insert(
+                declared_name,
+                TopicRuntimeProfile {
+                    backend: spec.backend,
+                    policies: spec.policies.clone(),
+                    selected_mode,
+                },
+            );
+        }
+
+        for (group_id, group_cfg) in &config.groups {
+            for (topic_name, spec) in &group_cfg.topics {
+                let declared_name = group_names
+                    .get(&(group_id.clone(), topic_name.clone()))
+                    .expect("group topic declaration must resolve")
+                    .clone();
+                let topology_mode = inferred_modes
+                    .get(&declared_name)
+                    .copied()
+                    .unwrap_or(InferredTopicMode::Mixed);
+                let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+                let selected_mode = Controller::<PData>::apply_topic_impl_selection_policy(
+                    topology_mode,
+                    selection_policy,
+                );
+                _ = profiles.insert(
+                    declared_name,
+                    TopicRuntimeProfile {
+                        backend: spec.backend,
+                        policies: spec.policies.clone(),
+                        selected_mode,
+                    },
+                );
+            }
+        }
+
+        Ok(profiles)
+    }
+
+    fn prepare_rollout_plan(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &ReplacePipelineRequest,
+    ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
+        let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
+        let pipeline_id: PipelineId = pipeline_id.to_owned().into();
+        let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+
+        let (live_config, current_record) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state.live_config.groups.contains_key(&pipeline_group_id) {
+                return Err(ControlPlaneError::GroupNotFound);
+            }
+            if state.active_rollouts.contains_key(&pipeline_key) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            (
+                state.live_config.clone(),
+                state.logical_pipelines.get(&pipeline_key).cloned(),
+            )
+        };
+
+        let mut candidate_pipeline = request.pipeline.clone();
+        candidate_pipeline
+            .canonicalize_for_pipeline(&pipeline_group_id, &pipeline_id)
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        candidate_pipeline
+            .validate(&pipeline_group_id, &pipeline_id)
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+
+        let mut candidate_config = live_config.clone();
+        let group_cfg = candidate_config
+            .groups
+            .get_mut(&pipeline_group_id)
+            .expect("group existence checked above");
+        _ = group_cfg
+            .pipelines
+            .insert(pipeline_id.clone(), candidate_pipeline.clone());
+
+        candidate_config
+            .validate()
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        Controller::<PData>::validate_engine_components_with_factory(
+            self.pipeline_factory,
+            &candidate_config,
+        )
+        .map_err(|message| ControlPlaneError::InvalidRequest { message })?;
+
+        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
+        let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
+        if current_profiles != candidate_profiles {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "request would require runtime topic broker mutation".to_owned(),
+            });
+        }
+
+        let resolved_pipeline = candidate_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| {
+                pipeline.role == ResolvedPipelineRole::Regular
+                    && pipeline.pipeline_group_id == pipeline_group_id
+                    && pipeline.pipeline_id == pipeline_id
+            })
+            .ok_or_else(|| ControlPlaneError::Internal {
+                message: "candidate pipeline disappeared during resolution".to_owned(),
+            })?;
+        let current_assigned_cores = if let Some(record) = current_record.as_ref() {
+            self.assigned_cores_for_resolved(&record.resolved)?
+        } else {
+            Vec::new()
+        };
+        let candidate_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        let action = if current_record.is_some() {
+            if current_assigned_cores != candidate_assigned_cores {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message:
+                        "request changes the effective core allocation for an existing pipeline"
+                            .to_owned(),
+                });
+            }
+            RolloutAction::Replace
+        } else {
+            RolloutAction::Create
+        };
+
+        let (rollout_id, target_generation) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_rollouts.contains_key(&pipeline_key) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            let rollout_id = format!("rollout-{}", state.next_rollout_id);
+            state.next_rollout_id += 1;
+            let generation_counter = state
+                .generation_counters
+                .entry(pipeline_key.clone())
+                .or_insert(0);
+            let target_generation = *generation_counter;
+            *generation_counter += 1;
+            (rollout_id, target_generation)
+        };
+
+        let cores = candidate_assigned_cores
+            .iter()
+            .map(|core_id| RolloutCoreProgress {
+                core_id: *core_id,
+                previous_generation: current_record
+                    .as_ref()
+                    .map(|record| record.active_generation),
+                target_generation,
+                state: "pending".to_owned(),
+                updated_at: timestamp_now(),
+                detail: None,
+            })
+            .collect();
+        let rollout = RolloutRecord::new(
+            rollout_id,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            action,
+            target_generation,
+            current_record
+                .as_ref()
+                .map(|record| record.active_generation),
+            cores,
+        );
+
+        Ok(CandidateRolloutPlan {
+            pipeline_key,
+            pipeline_group_id,
+            pipeline_id,
+            action,
+            resolved_pipeline,
+            current_record,
+            current_assigned_cores: candidate_assigned_cores,
+            target_generation,
+            rollout,
+            step_timeout_secs: request.step_timeout_secs.max(1),
+            drain_timeout_secs: request.drain_timeout_secs.max(1),
+        })
+    }
+
+    fn insert_rollout(
+        &self,
+        pipeline_key: &PipelineKey,
+        rollout: RolloutRecord,
+    ) -> Result<(), ControlPlaneError> {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_rollouts.contains_key(pipeline_key) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            _ = state
+                .active_rollouts
+                .insert(pipeline_key.clone(), rollout.rollout_id.clone());
+            _ = state
+                .rollouts
+                .insert(rollout.rollout_id.clone(), rollout.clone());
+        }
+        self.observed_state_store
+            .set_pipeline_rollout_summary(pipeline_key.clone(), rollout.summary());
+        Ok(())
+    }
+
+    fn update_rollout<F>(&self, pipeline_key: &PipelineKey, rollout_id: &str, update: F)
+    where
+        F: FnOnce(&mut RolloutRecord),
+    {
+        let summary = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(rollout) = state.rollouts.get_mut(rollout_id) else {
+                return;
+            };
+            update(rollout);
+            rollout.updated_at = timestamp_now();
+            rollout.summary()
+        };
+        self.observed_state_store
+            .set_pipeline_rollout_summary(pipeline_key.clone(), summary);
+    }
+
+    fn finish_rollout(&self, pipeline_key: &PipelineKey, rollout_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_rollouts
+            .get(pipeline_key)
+            .is_some_and(|id| id == rollout_id)
+        {
+            let _ = state.active_rollouts.remove(pipeline_key);
+        }
+    }
+
+    fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<PipelineRolloutStatus> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.rollouts.get(rollout_id).map(RolloutRecord::status)
+    }
+
+    fn pipeline_details_snapshot(
+        &self,
+        pipeline_key: &PipelineKey,
+    ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(record) = state.logical_pipelines.get(pipeline_key) else {
+            if !state
+                .live_config
+                .groups
+                .contains_key(pipeline_key.pipeline_group_id())
+            {
+                return Err(ControlPlaneError::GroupNotFound);
+            }
+            return Ok(None);
+        };
+        let rollout = state
+            .active_rollouts
+            .get(pipeline_key)
+            .and_then(|rollout_id| state.rollouts.get(rollout_id))
+            .map(RolloutRecord::summary);
+        Ok(Some(PipelineDetails {
+            pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
+            pipeline_id: pipeline_key.pipeline_id().clone(),
+            active_generation: Some(record.active_generation),
+            pipeline: record.resolved.pipeline.clone(),
+            rollout,
+        }))
+    }
+
+    fn spawn_rollout(
+        self: &Arc<Self>,
+        plan: CandidateRolloutPlan,
+    ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+        let rollout_id = plan.rollout.rollout_id.clone();
+        let pipeline_key = plan.pipeline_key.clone();
+        let initial_status = plan.rollout.status();
+        self.insert_rollout(&pipeline_key, plan.rollout.clone())?;
+        let runtime = Arc::clone(self);
+        let rollout_runtime = Arc::clone(&runtime);
+        let _rollout_handle = thread::Builder::new()
+            .name(format!(
+                "rollout-{}-{}",
+                pipeline_key.pipeline_group_id().as_ref(),
+                pipeline_key.pipeline_id().as_ref()
+            ))
+            .spawn(move || {
+                rollout_runtime.run_rollout(plan);
+            })
+            .map_err(|err| {
+                runtime.finish_rollout(&pipeline_key, &rollout_id);
+                ControlPlaneError::Internal {
+                    message: err.to_string(),
+                }
+            })?;
+        Ok(initial_status)
+    }
+
+    fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
+        self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+            rollout.state = RolloutLifecycleState::Running;
+        });
+
+        let result = match plan.action {
+            RolloutAction::Create => self.run_create_rollout(&plan),
+            RolloutAction::Replace => self.run_replace_rollout(&plan),
+        };
+
+        match result {
+            Ok(()) => {
+                self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                    rollout.state = RolloutLifecycleState::Succeeded;
+                    rollout.failure_reason = None;
+                });
+            }
+            Err(RolloutExecutionError::Failed(reason)) => {
+                self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                    rollout.state = RolloutLifecycleState::Failed;
+                    rollout.failure_reason = Some(reason);
+                });
+            }
+            Err(RolloutExecutionError::RollbackFailed(reason)) => {
+                self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                    rollout.state = RolloutLifecycleState::RollbackFailed;
+                    rollout.failure_reason = Some(reason);
+                });
+            }
+        }
+
+        self.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
+    }
+
+    fn run_create_rollout(
+        self: &Arc<Self>,
+        plan: &CandidateRolloutPlan,
+    ) -> Result<(), RolloutExecutionError> {
+        let mut launched = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+        for core_id in &plan.current_assigned_cores {
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "starting".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+            let deployed_key = self
+                .launch_regular_pipeline_instance(
+                    &plan.resolved_pipeline,
+                    *core_id,
+                    plan.target_generation,
+                )
+                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            launched.push(deployed_key);
+        }
+
+        for deployed_key in &launched {
+            self.wait_for_pipeline_ready(deployed_key, deadline)
+                .map_err(|reason| {
+                    let _ = self.shutdown_instances(&launched, plan.drain_timeout_secs);
+                    RolloutExecutionError::Failed(reason)
+                })?;
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == deployed_key.core_id)
+                {
+                    core.state = "ready".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+        }
+
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(group_cfg) = state.live_config.groups.get_mut(&plan.pipeline_group_id) {
+                _ = group_cfg.pipelines.insert(
+                    plan.pipeline_id.clone(),
+                    plan.resolved_pipeline.pipeline.clone(),
+                );
+            }
+            _ = state.logical_pipelines.insert(
+                plan.pipeline_key.clone(),
+                LogicalPipelineRecord {
+                    resolved: plan.resolved_pipeline.clone(),
+                    active_generation: plan.target_generation,
+                },
+            );
+        }
+        self.observed_state_store
+            .set_pipeline_active_generation(plan.pipeline_key.clone(), plan.target_generation);
+        Ok(())
+    }
+
+    fn run_replace_rollout(
+        self: &Arc<Self>,
+        plan: &CandidateRolloutPlan,
+    ) -> Result<(), RolloutExecutionError> {
+        let previous = plan
+            .current_record
+            .as_ref()
+            .expect("replace rollouts always have a current record");
+        let previous_generation = previous.active_generation;
+        for core_id in &plan.current_assigned_cores {
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                *core_id,
+                previous_generation,
+            );
+        }
+
+        let mut switched_cores = Vec::new();
+        for core_id in &plan.current_assigned_cores {
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "starting".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+
+            let new_key = self
+                .launch_regular_pipeline_instance(
+                    &plan.resolved_pipeline,
+                    *core_id,
+                    plan.target_generation,
+                )
+                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
+                let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
+                return self.rollback_replace_rollout(plan, &switched_cores, reason);
+            }
+
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "draining_old".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+
+            let old_key = DeployedPipelineKey {
+                pipeline_group_id: plan.pipeline_group_id.clone(),
+                pipeline_id: plan.pipeline_id.clone(),
+                core_id: *core_id,
+                deployment_generation: previous_generation,
+            };
+            if let Err(reason) = self.shutdown_instance(
+                &old_key,
+                plan.drain_timeout_secs,
+                "blue/green rollout drain",
+            ) {
+                let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
+                return self.rollback_replace_rollout(plan, &switched_cores, reason);
+            }
+
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                *core_id,
+                plan.target_generation,
+            );
+            switched_cores.push(*core_id);
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "switched".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+        }
+
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(group_cfg) = state.live_config.groups.get_mut(&plan.pipeline_group_id) {
+                _ = group_cfg.pipelines.insert(
+                    plan.pipeline_id.clone(),
+                    plan.resolved_pipeline.pipeline.clone(),
+                );
+            }
+            _ = state.logical_pipelines.insert(
+                plan.pipeline_key.clone(),
+                LogicalPipelineRecord {
+                    resolved: plan.resolved_pipeline.clone(),
+                    active_generation: plan.target_generation,
+                },
+            );
+        }
+        self.observed_state_store
+            .set_pipeline_active_generation(plan.pipeline_key.clone(), plan.target_generation);
+        for core_id in &plan.current_assigned_cores {
+            self.observed_state_store
+                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
+        }
+        Ok(())
+    }
+
+    fn rollback_replace_rollout(
+        self: &Arc<Self>,
+        plan: &CandidateRolloutPlan,
+        switched_cores: &[usize],
+        failure_reason: String,
+    ) -> Result<(), RolloutExecutionError> {
+        self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+            rollout.state = RolloutLifecycleState::RollingBack;
+            rollout.failure_reason = Some(failure_reason.clone());
+        });
+        let previous = plan
+            .current_record
+            .as_ref()
+            .expect("replace rollouts always have a current record");
+        let previous_generation = previous.active_generation;
+
+        for core_id in switched_cores.iter().rev() {
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "rollback_starting".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+
+            let old_key = self
+                .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
+                .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
+            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            self.wait_for_pipeline_ready(&old_key, ready_deadline)
+                .map_err(RolloutExecutionError::RollbackFailed)?;
+
+            let new_key = DeployedPipelineKey {
+                pipeline_group_id: plan.pipeline_group_id.clone(),
+                pipeline_id: plan.pipeline_id.clone(),
+                core_id: *core_id,
+                deployment_generation: plan.target_generation,
+            };
+            self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
+                .map_err(RolloutExecutionError::RollbackFailed)?;
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                *core_id,
+                previous_generation,
+            );
+            self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+                if let Some(core) = rollout
+                    .cores
+                    .iter_mut()
+                    .find(|core| core.core_id == *core_id)
+                {
+                    core.state = "rolled_back".to_owned();
+                    core.updated_at = timestamp_now();
+                }
+            });
+        }
+
+        for core_id in &plan.current_assigned_cores {
+            self.observed_state_store
+                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
+        }
+        Err(RolloutExecutionError::Failed(failure_reason))
+    }
+
+    fn shutdown_instances(
+        self: &Arc<Self>,
+        keys: &[DeployedPipelineKey],
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        for key in keys {
+            self.shutdown_instance(key, timeout_secs, "candidate cleanup")?;
+        }
+        Ok(())
+    }
+
+    fn launch_regular_pipeline_instance(
+        self: &Arc<Self>,
+        resolved_pipeline: &ResolvedPipelineConfig,
+        core_id: usize,
+        deployment_generation: u64,
+    ) -> Result<DeployedPipelineKey, Error> {
+        let thread_id = self.next_thread_id();
+        let num_cores = self
+            .assigned_cores_for_resolved(resolved_pipeline)
+            .map_err(|err| Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(format!("{err:?}"))),
+            })?
+            .len();
+        let deployed_key = DeployedPipelineKey {
+            pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
+            pipeline_id: resolved_pipeline.pipeline_id.clone(),
+            core_id,
+            deployment_generation,
+        };
+        let launched = Controller::<PData>::launch_pipeline_thread(
+            self.pipeline_factory,
+            deployed_key.clone(),
+            CoreId { id: core_id },
+            num_cores,
+            resolved_pipeline.pipeline.clone(),
+            resolved_pipeline.policies.channel_capacity.clone(),
+            resolved_pipeline.policies.telemetry.clone(),
+            self.controller_context.clone(),
+            self.metrics_reporter.clone(),
+            self.engine_event_reporter.clone(),
+            self.engine_tracing_setup.clone(),
+            &self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .live_config,
+            &self.declared_topics,
+            thread_id,
+            None,
+        )?;
+        self.register_launched_instance(launched);
+        Ok(deployed_key)
+    }
+
+    fn register_launched_instance(self: &Arc<Self>, launched: LaunchedPipelineThread<PData>) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            _ = state.runtime_instances.insert(
+                launched.pipeline_key.clone(),
+                RuntimeInstanceRecord {
+                    control_sender: Some(launched.control_sender.clone()),
+                    lifecycle: RuntimeInstanceLifecycle::Active,
+                },
+            );
+            state.active_instances += 1;
+            self.state_changed.notify_all();
+        }
+
+        let runtime = Arc::downgrade(self);
+        let _ = thread::Builder::new()
+            .name(format!("watcher-{}", launched.thread_name))
+            .spawn(move || {
+                let exit = match launched.join_handle.join() {
+                    Ok(Ok(_)) => RuntimeInstanceExit::Success,
+                    Ok(Err(err)) => RuntimeInstanceExit::Error(err.to_string()),
+                    Err(panic) => RuntimeInstanceExit::Error(format!(
+                        "thread {} (id {}) panicked: {panic:?}",
+                        launched.thread_name, launched.thread_id
+                    )),
+                };
+                if let Some(runtime) = Weak::upgrade(&runtime) {
+                    runtime.note_instance_exit(launched.pipeline_key, exit);
+                }
+            });
+    }
+
+    fn note_instance_exit(&self, pipeline_key: DeployedPipelineKey, exit: RuntimeInstanceExit) {
+        match &exit {
+            RuntimeInstanceExit::Success => {
+                self.engine_event_reporter
+                    .report(EngineEvent::drained(pipeline_key.clone(), None));
+            }
+            RuntimeInstanceExit::Error(message) => {
+                let err_summary = ErrorSummary::Pipeline {
+                    error_kind: "runtime".into(),
+                    message: message.clone(),
+                    source: None,
+                };
+                self.engine_event_reporter
+                    .report(EngineEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "Pipeline encountered a runtime error.",
+                        err_summary,
+                    ));
+            }
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(instance) = state.runtime_instances.get_mut(&pipeline_key) {
+            instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
+        }
+        state.active_instances = state.active_instances.saturating_sub(1);
+        if let RuntimeInstanceExit::Error(message) = &exit {
+            if state.first_error.is_none() {
+                state.first_error = Some(message.clone());
+            }
+        }
+        self.state_changed.notify_all();
+    }
+
+    fn wait_for_pipeline_ready(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let pipeline_key = PipelineKey::new(
+            deployed_key.pipeline_group_id.clone(),
+            deployed_key.pipeline_id.clone(),
+        );
+        loop {
+            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key) {
+                if let Some(instance) =
+                    status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
+                {
+                    let accepted = instance.accepted_condition().status == ConditionStatus::True;
+                    let ready = instance.ready_condition().status == ConditionStatus::True;
+                    if accepted && ready {
+                        return Ok(());
+                    }
+                    match instance.phase() {
+                        PipelinePhase::Failed(_)
+                        | PipelinePhase::Rejected(_)
+                        | PipelinePhase::Deleted
+                        | PipelinePhase::Stopped => {
+                            return Err(format!(
+                                "pipeline failed to become ready on core {} (generation {})",
+                                deployed_key.core_id, deployed_key.deployment_generation
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(exit) = self.instance_exit(deployed_key) {
+                return match exit {
+                    RuntimeInstanceExit::Success => Err(format!(
+                        "pipeline exited before reporting ready on core {} (generation {})",
+                        deployed_key.core_id, deployed_key.deployment_generation
+                    )),
+                    RuntimeInstanceExit::Error(message) => Err(message),
+                };
+            }
+
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for admitted+ready on core {} (generation {})",
+                    deployed_key.core_id, deployed_key.deployment_generation
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn instance_exit(&self, deployed_key: &DeployedPipelineKey) -> Option<RuntimeInstanceExit> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .runtime_instances
+            .get(deployed_key)
+            .and_then(|instance| match &instance.lifecycle {
+                RuntimeInstanceLifecycle::Active => None,
+                RuntimeInstanceLifecycle::Exited(exit) => Some(exit.clone()),
+            })
+    }
+
+    fn shutdown_instance(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        timeout_secs: u64,
+        reason: &str,
+    ) -> Result<(), String> {
+        let sender = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(instance) = state.runtime_instances.get(deployed_key) else {
+                return Err(format!(
+                    "pipeline instance {}:{} core={} generation={} is not registered",
+                    deployed_key.pipeline_group_id.as_ref(),
+                    deployed_key.pipeline_id.as_ref(),
+                    deployed_key.core_id,
+                    deployed_key.deployment_generation
+                ));
+            };
+            instance.control_sender.clone().ok_or_else(|| {
+                format!(
+                    "shutdown already requested for pipeline {}:{} core={} generation={}",
+                    deployed_key.pipeline_group_id.as_ref(),
+                    deployed_key.pipeline_id.as_ref(),
+                    deployed_key.core_id,
+                    deployed_key.deployment_generation
+                )
+            })?
+        };
+
+        sender
+            .try_send_shutdown(
+                Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+                reason.to_owned(),
+            )
+            .map_err(|err| err.to_string())?;
+        self.release_instance_control_sender(deployed_key);
+
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        loop {
+            if let Some(exit) = self.instance_exit(deployed_key) {
+                return match exit {
+                    RuntimeInstanceExit::Success => Ok(()),
+                    RuntimeInstanceExit::Error(message) => Err(message),
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                    deployed_key.pipeline_group_id.as_ref(),
+                    deployed_key.pipeline_id.as_ref(),
+                    deployed_key.core_id,
+                    deployed_key.deployment_generation
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(instance) = state.runtime_instances.get_mut(deployed_key) {
+            instance.control_sender = None;
+        }
+    }
+
+    fn request_shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
+        let senders: Vec<_> = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .runtime_instances
+                .iter()
+                .filter_map(|(deployed_key, instance)| match instance.lifecycle {
+                    RuntimeInstanceLifecycle::Active => instance
+                        .control_sender
+                        .as_ref()
+                        .map(|sender| (deployed_key.clone(), sender.clone())),
+                    RuntimeInstanceLifecycle::Exited(_) => None,
+                })
+                .collect()
+        };
+
+        for (deployed_key, sender) in senders {
+            sender
+                .try_send_shutdown(
+                    Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+                    "global shutdown".to_owned(),
+                )
+                .map_err(|err| ControlPlaneError::Internal {
+                    message: err.to_string(),
+                })?;
+            self.release_instance_control_sender(&deployed_key);
+        }
+        Ok(())
+    }
+
+    fn request_shutdown_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<(), ControlPlaneError> {
+        let pipeline_key = PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        );
+        let senders: Vec<_> = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state
+                .live_config
+                .groups
+                .contains_key(pipeline_key.pipeline_group_id())
+            {
+                return Err(ControlPlaneError::GroupNotFound);
+            }
+            if !state.logical_pipelines.contains_key(&pipeline_key) {
+                return Err(ControlPlaneError::PipelineNotFound);
+            }
+            if state.active_rollouts.contains_key(&pipeline_key) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+
+            let senders: Vec<_> = state
+                .runtime_instances
+                .iter()
+                .filter_map(|(deployed_key, instance)| {
+                    if deployed_key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                        && deployed_key.pipeline_id == *pipeline_key.pipeline_id()
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    {
+                        instance
+                            .control_sender
+                            .as_ref()
+                            .map(|sender| (deployed_key.clone(), sender.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if senders.is_empty() {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "pipeline {}:{} is already stopped",
+                        pipeline_group_id, pipeline_id
+                    ),
+                });
+            }
+            senders
+        };
+
+        for (deployed_key, sender) in senders {
+            sender
+                .try_send_shutdown(
+                    Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+                    "pipeline shutdown".to_owned(),
+                )
+                .map_err(|err| ControlPlaneError::Internal {
+                    message: err.to_string(),
+                })?;
+            self.release_instance_control_sender(&deployed_key);
+        }
+        Ok(())
+    }
+
+    fn wait_until_all_instances_exit(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.active_instances > 0 {
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    fn take_runtime_error(&self) -> Option<Error> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .first_error
+            .as_ref()
+            .map(|message| Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(message.clone())),
+            })
+    }
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
+    ControlPlane for ControllerControlPlane<PData>
+{
+    fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
+        self.runtime.request_shutdown_all(timeout_secs)
+    }
+
+    fn shutdown_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<(), ControlPlaneError> {
+        self.runtime
+            .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+    }
+
+    fn replace_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: ReplacePipelineRequest,
+    ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+        let plan = self
+            .runtime
+            .prepare_rollout_plan(pipeline_group_id, pipeline_id, &request)?;
+        self.runtime.spawn_rollout(plan)
+    }
+
+    fn pipeline_details(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+        self.runtime.pipeline_details_snapshot(&PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        ))
+    }
+
+    fn rollout_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError> {
+        let expected_key = PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        );
+        let Some(status) = self.runtime.rollout_status_snapshot(rollout_id) else {
+            return Ok(None);
+        };
+        let actual_key =
+            PipelineKey::new(status.pipeline_group_id.clone(), status.pipeline_id.clone());
+        if actual_key != expected_key {
+            return Err(ControlPlaneError::RolloutNotFound);
+        }
+        Ok(Some(status))
+    }
+}
+
+#[derive(Debug)]
+enum RolloutExecutionError {
+    Failed(String),
+    RollbackFailed(String),
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
     Controller<PData>
 {
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
+    }
+
+    fn validate_pipeline_components_with_factory(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        pipeline_cfg: &PipelineConfig,
+    ) -> Result<(), String> {
+        for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+            let urn_str = node_cfg.r#type.as_str();
+            let validate_config_fn = match node_cfg.kind() {
+                NodeKind::Receiver => pipeline_factory
+                    .get_receiver_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+                NodeKind::Processor | NodeKind::ProcessorChain => pipeline_factory
+                    .get_processor_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+                NodeKind::Exporter => pipeline_factory
+                    .get_exporter_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+            };
+
+            let Some(validate_fn) = validate_config_fn else {
+                let kind_name = match node_cfg.kind() {
+                    NodeKind::Receiver => "receiver",
+                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+                    NodeKind::Exporter => "exporter",
+                };
+                return Err(format!(
+                    "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
+                    kind_name,
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref()
+                ));
+            };
+
+            validate_fn(&node_cfg.config).map_err(|err| {
+                format!(
+                    "Invalid config for component `{}` in pipeline_group={} pipeline={} node={}: {}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref(),
+                    err
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn validate_engine_components_with_factory(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        engine_cfg: &OtelDataflowSpec,
+    ) -> Result<(), String> {
+        for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
+            for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
+                Self::validate_pipeline_components_with_factory(
+                    pipeline_factory,
+                    pipeline_group_id,
+                    pipeline_id,
+                    pipeline_cfg,
+                )?;
+            }
+        }
+
+        if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
+            let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+            let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+            let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
+            Self::validate_pipeline_components_with_factory(
+                pipeline_factory,
+                &obs_group_id,
+                &obs_pipeline_id,
+                &obs_pipeline_config,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Validates that every configured node resolves to a registered component and that the
+    /// static component-specific configuration validates.
+    pub fn validate_engine_components(&self, engine_cfg: &OtelDataflowSpec) -> Result<(), String> {
+        Self::validate_engine_components_with_factory(self.pipeline_factory, engine_cfg)
     }
 
     /// Starts the controller with the given engine configurations.
@@ -1020,7 +2546,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             );
         }
 
-        let pipeline_count = pipelines.len();
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_core = *all_cores.first().expect("a cpu core");
@@ -1034,11 +2559,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 pipeline.policies.health.clone(),
             );
         }
-        let available_core_ids = if pipeline_count == 0 {
-            Vec::new()
-        } else {
-            all_cores
-        };
+        let available_core_ids = all_cores;
         let planned_core_assignments =
             Self::preflight_pipeline_core_allocations(&pipelines, &available_core_ids)?;
 
@@ -1101,10 +2622,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         };
 
         // Start the observed state store background task
+        let obs_state_store_runtime = obs_state_store.clone();
         let obs_state_join_handle = spawn_thread_local_task(
             "observed-state-store",
             admin_tracing_setup.clone(),
-            move |cancellation_token| obs_state_store.run(cancellation_token),
+            move |cancellation_token| obs_state_store_runtime.run(cancellation_token),
         )?;
 
         // Start the engine-wide metrics collection task.
@@ -1149,180 +2671,88 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             },
         )?;
 
-        let mut threads = Vec::new();
-        let mut ctrl_msg_senders = Vec::new();
+        let runtime = Arc::new(ControllerRuntime::new(
+            self.pipeline_factory,
+            controller_ctx.clone(),
+            obs_state_store.clone(),
+            obs_state_handle.clone(),
+            engine_evt_reporter.clone(),
+            metrics_reporter.clone(),
+            declared_topics,
+            available_core_ids.clone(),
+            telemetry_system.engine_tracing_setup(),
+            engine_config.clone(),
+        ));
 
-        // TODO: We do not have proper thread::current().id assignment.
-        let mut next_thread_id: usize = 1;
-        let its_thread_id: usize = 0;
-
-        // Add internal pipeline to threads list if present
-        if let Some((thread_name, handle)) = internal_pipeline_handle {
-            threads.push((thread_name, its_thread_id, its_key, handle));
+        if let Some(launched) = internal_pipeline_handle {
+            runtime.register_launched_instance(launched);
         }
 
-        for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
-        {
+        for (pipeline_entry, requested_cores) in pipelines.iter().zip(planned_core_assignments) {
+            runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
+            let num_cores = requested_cores.len();
+
             let core_allocation = pipeline_entry
                 .policies
                 .effective_resources()
                 .core_allocation
                 .to_string();
-            let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
-            let telemetry_policy = pipeline_entry.policies.telemetry;
-            let pipeline_group_id = pipeline_entry.pipeline_group_id;
-            let pipeline_id = pipeline_entry.pipeline_id;
-            let pipeline = pipeline_entry.pipeline;
-
-            let num_cores = requested_cores.len();
             otel_info!(
                 "pipeline.core_allocation",
-                pipeline_group_id = pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_id.as_ref(),
+                pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_entry.pipeline_id.as_ref(),
                 num_cores = num_cores,
                 core_allocation = core_allocation
             );
-            for core_id in requested_cores {
-                let pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: pipeline_group_id.clone(),
-                    pipeline_id: pipeline_id.clone(),
-                    core_id: core_id.id,
-                };
-                let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
-                    pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-                ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
-                let pipeline_config = pipeline.clone();
-                let pipeline_factory = self.pipeline_factory;
-                let thread_id = next_thread_id;
-                next_thread_id += 1;
-                let mut pipeline_handle = controller_ctx.pipeline_context_with(
-                    pipeline_group_id.clone(),
-                    pipeline_id.clone(),
-                    core_id.id,
+            for core_id in &requested_cores {
+                let launched = Self::launch_pipeline_thread(
+                    self.pipeline_factory,
+                    DeployedPipelineKey {
+                        pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                        pipeline_id: pipeline_entry.pipeline_id.clone(),
+                        core_id: core_id.id,
+                        deployment_generation: 0,
+                    },
+                    *core_id,
                     num_cores,
-                    thread_id,
-                );
-                let topic_set = Self::build_pipeline_topic_set(
+                    pipeline_entry.pipeline.clone(),
+                    pipeline_entry.policies.channel_capacity.clone(),
+                    pipeline_entry.policies.telemetry.clone(),
+                    controller_ctx.clone(),
+                    metrics_reporter.clone(),
+                    engine_evt_reporter.clone(),
+                    telemetry_system.engine_tracing_setup(),
                     &engine_config,
-                    &declared_topics,
-                    &pipeline_group_id,
-                    &pipeline_id,
-                    core_id.id,
+                    &runtime.declared_topics,
+                    runtime.next_thread_id(),
+                    None,
                 )?;
-                pipeline_handle.set_topic_set(topic_set);
-                let metrics_reporter = metrics_reporter.clone();
-
-                let thread_name = format!(
-                    "pipeline-{}-{}-core-{}",
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    core_id.id
-                );
-
-                let run_key = pipeline_key.clone();
-                let engine_tracing_setup = telemetry_system.engine_tracing_setup();
-                let engine_evt_reporter = engine_evt_reporter.clone();
-                let effective_channel_capacity_policy = channel_capacity_policy.clone();
-                let effective_telemetry_policy = telemetry_policy.clone();
-                let handle = thread::Builder::new()
-                    .name(thread_name.clone())
-                    .spawn(move || {
-                        Self::run_pipeline_thread(
-                            run_key,
-                            core_id,
-                            pipeline_config,
-                            effective_channel_capacity_policy,
-                            effective_telemetry_policy,
-                            pipeline_factory,
-                            pipeline_handle,
-                            engine_evt_reporter,
-                            metrics_reporter,
-                            pipeline_ctrl_msg_tx,
-                            pipeline_ctrl_msg_rx,
-                            engine_tracing_setup,
-                            None,
-                        )
-                    })
-                    .map_err(|e| Error::ThreadSpawnError {
-                        thread_name: thread_name.clone(),
-                        source: e,
-                    })?;
-
-                threads.push((thread_name, thread_id, pipeline_key, handle));
+                runtime.register_launched_instance(launched);
             }
         }
 
-        // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
-        // Start the admin HTTP server
+        let control_plane: Arc<dyn ControlPlane> = Arc::new(ControllerControlPlane {
+            runtime: Arc::clone(&runtime),
+        });
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
             move |cancellation_token| {
-                // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
-                    ctrl_msg_senders
-                        .into_iter()
-                        .map(|sender| {
-                            Arc::new(sender)
-                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                        })
-                        .collect();
-
                 otap_df_admin::run(
                     admin_settings,
                     obs_state_handle,
-                    admin_senders,
+                    control_plane,
                     telemetry_registry,
                     cancellation_token,
                 )
             },
         )?;
 
-        // Wait for all pipeline threads to finish and collect their results
-        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, pipeline_key, handle) in threads {
-            match handle.join() {
-                Ok(Ok(_)) => {
-                    engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
-                }
-                Ok(Err(e)) => {
-                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
-                        pipeline_key.clone(),
-                        "Pipeline encountered a runtime error.",
-                        err_summary,
-                    ));
-                    results.push(Err(e));
-                }
-                Err(e) => {
-                    let err_summary = ErrorSummary::Pipeline {
-                        error_kind: "panic".into(),
-                        message: "The pipeline panicked during execution.".into(),
-                        source: Some(format!("{e:?}")),
-                    };
-                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
-                        pipeline_key.clone(),
-                        "The pipeline panicked during execution.",
-                        err_summary,
-                    ));
-                    // Thread join failed, handle the error
-                    let core_id = pipeline_key.core_id;
-                    return Err(Error::ThreadPanic {
-                        thread_name,
-                        thread_id,
-                        core_id,
-                        panic_message: format!("{e:?}"),
-                    });
-                }
-            }
-        }
-
-        // Check if any pipeline threads returned an error
-        if let Some(err) = results.into_iter().find_map(Result::err) {
-            return Err(err);
+        if run_mode == RunMode::ShutdownWhenDone {
+            runtime.wait_until_all_instances_exit();
         }
 
         // In standard engine mode we keep the main thread parked after startup.
@@ -1339,6 +2769,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
         obs_state_join_handle.shutdown_and_join()?;
         telemetry_system.shutdown_otel()?;
+
+        if let Some(err) = runtime.take_runtime_error() {
+            return Err(err);
+        }
 
         Ok(())
     }
@@ -1477,7 +2911,90 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
             core_id: core_id.id,
+            deployment_generation: 0,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_pipeline_thread(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        pipeline_key: DeployedPipelineKey,
+        core_id: CoreId,
+        num_cores: usize,
+        pipeline_config: PipelineConfig,
+        channel_capacity_policy: ChannelCapacityPolicy,
+        telemetry_policy: TelemetryPolicy,
+        controller_ctx: ControllerContext,
+        metrics_reporter: MetricsReporter,
+        engine_evt_reporter: ObservedEventReporter,
+        tracing_setup: TracingSetup,
+        config: &OtelDataflowSpec,
+        declared_topics: &DeclaredTopics<PData>,
+        thread_id: usize,
+        internal_telemetry: Option<(
+            InternalTelemetrySettings,
+            std_mpsc::SyncSender<Result<(), EngineError>>,
+        )>,
+    ) -> Result<LaunchedPipelineThread<PData>, Error> {
+        let mut pipeline_ctx = controller_ctx.pipeline_context_with_generation(
+            pipeline_key.pipeline_group_id.clone(),
+            pipeline_key.pipeline_id.clone(),
+            pipeline_key.core_id,
+            num_cores,
+            thread_id,
+            pipeline_key.deployment_generation,
+        );
+        let topic_set = Self::build_pipeline_topic_set(
+            config,
+            declared_topics,
+            &pipeline_key.pipeline_group_id,
+            &pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+        )?;
+        pipeline_ctx.set_topic_set(topic_set);
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
+            pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(pipeline_ctrl_msg_tx.clone());
+        let thread_name = format!(
+            "pipeline-{}-{}-core-{}-gen-{}",
+            pipeline_key.pipeline_group_id.as_ref(),
+            pipeline_key.pipeline_id.as_ref(),
+            pipeline_key.core_id,
+            pipeline_key.deployment_generation
+        );
+        let run_key = pipeline_key.clone();
+        let handle = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                Self::run_pipeline_thread(
+                    run_key,
+                    core_id,
+                    pipeline_config,
+                    channel_capacity_policy,
+                    telemetry_policy,
+                    pipeline_factory,
+                    pipeline_ctx,
+                    engine_evt_reporter,
+                    metrics_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                    tracing_setup,
+                    internal_telemetry,
+                )
+            })
+            .map_err(|e| Error::ThreadSpawnError {
+                thread_name: thread_name.clone(),
+                source: e,
+            })?;
+
+        Ok(LaunchedPipelineThread {
+            thread_name,
+            thread_id,
+            pipeline_key,
+            control_sender,
+            join_handle: handle,
+            _marker: std::marker::PhantomData,
+        })
     }
 
     /// Spawns the internal telemetry pipeline if engine observability config provides one.
@@ -1497,7 +3014,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
         tracing_setup: TracingSetup,
-    ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
+    ) -> Result<Option<LaunchedPipelineThread<PData>>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
             PipelineConfig,
             ChannelCapacityPolicy,
@@ -1529,58 +3046,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             Some(its_settings) => its_settings,
         };
 
-        let mut internal_pipeline_ctx = controller_ctx.pipeline_context_with(
-            its_key.pipeline_group_id.clone(),
-            its_key.pipeline_id.clone(),
-            its_key.core_id,
-            1, // Internal telemetry pipeline runs on a single core
-            0, // TODO: we do not have a thread_id
-        );
-        let topic_set = Self::build_pipeline_topic_set(
-            config,
-            declared_topics,
-            &its_key.pipeline_group_id,
-            &its_key.pipeline_id,
-            its_key.core_id,
-        )?;
-        internal_pipeline_ctx.set_topic_set(topic_set);
-
-        // Create control message channel for internal pipeline
-        let (internal_ctrl_tx, internal_ctrl_rx) =
-            pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
-
-        let thread_name = "internal-pipeline".to_string();
-        let internal_evt_reporter = engine_evt_reporter.clone();
-        let internal_metrics_reporter = metrics_reporter.clone();
-        let internal_channel_capacity_policy = channel_capacity_policy;
-        let internal_telemetry_policy = telemetry_policy;
-
-        let handle = thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || {
-                Self::run_pipeline_thread(
-                    its_key,
-                    its_core,
-                    internal_config,
-                    internal_channel_capacity_policy,
-                    internal_telemetry_policy,
-                    pipeline_factory,
-                    internal_pipeline_ctx,
-                    internal_evt_reporter,
-                    internal_metrics_reporter,
-                    internal_ctrl_tx,
-                    internal_ctrl_rx,
-                    tracing_setup,
-                    Some((its_settings, startup_tx)),
-                )
-            })
-            .map_err(|e| Error::ThreadSpawnError {
-                thread_name: thread_name.clone(),
-                source: e,
-            })?;
+        let launched = Self::launch_pipeline_thread(
+            pipeline_factory,
+            its_key,
+            its_core,
+            1,
+            internal_config,
+            channel_capacity_policy,
+            telemetry_policy,
+            controller_ctx.clone(),
+            metrics_reporter.clone(),
+            engine_evt_reporter.clone(),
+            tracing_setup,
+            config,
+            declared_topics,
+            0,
+            Some((its_settings, startup_tx)),
+        )?;
 
         // Wait for the internal pipeline to signal successful startup
         match startup_rx.recv() {
@@ -1604,7 +3088,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
         }
 
-        Ok(Some((thread_name, handle)))
+        Ok(Some(launched))
     }
 
     /// Runs a single pipeline in the current thread.
@@ -1719,33 +3203,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     }
 }
 
-fn error_summary_from_gen(error: &Error) -> ErrorSummary {
-    match error {
-        Error::PipelineRuntimeError { source } => {
-            if let Some(engine_error) = source.downcast_ref::<EngineError>() {
-                error_summary_from(engine_error)
-            } else {
-                ErrorSummary::Pipeline {
-                    error_kind: "runtime".into(),
-                    message: source.to_string(),
-                    source: None,
-                }
-            }
-        }
-        _ => ErrorSummary::Pipeline {
-            error_kind: "runtime".into(),
-            message: error.to_string(),
-            source: None,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
+    use otap_df_config::settings::telemetry::logs::LogLevel;
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+    use otap_df_engine::ExporterFactory;
+    use otap_df_engine::ReceiverFactory;
+    use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
+    use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::wiring_contract::WiringContract;
+    use otap_df_telemetry::TracingSetup;
+    use otap_df_telemetry::tracing_init::ProviderSetup;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -1833,6 +3307,708 @@ connections:
             .broker
             .get_topic_required(declared_name)
             .expect("declared topic must exist in broker")
+    }
+
+    fn test_validate_config(
+        _config: &serde_json::Value,
+    ) -> Result<(), otap_df_config::error::Error> {
+        Ok(())
+    }
+
+    fn test_receiver_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _receiver_config: &ReceiverConfig,
+    ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+        panic!("test receiver factory should not be constructed")
+    }
+
+    fn test_exporter_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _exporter_config: &ExporterConfig,
+    ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+        panic!("test exporter factory should not be constructed")
+    }
+
+    static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: test_receiver_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:topic",
+            create: test_receiver_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ];
+
+    static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+        ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: test_exporter_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ExporterFactory {
+            name: "urn:otel:exporter:topic",
+            create: test_exporter_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ];
+
+    static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
+        PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES);
+
+    fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
+        let registry = TelemetryRegistryHandle::new();
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
+        let observed_state_handle = observed_state_store.handle();
+        let engine_event_reporter = observed_state_store.reporter(Default::default());
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
+        let declared_topics =
+            Controller::<()>::declare_topics(config).expect("declared topics should be valid");
+
+        Arc::new(ControllerRuntime::new(
+            &TEST_PIPELINE_FACTORY,
+            ControllerContext::new(registry),
+            observed_state_store,
+            observed_state_handle,
+            engine_event_reporter,
+            metrics_reporter,
+            declared_topics,
+            available_core_ids(),
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+            config.clone(),
+        ))
+    }
+
+    fn engine_config_with_pipeline(pipeline_yaml: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+{pipeline_yaml}
+"#
+        ))
+        .expect("engine config should parse")
+    }
+
+    fn register_existing_pipeline(runtime: &ControllerRuntime<()>, config: &OtelDataflowSpec) {
+        register_pipeline(runtime, config, "g1", "p1");
+    }
+
+    fn register_pipeline(
+        runtime: &ControllerRuntime<()>,
+        config: &OtelDataflowSpec,
+        group_id: &str,
+        pipeline_id: &str,
+    ) {
+        let resolved = config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| {
+                pipeline.role == ResolvedPipelineRole::Regular
+                    && pipeline.pipeline_group_id.as_ref() == group_id
+                    && pipeline.pipeline_id.as_ref() == pipeline_id
+            })
+            .expect("resolved pipeline should exist");
+        runtime.register_committed_pipeline(resolved, 0);
+    }
+
+    fn register_runtime_instance(
+        runtime: &ControllerRuntime<()>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        core_id: usize,
+        generation: u64,
+        lifecycle: RuntimeInstanceLifecycle,
+    ) -> PipelineCtrlMsgReceiver<()> {
+        let (tx, rx) = pipeline_ctrl_msg_channel(4);
+        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(tx.clone());
+        let is_active = matches!(&lifecycle, RuntimeInstanceLifecycle::Active);
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state.runtime_instances.insert(
+            DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.to_owned().into(),
+                pipeline_id: pipeline_id.to_owned().into(),
+                core_id,
+                deployment_generation: generation,
+            },
+            RuntimeInstanceRecord {
+                control_sender: Some(control_sender),
+                lifecycle,
+            },
+        );
+        if is_active {
+            state.active_instances += 1;
+        }
+        rx
+    }
+
+    #[test]
+    fn prepare_rollout_plan_rejects_core_allocation_change() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let err = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect_err("core allocation changes should be rejected");
+
+        match err {
+            ControlPlaneError::InvalidRequest { message } => {
+                assert!(message.contains("effective core allocation"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_rollout_plan_rejects_topic_runtime_mutation() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          to_topic:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: shared
+        connections:
+          - from: receiver
+            to: to_topic
+"#,
+        )
+        .expect("config should parse");
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  from_topic:
+    type: "urn:otel:receiver:topic"
+    config:
+      topic: shared
+      subscription:
+        mode: balanced
+        group: workers
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: from_topic
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let err = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect_err("topic runtime changes should be rejected");
+
+        match err {
+            ControlPlaneError::InvalidRequest { message } => {
+                assert!(message.contains("topic broker mutation"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_rollout_plan_rejects_concurrent_rollout_for_same_pipeline() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+        )
+        .expect("replacement should parse");
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement.clone(),
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("first rollout plan should be accepted");
+        runtime
+            .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+            .expect("rollout should register");
+
+        let err = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect_err("second rollout should conflict");
+
+        assert_eq!(err, ControlPlaneError::RolloutConflict);
+    }
+
+    #[test]
+    fn pipeline_details_returns_committed_config_while_rollout_is_pending() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+        )
+        .expect("replacement should parse");
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement.clone(),
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("rollout plan should be accepted");
+        runtime
+            .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+            .expect("rollout should register");
+
+        let details = runtime
+            .pipeline_details_snapshot(&PipelineKey::new("g1".into(), "p1".into()))
+            .expect("group should exist")
+            .expect("pipeline details should exist");
+
+        let mut committed_nodes = details
+            .pipeline
+            .node_iter()
+            .map(|(node_id, _)| node_id.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        committed_nodes.sort();
+        assert_eq!(
+            committed_nodes,
+            vec!["exporter".to_owned(), "receiver".to_owned()]
+        );
+        assert_eq!(details.active_generation, Some(0));
+        assert_eq!(
+            details
+                .rollout
+                .expect("pending rollout summary should be present")
+                .target_generation,
+            1
+        );
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_rejects_missing_group() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+
+        let err = runtime
+            .request_shutdown_pipeline("missing", "p1", 5)
+            .expect_err("missing group should be rejected");
+
+        assert_eq!(err, ControlPlaneError::GroupNotFound);
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_rejects_missing_pipeline() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+
+        let err = runtime
+            .request_shutdown_pipeline("g1", "missing", 5)
+            .expect_err("missing pipeline should be rejected");
+
+        assert_eq!(err, ControlPlaneError::PipelineNotFound);
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_rejects_active_rollout() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key, "rollout-42".to_owned());
+        drop(state);
+
+        let err = runtime
+            .request_shutdown_pipeline("g1", "p1", 5)
+            .expect_err("active rollout should conflict");
+
+        assert_eq!(err, ControlPlaneError::RolloutConflict);
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_rejects_already_stopped_pipeline() {
+        let config = engine_config_with_pipeline(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+
+        let err = runtime
+            .request_shutdown_pipeline("g1", "p1", 5)
+            .expect_err("already stopped pipeline should be rejected");
+
+        match err {
+            ControlPlaneError::InvalidRequest { message } => {
+                assert!(message.contains("already stopped"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_shutdown_pipeline_targets_only_active_instances_for_pipeline() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("config should parse");
+        let runtime = test_runtime(&config);
+        register_pipeline(&runtime, &config, "g1", "p1");
+        register_pipeline(&runtime, &config, "g1", "p2");
+
+        let mut p1_core0 =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+        let mut p1_core1 =
+            register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+        let mut p1_exited = register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            2,
+            0,
+            RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Success),
+        );
+        let mut p2_core0 =
+            register_runtime_instance(&runtime, "g1", "p2", 3, 0, RuntimeInstanceLifecycle::Active);
+
+        runtime
+            .request_shutdown_pipeline("g1", "p1", 5)
+            .expect("shutdown request should be accepted");
+
+        assert!(matches!(
+            p1_core0.try_recv().expect("core 0 should receive shutdown"),
+            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+        ));
+        assert!(matches!(
+            p1_core1.try_recv().expect("core 1 should receive shutdown"),
+            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+        ));
+        assert!(
+            p1_exited.try_recv().is_err(),
+            "exited runtime should not receive shutdown"
+        );
+        assert!(
+            p2_core0.try_recv().is_err(),
+            "other pipelines must not receive shutdown"
+        );
+
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state
+                .runtime_instances
+                .get(&DeployedPipelineKey {
+                    pipeline_group_id: "g1".into(),
+                    pipeline_id: "p1".into(),
+                    core_id: 0,
+                    deployment_generation: 0,
+                })
+                .and_then(|instance| instance.control_sender.as_ref())
+                .is_none()
+        );
+        assert!(
+            state
+                .runtime_instances
+                .get(&DeployedPipelineKey {
+                    pipeline_group_id: "g1".into(),
+                    pipeline_id: "p1".into(),
+                    core_id: 1,
+                    deployment_generation: 0,
+                })
+                .and_then(|instance| instance.control_sender.as_ref())
+                .is_none()
+        );
+        assert!(
+            state
+                .runtime_instances
+                .get(&DeployedPipelineKey {
+                    pipeline_group_id: "g1".into(),
+                    pipeline_id: "p2".into(),
+                    core_id: 3,
+                    deployment_generation: 0,
+                })
+                .and_then(|instance| instance.control_sender.as_ref())
+                .is_some()
+        );
     }
 
     #[test]
@@ -2850,7 +5026,7 @@ groups:
         );
         assert_eq!(
             local_block.default_publish_outcome_config().timeout,
-            std::time::Duration::from_secs(46)
+            Duration::from_secs(46)
         );
 
         // group-local declaration must override global policy for same local name
@@ -2875,7 +5051,7 @@ groups:
         );
         assert_eq!(
             overridden.default_publish_outcome_config().timeout,
-            std::time::Duration::from_secs(47)
+            Duration::from_secs(47)
         );
     }
 

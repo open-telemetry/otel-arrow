@@ -7,7 +7,7 @@ use crate::ObservedEventRingBuffer;
 use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
-use crate::pipeline_status::PipelineStatus;
+use crate::pipeline_status::{PipelineRolloutSummary, PipelineStatus, RuntimeInstanceKey};
 use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
@@ -114,6 +114,100 @@ impl ObservedStateStore {
             poisoned.into_inner()
         });
         _ = policies.insert(pipeline_key, health_policy);
+    }
+
+    fn health_policy_for_pipeline(&self, pipeline_key: &PipelineKey) -> HealthPolicy {
+        self.health_policies
+            .lock()
+            .ok()
+            .and_then(|policies| policies.get(pipeline_key).cloned())
+            .unwrap_or_else(|| self.default_health_policy.clone())
+    }
+
+    /// Records the committed active generation for a logical pipeline.
+    pub fn set_pipeline_active_generation(&self, pipeline_key: PipelineKey, generation: u64) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        let status = pipelines
+            .entry(pipeline_key.clone())
+            .or_insert_with(|| PipelineStatus::new(self.health_policy_for_pipeline(&pipeline_key)));
+        status.set_active_generation(generation);
+    }
+
+    /// Records which generation is serving traffic for the given logical core.
+    pub fn set_pipeline_serving_generation(
+        &self,
+        pipeline_key: PipelineKey,
+        core_id: otap_df_config::CoreId,
+        generation: u64,
+    ) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        let status = pipelines
+            .entry(pipeline_key.clone())
+            .or_insert_with(|| PipelineStatus::new(self.health_policy_for_pipeline(&pipeline_key)));
+        status.set_serving_generation(core_id, generation);
+    }
+
+    /// Removes the serving-generation marker for a logical core.
+    pub fn clear_pipeline_serving_generation(
+        &self,
+        pipeline_key: PipelineKey,
+        core_id: otap_df_config::CoreId,
+    ) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        if let Some(status) = pipelines.get_mut(&pipeline_key) {
+            status.clear_serving_generation(core_id);
+        }
+    }
+
+    /// Updates the rollout summary exposed in `/status`.
+    pub fn set_pipeline_rollout_summary(
+        &self,
+        pipeline_key: PipelineKey,
+        rollout: PipelineRolloutSummary,
+    ) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        let status = pipelines
+            .entry(pipeline_key.clone())
+            .or_insert_with(|| PipelineStatus::new(self.health_policy_for_pipeline(&pipeline_key)));
+        status.set_rollout_summary(rollout);
+    }
+
+    /// Clears any rollout summary for the logical pipeline.
+    pub fn clear_pipeline_rollout_summary(&self, pipeline_key: PipelineKey) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        if let Some(status) = pipelines.get_mut(&pipeline_key) {
+            status.clear_rollout_summary();
+        }
     }
 
     /// Returns a handle that can be used to read the current observed state.
@@ -224,11 +318,17 @@ impl ObservedStateStore {
         let ps = pipelines
             .entry(pipeline_key)
             .or_insert_with(|| PipelineStatus::new(health_policy));
+        if ps.active_generation().is_none() {
+            ps.set_active_generation(key.deployment_generation);
+        }
 
-        // Upsert the core record and its condition snapshot
+        // Upsert the runtime-instance record and its condition snapshot
         let cs = ps
-            .cores
-            .entry(key.core_id)
+            .instances
+            .entry(RuntimeInstanceKey {
+                core_id: key.core_id,
+                deployment_generation: key.deployment_generation,
+            })
             .or_insert_with(|| PipelineRuntimeStatus {
                 phase: PipelinePhase::Pending,
                 last_heartbeat_time: observed_event.time,
