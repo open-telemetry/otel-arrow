@@ -411,6 +411,12 @@ where
 
                     for e in expressions {
                         match e {
+                            PipelineFunctionExpression::Conditional(c) => {
+                                return Err(ExpressionError::NotSupported(
+                                    c.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", c.get_name()),
+                                ));
+                            }
                             PipelineFunctionExpression::Discard(d) => {
                                 return Err(ExpressionError::NotSupported(
                                     d.get_query_location().clone(),

@@ -126,6 +126,7 @@ mod tests {
     }
 
     fn create_test_client() -> LogsIngestionClient {
+        otap_df_otap::crypto::ensure_crypto_provider();
         // Use a client that will fail fast if actually used
         let http_client = Client::builder()
             .timeout(StdDuration::from_millis(1))

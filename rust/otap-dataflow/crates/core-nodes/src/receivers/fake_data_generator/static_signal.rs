@@ -20,14 +20,21 @@ use otap_df_pdata::proto::opentelemetry::{
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::SpanKind},
 };
+use std::collections::HashMap;
 
-/// Static resource attributes
-fn static_resource_attributes() -> Vec<KeyValue> {
-    vec![
+/// Static resource attributes, with optional user-supplied extras merged in.
+fn build_resource_attributes(extra: Option<&HashMap<String, String>>) -> Vec<KeyValue> {
+    let mut attrs = vec![
         KeyValue::new("service.name", AnyValue::new_string("load-generator")),
         KeyValue::new("service.version", AnyValue::new_string("1.0.0")),
         KeyValue::new("service.instance.id", AnyValue::new_string("instance-001")),
-    ]
+    ];
+    if let Some(extra) = extra {
+        for (k, v) in extra {
+            attrs.push(KeyValue::new(k.as_str(), AnyValue::new_string(v.as_str())));
+        }
+    }
+    attrs
 }
 
 /// Static span attributes for HTTP server spans
@@ -61,7 +68,10 @@ fn static_log_attributes() -> Vec<KeyValue> {
 
 /// Generates TracesData with static hardcoded spans
 #[must_use]
-pub fn static_otlp_traces(signal_count: usize) -> TracesData {
+pub fn static_otlp_traces(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> TracesData {
     let spans = static_spans(signal_count);
 
     let scopes = vec![ScopeSpans::new(
@@ -74,7 +84,7 @@ pub fn static_otlp_traces(signal_count: usize) -> TracesData {
 
     let resources = vec![ResourceSpans::new(
         Resource::build()
-            .attributes(static_resource_attributes())
+            .attributes(build_resource_attributes(extra_attrs))
             .finish(),
         scopes,
     )];
@@ -84,7 +94,10 @@ pub fn static_otlp_traces(signal_count: usize) -> TracesData {
 
 /// Generates LogsData with static hardcoded log records
 #[must_use]
-pub fn static_otlp_logs(signal_count: usize) -> LogsData {
+pub fn static_otlp_logs(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> LogsData {
     let logs = static_logs(signal_count);
 
     let scopes = vec![ScopeLogs::new(
@@ -97,7 +110,7 @@ pub fn static_otlp_logs(signal_count: usize) -> LogsData {
 
     let resources = vec![ResourceLogs::new(
         Resource::build()
-            .attributes(static_resource_attributes())
+            .attributes(build_resource_attributes(extra_attrs))
             .finish(),
         scopes,
     )];
@@ -107,7 +120,10 @@ pub fn static_otlp_logs(signal_count: usize) -> LogsData {
 
 /// Generates MetricsData with static hardcoded metrics
 #[must_use]
-pub fn static_otlp_metrics(signal_count: usize) -> MetricsData {
+pub fn static_otlp_metrics(
+    signal_count: usize,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> MetricsData {
     let metrics = static_metrics(signal_count);
 
     let scopes = vec![ScopeMetrics::new(
@@ -120,7 +136,7 @@ pub fn static_otlp_metrics(signal_count: usize) -> MetricsData {
 
     let resources = vec![ResourceMetrics::new(
         Resource::build()
-            .attributes(static_resource_attributes())
+            .attributes(build_resource_attributes(extra_attrs))
             .finish(),
         scopes,
     )];
@@ -219,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_static_traces() {
-        let traces = static_otlp_traces(10);
+        let traces = static_otlp_traces(10, None);
         assert_eq!(traces.resource_spans.len(), 1);
         assert_eq!(traces.resource_spans[0].scope_spans.len(), 1);
         assert_eq!(traces.resource_spans[0].scope_spans[0].spans.len(), 10);
@@ -227,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_static_metrics() {
-        let metrics = static_otlp_metrics(10);
+        let metrics = static_otlp_metrics(10, None);
         assert_eq!(metrics.resource_metrics.len(), 1);
         assert_eq!(metrics.resource_metrics[0].scope_metrics.len(), 1);
         assert_eq!(
@@ -238,9 +254,18 @@ mod tests {
 
     #[test]
     fn test_static_logs() {
-        let logs = static_otlp_logs(10);
+        let logs = static_otlp_logs(10, None);
         assert_eq!(logs.resource_logs.len(), 1);
         assert_eq!(logs.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(logs.resource_logs[0].scope_logs[0].log_records.len(), 10);
+    }
+
+    #[test]
+    fn test_static_logs_with_extra_attrs() {
+        let mut extra = HashMap::new();
+        _ = extra.insert("tenant.id".to_string(), "prod".to_string());
+        let logs = static_otlp_logs(5, Some(&extra));
+        let attrs = &logs.resource_logs[0].resource.as_ref().unwrap().attributes;
+        assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
     }
 }

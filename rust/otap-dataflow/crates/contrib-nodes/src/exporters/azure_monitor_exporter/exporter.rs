@@ -521,7 +521,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
                         otel_info!(
                             "azure_monitor_exporter.auth.initial_token_acquired",
-                            refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
+                            next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
                         );
                         next
                     }
@@ -679,6 +679,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_pipeline_ctx() -> PipelineContext {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)

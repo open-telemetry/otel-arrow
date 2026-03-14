@@ -1,3 +1,5 @@
+{%- set transport = syslog_transport | default("udp") -%}
+{%- set exporter_type = exporter | default("otap") -%}
 version: otel_dataflow/v1
 policies:
   channel_capacity:
@@ -18,7 +20,7 @@ groups:
             type: urn:otel:receiver:syslog_cef
             config:
               protocol:
-                udp:
+                {{ transport }}:
                   listening_addr: "0.0.0.0:4317"
           attr:
             type: urn:otel:processor:attribute
@@ -30,12 +32,19 @@ groups:
                 apply_to:
                 - scope
           exporter:
+            {%- if exporter_type == "otap" %}
             type: urn:otel:exporter:otap
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: zstd
               arrow:
                 payload_compression: none
+            {%- else %}
+            type: urn:otel:exporter:otlp_grpc
+            config:
+              grpc_endpoint: http://{{backend_hostname}}:1235
+              compression_method: gzip
+            {%- endif %}
         connections:
         - from: receiver
           to: attr

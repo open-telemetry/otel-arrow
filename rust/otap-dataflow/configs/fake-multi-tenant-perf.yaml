@@ -1,0 +1,64 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: fresh
+              traffic_config:
+                # For a finite stream set max_signal_count; omit for continuous output.
+                # max_signal_count: 10000
+                max_batch_size: 100
+                signals_per_second: 1000
+                log_weight: 100
+
+              # Rotate resource attributes across batches to simulate mixed-tenant
+              # traffic on a single connection.  Each entry receives a share of
+              # batches proportional to its weight: here "prod" gets 3 batches for
+              # every 1 batch sent with "ppe" attributes (75 % / 25 % split).
+              #
+              # Accepted forms:
+              #   Single map (weight 1, no rotation):
+              #     resource_attributes:
+              #       tenant.id: prod
+              #
+              #   List of maps (equal weight, simple round-robin):
+              #     resource_attributes:
+              #       - {tenant.id: prod}
+              #       - {tenant.id: ppe}
+              #
+              #   Weighted list (shown below):
+              resource_attributes:
+                - attrs:
+                    tenant.id: prod
+                    service.namespace: frontend
+                  weight: 3
+                - attrs:
+                    tenant.id: ppe
+                    service.namespace: backend
+                  weight: 1
+
+          exporter:
+            type: exporter:perf
+            config:
+              frequency: 1000
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+
+        connections:
+          - from: receiver
+            to: exporter

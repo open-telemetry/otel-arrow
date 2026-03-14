@@ -5,7 +5,9 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use crate::receivers::fake_data_generator::config::{Config, DataSource, GenerationStrategy};
+use crate::receivers::fake_data_generator::config::{
+    Config, DataSource, GenerationStrategy, ResourceAttributeSet, build_rotation_table,
+};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
@@ -26,8 +28,9 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
 use weaver_forge::registry::ResolvedRegistry;
@@ -106,44 +109,66 @@ impl FakeGeneratorReceiver {
 enum SignalGenerator {
     /// Uses semantic conventions registry via weaver
     SemanticConventions(ResolvedRegistry),
-    /// Uses static hardcoded signals
-    Static,
+    /// Uses static hardcoded signals with weighted per-batch resource attribute
+    /// rotation.  `entries` holds the typed attribute sets; `rotation` is a
+    /// precomputed index table built from the entry weights so the hot path is
+    /// a single modulo lookup.  Both are empty when no custom attributes are
+    /// configured.
+    Static {
+        entries: Vec<ResourceAttributeSet>,
+        rotation: Vec<usize>,
+    },
 }
 
 impl SignalGenerator {
+    /// Return the resource attributes for the current batch, or `None` when no
+    /// custom attributes are configured.
+    ///
+    /// The slot is selected as `rotation[batch_index % rotation.len()]`, which
+    /// gives each entry a share of batches proportional to its weight.
+    fn attrs_for_batch(&self, batch_index: u64) -> Option<&HashMap<String, String>> {
+        match self {
+            SignalGenerator::Static { entries, rotation } if !rotation.is_empty() => {
+                let slot = rotation[batch_index as usize % rotation.len()];
+                Some(&entries[slot].attrs)
+            }
+            _ => None,
+        }
+    }
+
     /// Generate OTLP traces
-    fn generate_traces(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_traces(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Traces(semconv_signal::semconv_otlp_traces(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Traces(static_signal::static_otlp_traces(count))
-            }
+            SignalGenerator::Static { .. } => OtlpProtoMessage::Traces(
+                static_signal::static_otlp_traces(count, self.attrs_for_batch(batch_index)),
+            ),
         }
     }
 
     /// Generate OTLP metrics
-    fn generate_metrics(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_metrics(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics(count))
-            }
+            SignalGenerator::Static { .. } => OtlpProtoMessage::Metrics(
+                static_signal::static_otlp_metrics(count, self.attrs_for_batch(batch_index)),
+            ),
         }
     }
 
     /// Generate OTLP logs
-    fn generate_logs(&self, count: usize) -> OtlpProtoMessage {
+    fn generate_logs(&self, count: usize, batch_index: u64) -> OtlpProtoMessage {
         match self {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, registry))
             }
-            SignalGenerator::Static => {
-                OtlpProtoMessage::Logs(static_signal::static_otlp_logs(count))
-            }
+            SignalGenerator::Static { .. } => OtlpProtoMessage::Logs(
+                static_signal::static_otlp_logs(count, self.attrs_for_batch(batch_index)),
+            ),
         }
     }
 }
@@ -170,6 +195,10 @@ impl BatchCache {
     /// Create a new batch cache by pre-generating a single batch for each signal type.
     /// The batch contains up to `batch_size` records, which will be sent multiple times
     /// per iteration to match the total signal count.
+    ///
+    /// **Note:** Cached batches always use the first resource-attribute set (slot 0).
+    /// Resource attribute rotation is not supported with `pre_generated` strategy;
+    /// use `fresh` or `templates` for per-batch attribute rotation.
     fn new(
         generator: &SignalGenerator,
         batch_size: usize,
@@ -180,7 +209,11 @@ impl BatchCache {
         // Pre-generate single metrics batch
         let metrics_batch_size = metric_count.min(batch_size);
         let metrics = if metric_count > 0 {
-            Some(generator.generate_metrics(metrics_batch_size).try_into()?)
+            Some(
+                generator
+                    .generate_metrics(metrics_batch_size, 0)
+                    .try_into()?,
+            )
         } else {
             None
         };
@@ -188,7 +221,7 @@ impl BatchCache {
         // Pre-generate single traces batch
         let traces_batch_size = trace_count.min(batch_size);
         let traces = if trace_count > 0 {
-            Some(generator.generate_traces(traces_batch_size).try_into()?)
+            Some(generator.generate_traces(traces_batch_size, 0).try_into()?)
         } else {
             None
         };
@@ -196,7 +229,7 @@ impl BatchCache {
         // Pre-generate single logs batch
         let logs_batch_size = log_count.min(batch_size);
         let logs = if log_count > 0 {
-            let pdata: OtapPdata = generator.generate_logs(logs_batch_size).try_into()?;
+            let pdata: OtapPdata = generator.generate_logs(logs_batch_size, 0).try_into()?;
             let (_, payload) = pdata.clone().into_parts();
             let size = payload.num_bytes().unwrap_or(0);
             otel_info!(
@@ -249,7 +282,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     .expect("SemanticConventions data source should return Some registry");
                 SignalGenerator::SemanticConventions(registry)
             }
-            DataSource::Static => SignalGenerator::Static,
+            DataSource::Static => {
+                let entries = self.config.resource_attributes().to_vec();
+                let rotation = build_rotation_table(&entries);
+                SignalGenerator::Static { entries, rotation }
+            }
         };
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -276,6 +313,13 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         // Create batch cache if using PreGenerated strategy
         let batch_cache = match generation_strategy {
             GenerationStrategy::PreGenerated => {
+                if !self.config.resource_attributes().is_empty() {
+                    otel_warn!(
+                        "fake_data_generator.config_warning",
+                        message = "resource_attributes rotation is not supported with pre_generated strategy; \
+                                   only the first attribute set will be used. Use 'fresh' or 'templates' for rotation."
+                    );
+                }
                 otel_info!(
                     "fake_data_generator.pre_generate",
                     message = "Pre-generating batch for high-throughput mode"
@@ -300,6 +344,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         };
 
         let mut signal_count: u64 = 0;
+        let mut batch_rotation_index: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
 
         let _ = effect_handler
@@ -337,6 +382,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     effect_handler.clone(),
                     max_signal_count,
                     &mut signal_count,
+                    &mut batch_rotation_index,
                     max_batch_size,
                     metric_count,
                     trace_count,
@@ -393,6 +439,7 @@ async fn send_signals(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
+    batch_rotation_index: &mut u64,
     max_batch_size: usize,
     metric_count: usize,
     trace_count: usize,
@@ -420,6 +467,7 @@ async fn send_signals(
                 effect_handler,
                 max_signal_count,
                 signal_count,
+                batch_rotation_index,
                 max_batch_size,
                 metric_count,
                 trace_count,
@@ -509,6 +557,7 @@ async fn generate_signal_fresh(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
+    batch_rotation_index: &mut u64,
     max_batch_size: usize,
     metric_count: usize,
     trace_count: usize,
@@ -540,10 +589,13 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(max_batch_size).try_into()?,
+                    generator
+                        .generate_metrics(max_batch_size, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 // generate last remaining signals
@@ -558,10 +610,13 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_metrics(remaining_count).try_into()?,
+                    generator
+                        .generate_metrics(remaining_count, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
 
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -573,11 +628,12 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder)
+                    .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += metric_count_remainder as u64;
         }
 
@@ -586,10 +642,13 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(max_batch_size).try_into()?,
+                    generator
+                        .generate_traces(max_batch_size, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -603,10 +662,13 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_traces(remaining_count).try_into()?,
+                    generator
+                        .generate_traces(remaining_count, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
@@ -616,11 +678,12 @@ async fn generate_signal_fresh(
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder)
+                    .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += trace_count_remainder as u64;
         }
 
@@ -629,10 +692,13 @@ async fn generate_signal_fresh(
             if max_count >= current_count + max_batch_size as u64 {
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(max_batch_size).try_into()?,
+                    generator
+                        .generate_logs(max_batch_size, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 current_count += max_batch_size as u64;
             } else {
                 let remaining_count: usize =
@@ -646,10 +712,13 @@ async fn generate_signal_fresh(
                         })?;
                 send_generated_pdata(
                     &effect_handler,
-                    generator.generate_logs(remaining_count).try_into()?,
+                    generator
+                        .generate_logs(remaining_count, *batch_rotation_index)
+                        .try_into()?,
                     enable_ack_nack,
                 )
                 .await?;
+                *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
                 return Ok(());
@@ -658,10 +727,13 @@ async fn generate_signal_fresh(
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder).try_into()?,
+                generator
+                    .generate_logs(log_count_remainder, *batch_rotation_index)
+                    .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
             current_count += log_count_remainder as u64;
         }
 
@@ -671,58 +743,78 @@ async fn generate_signal_fresh(
         for _ in 0..metric_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_metrics(max_batch_size).try_into()?,
+                generator
+                    .generate_metrics(max_batch_size, *batch_rotation_index)
+                    .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if metric_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_metrics(metric_count_remainder)
+                    .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += metric_count_remainder as u64;
         }
 
         // generate and send traces
         for _ in 0..trace_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_traces(max_batch_size).try_into()?,
+                generator
+                    .generate_traces(max_batch_size, *batch_rotation_index)
+                    .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if trace_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
                 generator
-                    .generate_traces(trace_count_remainder)
+                    .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += trace_count_remainder as u64;
         }
 
         // generate and send logs
         for _ in 0..log_count_split {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(max_batch_size).try_into()?,
+                generator
+                    .generate_logs(max_batch_size, *batch_rotation_index)
+                    .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += max_batch_size as u64;
         }
         if log_count_remainder > 0 {
             send_generated_pdata(
                 &effect_handler,
-                generator.generate_logs(log_count_remainder).try_into()?,
+                generator
+                    .generate_logs(log_count_remainder, *batch_rotation_index)
+                    .try_into()?,
                 enable_ack_nack,
             )
             .await?;
+            *batch_rotation_index += 1;
+            *signal_count += log_count_remainder as u64;
         }
     }
 
@@ -1238,5 +1330,73 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_pregenerated());
+    }
+
+    #[test]
+    fn test_resource_attribute_rotation_across_batches() {
+        use crate::receivers::fake_data_generator::config::ResourceAttributeSet;
+        use std::collections::HashMap;
+        use std::num::NonZeroU32;
+
+        let make_entry = |tenant: &str| ResourceAttributeSet {
+            attrs: HashMap::from([("tenant.id".to_string(), tenant.to_string())]),
+            weight: NonZeroU32::new(1).unwrap(),
+        };
+        let entries = vec![make_entry("prod"), make_entry("staging")];
+        let rotation = build_rotation_table(&entries);
+        let generator = SignalGenerator::Static { entries, rotation };
+
+        // attrs_for_batch should rotate through the two sets
+        assert_eq!(generator.attrs_for_batch(0).unwrap()["tenant.id"], "prod");
+        assert_eq!(
+            generator.attrs_for_batch(1).unwrap()["tenant.id"],
+            "staging"
+        );
+        assert_eq!(generator.attrs_for_batch(2).unwrap()["tenant.id"], "prod");
+        assert_eq!(
+            generator.attrs_for_batch(3).unwrap()["tenant.id"],
+            "staging"
+        );
+
+        // Verify generated signals carry the rotated attributes
+        let logs_batch_0 = match generator.generate_logs(1, 0) {
+            OtlpProtoMessage::Logs(logs) => logs,
+            _ => panic!("expected logs"),
+        };
+        let logs_batch_1 = match generator.generate_logs(1, 1) {
+            OtlpProtoMessage::Logs(logs) => logs,
+            _ => panic!("expected logs"),
+        };
+
+        let get_tenant_id = |logs: &LogsData| -> String {
+            logs.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "tenant.id")
+                .expect("tenant.id attribute missing")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+        };
+
+        assert_ne!(
+            get_tenant_id(&logs_batch_0),
+            get_tenant_id(&logs_batch_1),
+            "consecutive batches should use different resource attribute sets"
+        );
+    }
+
+    #[test]
+    fn test_resource_attribute_rotation_empty_attrs() {
+        let generator = SignalGenerator::Static {
+            entries: vec![],
+            rotation: vec![],
+        };
+        assert!(generator.attrs_for_batch(0).is_none());
+        assert!(generator.attrs_for_batch(1).is_none());
     }
 }

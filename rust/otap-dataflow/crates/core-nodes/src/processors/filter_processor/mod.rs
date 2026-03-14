@@ -10,7 +10,6 @@
 
 use self::config::Config;
 use self::metrics::FilterPdataMetrics;
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -26,6 +25,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ProcessDuration;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -213,8 +213,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
 #[cfg(test)]
 mod tests {
-    use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
-    use crate::pdata::OtapPdata;
+    use crate::processors::filter_processor::{
+        FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
+    };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -222,6 +223,7 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
