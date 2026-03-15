@@ -29,14 +29,14 @@ const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 // when attempting to build a filter for a optional record batch
 const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
 
-/// A flat bitmap for fast membership testing of dense u32 ID values.
+/// A flat bitmap for fast membership testing of dense ID values.
 ///
-/// This is designed for ID spaces that are dense and start near 0. It uses a `Vec<u64>` where
-/// each bit represents whether an ID is present. This provides O(1) insert and contains operations
-/// with minimal overhead (a single array index + bit test).
+/// This is designed for ID spaces that are dense and start near 0, which OTAP's ID columns will
+/// often be. This provides O(1) insert and contains operations with minimal overhead.
 ///
-/// The bitmap is designed to be reused across batches via [`IdBitmap::populate`], which clears
-/// the existing bitmap and repopulates it without deallocating the underlying storage.
+/// Note that the internals of this are heap allocated, so the implementation is designed to be
+/// reused via [`IdBitmap::populate`], which clears the existing bitmap and repopulates it without
+/// deallocating the underlying storage.
 #[derive(Debug, PartialEq)]
 pub struct IdBitmap {
     bits: Vec<u64>,
@@ -49,10 +49,7 @@ impl IdBitmap {
         Self { bits: Vec::new() }
     }
 
-    /// Clears all bits in the bitmap without deallocating.
-    ///
-    /// After calling this, `contains` will return `false` for all IDs, but the underlying
-    /// `Vec<u64>` retains its capacity for reuse.
+    /// Clears all bits in the bitmap (without deallocating).
     pub fn clear(&mut self) {
         self.bits.iter_mut().for_each(|w| *w = 0);
     }
@@ -105,8 +102,6 @@ impl IdBitmap {
     }
 
     /// In-place union: `self |= other`.
-    ///
-    /// After this operation, `self` contains all IDs that were in either `self` or `other`.
     pub fn union_with(&mut self, other: &Self) {
         if other.bits.len() > self.bits.len() {
             self.bits.resize(other.bits.len(), 0);
@@ -117,10 +112,6 @@ impl IdBitmap {
     }
 
     /// In-place intersection: `self &= other`.
-    ///
-    /// After this operation, `self` contains only IDs that were in both `self` and `other`.
-    /// Words in `self` beyond `other`'s length are zeroed (intersecting with an implicit
-    /// all-zeros extension).
     pub fn intersect_with(&mut self, other: &Self) {
         for (i, word) in self.bits.iter_mut().enumerate() {
             if i < other.bits.len() {
@@ -132,10 +123,6 @@ impl IdBitmap {
     }
 
     /// In-place difference: `self &= !other`.
-    ///
-    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
-    /// Words in `self` beyond `other`'s length are unchanged (differencing with an implicit
-    /// all-zeros extension leaves them intact).
     pub fn difference_with(&mut self, other: &Self) {
         for (s, o) in self.bits.iter_mut().zip(other.bits.iter()) {
             *s &= !o;
@@ -150,10 +137,6 @@ impl Default for IdBitmap {
 }
 
 /// A pool of reusable [`IdBitmap`] instances to avoid repeated heap allocations.
-///
-/// When acquiring a bitmap, the pool returns a previously released bitmap (already cleared) or
-/// creates a new one if the pool is empty. When releasing a bitmap, it is returned to the pool
-/// for future reuse. The bitmaps retain their heap allocation across reuse cycles.
 pub struct IdBitmapPool {
     bitmaps: Vec<IdBitmap>,
 }
@@ -169,7 +152,7 @@ impl IdBitmapPool {
 
     /// Acquires an [`IdBitmap`] from the pool, or creates a new empty one if the pool is empty.
     ///
-    /// The returned bitmap is cleared and ready for use.
+    /// The returned bitmap is cleared.
     pub fn acquire(&mut self) -> IdBitmap {
         match self.bitmaps.pop() {
             Some(mut bm) => {
