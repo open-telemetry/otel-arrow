@@ -3,19 +3,19 @@
 
 //! Pipeline group endpoints.
 //!
-//! - GET `/pipeline-groups/:id/pipelines` - list active pipelines and their status (ToDo)
-//! - POST `/pipeline-groups/shutdown` - shutdown all pipelines in all groups
+//! - GET `/groups/:id/pipelines` - list active pipelines and their status (ToDo)
+//! - POST `/groups/shutdown` - shutdown all pipelines in all groups
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until all pipelines have stopped
 //!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
 //!
 //!   Example (fire-and-forget):
 //!   ```sh
-//!   curl -X POST http://localhost:8080/pipeline-groups/shutdown
+//!   curl -X POST http://localhost:8080/groups/shutdown
 //!   ```
 //!   Example (wait for graceful shutdown with 30s timeout):
 //!   ```sh
-//!   curl -X POST "http://localhost:8080/pipeline-groups/shutdown?wait=true&timeout_secs=30"
+//!   curl -X POST "http://localhost:8080/groups/shutdown?wait=true&timeout_secs=30"
 //!   ```
 //!
 //!   - 200 OK if `wait=true` and all pipelines stopped successfully
@@ -46,9 +46,9 @@ use std::time::{Duration, Instant};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         // Returns a summary of all pipelines and their statuses.
-        .route("/pipeline-groups/status", get(show_status))
+        .route("/groups/status", get(show_status))
         // Shutdown all pipelines in all groups.
-        .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+        .route("/groups/shutdown", post(shutdown_all_pipelines))
     // ToDo Global liveness and readiness probes.
 }
 

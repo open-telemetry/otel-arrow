@@ -150,7 +150,7 @@ async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), Val
 /// shutdown pipeline after running
 async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
     let _ = client
-        .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
+        .post(format!("{base}/groups/shutdown?wait=true"))
         .send()
         .await
         .map_err(|e| ValidationError::Http(e.to_string()))?

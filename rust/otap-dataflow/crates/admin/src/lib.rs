@@ -52,7 +52,7 @@ pub enum ControlPlaneError {
     },
 }
 
-/// Body for `PUT /pipeline-groups/{group}/pipelines/{id}`.
+/// Body for `PUT /groups/{group}/pipelines/{id}`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplacePipelineRequest {
@@ -95,7 +95,7 @@ pub struct PipelineRolloutStatus {
     pub pipeline_group_id: PipelineGroupId,
     /// Logical target pipeline id.
     pub pipeline_id: PipelineId,
-    /// `create` when this was a new pipeline, `replace` when rolling an existing one.
+    /// `create`, `noop`, `replace`, or `resize`.
     pub action: String,
     /// Current rollout lifecycle state.
     pub state: String,
@@ -154,7 +154,7 @@ pub struct PipelineShutdownStatus {
     pub cores: Vec<ShutdownCoreStatus>,
 }
 
-/// Live logical pipeline view returned by `GET /pipeline-groups/{group}/pipelines/{id}`.
+/// Live logical pipeline view returned by `GET /groups/{group}/pipelines/{id}`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDetails {

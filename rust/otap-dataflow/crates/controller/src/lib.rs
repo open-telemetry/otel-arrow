@@ -147,6 +147,7 @@ impl InferredTopicMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RolloutAction {
     Create,
+    NoOp,
     Replace,
     Resize,
 }
@@ -155,6 +156,7 @@ impl RolloutAction {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
+            Self::NoOp => "noop",
             Self::Replace => "replace",
             Self::Resize => "resize",
         }
@@ -774,6 +776,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(current_pipeline == candidate_pipeline && current_policies == candidate_policies)
     }
 
+    fn resolved_pipeline_matches(
+        current: &ResolvedPipelineConfig,
+        candidate: &ResolvedPipelineConfig,
+    ) -> Result<bool, ControlPlaneError> {
+        let current_pipeline =
+            serde_json::to_value(&current.pipeline).map_err(|err| ControlPlaneError::Internal {
+                message: err.to_string(),
+            })?;
+        let candidate_pipeline = serde_json::to_value(&candidate.pipeline).map_err(|err| {
+            ControlPlaneError::Internal {
+                message: err.to_string(),
+            }
+        })?;
+
+        Ok(current.role == candidate.role
+            && current_pipeline == candidate_pipeline
+            && current.policies == candidate.policies)
+    }
+
     fn pipeline_topic_profiles(
         config: &OtelDataflowSpec,
     ) -> Result<HashMap<TopicName, TopicRuntimeProfile>, ControlPlaneError> {
@@ -973,13 +994,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_record.as_ref() {
+            let identical_update = current_assigned_cores == target_assigned_cores
+                && active_runtime_state.current_generation_cores == target_assigned_cores
+                && !active_runtime_state.has_foreign_active_generations
+                && Self::resolved_pipeline_matches(&record.resolved, &resolved_pipeline)?;
             let resize_only = current_assigned_cores != target_assigned_cores
                 && !active_runtime_state.has_foreign_active_generations
                 && Self::runtime_shape_matches_ignoring_resources(
                     &record.resolved,
                     &resolved_pipeline,
                 )?;
-            if resize_only {
+            if identical_update {
+                RolloutAction::NoOp
+            } else if resize_only {
                 RolloutAction::Resize
             } else {
                 RolloutAction::Replace
@@ -989,7 +1016,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         };
         let (resize_start_cores, resize_stop_cores) = match action {
             RolloutAction::Resize => (resize_start_cores, resize_stop_cores),
-            RolloutAction::Create | RolloutAction::Replace => (Vec::new(), Vec::new()),
+            RolloutAction::Create | RolloutAction::NoOp | RolloutAction::Replace => {
+                (Vec::new(), Vec::new())
+            }
         };
         let previous_generation = current_record
             .as_ref()
@@ -1008,9 +1037,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let rollout_id = format!("rollout-{}", state.next_rollout_id);
             state.next_rollout_id += 1;
             let target_generation = match action {
-                RolloutAction::Resize => {
-                    previous_generation.expect("resize rollouts always have a current generation")
-                }
+                RolloutAction::NoOp | RolloutAction::Resize => previous_generation
+                    .expect("noop and resize rollouts always have a current generation"),
                 RolloutAction::Create | RolloutAction::Replace => {
                     let generation_counter = state
                         .generation_counters
@@ -1025,6 +1053,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         };
 
         let rollout_core_ids = match action {
+            RolloutAction::NoOp => Vec::new(),
             RolloutAction::Resize => {
                 let mut ids = resize_start_cores.clone();
                 let additional_stop_cores: Vec<_> = resize_stop_cores
@@ -1047,6 +1076,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 core_id,
                 previous_generation: match action {
                     RolloutAction::Create => None,
+                    RolloutAction::NoOp => active_core_set
+                        .contains(&core_id)
+                        .then_some(previous_generation)
+                        .flatten(),
                     RolloutAction::Replace => current_core_set
                         .contains(&core_id)
                         .then_some(previous_generation)
@@ -1401,8 +1434,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
         let rollout_id = plan.rollout.rollout_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
-        let initial_status = plan.rollout.status();
         self.insert_rollout(&pipeline_key, plan.rollout.clone())?;
+        if matches!(plan.action, RolloutAction::NoOp) {
+            self.commit_pipeline_record(&plan, plan.target_generation);
+            self.update_rollout(&pipeline_key, &rollout_id, |rollout| {
+                rollout.state = RolloutLifecycleState::Succeeded;
+                rollout.failure_reason = None;
+            });
+            self.finish_rollout(&pipeline_key, &rollout_id);
+            return self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {
+                ControlPlaneError::Internal {
+                    message: format!("rollout {rollout_id} disappeared before response"),
+                }
+            });
+        }
+
+        let initial_status = plan.rollout.status();
         let runtime = Arc::clone(self);
         let rollout_runtime = Arc::clone(&runtime);
         let _rollout_handle = thread::Builder::new()
@@ -1461,6 +1508,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         let result = match plan.action {
             RolloutAction::Create => self.run_create_rollout(&plan),
+            RolloutAction::NoOp => Ok(()),
             RolloutAction::Replace => self.run_replace_rollout(&plan),
             RolloutAction::Resize => self.run_resize_rollout(&plan),
         };
@@ -4551,6 +4599,158 @@ connections:
                 .collect::<Vec<_>>(),
             vec![1]
         );
+    }
+
+    #[test]
+    fn prepare_rollout_plan_returns_noop_for_identical_active_pipeline() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+        let _receiver =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("identical updates should be planned");
+
+        assert_eq!(plan.action, RolloutAction::NoOp);
+        assert_eq!(plan.target_generation, 0);
+        assert!(plan.rollout.cores.is_empty());
+        assert!(plan.resize_start_cores.is_empty());
+        assert!(plan.resize_stop_cores.is_empty());
+    }
+
+    #[test]
+    fn spawn_rollout_returns_immediate_success_for_noop() {
+        let config = engine_config_with_pipeline(
+            r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        );
+        let runtime = test_runtime(&config);
+        register_existing_pipeline(&runtime, &config);
+        let _receiver =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+        let replacement = PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("replacement should parse");
+
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReplacePipelineRequest {
+                    pipeline: replacement,
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("identical updates should be planned");
+
+        let status = runtime
+            .spawn_rollout(plan)
+            .expect("noop rollout should succeed");
+
+        assert_eq!(status.action, "noop");
+        assert_eq!(status.state, "succeeded");
+        assert_eq!(status.target_generation, 0);
+        assert!(status.cores.is_empty());
+
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        let details = runtime
+            .pipeline_details_snapshot(&pipeline_key)
+            .expect("group should exist")
+            .expect("pipeline should exist");
+        assert_eq!(details.active_generation, Some(0));
+        assert!(details.rollout.is_none());
+
+        let rollout = runtime
+            .rollout_status_snapshot(&status.rollout_id)
+            .expect("completed rollout should remain queryable");
+        assert_eq!(rollout.state, "succeeded");
     }
 
     #[test]

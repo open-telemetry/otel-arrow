@@ -3,17 +3,17 @@
 
 //! Pipeline endpoints.
 //!
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Get the configuration of the specified pipeline.
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
 //!   Get the status of the specified pipeline.
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
 //!   Get the status of a specific rollout job for the logical pipeline.
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
+//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
 //!   Get the status of a specific shutdown job for the logical pipeline.
-//! - PUT `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//! - PUT `/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Create or replace a pipeline and return a rollout job status snapshot.
-//! - POST `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
+//! - POST `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
 //!   Shutdown a specific logical pipeline and return a shutdown job status snapshot.
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until the pipeline stops
@@ -45,33 +45,33 @@ use std::time::{Duration, Instant};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}",
             get(show_pipeline).put(put_pipeline),
         )
         // Returns the status of a specific pipeline.
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status",
             get(show_status),
         )
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}",
             get(show_rollout),
         )
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}",
             get(show_shutdown),
         )
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown",
             post(shutdown_pipeline),
         )
         // liveness and readiness probes.
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez",
             get(liveness),
         )
         .route(
-            "/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz",
+            "/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz",
             get(readiness),
         )
 }
@@ -145,7 +145,16 @@ pub async fn put_pipeline(
     };
 
     if !params.wait {
-        return (StatusCode::ACCEPTED, Json(rollout)).into_response();
+        let status = if rollout_is_terminal(&rollout.state) {
+            if rollout_is_success(&rollout.state) {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            }
+        } else {
+            StatusCode::ACCEPTED
+        };
+        return (status, Json(rollout)).into_response();
     }
 
     let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
