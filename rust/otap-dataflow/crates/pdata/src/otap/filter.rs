@@ -576,12 +576,7 @@ fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanA
 }
 
 /// Builds a selection [`BooleanArray`] for a native (non-dictionary) [`PrimitiveArray`] by checking
-/// each value against the [`IdBitmap`]. This is generic over the arrow primitive type, so it works
-/// for both `UInt16Array` and `UInt32Array`.
-///
-/// Rows with null values are marked as `false` (not selected). The result uses segment-batched
-/// appends to `BooleanBuilder` for efficiency when there are contiguous runs of selected/unselected
-/// rows.
+/// each value against the [`IdBitmap`].
 #[must_use]
 pub fn build_native_selection_vec<T: ArrowPrimitiveType>(
     array: &PrimitiveArray<T>,
@@ -621,7 +616,9 @@ where
 /// Builds a selection [`BooleanArray`] for a dictionary-encoded u32 ID column by checking each
 /// resolved value against the [`IdBitmap`].
 ///
-/// Supports `Dictionary(UInt8, UInt32)` and `Dictionary(UInt16, UInt32)` column types.
+/// Note - only supports Dictionary ID types used for in OTAP (`Dictionary(UInt8, UInt32)`
+/// and `Dictionary(UInt16, UInt32)`, which are used as parent_id in attributes record batches.
+/// This returns an error if the passed id_column is not one of these types.
 pub fn build_dict_u32_selection_vec(
     id_column: &ArrayRef,
     id_bitmap: &IdBitmap,
