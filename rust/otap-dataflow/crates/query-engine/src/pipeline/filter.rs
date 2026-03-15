@@ -3,6 +3,15 @@
 
 use std::sync::Arc;
 
+use crate::error::{Error, Result};
+use crate::pipeline::PipelineStage;
+use crate::pipeline::functions::expr_fn::contains;
+use crate::pipeline::planner::{
+    AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
+    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
+};
+use crate::pipeline::project::Projection;
+use crate::pipeline::state::ExecutionState;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
     RecordBatch, StructArray, UInt16Array,
@@ -33,15 +42,6 @@ use otap_df_pdata::otap::filter::{
 use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
-use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
-use crate::pipeline::functions::expr_fn::contains;
-use crate::pipeline::planner::{
-    AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
-    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
-};
-use crate::pipeline::project::Projection;
-use crate::pipeline::state::ExecutionState;
 
 pub mod optimize;
 
@@ -745,7 +745,7 @@ impl FilterExec {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
-        pool: &mut IdBitmapPool,
+        id_bitmap_pool: &mut IdBitmapPool,
     ) -> Result<BooleanArray> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -793,7 +793,7 @@ impl FilterExec {
                     }
                 };
 
-            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false, pool)?;
+            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false, id_bitmap_pool)?;
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
 
             // we append to the selection vector in contiguous segments rather than doing it 1-by-1
@@ -826,7 +826,7 @@ impl FilterExec {
             }
 
             // release the id_mask bitmap back to the pool for reuse
-            id_mask.release_to(pool);
+            id_mask.release_to(id_bitmap_pool);
 
             let attr_selection_vec = BooleanArray::new(attrs_selection_vec_builder.finish(), None);
             selection_vec = Some(match selection_vec {
@@ -855,13 +855,17 @@ impl Composite<FilterExec> {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
-        pool: &mut IdBitmapPool,
+        id_bitmap_pool: &mut IdBitmapPool,
     ) -> Result<BooleanArray> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch, session_ctx, pool),
-            Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx, pool)?)?),
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx, id_bitmap_pool),
+            Self::Not(filter) => Ok(not(&filter.execute(
+                otap_batch,
+                session_ctx,
+                id_bitmap_pool,
+            )?)?),
             Self::And(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute(otap_batch, session_ctx, id_bitmap_pool)?;
 
                 // short circuit if everything on the left was filtered out. No "true" value
                 // in the right selection vector would change the result
@@ -873,11 +877,11 @@ impl Composite<FilterExec> {
                     return Ok(left_result);
                 }
 
-                let right_result = right.execute(otap_batch, session_ctx, pool)?;
+                let right_result = right.execute(otap_batch, session_ctx, id_bitmap_pool)?;
                 Ok(and(&left_result, &right_result)?)
             }
             Self::Or(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute(otap_batch, session_ctx, id_bitmap_pool)?;
 
                 // short circuit if nothing on the left was filtered out. No "false" value
                 // in the right selection vector would change the result
@@ -889,7 +893,7 @@ impl Composite<FilterExec> {
                     return Ok(left_result);
                 }
 
-                let right_result = right.execute(otap_batch, session_ctx, pool)?;
+                let right_result = right.execute(otap_batch, session_ctx, id_bitmap_pool)?;
                 Ok(or(&left_result, &right_result)?)
             }
         }
@@ -948,7 +952,8 @@ impl IdMask {
                 Self::Some(lhs)
             }
 
-            (Self::Some(lhs), Self::NotSome(mut rhs)) | (Self::NotSome(mut rhs), Self::Some(lhs)) => {
+            (Self::Some(lhs), Self::NotSome(mut rhs))
+            | (Self::NotSome(mut rhs), Self::Some(lhs)) => {
                 // Some(lhs) | NotSome(rhs) = Some(lhs) | !Some(rhs)
                 // = everything except what's in rhs but not in lhs
                 // = NotSome(rhs - lhs)
@@ -987,7 +992,8 @@ impl IdMask {
                 Self::Some(lhs)
             }
 
-            (Self::Some(mut lhs), Self::NotSome(rhs)) | (Self::NotSome(rhs), Self::Some(mut lhs)) => {
+            (Self::Some(mut lhs), Self::NotSome(rhs))
+            | (Self::NotSome(rhs), Self::Some(mut lhs)) => {
                 // Some(lhs) & NotSome(rhs) = Some(lhs) & !Some(rhs)
                 // = lhs minus rhs
                 lhs.difference_with(&rhs);
@@ -4370,10 +4376,7 @@ mod test {
         // Some([1,2,3,4,5]) | NotSome([2,3])
         // = [1,2,3,4,5] plus everything except [2,3]
         // = everything (because [2,3] - [1,2,3,4,5] = empty)
-        assert!(matches!(
-            some.combine_or(not_some, &mut pool),
-            IdMask::All
-        ));
+        assert!(matches!(some.combine_or(not_some, &mut pool), IdMask::All));
     }
 
     #[test]
