@@ -37,6 +37,7 @@ const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
 ///
 /// The bitmap is designed to be reused across batches via [`IdBitmap::populate`], which clears
 /// the existing bitmap and repopulates it without deallocating the underlying storage.
+#[derive(Debug, PartialEq)]
 pub struct IdBitmap {
     bits: Vec<u64>,
 }
@@ -102,9 +103,90 @@ impl IdBitmap {
             self.insert(id);
         }
     }
+
+    /// In-place union: `self |= other`.
+    ///
+    /// After this operation, `self` contains all IDs that were in either `self` or `other`.
+    pub fn union_with(&mut self, other: &Self) {
+        if other.bits.len() > self.bits.len() {
+            self.bits.resize(other.bits.len(), 0);
+        }
+        for (s, o) in self.bits.iter_mut().zip(other.bits.iter()) {
+            *s |= o;
+        }
+    }
+
+    /// In-place intersection: `self &= other`.
+    ///
+    /// After this operation, `self` contains only IDs that were in both `self` and `other`.
+    /// Words in `self` beyond `other`'s length are zeroed (intersecting with an implicit
+    /// all-zeros extension).
+    pub fn intersect_with(&mut self, other: &Self) {
+        for (i, word) in self.bits.iter_mut().enumerate() {
+            if i < other.bits.len() {
+                *word &= other.bits[i];
+            } else {
+                *word = 0;
+            }
+        }
+    }
+
+    /// In-place difference: `self &= !other`.
+    ///
+    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
+    /// Words in `self` beyond `other`'s length are unchanged (differencing with an implicit
+    /// all-zeros extension leaves them intact).
+    pub fn difference_with(&mut self, other: &Self) {
+        for (s, o) in self.bits.iter_mut().zip(other.bits.iter()) {
+            *s &= !o;
+        }
+    }
 }
 
 impl Default for IdBitmap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A pool of reusable [`IdBitmap`] instances to avoid repeated heap allocations.
+///
+/// When acquiring a bitmap, the pool returns a previously released bitmap (already cleared) or
+/// creates a new one if the pool is empty. When releasing a bitmap, it is returned to the pool
+/// for future reuse. The bitmaps retain their heap allocation across reuse cycles.
+pub struct IdBitmapPool {
+    bitmaps: Vec<IdBitmap>,
+}
+
+impl IdBitmapPool {
+    /// Creates a new empty pool.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bitmaps: Vec::new(),
+        }
+    }
+
+    /// Acquires an [`IdBitmap`] from the pool, or creates a new empty one if the pool is empty.
+    ///
+    /// The returned bitmap is cleared and ready for use.
+    pub fn acquire(&mut self) -> IdBitmap {
+        match self.bitmaps.pop() {
+            Some(mut bm) => {
+                bm.clear();
+                bm
+            }
+            None => IdBitmap::new(),
+        }
+    }
+
+    /// Returns an [`IdBitmap`] to the pool for future reuse.
+    pub fn release(&mut self, bitmap: IdBitmap) {
+        self.bitmaps.push(bitmap);
+    }
+}
+
+impl Default for IdBitmapPool {
     fn default() -> Self {
         Self::new()
     }
@@ -1452,5 +1534,129 @@ mod tests {
         let result = build_native_selection_vec(&array, &bitmap);
         let expected = BooleanArray::from(vec![true, true, true, false, false, false, true, true]);
         assert_eq!(result, expected);
+    }
+
+    // --- IdBitmap set operations tests ---
+
+    fn bitmap_from(ids: &[u32]) -> IdBitmap {
+        let mut bm = IdBitmap::new();
+        for &id in ids {
+            bm.insert(id);
+        }
+        bm
+    }
+
+    #[test]
+    fn test_id_bitmap_union_with() {
+        let mut a = bitmap_from(&[1, 2, 3]);
+        let b = bitmap_from(&[3, 4, 5]);
+        a.union_with(&b);
+
+        for id in [1, 2, 3, 4, 5] {
+            assert!(a.contains(id), "expected {} to be present", id);
+        }
+        assert!(!a.contains(0));
+        assert!(!a.contains(6));
+    }
+
+    #[test]
+    fn test_id_bitmap_union_with_extends() {
+        // other is longer than self — self should grow
+        let mut a = bitmap_from(&[1]);
+        let b = bitmap_from(&[1000]);
+        a.union_with(&b);
+
+        assert!(a.contains(1));
+        assert!(a.contains(1000));
+    }
+
+    #[test]
+    fn test_id_bitmap_intersect_with() {
+        let mut a = bitmap_from(&[1, 2, 3, 4]);
+        let b = bitmap_from(&[2, 4, 6]);
+        a.intersect_with(&b);
+
+        assert!(!a.contains(1));
+        assert!(a.contains(2));
+        assert!(!a.contains(3));
+        assert!(a.contains(4));
+        assert!(!a.contains(6));
+    }
+
+    #[test]
+    fn test_id_bitmap_intersect_with_shorter_other() {
+        // Words beyond other's length should be zeroed
+        let mut a = bitmap_from(&[1, 1000]);
+        let b = bitmap_from(&[1]);
+        a.intersect_with(&b);
+
+        assert!(a.contains(1));
+        assert!(!a.contains(1000));
+    }
+
+    #[test]
+    fn test_id_bitmap_difference_with() {
+        let mut a = bitmap_from(&[1, 2, 3, 4]);
+        let b = bitmap_from(&[2, 3, 5]);
+        a.difference_with(&b);
+
+        assert!(a.contains(1));
+        assert!(!a.contains(2));
+        assert!(!a.contains(3));
+        assert!(a.contains(4));
+        assert!(!a.contains(5));
+    }
+
+    #[test]
+    fn test_id_bitmap_difference_with_shorter_other() {
+        // Words beyond other's length should be unchanged
+        let mut a = bitmap_from(&[1, 1000]);
+        let b = bitmap_from(&[1]);
+        a.difference_with(&b);
+
+        assert!(!a.contains(1));
+        assert!(a.contains(1000));
+    }
+
+    // --- IdBitmapPool tests ---
+
+    #[test]
+    fn test_id_bitmap_pool_acquire_release() {
+        let mut pool = IdBitmapPool::new();
+
+        // first acquire should create a new bitmap
+        let mut bm = pool.acquire();
+        assert!(bm.is_empty());
+
+        // populate it
+        bm.insert(42);
+        assert!(bm.contains(42));
+
+        // release it back
+        pool.release(bm);
+
+        // acquire again should return the same allocation, but cleared
+        let bm2 = pool.acquire();
+        assert!(bm2.is_empty());
+        assert!(!bm2.contains(42));
+        // the internal vec should still have capacity from the previous use
+        assert!(bm2.bits.capacity() > 0);
+    }
+
+    #[test]
+    fn test_id_bitmap_pool_multiple() {
+        let mut pool = IdBitmapPool::new();
+
+        let bm1 = pool.acquire();
+        let bm2 = pool.acquire();
+        pool.release(bm1);
+        pool.release(bm2);
+
+        // should get two back
+        let _ = pool.acquire();
+        let _ = pool.acquire();
+        // third should create a new one
+        let bm3 = pool.acquire();
+        assert!(bm3.is_empty());
     }
 }

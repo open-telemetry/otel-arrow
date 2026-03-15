@@ -16,7 +16,7 @@ use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
-use otap_df_pdata::otap::filter::IdBitmap;
+use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 
 use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
@@ -50,6 +50,9 @@ pub struct ConditionalPipelineStage {
 
     /// Reusable bitmap for filtering child batches, avoiding repeated allocations across batches.
     id_bitmap: IdBitmap,
+
+    /// Pool of reusable bitmaps for attribute filter execution.
+    id_bitmap_pool: IdBitmapPool,
 }
 
 impl ConditionalPipelineStage {
@@ -61,6 +64,7 @@ impl ConditionalPipelineStage {
             branches,
             default_branch,
             id_bitmap: IdBitmap::new(),
+            id_bitmap_pool: IdBitmapPool::new(),
         }
     }
 }
@@ -129,7 +133,10 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_selection_vec = branch.condition.execute(&otap_batch, session_ctx)?;
+            let predicate_selection_vec =
+                branch
+                    .condition
+                    .execute(&otap_batch, session_ctx, &mut self.id_bitmap_pool)?;
 
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
 
