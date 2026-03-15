@@ -3,9 +3,9 @@
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array, Int64Array,
-    RecordBatch, StringArray, UInt16Array, UInt32Array,
+    PrimitiveArray, RecordBatch, StringArray, UInt16Array, UInt32Array,
 };
-use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt8Type, UInt16Type};
 use roaring::RoaringBitmap;
 
 use crate::arrays::get_required_array;
@@ -28,6 +28,87 @@ const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 // default boolean array length to use for filter if there is no record batch set
 // when attempting to build a filter for a optional record batch
 const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
+
+/// A flat bitmap for fast membership testing of dense u32 ID values.
+///
+/// This is designed for ID spaces that are dense and start near 0. It uses a `Vec<u64>` where
+/// each bit represents whether an ID is present. This provides O(1) insert and contains operations
+/// with minimal overhead (a single array index + bit test).
+///
+/// The bitmap is designed to be reused across batches via [`IdBitmap::populate`], which clears
+/// the existing bitmap and repopulates it without deallocating the underlying storage.
+pub struct IdBitmap {
+    bits: Vec<u64>,
+}
+
+impl IdBitmap {
+    /// Creates a new empty `IdBitmap`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { bits: Vec::new() }
+    }
+
+    /// Clears all bits in the bitmap without deallocating.
+    ///
+    /// After calling this, `contains` will return `false` for all IDs, but the underlying
+    /// `Vec<u64>` retains its capacity for reuse.
+    pub fn clear(&mut self) {
+        self.bits.iter_mut().for_each(|w| *w = 0);
+    }
+
+    /// Ensures the bitmap has capacity to store the given ID (inclusive).
+    #[inline]
+    fn ensure_capacity(&mut self, id: u32) {
+        let needed = (id as usize / 64) + 1;
+        if needed > self.bits.len() {
+            self.bits.resize(needed, 0);
+        }
+    }
+
+    /// Inserts an ID into the bitmap.
+    #[inline]
+    pub fn insert(&mut self, id: u32) {
+        self.ensure_capacity(id);
+        self.bits[id as usize / 64] |= 1 << (id % 64);
+    }
+
+    /// Returns `true` if the bitmap contains the given ID.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, id: u32) -> bool {
+        let word_idx = id as usize / 64;
+        word_idx < self.bits.len() && (self.bits[word_idx] & (1 << (id % 64))) != 0
+    }
+
+    /// Returns the number of IDs stored in the bitmap (popcount).
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.bits.iter().map(|w| w.count_ones() as u64).sum()
+    }
+
+    /// Returns `true` if the bitmap contains no IDs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bits.iter().all(|&w| w == 0)
+    }
+
+    /// Clears the bitmap and repopulates it from the given iterator.
+    ///
+    /// This reuses the existing allocation when possible. The bitmap will grow if necessary
+    /// to accommodate the largest ID in the iterator, but will never shrink.
+    pub fn populate(&mut self, iter: impl Iterator<Item = u32>) {
+        self.clear();
+        for id in iter {
+            self.insert(id);
+        }
+    }
+}
+
+impl Default for IdBitmap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
@@ -426,6 +507,151 @@ fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanA
     match id_set {
         IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, &u16_ids),
         IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, &u32_ids),
+    }
+}
+
+/// Builds a selection [`BooleanArray`] for a native (non-dictionary) [`PrimitiveArray`] by checking
+/// each value against the [`IdBitmap`]. This is generic over the arrow primitive type, so it works
+/// for both `UInt16Array` and `UInt32Array`.
+///
+/// Rows with null values are marked as `false` (not selected). The result uses segment-batched
+/// appends to `BooleanBuilder` for efficiency when there are contiguous runs of selected/unselected
+/// rows.
+#[must_use]
+pub fn build_native_selection_vec<T: ArrowPrimitiveType>(
+    array: &PrimitiveArray<T>,
+    id_bitmap: &IdBitmap,
+) -> BooleanArray
+where
+    T::Native: Into<u32>,
+{
+    let mut builder = BooleanBuilder::with_capacity(array.len());
+    let mut seg_val = false;
+    let mut seg_len = 0usize;
+
+    for val in array {
+        let valid = match val {
+            Some(v) => id_bitmap.contains(v.into()),
+            None => false,
+        };
+
+        if valid != seg_val {
+            if seg_len > 0 {
+                builder.append_n(seg_len, seg_val);
+            }
+            seg_val = valid;
+            seg_len = 0;
+        }
+
+        seg_len += 1;
+    }
+
+    if seg_len > 0 {
+        builder.append_n(seg_len, seg_val);
+    }
+
+    builder.finish()
+}
+
+/// Builds a selection [`BooleanArray`] for a dictionary-encoded u32 ID column by checking each
+/// resolved value against the [`IdBitmap`].
+///
+/// Supports `Dictionary(UInt8, UInt32)` and `Dictionary(UInt16, UInt32)` column types.
+pub fn build_dict_u32_selection_vec(
+    id_column: &ArrayRef,
+    id_bitmap: &IdBitmap,
+) -> Result<BooleanArray> {
+    match id_column.data_type() {
+        DataType::Dictionary(key, val) => match (key.as_ref(), val.as_ref()) {
+            (&DataType::UInt8, &DataType::UInt32) => {
+                let dict_array = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::Dictionary(
+                            Box::new(DataType::UInt8),
+                            Box::new(DataType::UInt32),
+                        ),
+                    })?;
+
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: dict_array.data_type().clone(),
+                        expect: DataType::UInt32,
+                    })?;
+
+                let mut builder = BooleanBuilder::with_capacity(dict_array.len());
+                for key in dict_array.keys() {
+                    match key {
+                        Some(k) => {
+                            builder.append_value(id_bitmap.contains(values.value(k as usize)));
+                        }
+                        None => {
+                            builder.append_value(false);
+                        }
+                    }
+                }
+
+                Ok(builder.finish())
+            }
+            (&DataType::UInt16, &DataType::UInt32) => {
+                let dict_array = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::Dictionary(
+                            Box::new(DataType::UInt16),
+                            Box::new(DataType::UInt32),
+                        ),
+                    })?;
+
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: dict_array.data_type().clone(),
+                        expect: DataType::UInt32,
+                    })?;
+
+                let mut builder = BooleanBuilder::with_capacity(dict_array.len());
+                for key in dict_array.keys() {
+                    match key {
+                        Some(k) => {
+                            builder.append_value(id_bitmap.contains(values.value(k as usize)));
+                        }
+                        None => {
+                            builder.append_value(false);
+                        }
+                    }
+                }
+
+                Ok(builder.finish())
+            }
+            _ => Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+                ],
+                actual: id_column.data_type().clone(),
+            }),
+        },
+        _ => Err(Error::InvalidListArray {
+            expect_oneof: vec![
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+            ],
+            actual: id_column.data_type().clone(),
+        }),
     }
 }
 
@@ -1046,6 +1272,185 @@ mod tests {
         let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
         let expected = BooleanArray::from(vec![true, true, true]);
 
+        assert_eq!(result, expected);
+    }
+
+    // --- IdBitmap tests ---
+
+    #[test]
+    fn test_id_bitmap_empty() {
+        let bitmap = IdBitmap::new();
+        assert!(bitmap.is_empty());
+        assert_eq!(bitmap.len(), 0);
+        assert!(!bitmap.contains(0));
+        assert!(!bitmap.contains(100));
+    }
+
+    #[test]
+    fn test_id_bitmap_insert_and_contains() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(5);
+        bitmap.insert(63);
+        bitmap.insert(64);
+        bitmap.insert(1000);
+
+        assert!(bitmap.contains(0));
+        assert!(bitmap.contains(5));
+        assert!(bitmap.contains(63));
+        assert!(bitmap.contains(64));
+        assert!(bitmap.contains(1000));
+
+        assert!(!bitmap.contains(1));
+        assert!(!bitmap.contains(62));
+        assert!(!bitmap.contains(65));
+        assert!(!bitmap.contains(999));
+
+        assert_eq!(bitmap.len(), 5);
+        assert!(!bitmap.is_empty());
+    }
+
+    #[test]
+    fn test_id_bitmap_clear_and_reuse() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(10);
+        bitmap.insert(20);
+        assert_eq!(bitmap.len(), 2);
+
+        bitmap.clear();
+        assert!(bitmap.is_empty());
+        assert!(!bitmap.contains(10));
+        assert!(!bitmap.contains(20));
+
+        // reuse after clear - allocation should still be there
+        bitmap.insert(30);
+        assert!(bitmap.contains(30));
+        assert!(!bitmap.contains(10));
+        assert_eq!(bitmap.len(), 1);
+    }
+
+    #[test]
+    fn test_id_bitmap_populate() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([1u32, 3, 5, 7].into_iter());
+
+        assert!(bitmap.contains(1));
+        assert!(!bitmap.contains(2));
+        assert!(bitmap.contains(3));
+        assert!(!bitmap.contains(4));
+        assert!(bitmap.contains(5));
+        assert!(bitmap.contains(7));
+        assert_eq!(bitmap.len(), 4);
+
+        // repopulate with different values
+        bitmap.populate([2u32, 4].into_iter());
+        assert!(!bitmap.contains(1));
+        assert!(bitmap.contains(2));
+        assert!(!bitmap.contains(3));
+        assert!(bitmap.contains(4));
+        assert!(!bitmap.contains(5));
+        assert_eq!(bitmap.len(), 2);
+    }
+
+    #[test]
+    fn test_id_bitmap_contains_out_of_range() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(5);
+        // ID well beyond the allocated range should return false, not panic
+        assert!(!bitmap.contains(1_000_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_word_boundary() {
+        // Test IDs right at word boundaries (multiples of 64)
+        let mut bitmap = IdBitmap::new();
+        for i in (0..256).step_by(64) {
+            bitmap.insert(i);
+        }
+        for i in (0..256).step_by(64) {
+            assert!(bitmap.contains(i), "expected {} to be present", i);
+        }
+        for i in (1..256).step_by(64) {
+            assert!(!bitmap.contains(i), "expected {} to be absent", i);
+        }
+    }
+
+    // --- build_native_selection_vec tests ---
+
+    #[test]
+    fn test_build_native_selection_vec_u16_basic() {
+        let array = UInt16Array::from(vec![1, 2, 3, 4, 5]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([2u32, 4].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, true, false, true, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_u16_with_nulls() {
+        let array = UInt16Array::from(vec![Some(1), None, Some(3), None, Some(5)]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([1u32, 3, 5].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, false, true, false, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_u32_basic() {
+        let array = UInt32Array::from(vec![10, 20, 30, 40, 50]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([20u32, 30, 50].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, true, true, false, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_empty_bitmap() {
+        let array = UInt16Array::from(vec![1, 2, 3]);
+        let bitmap = IdBitmap::new();
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_all_match() {
+        let array = UInt16Array::from(vec![7, 8, 9]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([7u32, 8, 9].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, true, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_no_match() {
+        let array = UInt16Array::from(vec![1, 2, 3]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([10u32, 20, 30].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_contiguous_runs() {
+        // Tests the segment batching optimization with contiguous selected/unselected runs
+        let array = UInt16Array::from(vec![1, 1, 1, 2, 2, 2, 1, 1]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(1);
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, true, true, false, false, false, true, true]);
         assert_eq!(result, expected);
     }
 }
