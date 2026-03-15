@@ -5,7 +5,7 @@ use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use otap_df_admin_api::{
     AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
-    operations::OperationOptions, pipeline_groups::ShutdownStatus, telemetry::MetricsOptions,
+    groups::ShutdownStatus, operations::OperationOptions, telemetry::MetricsOptions,
 };
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
@@ -147,7 +147,7 @@ async fn wait_for_validation_finished(
 /// shutdown pipeline after running
 async fn shutdown_pipeline(client: &AdminClient) -> Result<(), ValidationError> {
     let response = client
-        .pipeline_groups()
+        .groups()
         .shutdown(&OperationOptions::default())
         .await
         .map_err(admin_error)?;
@@ -476,7 +476,7 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/pipeline-groups/shutdown"))
+            .and(path("/api/v1/groups/shutdown"))
             .and(query_param("wait", "false"))
             .and(query_param("timeout_secs", "60"))
             .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({

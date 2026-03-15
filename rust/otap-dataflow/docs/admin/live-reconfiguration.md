@@ -22,6 +22,7 @@ a time without restarting the process or reloading the full startup file.
 - Replace an existing pipeline with a new topology or node configuration.
 - Resize an existing pipeline when the only effective runtime change is
   `policies.resources.core_allocation`.
+- Accept an effectively identical update as a `noop`.
 - Track rollout progress with a rollout id.
 - Shutdown a logical pipeline and track shutdown progress with a shutdown id.
 
@@ -52,14 +53,11 @@ traffic flip across the whole pipeline.
 - Group-level and engine-level policy mutation is out of scope.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
-- There is not yet a no-op fast path for identical updates. If the submitted
-  config is effectively identical to the committed one, the controller still
-  plans a replace rollout today.
 
 ## How It Works
 
 1. The client submits a candidate pipeline config to
-   `PUT /pipeline-groups/{group}/pipelines/{id}`.
+   `PUT /groups/{group}/pipelines/{id}`.
 1. The controller patches exactly that pipeline into its live in-memory
    `OtelDataflowSpec`.
 1. The candidate config is validated as a full engine snapshot:
@@ -69,18 +67,22 @@ traffic flip across the whole pipeline.
    - topic runtime profile compatibility.
 1. The controller classifies the update:
    - `create`: the logical pipeline does not exist yet;
+   - `noop`: the resolved pipeline and active serving footprint already match
+     the request;
    - `replace`: the runtime graph or runtime-significant node config changed;
    - `resize`: only the effective core allocation changed.
 1. The controller executes the plan:
    - `create`: start all target instances in parallel and commit only if they
      all become healthy.
+   - `noop`: record an immediately successful rollout result without restarting
+     any runtime instances.
    - `replace`: do a serial rolling cutover with overlap per common core.
      Start the new generation on one core, wait for admission and readiness,
      then drain the old generation on that core.
    - `resize`: start only newly added cores and drain only removed cores.
      Common cores stay up and keep serving the current generation.
 1. The controller records rollout progress and mirrors a summary into
-   `GET /pipeline-groups/{group}/pipelines/{id}/status`.
+   `GET /groups/{group}/pipelines/{id}/status`.
 
 ### Success Gate
 
@@ -116,7 +118,7 @@ The query string also supports an overall client wait timeout:
 
 ### Read current pipeline config
 
-`GET /pipeline-groups/{group}/pipelines/{id}`
+`GET /groups/{group}/pipelines/{id}`
 
 Returns:
 
@@ -128,7 +130,7 @@ Returns:
 
 ### Create, replace, or resize a pipeline
 
-`PUT /pipeline-groups/{group}/pipelines/{id}?wait=true|false&timeout_secs=<overall>`
+`PUT /groups/{group}/pipelines/{id}?wait=true|false&timeout_secs=<overall>`
 
 Request body:
 
@@ -145,13 +147,14 @@ Request body:
 Behavior:
 
 - If `(group, id)` does not exist, the action is `create`.
+- If the submitted config is already in effect, the action is `noop`.
 - If only the effective core allocation changed, the action is `resize`.
 - Otherwise the action is `replace`.
 
 Response body is a `PipelineRolloutStatus` with:
 
 - `rolloutId`
-- `action` (`create`, `replace`, `resize`)
+- `action` (`create`, `noop`, `replace`, `resize`)
 - `state` (`pending`, `running`, `succeeded`, `failed`, `rolling_back`,
   `rollback_failed`)
 - `targetGeneration`
@@ -174,13 +177,13 @@ Status codes:
 
 ### Read rollout progress
 
-`GET /pipeline-groups/{group}/pipelines/{id}/rollouts/{rolloutId}`
+`GET /groups/{group}/pipelines/{id}/rollouts/{rolloutId}`
 
 Returns the current `PipelineRolloutStatus` snapshot for that operation.
 
 ### Read observed pipeline status
 
-`GET /pipeline-groups/{group}/pipelines/{id}/status`
+`GET /groups/{group}/pipelines/{id}/status`
 
 Returns the aggregated pipeline status. Useful fields during rollout:
 
@@ -197,9 +200,9 @@ overlapping old/new generations stay distinguishable during a rolling cutover.
 
 ### Related shutdown endpoints
 
-- `POST /pipeline-groups/{group}/pipelines/{id}/shutdown`
-- `GET /pipeline-groups/{group}/pipelines/{id}/shutdowns/{shutdownId}`
-- `POST /pipeline-groups/shutdown`
+- `POST /groups/{group}/pipelines/{id}/shutdown`
+- `GET /groups/{group}/pipelines/{id}/shutdowns/{shutdownId}`
+- `POST /groups/shutdown`
 
 These are separate from reconfiguration, but they use the same resident
 controller and the same logical-pipeline locking rules.
@@ -214,7 +217,6 @@ pipeline `topic_multitenant_isolation/tenant_c_pipeline`.
 ### Start the sample engine
 
 ```bash
-cd /Users/l.querel/oss/otel-arrow/rust/otap-dataflow
 cargo run -- -c configs/engine-conf/topic_multitenant_isolation.yaml
 ```
 
@@ -229,8 +231,8 @@ PIPE=tenant_c_pipeline
 Inspect the current committed config and observed runtime state:
 
 ```bash
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" | jq .
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE/status" | jq .
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" | jq .
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" | jq .
 ```
 
 ### Example: Topology change with serial rolling cutover
@@ -241,7 +243,7 @@ processor.
 Build the request body from the live config:
 
 ```bash
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" \
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" \
   | jq '
       {
         pipeline: (
@@ -271,7 +273,7 @@ Submit the update and wait for completion:
 
 ```bash
 curl -sS -X PUT \
-  "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE?wait=true&timeout_secs=120" \
+  "$BASE/groups/$GROUP/pipelines/$PIPE?wait=true&timeout_secs=120" \
   -H 'content-type: application/json' \
   --data-binary @/tmp/tenant_c_pipeline-debug.json | jq .
 ```
@@ -285,8 +287,8 @@ Expected result:
 Verify the committed config and rollout-aware status:
 
 ```bash
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" | jq .
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE/status" \
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" | jq .
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
   | jq '{conditions, totalCores, runningCores, activeGeneration, servingGenerations, rollout, instances}'
 ```
 
@@ -297,13 +299,13 @@ Use `wait=false` to return immediately, then poll the rollout resource:
 ```bash
 ROLLOUT_ID=$(
   curl -sS -X PUT \
-    "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE?wait=false" \
+    "$BASE/groups/$GROUP/pipelines/$PIPE?wait=false" \
     -H 'content-type: application/json' \
     --data-binary @/tmp/tenant_c_pipeline-debug.json \
   | jq -r '.rolloutId'
 )
 
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE/rollouts/$ROLLOUT_ID" | jq .
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/rollouts/$ROLLOUT_ID" | jq .
 ```
 
 ### Example: Pure resource-policy resize
@@ -313,7 +315,7 @@ controller detects that the runtime shape is otherwise unchanged and executes a
 `resize` rollout instead of a full replace.
 
 ```bash
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" \
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" \
   | jq '
       {
         pipeline: .pipeline,
@@ -327,7 +329,7 @@ curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" \
 
 ```bash
 curl -sS -X PUT \
-  "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE?wait=true&timeout_secs=120" \
+  "$BASE/groups/$GROUP/pipelines/$PIPE?wait=true&timeout_secs=120" \
   -H 'content-type: application/json' \
   --data-binary @/tmp/tenant_c_pipeline-scale-up.json | jq .
 ```
@@ -341,7 +343,7 @@ Expected result:
 Verify the pipeline footprint:
 
 ```bash
-curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE/status" \
+curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
   | jq '{totalCores, runningCores, activeGeneration, servingGenerations, rollout}'
 ```
 
@@ -353,8 +355,8 @@ pattern.
 - Different logical pipelines may roll concurrently.
 - A single logical pipeline allows only one active rollout or shutdown at a
   time.
-- `GET /pipeline-groups/{group}/pipelines/{id}` always returns the committed
+- `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
-- `GET /pipeline-groups/{group}/pipelines/{id}/status` is the best endpoint
+- `GET /groups/{group}/pipelines/{id}/status` is the best endpoint
   for watching serving generations and per-instance phase changes during a
   rollout.
