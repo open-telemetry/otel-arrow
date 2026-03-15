@@ -16,7 +16,7 @@ use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
-use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool};
+use otap_df_pdata::otap::filter::IdBitmapPool;
 
 use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
@@ -48,10 +48,7 @@ pub struct ConditionalPipelineStage {
     /// This is analogous to the `else` branch of an if/else control flow statement.
     default_branch: Option<Vec<BoxedPipelineStage>>,
 
-    /// Reusable bitmap for filtering child batches, avoiding repeated allocations across batches.
-    id_bitmap: IdBitmap,
-
-    /// Pool of reusable bitmaps for attribute filter execution.
+    /// Pool of reusable bitmaps for attribute filter execution and child batch filtering.
     id_bitmap_pool: IdBitmapPool,
 }
 
@@ -63,7 +60,6 @@ impl ConditionalPipelineStage {
         Self {
             branches,
             default_branch,
-            id_bitmap: IdBitmap::new(),
             id_bitmap_pool: IdBitmapPool::new(),
         }
     }
@@ -154,7 +150,7 @@ impl PipelineStage for ConditionalPipelineStage {
             let mut branch_otap_batch = filter_otap_batch(
                 &branch_selection_vec,
                 otap_batch.clone(),
-                &mut self.id_bitmap,
+                &mut self.id_bitmap_pool,
             )?;
 
             for stage in &mut branch.pipeline_stages {
@@ -178,7 +174,7 @@ impl PipelineStage for ConditionalPipelineStage {
             let mut default_branch_batch = filter_otap_batch(
                 &not(&already_selected_vec)?,
                 otap_batch.clone(),
-                &mut self.id_bitmap,
+                &mut self.id_bitmap_pool,
             )?;
 
             if let Some(default_branch) = self.default_branch.as_mut() {
