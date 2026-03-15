@@ -3,11 +3,13 @@
 This section documents the admin surface of the OTAP Dataflow Engine:
 
 - runtime endpoints used for health, status, and telemetry;
+- live pipeline reconfiguration and shutdown operations;
 - embedded browser UI behavior and architecture.
 
 ## Document map
 
 - [Admin UI Architecture](architecture.md)
+- [Live Pipeline Reconfiguration](live-reconfiguration.md)
 - [Crate README (admin endpoints and crate layout)](../../crates/admin/README.md)
 
 ## Quick start
@@ -20,6 +22,9 @@ Assuming the engine is running with admin HTTP enabled:
 
 For architecture details (state model, derivation rules, graph rules, testing),
 start with [Admin UI Architecture](architecture.md).
+
+For the live mutation API used to create, replace, resize, and shut down
+logical pipelines, see [Live Pipeline Reconfiguration](live-reconfiguration.md).
 
 ## UI module tests
 

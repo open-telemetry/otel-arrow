@@ -72,7 +72,7 @@ struct RuntimeInstanceStatusView<'a> {
 /// Aggregated, controller-synthesized view for a logical pipeline.
 #[derive(Debug, Clone)]
 pub struct PipelineStatus {
-    /// Per-instance details to aid debugging and blue/green aggregation.
+    /// Per-instance details to aid debugging and overlap-aware generation aggregation.
     pub(crate) instances: HashMap<RuntimeInstanceKey, PipelineRuntimeStatus>,
 
     /// Serving generation selected per core by the controller during rollout.

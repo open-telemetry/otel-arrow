@@ -9,14 +9,14 @@ a time without restarting the process or reloading the full startup file.
 
 - Reconfigure one pipeline in a running engine instance.
 - Keep the mutation scoped to a single `(pipeline_group_id, pipeline_id)`.
-- Preserve service continuity for topology/config changes with a blue/green
-  rollout on the affected cores.
+- Preserve service continuity for topology/config changes with a serial rolling
+  cutover that overlaps old and new instances only on the affected cores.
 - Support pure resource policy changes, including scale up and scale down,
   without restarting unchanged cores.
 - Make progress observable through admin endpoints instead of hidden internal
   controller state.
 
-## What v1 Supports
+## Supported Operations
 
 - Create a new pipeline inside an existing pipeline group.
 - Replace an existing pipeline with a new topology or node configuration.
@@ -24,6 +24,22 @@ a time without restarting the process or reloading the full startup file.
   `policies.resources.core_allocation`.
 - Track rollout progress with a rollout id.
 - Shutdown a logical pipeline and track shutdown progress with a shutdown id.
+
+## Terminology
+
+This document uses `serial rolling cutover with overlap` for topology-changing
+replacement.
+
+During `replace`, the controller overlaps old and new instances only on the
+core currently being switched:
+
+- start the new instance for one core;
+- wait for `Admitted` and `Ready`;
+- drain the old instance on that same core;
+- move to the next core.
+
+This does not start a second complete serving fleet and perform one atomic
+traffic flip across the whole pipeline.
 
 ## Boundaries and Current Limits
 
@@ -58,9 +74,9 @@ a time without restarting the process or reloading the full startup file.
 1. The controller executes the plan:
    - `create`: start all target instances in parallel and commit only if they
      all become healthy.
-   - `replace`: do a serial blue/green rollout per common core. Start the new
-     generation on one core, wait for admission and readiness, then drain the
-     old generation on that core.
+   - `replace`: do a serial rolling cutover with overlap per common core.
+     Start the new generation on one core, wait for admission and readiness,
+     then drain the old generation on that core.
    - `resize`: start only newly added cores and drain only removed cores.
      Common cores stay up and keep serving the current generation.
 1. The controller records rollout progress and mirrors a summary into
@@ -177,7 +193,7 @@ Returns the aggregated pipeline status. Useful fields during rollout:
 - `instances`
 
 Each `instances` entry is keyed by `(coreId, deploymentGeneration)`, so
-overlapping old/new generations stay distinguishable during blue/green rollout.
+overlapping old/new generations stay distinguishable during a rolling cutover.
 
 ### Related shutdown endpoints
 
@@ -217,7 +233,7 @@ curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE" | jq .
 curl -s "$BASE/pipeline-groups/$GROUP/pipelines/$PIPE/status" | jq .
 ```
 
-### Example: Topology change with blue/green replace
+### Example: Topology change with serial rolling cutover
 
 This example inserts a debug processor between the topic receiver and the retry
 processor.

@@ -3,12 +3,16 @@
 `otap-df-admin` provides:
 
 - admin, health, status, and telemetry HTTP endpoints;
+- live pipeline mutation endpoints for create, replace, resize, rollout
+  tracking, and shutdown tracking;
 - an embedded single-page UI served from the same process and origin.
 
 For architecture and runtime behavior details, see
 [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 For the admin docs landing page, see
 [`docs/admin/README.md`](../../docs/admin/README.md).
+For the operator guide to live pipeline mutation, see
+[`docs/admin/live-reconfiguration.md`](../../docs/admin/live-reconfiguration.md).
 
 ## Main routes
 
@@ -31,9 +35,17 @@ For the admin docs landing page, see
 - `GET /livez`
 - `GET /readyz`
 - `GET /pipeline-groups/status`
+- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 - `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
 - `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
 - `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
+
+### Pipeline lifecycle
+
+- `PUT /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+- `POST /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
 - `POST /pipeline-groups/shutdown`
 
 ## Embedded UI layout (crate-relative)
@@ -86,8 +98,11 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   through an enforced integration layer).
 - [ ] Add TLS support in-process or enforce TLS at a mandatory front proxy
   boundary.
-- [ ] Protect `POST /pipeline-groups/shutdown` with stricter access controls
-  than read-only endpoints.
+- [ ] Protect mutating endpoints such as
+  `PUT /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
+  `POST /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
+  and `POST /pipeline-groups/shutdown` with stricter access controls than
+  read-only endpoints.
 - [ ] Apply the same hardened response headers to API endpoints
   (`/status`, `/livez`, `/readyz`, `/telemetry/*`, `/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
@@ -104,4 +119,6 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   - strong authentication/authorization
   - network ACLs / source allow-listing
   - route-level restrictions for mutating endpoints such as
-    `/pipeline-groups/shutdown`
+    `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
+    `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
+    and `/pipeline-groups/shutdown`
