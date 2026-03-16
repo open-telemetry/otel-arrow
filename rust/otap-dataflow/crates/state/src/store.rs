@@ -272,8 +272,8 @@ impl ObservedStateStore {
     /// triggered.
     ///
     /// Engine lifecycle events are received from a dedicated unbounded channel
-    /// and are given priority over log events to ensure state transitions are
-    /// never starved by high-volume log traffic.
+    /// and are prioritized over log events so log traffic cannot delay
+    /// lifecycle processing on the shared consumer loop.
     pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
         let mut engine_closed = false;
         let mut log_closed = false;
