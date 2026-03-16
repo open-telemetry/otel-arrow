@@ -1431,162 +1431,165 @@ pub(crate) fn filter_otap_batch(
     // replace the root batch
     otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
 
+    // Acquire a reusable bitmap from the pool for child batch filtering. The closure ensures
+    // the bitmap is always returned to the pool, even if a filter_child_batch call returns an
+    // error (the `?` operator returns from the closure, not the outer function).
     let mut id_bitmap = pool.acquire();
-
-    // update the child batches after filtering has been applied to parent
-    let result = match otap_batch.root_payload_type() {
-        ArrowPayloadType::Logs => {
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::LogAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ScopeAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ResourceAttrs,
-                &mut id_bitmap,
-            )?;
-            Ok(otap_batch)
-        }
-        ArrowPayloadType::Spans => {
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SpanAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ScopeAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ResourceAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SpanEvents,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SpanEventAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SpanLinks,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SpanLinkAttrs,
-                &mut id_bitmap,
-            )?;
-            Ok(otap_batch)
-        }
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::MetricAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ScopeAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ResourceAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SummaryDataPoints,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::SummaryDpAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::NumberDataPoints,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::NumberDpAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::NumberDpExemplars,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::NumberDpExemplarAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDataPoints,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDpAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDpExemplars,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDpExemplarAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDataPoints,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpAttrs,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpExemplars,
-                &mut id_bitmap,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-                &mut id_bitmap,
-            )?;
-            Ok(otap_batch)
-        }
-        signal_type => Err(Error::ExecutionError {
-            cause: format!(
-                "signal type {:?} not yet supported by FilterPipelineStage",
-                signal_type
-            ),
-        }),
-    };
-
+    let result = (|| -> Result<OtapArrowRecords> {
+        // update the child batches after filtering has been applied to parent
+        match otap_batch.root_payload_type() {
+            ArrowPayloadType::Logs => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::LogAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            ArrowPayloadType::Spans => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEvents,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEventAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinks,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinkAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::MetricAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            signal_type => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "signal type {:?} not yet supported by FilterPipelineStage",
+                        signal_type
+                    ),
+                });
+            }
+        };
+        Ok(otap_batch)
+    })();
     pool.release(id_bitmap);
     result
 }
