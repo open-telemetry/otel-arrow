@@ -23,6 +23,8 @@
 
 pub mod config;
 pub mod error;
+#[cfg(test)]
+mod fixtures;
 pub mod idgen;
 pub mod metrics;
 pub mod partition;
@@ -421,6 +423,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use super::fixtures;
     use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt16Array};
     use arrow::compute::concat_batches;
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -441,7 +444,7 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::{fixtures, object_store};
+    use otap_df_otap::object_store;
     use otap_df_pdata::Consumer;
     use otap_df_pdata::otap::from_record_messages;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;

@@ -39,10 +39,6 @@ mod otap_mock;
 mod otlp_mock;
 
 #[cfg(any(test, feature = "test-utils"))]
-#[allow(missing_docs)]
-pub mod fixtures;
-
-#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 
 /// compression formats

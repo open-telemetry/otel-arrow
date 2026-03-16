@@ -58,6 +58,8 @@ weaver_semconv.workspace = true
 experimental-tls = []
 
 [dev-dependencies]
+arrow-ipc.workspace = true
+fluke-hpack.workspace = true
 otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
