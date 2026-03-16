@@ -983,7 +983,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let obs_state_store =
             ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
-        let engine_evt_reporter = obs_state_store.reporter(engine.observed_state.engine_events);
+        let engine_evt_reporter =
+            obs_state_store.engine_reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
             .logs
             .providers
