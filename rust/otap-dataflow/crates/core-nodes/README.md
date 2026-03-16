@@ -14,6 +14,8 @@ Each component lives in its own subfolder within a category:
         console_exporter/
         error_exporter/
         noop_exporter/
+        perf_exporter/
+        topic_exporter/
       processors/
         mod.rs (category exports)
         attributes_processor/
@@ -30,6 +32,8 @@ Each component lives in its own subfolder within a category:
       receivers/
         mod.rs (category exports)
         fake_data_generator/
+        internal_telemetry_receiver/
+        topic_receiver/
       lib.rs
 
 ## Components
@@ -41,6 +45,8 @@ Each component lives in its own subfolder within a category:
 | console_exporter | `urn:otel:exporter:console` | `src/exporters/console_exporter/` |
 | error_exporter | `urn:otel:exporter:error` | `src/exporters/error_exporter/` |
 | noop_exporter | `urn:otel:exporter:noop` | `src/exporters/noop_exporter/` |
+| perf_exporter | `urn:otel:exporter:perf` | `src/exporters/perf_exporter/` |
+| topic_exporter | `urn:otel:exporter:topic` | `src/exporters/topic_exporter/` |
 
 #### console_exporter
 
@@ -56,6 +62,16 @@ Each component lives in its own subfolder within a category:
 
 - Placeholder exporter that ACKs all messages without processing
 - Lightweight for performance testing and pipeline validation
+
+#### perf_exporter
+
+- Measures item throughput by signal type for benchmarking scenarios
+- Emits pdata-oriented telemetry metrics during pipeline execution
+
+#### topic_exporter
+
+- Publishes pdata into configured runtime topics
+- Supports tracked end-to-end ack/nack propagation through topic boundaries
 
 ### Processors
 
@@ -140,9 +156,21 @@ Each component lives in its own subfolder within a category:
 | Node | URN | Module |
 | ---- | --- | ------ |
 | fake_data_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/fake_data_generator/` |
+| internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
+| topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
 
 #### fake_data_generator
 
 - Generates synthetic OTAP/OTLP signals for testing and benchmarking
 - Configurable signal generation strategies and volume constraints
 - Includes support for pregenerated, dynamic, and rate-based signal generation
+
+#### internal_telemetry_receiver
+
+- Receives internal engine telemetry events from the internal log channel
+- Emits them as OTLP log pdata into the configured pipeline
+
+#### topic_receiver
+
+- Subscribes to runtime topics and forwards messages into the pipeline
+- Supports broadcast/balanced subscription modes and topic ack/nack bridging
