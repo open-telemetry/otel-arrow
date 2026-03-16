@@ -198,8 +198,8 @@ zip = "=4.2.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-azure_core = {version = "0.32.0", default-features = false }
-azure_identity = {version = "0.32.0", default-features = false }
+azure_core = {version = "0.33.0", default-features = false }
+azure_identity = {version = "0.33.0", default-features = false }
 flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"
