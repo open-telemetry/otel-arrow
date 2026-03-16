@@ -88,6 +88,44 @@ meshes. In theory we could parse (plaintext) HTTP/2 frames and steer them across
 worker sockets, but doing so (especially through TLS) is complex and typically
 unnecessary if an L7 proxy is available. Treat as research / last resort.
 
+#### 2.d. Internal Topic-Based Split (Pipeline Decoupling)
+
+When `SO_REUSEPORT` is unavailable (or ineffective) and/or incoming connection
+count is too low to distribute load well across cores, a complementary approach
+is to split one pipeline into two pipelines connected by an internal in-memory
+topic.
+
+```text
+Ingress pipeline (n cores)                  Processing/Export pipeline (m cores)
+receiver -> (minimal processing) -> topic   topic -> processors -> exporters
+```
+
+Recommended shape:
+
+- **Ingress pipeline (`n` cores):** optimize for receiver-side work only
+  (accept/decode/admission), then publish each received **batch** to a local
+  in-memory topic.
+- **Processing/export pipeline (`m` cores):** consume that topic with balanced
+  subscriptions, then run heavier processing/export logic.
+
+Why this helps:
+
+- Distribution happens at the **batch** level (not per signal), so scheduling
+  overhead remains low.
+- Receiver-side connection skew is absorbed by the topic boundary, while
+  downstream worker cores still get balanced batches.
+- `n` and `m` can be tuned independently (I/O-heavy ingest vs CPU-heavy
+  processing).
+- Best efficiency is typically achieved when both pipelines are pinned to the
+  same NUMA node, minimizing cross-node memory traffic.
+
+Trade-offs to plan for:
+
+- Extra queueing boundary (capacity sizing and `queue_on_full` policy matter).
+- Potential additional latency under sustained backpressure.
+- This is complementary to L7/reuseport strategies, not a replacement for
+  network-level balancing across hosts.
+
 ## Recommended Baseline Configuration
 
 1. **Per-CPU listener sockets:** Use `SO_REUSEPORT` (one service port; one
@@ -103,6 +141,10 @@ unnecessary if an L7 proxy is available. Treat as research / last resort.
 4. **Observability:** Monitor per-listener connection counts, QPS, latency, and
    compression efficiency; alert when deviation exceeds acceptable thresholds
    (e.g. >20% from median) aligned with your Service Level Objectives (SLOs).
+5. **Low-connection or no-reuseport fallback:** If listener-level skew persists
+   because connection entropy is low (or `SO_REUSEPORT` is not available),
+   consider the internal topic-based split (`ingest -> topic -> processing`) to
+   rebalance work at batch granularity.
 
 ## Future Work
 

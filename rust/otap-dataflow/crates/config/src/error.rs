@@ -192,12 +192,38 @@ pub enum Error {
         declared_outputs: Box<[PortName]>,
     },
 
+    /// An environment variable referenced in the configuration is not set and no default was given.
+    #[error("Environment variable `{var}` is not set and no default was provided")]
+    #[diagnostic(code(data_plane::env_var_not_found), url(docsrs))]
+    EnvVarNotFound {
+        /// The name of the missing environment variable.
+        var: String,
+    },
+
+    /// An environment variable referenced in the configuration cannot be parsed and no default was given.
+    #[error("Environment variable `{var}` cannot be parsed and no default was provided")]
+    #[diagnostic(code(data_plane::env_var_cannot_be_parsed), url(docsrs))]
+    EnvVarCannotBeParsed {
+        /// The name of the environment variable that cannot be parsed.
+        var: String,
+    },
+
     /// An invalid user configuration occurred.
     #[error("An invalid user configuration occurred: {error}")]
     InvalidUserConfig {
         /// An error message.
         error: String,
     },
+
+    /// Topic name cannot be empty.
+    #[error("invalid topic name: topic name must be non-empty")]
+    #[diagnostic(code(data_plane::invalid_topic_name), url(docsrs))]
+    TopicNameEmpty,
+
+    /// Subscription group name cannot be empty.
+    #[error("invalid subscription group name: subscription group name must be non-empty")]
+    #[diagnostic(code(data_plane::invalid_subscription_group_name), url(docsrs))]
+    SubscriptionGroupNameEmpty,
 
     /// A pipeline with the same id already exists in the pipeline group.
     #[error("Pipeline with id `{pipeline_id}` already exists in the pipeline group")]

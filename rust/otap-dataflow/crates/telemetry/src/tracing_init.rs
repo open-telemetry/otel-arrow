@@ -18,8 +18,11 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 /// Creates an `EnvFilter` for the given log level.
 ///
-/// If `RUST_LOG` is set in the environment, it takes precedence for fine-grained control.
-/// Otherwise, the level's directive string is passed directly to `EnvFilter`.
+/// If the `RUST_LOG` environment variable is set, it takes precedence.
+/// Otherwise, the level's [`RUST_LOG`-style directive string][env-filter] is
+/// passed directly to [`EnvFilter`].
+///
+/// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))

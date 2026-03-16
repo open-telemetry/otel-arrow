@@ -1184,8 +1184,8 @@ nodes:
       compression_method: zstd
       arrow:
         payload_compression: none
-  otlp_exporter:
-    type: "urn:otel:exporter:otlp"
+  otlp_grpc_exporter:
+    type: "urn:otel:exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # Optional: timeout for RPC requests
@@ -1199,7 +1199,7 @@ connections:
   - from: durable_buffer
     to: otap_exporter
   - from: durable_buffer
-    to: otlp_exporter
+    to: otlp_grpc_exporter
 ```
 
 ### Example: Dual Exporters with Completion Tracking
@@ -1212,7 +1212,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 
 1. Incoming batches append to the WAL and accumulate in the in-memory open
   segment until finalize triggers; then the data is written as `seg-120.arrow`.
-1. Quiver enqueues a notification for `parquet_exporter` and `otlp_exporter`.
+1. Quiver enqueues a notification for `parquet_exporter` and `otlp_grpc_exporter`.
 1. Each exporter drains the segment's three bundles in order and, after
   finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
   to Quiver. The consumer-side cursor only advances to the next bundle once the
@@ -1226,7 +1226,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
 
-  quiver.sub.otlp_exporter:
+  quiver.sub.otlp_grpc_exporter:
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
   ```

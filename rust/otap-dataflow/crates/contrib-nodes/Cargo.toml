@@ -45,8 +45,10 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls"] }
+ryu = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 
 [features]
@@ -68,7 +70,9 @@ azure-monitor-exporter = [
     "dep:chrono",
     "dep:flate2",
     "dep:http",
+    "dep:itoa",
     "dep:rand",
+    "dep:ryu",
 ]
 
 contrib-processors = [
@@ -85,7 +89,14 @@ recordset-kql-processor = [
 resource-validator-processor = []
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
 pretty_assertions.workspace = true
 wiremock.workspace = true
+
+[[bench]]
+name = "azure_monitor_transformer"
+path = "benches/exporters/azure_monitor_exporter/transformer.rs"
+harness = false
+required-features = ["azure-monitor-exporter"]

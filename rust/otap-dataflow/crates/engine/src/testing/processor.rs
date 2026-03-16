@@ -6,6 +6,7 @@
 //! These utilities are designed to make testing processors simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::Interests;
 use crate::config::ProcessorConfig;
 use crate::control::pipeline_ctrl_msg_channel;
 use crate::effect_handler::SourceTagging;
@@ -286,7 +287,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         self.rt.block_on(async move {
             let mut runtime = self
                 .processor
-                .prepare_runtime(metrics_reporter)
+                .prepare_runtime(metrics_reporter, Interests::empty())
                 .await
                 .expect("Failed to prepare runtime");
 

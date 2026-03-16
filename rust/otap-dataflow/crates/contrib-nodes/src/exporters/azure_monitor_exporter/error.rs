@@ -88,7 +88,7 @@ pub enum Error {
 
     // ==================== Export Errors ====================
     /// Export failed after retries.
-    #[error("Export failed after {attempts} attempts")]
+    #[error("Export failed after {attempts} attempts: {last_error}")]
     ExportFailed {
         /// Number of attempts made.
         attempts: u32,
@@ -262,6 +262,19 @@ impl Error {
         }
     }
 
+    /// Creates a token acquisition timeout error.
+    #[must_use]
+    pub fn token_acquisition_timeout(timeout: std::time::Duration) -> Self {
+        Self::Auth {
+            kind: AuthErrorKind::TokenAcquisition,
+            source: Some(azure_core::error::Error::new(
+                azure_core::error::ErrorKind::Other,
+                format!("token acquisition timed out after {}s", timeout.as_secs()),
+            )),
+            body: None,
+        }
+    }
+
     /// Creates an unauthorized (401) error.
     #[must_use]
     pub fn unauthorized(body: String) -> Self {
@@ -423,7 +436,10 @@ mod tests {
             attempts: 5,
             last_error: Box::new(inner),
         };
-        assert_eq!(error.to_string(), "Export failed after 5 attempts");
+        assert_eq!(
+            error.to_string(),
+            "Export failed after 5 attempts: Payload too large"
+        );
         assert!(error.source().is_some());
     }
 

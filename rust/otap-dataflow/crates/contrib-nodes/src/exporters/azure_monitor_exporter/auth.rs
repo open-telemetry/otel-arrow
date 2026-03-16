@@ -6,19 +6,18 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 use super::metrics::AzureMonitorExporterMetricsRc;
 
-/// Minimum delay between token refresh retry attempts in seconds.
-const MIN_RETRY_DELAY_SECS: f64 = 5.0;
-/// Maximum delay between token refresh retry attempts in seconds.
-const MAX_RETRY_DELAY_SECS: f64 = 30.0;
-/// Maximum jitter percentage (±10%) to add to retry delays.
-const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
+/// Brief pause between outer retry loops.
+/// The Azure SDK already performs exponential backoff internally
+/// (e.g., 6 retries over ~72s for IMDS), so this is just a short
+/// breather before the next SDK retry cycle.
+const RETRY_PAUSE: tokio::time::Duration = tokio::time::Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
@@ -68,6 +67,54 @@ impl Auth {
         Ok(token_response)
     }
 
+    /// Attempt token acquisition with bounded retries and an overall timeout.
+    /// Used at startup to surface auth misconfigurations quickly.
+    /// Retries up to `max_attempts` times within the `timeout` duration.
+    /// Returns Ok(token) on first success, or the last error if all attempts
+    /// fail or the overall timeout is reached.
+    pub async fn try_get_token(
+        &self,
+        timeout: tokio::time::Duration,
+        max_attempts: u32,
+    ) -> Result<AccessToken, Error> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error = None;
+
+        for attempt in 1..=max_attempts {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, self.get_token_internal()).await {
+                Ok(Ok(token)) => return Ok(token),
+                Ok(Err(e)) => {
+                    otel_debug!(
+                        "azure_monitor_exporter.auth.startup_attempt_failed",
+                        attempt = attempt,
+                        max_attempts = max_attempts,
+                        error = %e
+                    );
+                    last_error = Some(e);
+                }
+                Err(_elapsed) => {
+                    return Err(Error::token_acquisition_timeout(timeout));
+                }
+            }
+
+            // Brief pause between retries (not after the last attempt)
+            if attempt < max_attempts {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if !remaining.is_zero() {
+                    tokio::time::sleep(remaining.min(tokio::time::Duration::from_millis(500)))
+                        .await;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| Error::token_acquisition_timeout(timeout)))
+    }
+
     pub async fn get_token(&mut self) -> Result<AccessToken, Error> {
         let mut attempt = 0_i32;
         let start = tokio::time::Instant::now();
@@ -82,32 +129,24 @@ impl Auth {
                     return Ok(token);
                 }
                 Err(e) => {
-                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
+                    let error_msg = e.to_string();
+                    let first_line = error_msg.lines().next().unwrap_or(&error_msg);
+
+                    otel_warn!(
+                        "azure_monitor_exporter.auth.get_token_failed",
+                        message = "Token acquisition failed. Will keep retrying. The error may mention retries being exhausted; that refers to an internal retry layer, not this outer loop.",
+                        attempt = attempt,
+                        error = %first_line
+                    );
+                    otel_debug!("azure_monitor_exporter.auth.get_token_failed.details", attempt = attempt, error = %e);
                     self.metrics.borrow_mut().add_auth_failure();
+
+                    // The Azure SDK already retries internally with exponential
+                    // backoff (e.g., 6 retries over ~72s for IMDS). This short
+                    // pause just prevents a tight spin before the next SDK cycle.
+                    tokio::time::sleep(RETRY_PAUSE).await;
                 }
             }
-
-            // Calculate exponential backoff: 5s, 10s, 20s, 30s (capped)
-            let base_delay_secs = MIN_RETRY_DELAY_SECS * 2.0_f64.powi(attempt - 1);
-            let capped_delay_secs = base_delay_secs.min(MAX_RETRY_DELAY_SECS);
-
-            // Add jitter: random value between -10% and +10% of the delay
-            let jitter_range = capped_delay_secs * MAX_RETRY_JITTER_RATIO;
-            let jitter = if jitter_range > 0.0 {
-                let random_factor = rand::random::<f64>() * 2.0 - 1.0;
-                random_factor * jitter_range
-            } else {
-                0.0
-            };
-
-            let delay_secs = (capped_delay_secs + jitter).max(1.0);
-            let delay = tokio::time::Duration::from_secs_f64(delay_secs);
-
-            otel_warn!(
-                "azure_monitor_exporter.auth.retry_scheduled",
-                delay_secs = %delay_secs
-            );
-            tokio::time::sleep(delay).await;
         }
     }
 
@@ -117,28 +156,16 @@ impl Auth {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
                 if let Some(client_id) = &auth_config.client_id {
-                    otel_info!("azure_monitor_exporter.auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
-                } else {
-                    otel_info!(
-                        "azure_monitor_exporter.auth.credential_type",
-                        method = "system_assigned_managed_identity"
-                    );
                 }
 
                 Ok(ManagedIdentityCredential::new(Some(options))
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
-            AuthMethod::Development => {
-                otel_info!(
-                    "azure_monitor_exporter.auth.credential_type",
-                    method = "developer_tools"
-                );
-                Ok(
-                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
-                )
-            }
+            AuthMethod::Development => Ok(DeveloperToolsCredential::new(Some(
+                DeveloperToolsCredentialOptions::default(),
+            ))
+            .map_err(|e| Error::create_credential(AuthMethod::Development, e))?),
         }
     }
 }
@@ -217,6 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_with_managed_identity_user_assigned() {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: Some("test-client-id".to_string()),
@@ -231,6 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_with_managed_identity_system_assigned() {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: None,
@@ -354,6 +383,138 @@ mod tests {
             } => {}
             err => panic!("Expected Auth token acquisition error, got: {:?}", err),
         }
+    }
+
+    // ==================== try_get_token Tests ====================
+
+    #[tokio::test]
+    async fn test_try_get_token_returns_token_on_first_success() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let credential = make_mock_credential(
+            "startup_token",
+            azure_core::time::Duration::minutes(60),
+            call_count.clone(),
+        );
+
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let result = auth
+            .try_get_token(tokio::time::Duration::from_secs(5), 3)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().token.secret(), "startup_token");
+        // Should succeed on the first attempt — no retries needed
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_try_get_token_retries_then_succeeds() {
+        use std::sync::atomic::AtomicU32;
+
+        /// Credential that fails the first N attempts then succeeds.
+        #[derive(Debug)]
+        struct FailThenSucceedCredential {
+            fail_count: AtomicU32,
+            failures_remaining: AtomicU32,
+        }
+
+        #[async_trait::async_trait]
+        impl TokenCredential for FailThenSucceedCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                let remaining = self.failures_remaining.load(Ordering::SeqCst);
+                if remaining > 0 {
+                    let _ = self.failures_remaining.fetch_sub(1, Ordering::SeqCst);
+                    let _ = self.fail_count.fetch_add(1, Ordering::SeqCst);
+                    return Err(azure_core::error::Error::new(
+                        azure_core::error::ErrorKind::Credential,
+                        "transient failure",
+                    ));
+                }
+                Ok(AccessToken {
+                    token: "recovered_token".to_string().into(),
+                    expires_on: OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(60),
+                })
+            }
+        }
+
+        let credential: Arc<dyn TokenCredential> = Arc::new(FailThenSucceedCredential {
+            fail_count: AtomicU32::new(0),
+            failures_remaining: AtomicU32::new(2), // fail twice, succeed on 3rd
+        });
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let result = auth
+            .try_get_token(tokio::time::Duration::from_secs(5), 3)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().token.secret(), "recovered_token");
+    }
+
+    #[tokio::test]
+    async fn test_try_get_token_returns_error_after_max_attempts() {
+        #[derive(Debug)]
+        struct FailingCredential;
+
+        #[async_trait::async_trait]
+        impl TokenCredential for FailingCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                Err(azure_core::error::Error::new(
+                    azure_core::error::ErrorKind::Credential,
+                    "Mock credential failure",
+                ))
+            }
+        }
+
+        let credential: Arc<dyn TokenCredential> = Arc::new(FailingCredential);
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let result = auth
+            .try_get_token(tokio::time::Duration::from_secs(5), 3)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_try_get_token_times_out_on_slow_credential() {
+        #[derive(Debug)]
+        struct SlowCredential;
+
+        #[async_trait::async_trait]
+        impl TokenCredential for SlowCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                // Simulate a slow IMDS endpoint
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                Ok(AccessToken {
+                    token: "slow_token".to_string().into(),
+                    expires_on: OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(60),
+                })
+            }
+        }
+
+        let credential: Arc<dyn TokenCredential> = Arc::new(SlowCredential);
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+
+        let start = tokio::time::Instant::now();
+        let result = auth
+            .try_get_token(tokio::time::Duration::from_millis(100), 3)
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        // Should have timed out quickly, not waited 60 seconds
+        assert!(elapsed < tokio::time::Duration::from_secs(1));
     }
 
     // ==================== Clone Behavior Tests ====================

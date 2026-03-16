@@ -365,6 +365,7 @@ mod test {
     #[test]
     #[cfg(feature = "azure")]
     fn test_get_azure_storage() {
+        crate::crypto::ensure_crypto_provider();
         let storage = StorageType::Azure {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
             storage_scope: None,
@@ -379,6 +380,7 @@ mod test {
     #[test]
     #[cfg(feature = "aws")]
     fn test_get_s3_storage() {
+        crate::crypto::ensure_crypto_provider();
         let storage = StorageType::S3 {
             base_uri: "s3://my-bucket/test".to_string(),
             region: Some("us-east-1".to_string()),

@@ -437,7 +437,7 @@ fn create_req_stream(
                 yield bar;
             }
             Err(_) => {
-                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, first_pdata));
+                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, first_pdata)).await;
             }
         };
 
@@ -450,7 +450,7 @@ fn create_req_stream(
                     yield bar;
                 }
                 Err(_) => {
-                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata));
+                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata)).await;
                 }
             }
         }
@@ -892,7 +892,9 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
+            _ = exporter
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .await;
             Ok(())
         }
 
@@ -1225,7 +1227,9 @@ mod tests {
             let local_set = tokio::task::LocalSet::new();
             let mr = metrics_reporter.clone();
             let _exporter_fut = local_set.spawn_local(async move {
-                let _ = exporter.start(pipeline_ctrl_msg_tx, mr).await;
+                let _ = exporter
+                    .start(pipeline_ctrl_msg_tx, mr, Interests::empty())
+                    .await;
             });
 
             tokio::join!(local_set, async {
