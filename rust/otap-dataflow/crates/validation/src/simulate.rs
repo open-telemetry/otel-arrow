@@ -46,8 +46,7 @@ pub(crate) async fn run_pipelines_with_timeout(
             metrics_poll,
         )
         .await?;
-        let result =
-            wait_for_validation_finished(&admin_client, &admin_base, metrics_poll).await;
+        let result = wait_for_validation_finished(&admin_client, &admin_base, metrics_poll).await;
         shutdown_pipeline(&admin_client, &admin_base).await?;
         result
     })

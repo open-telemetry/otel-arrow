@@ -19,6 +19,10 @@
           - start: {{ capture_core_start }}
             end: {{ capture_core_end }}
   nodes:
+{% if custom_suv_receiver %}
+    suv_receiver:
+{{ custom_suv_receiver | indent(6, true) }}
+{% else %}
     suv_receiver:
       type: {{ suv_receiver_plugin_urn }}
       config:
@@ -30,6 +34,7 @@
 {% if suv_receiver_type == "otap" %}
         listening_addr: 127.0.0.1:{{ suv_port }}
         response_stream_channel_size: 256
+{% endif %}
 {% endif %}
 {% for control_port in control_ports %}
     control_receiver{{ loop.index }}:

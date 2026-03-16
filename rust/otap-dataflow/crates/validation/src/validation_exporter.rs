@@ -187,7 +187,8 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     // last message and we have received at least one SUV
                     // message, perform the final validation and signal
                     // finished.
-                    if last_message_time.elapsed() >= self.idle_timeout && self.metrics.finished.get() != 1
+                    if last_message_time.elapsed() >= self.idle_timeout
+                        && self.metrics.finished.get() != 1
                     {
                         self.validate_and_record();
                         self.metrics.finished.set(1);
