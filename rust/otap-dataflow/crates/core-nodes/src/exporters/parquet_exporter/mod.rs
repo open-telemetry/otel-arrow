@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(missing_docs)]
+
 //! Parquet exporter for OTAP data
 //!
 //! This writes the parquet files in a denormalized star-schema, where each OTAP payload
@@ -19,18 +21,18 @@
 //! - dynamic configuration updates
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::parquet_exporter::schema::transform_to_known_schema;
-use crate::pdata::OtapPdata;
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+pub mod config;
+pub mod error;
+pub mod idgen;
+pub mod metrics;
+pub mod partition;
+pub mod schema;
+pub mod writer;
 
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
+use self::schema::transform_to_known_schema;
 use self::writer::WriteBatch;
-use crate::metrics::ExporterPDataMetrics;
-use crate::parquet_exporter::metrics::ParquetExporterMetrics;
 use async_trait::async_trait;
 use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
@@ -46,16 +48,14 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-
-mod config;
-mod error;
-mod idgen;
-mod metrics;
-mod partition;
-mod schema;
-mod writer;
+use std::io::ErrorKind;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
 const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
@@ -64,7 +64,7 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 pub struct ParquetExporter {
     config: config::Config,
     pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
-    io_metrics: Option<MetricSet<ParquetExporterMetrics>>,
+    io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
 }
 
 /// Declares the Parquet exporter as a local exporter factory
@@ -115,7 +115,7 @@ impl ParquetExporter {
         })?;
 
         let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
-        let io_metrics = pipeline_ctx.register_metrics::<ParquetExporterMetrics>();
+        let io_metrics = pipeline_ctx.register_metrics::<metrics::ParquetExporterMetrics>();
 
         Ok(ParquetExporter {
             config,
@@ -127,7 +127,7 @@ impl ParquetExporter {
     fn terminal_state(
         deadline: Instant,
         pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
-        io_metrics: Option<MetricSet<ParquetExporterMetrics>>,
+        io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
@@ -155,8 +155,8 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        let object_store =
-            crate::object_store::from_storage_type(&self.config.storage).map_err(|e| {
+        let object_store = otap_df_otap::object_store::from_storage_type(&self.config.storage)
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),
@@ -412,7 +412,7 @@ fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Durat
 
 #[cfg(test)]
 mod test {
-    use crate::parquet_exporter::config::WriterOptions;
+    use crate::exporters::parquet_exporter::config::WriterOptions;
     use std::ops::Add;
 
     use super::*;
@@ -441,6 +441,7 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::{fixtures, object_store};
     use otap_df_pdata::Consumer;
     use otap_df_pdata::otap::from_record_messages;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -449,8 +450,6 @@ mod test {
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
-
-    use crate::fixtures;
 
     fn logs_scenario(
         num_rows: usize,
@@ -491,7 +490,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -597,7 +596,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -743,7 +742,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: Some(vec![config::PartitioningStrategy::SchemaMetadata(
@@ -834,7 +833,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -883,7 +882,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
             },
             partitioning_strategies: None,
@@ -1032,7 +1031,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -1186,7 +1185,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -1258,7 +1257,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -1329,7 +1328,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,
@@ -1553,7 +1552,7 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            storage: crate::object_store::StorageType::File {
+            storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
             partitioning_strategies: None,

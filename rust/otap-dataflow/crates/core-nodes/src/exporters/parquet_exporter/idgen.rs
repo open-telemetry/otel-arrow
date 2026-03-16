@@ -225,7 +225,7 @@ pub mod test {
     use otap_df_pdata::schema::consts::metadata;
     use otap_df_pdata::schema::get_schema_metadata;
 
-    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
+    use otap_df_otap::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
 
     use super::*;
 

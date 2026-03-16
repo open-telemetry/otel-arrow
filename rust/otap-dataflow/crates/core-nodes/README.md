@@ -14,6 +14,7 @@ Each component lives in its own subfolder within a category:
         console_exporter/
         error_exporter/
         noop_exporter/
+        parquet_exporter/
         perf_exporter/
         topic_exporter/
       processors/
@@ -33,6 +34,7 @@ Each component lives in its own subfolder within a category:
         mod.rs (category exports)
         fake_data_generator/
         internal_telemetry_receiver/
+        syslog_cef_receiver/
         topic_receiver/
       lib.rs
 
@@ -45,6 +47,7 @@ Each component lives in its own subfolder within a category:
 | console_exporter | `urn:otel:exporter:console` | `src/exporters/console_exporter/` |
 | error_exporter | `urn:otel:exporter:error` | `src/exporters/error_exporter/` |
 | noop_exporter | `urn:otel:exporter:noop` | `src/exporters/noop_exporter/` |
+| parquet_exporter | `urn:otel:exporter:parquet` | `src/exporters/parquet_exporter/` |
 | perf_exporter | `urn:otel:exporter:perf` | `src/exporters/perf_exporter/` |
 | topic_exporter | `urn:otel:exporter:topic` | `src/exporters/topic_exporter/` |
 
@@ -62,6 +65,11 @@ Each component lives in its own subfolder within a category:
 
 - Placeholder exporter that ACKs all messages without processing
 - Lightweight for performance testing and pipeline validation
+
+#### parquet_exporter
+
+- Writes OTAP batches into partitioned Parquet files
+- Supports schema normalization, ID generation, and configurable flush behavior
 
 #### perf_exporter
 
@@ -157,6 +165,7 @@ Each component lives in its own subfolder within a category:
 | ---- | --- | ------ |
 | fake_data_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/fake_data_generator/` |
 | internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
+| syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
 | topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
 
 #### fake_data_generator
@@ -169,6 +178,11 @@ Each component lives in its own subfolder within a category:
 
 - Receives internal engine telemetry events from the internal log channel
 - Emits them as OTLP log pdata into the configured pipeline
+
+#### syslog_cef_receiver
+
+- Ingests RFC 3164/RFC 5424 syslog and CEF logs over TCP or UDP
+- Converts incoming records into OTAP pdata with parser/format metadata
 
 #### topic_receiver
 

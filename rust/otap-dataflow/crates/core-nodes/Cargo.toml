@@ -30,11 +30,15 @@ async-trait.workspace = true
 blake3.workspace = true
 byte-unit.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
-humantime-serde.workspace = true
 futures.workspace = true
+futures-timer.workspace = true
+humantime-serde.workspace = true
 linkme.workspace = true
+object_store = {workspace = true, features = ["fs"]}
+parquet.workspace = true
 prost.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -43,15 +47,21 @@ slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 weaver_common.workspace = true
 weaver_forge.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 weaver_semconv.workspace = true
 
+[features]
+experimental-tls = []
+
 [dev-dependencies]
 otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
 otap-df-telemetry = { path = "../telemetry" }
+pretty_assertions.workspace = true
 tempfile.workspace = true
+portpicker.workspace = true

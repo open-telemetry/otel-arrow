@@ -483,8 +483,8 @@ mod test {
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
-    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use crate::parquet_exporter::partition::PartitionAttributeValue;
+    use crate::exporters::parquet_exporter::partition::PartitionAttributeValue;
+    use otap_df_otap::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
 
     fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapArrowRecords {
         let mut consumer = Consumer::default();

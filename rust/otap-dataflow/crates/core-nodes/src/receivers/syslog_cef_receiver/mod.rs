@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -18,6 +16,8 @@ use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -33,9 +33,9 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[cfg(feature = "experimental-tls")]
-use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
+#[cfg(feature = "experimental-tls")]
+use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_debug;
 
@@ -322,7 +322,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
-                                Ok((socket, peer_addr)) => {
+                                Ok((socket, _peer_addr)) => {
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
@@ -360,7 +360,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
                                                         "syslog_cef_receiver.tls.handshake.success",
-                                                        peer = %peer_addr,
+                                                        peer = %_peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
                                                     Box::new(BufReader::new(tls_stream))
@@ -368,7 +368,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 Err(e) => {
                                                     otel_warn!(
                                                         "syslog_cef_receiver.tls.handshake.failed",
-                                                        peer = %peer_addr,
+                                                        peer = %_peer_addr,
                                                         error = %e,
                                                         message = "TLS handshake failed, closing connection"
                                                     );
@@ -384,9 +384,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         #[cfg(not(feature = "experimental-tls"))]
                                         let mut reader = BufReader::new(socket);
-
-                                        // Suppress unused variable warning when TLS is disabled
-                                        let _ = peer_addr;
 
                                         let mut line_bytes = Vec::new();
 

@@ -3,12 +3,12 @@
 
 use core::str;
 
-use crate::syslog_cef_receiver::parser::ParseError;
+use crate::receivers::syslog_cef_receiver::parser::ParseError;
 
 /// RFC 5424 message structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rfc5424Message<'a> {
-    pub(super) priority: crate::syslog_cef_receiver::parser::Priority,
+    pub(super) priority: super::Priority,
     pub(super) version: u8,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
@@ -27,7 +27,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         return Err(ParseError::EmptyInput);
     }
 
-    let (priority, mut remaining) = crate::syslog_cef_receiver::parser::parse_priority(input)?;
+    let (priority, mut remaining) = super::parse_priority(input)?;
 
     // Check if we have anything after priority
     if remaining.is_empty() {
@@ -227,7 +227,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
 
 #[cfg(test)]
 mod tests {
-    use crate::syslog_cef_receiver::parser::*;
+    use crate::receivers::syslog_cef_receiver::parser::*;
 
     #[test]
     fn test_rfc5424_parsing() {

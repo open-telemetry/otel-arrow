@@ -380,7 +380,7 @@ fn default_resource_weight() -> NonZeroU32 {
 ///
 /// Each entry at position `i` contributes `entry.weight` copies of `i` to the
 /// table.  The hot path is then:
-/// ```
+/// ```text
 /// slot = rotation[batch_index % rotation.len()]
 /// attrs = &entries[slot].attrs
 /// ```
