@@ -442,7 +442,7 @@ impl<PData> NodeWithPDataReceiver<PData> for ExporterWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use crate::Interests;
-    use crate::control::{AckMsg, NodeControlMsg};
+    use crate::control::{AckMsg, Controllable, NodeControlMsg};
     use crate::error::ExporterErrorKind;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
@@ -1377,5 +1377,261 @@ mod tests {
         let buffered = channel.take_orphaned_pdata();
         assert_eq!(buffered.len(), 1);
         assert_eq!(buffered[0], "shared_unread");
+    }
+
+    // ==================== auto-NACK tests ====================
+
+    /// A PData type with has_frames() == true so the auto-NACK guard
+    /// in ExporterWrapper::start() actually sends NACKs.
+    #[derive(Debug, Clone, PartialEq)]
+    struct FramedMsg(String);
+
+    impl crate::ReceivedAtNode for FramedMsg {
+        fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
+    }
+
+    impl crate::Unwindable for FramedMsg {
+        fn has_frames(&self) -> bool {
+            true
+        }
+        fn pop_frame(&mut self) -> Option<crate::control::Frame> {
+            None
+        }
+        fn drop_payload(&mut self) {}
+    }
+
+    /// Exporter that breaks on Shutdown without reading any pdata.
+    struct ShutdownOnlyExporter;
+
+    #[async_trait(?Send)]
+    impl local::Exporter<FramedMsg> for ShutdownOnlyExporter {
+        async fn start(
+            self: Box<Self>,
+            mut msg_chan: message::MessageChannel<FramedMsg>,
+            _effect_handler: local::EffectHandler<FramedMsg>,
+        ) -> Result<(TerminalState, message::MessageChannel<FramedMsg>), Error> {
+            loop {
+                if let Message::Control(NodeControlMsg::Shutdown { .. }) = msg_chan.recv().await? {
+                    break;
+                }
+            }
+            Ok((TerminalState::default(), msg_chan))
+        }
+    }
+
+    /// Exporter that returns Err on Shutdown, leaving pdata unread.
+    struct ErrorOnShutdownExporter;
+
+    #[async_trait(?Send)]
+    impl local::Exporter<FramedMsg> for ErrorOnShutdownExporter {
+        async fn start(
+            self: Box<Self>,
+            mut msg_chan: message::MessageChannel<FramedMsg>,
+            effect_handler: local::EffectHandler<FramedMsg>,
+        ) -> Result<(TerminalState, message::MessageChannel<FramedMsg>), Error> {
+            loop {
+                if let Message::Control(NodeControlMsg::Shutdown { .. }) = msg_chan.recv().await? {
+                    return Err(Error::ExporterError {
+                        exporter: effect_handler.exporter_id(),
+                        kind: ExporterErrorKind::Other,
+                        error: "simulated shutdown failure".to_owned(),
+                        source_detail: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Wire up an ExporterWrapper<FramedMsg> with explicit pipeline control
+    /// channel capacity.
+    fn setup_framed_exporter(
+        exporter: impl local::Exporter<FramedMsg> + 'static,
+        pipeline_ctrl_capacity: usize,
+    ) -> (
+        message::Sender<NodeControlMsg<FramedMsg>>,
+        message::Sender<FramedMsg>,
+        crate::control::PipelineCtrlMsgSender<FramedMsg>,
+        crate::control::PipelineCtrlMsgReceiver<FramedMsg>,
+        tokio::runtime::Runtime,
+        tokio::task::LocalSet,
+    ) {
+        use crate::config::ExporterConfig;
+        use crate::control::pipeline_ctrl_msg_channel;
+        use crate::local::message::LocalSender;
+        use crate::node::NodeWithPDataReceiver;
+        use crate::testing::create_not_send_channel;
+        use otap_df_telemetry::InternalTelemetrySystem;
+
+        let metrics_system = InternalTelemetrySystem::default();
+        let config = ExporterConfig::new("test_exporter");
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("test_exporter"));
+        let mut wrapper = ExporterWrapper::local(
+            exporter,
+            test_node(config.name.clone()),
+            user_config,
+            &config,
+        );
+
+        let control_sender = wrapper.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel(config.control_channel.capacity);
+        let pdata_sender = message::Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_receiver = message::Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+
+        wrapper
+            .set_pdata_receiver(test_node(config.name.clone()), pdata_receiver)
+            .expect("Failed to set PData receiver");
+
+        let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
+            pipeline_ctrl_msg_channel(pipeline_ctrl_capacity);
+        let pipeline_ctrl_tx_clone = pipeline_ctrl_tx.clone();
+
+        let metrics_reporter = metrics_system.reporter();
+        drop(local_tasks.spawn_local(async move {
+            let _ = wrapper
+                .start(pipeline_ctrl_tx, metrics_reporter, Interests::empty())
+                .await;
+        }));
+
+        (
+            control_sender,
+            pdata_sender,
+            pipeline_ctrl_tx_clone,
+            pipeline_ctrl_rx,
+            rt,
+            local_tasks,
+        )
+    }
+
+    /// Pre-fill the pipeline control channel to capacity, then shut down an
+    /// exporter with unread buffered pdata.
+    ///
+    /// Expectation: the unread pdata should still be NACKed.
+    ///
+    /// Currently ignored: auto-NACKs use try_send on the bounded pipeline
+    /// control channel. When the channel is full, try_send fails and the
+    /// NACK is silently dropped. Using send().await would deadlock because
+    /// no pipeline controller is draining the channel at this point.
+    /// Fixing this requires a dedicated unbounded NACK return path.
+    #[test]
+    #[ignore = "requires dedicated NACK channel: try_send drops NACKs when pipeline ctrl channel is full"]
+    fn test_auto_nack_with_saturated_pipeline_control_channel() {
+        let pipeline_capacity = 2;
+        let (control_sender, pdata_sender, pipeline_ctrl_tx, mut pipeline_ctrl_rx, rt, local_tasks) =
+            setup_framed_exporter(ShutdownOnlyExporter, pipeline_capacity);
+
+        drop(local_tasks.spawn_local(async move {
+            // Buffer pdata the exporter will NOT read.
+            pdata_sender
+                .send(FramedMsg("orphan_1".into()))
+                .await
+                .expect("send pdata 1");
+            pdata_sender
+                .send(FramedMsg("orphan_2".into()))
+                .await
+                .expect("send pdata 2");
+
+            // Pre-fill the pipeline control channel to capacity.
+            for i in 0..pipeline_capacity {
+                pipeline_ctrl_tx
+                    .send(crate::control::PipelineControlMsg::StartTimer {
+                        node_id: 999,
+                        duration: Duration::from_secs(i as u64 + 100),
+                    })
+                    .await
+                    .expect("pre-fill pipeline ctrl channel");
+            }
+
+            // Send immediate shutdown so the exporter exits without draining.
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "test: saturated pipeline ctrl".to_owned(),
+                })
+                .await
+                .expect("send shutdown");
+        }));
+
+        rt.block_on(local_tasks);
+
+        let mut nack_count = 0usize;
+        let mut other_count = 0usize;
+        while let Ok(msg) = pipeline_ctrl_rx.try_recv() {
+            match msg {
+                crate::control::PipelineControlMsg::DeliverNack { .. } => nack_count += 1,
+                _ => other_count += 1,
+            }
+        }
+
+        assert_eq!(
+            other_count, pipeline_capacity,
+            "should see the {pipeline_capacity} pre-filled messages"
+        );
+        assert_eq!(
+            nack_count, 2,
+            "all orphaned pdata should be NACKed even when pipeline control channel was full"
+        );
+    }
+
+    /// Exporter receives Shutdown and returns Err(...) while leaving unread
+    /// pdata in its input buffer.
+    ///
+    /// Expectation: those buffered items should still be turned into NACKs.
+    ///
+    /// Currently ignored: the Exporter trait returns `Result<(TS, MC), Err>`,
+    /// so on the Err path the MessageChannel is consumed and dropped inside
+    /// the exporter — the engine never gets it back to drain orphaned pdata.
+    /// Fixing this requires changing the trait to always return the
+    /// MessageChannel.
+    #[test]
+    #[ignore = "requires Exporter trait change to return MessageChannel on Err"]
+    fn test_auto_nack_when_exporter_returns_error() {
+        let pipeline_capacity = 32;
+        let (
+            control_sender,
+            pdata_sender,
+            _pipeline_ctrl_tx,
+            mut pipeline_ctrl_rx,
+            rt,
+            local_tasks,
+        ) = setup_framed_exporter(ErrorOnShutdownExporter, pipeline_capacity);
+
+        drop(local_tasks.spawn_local(async move {
+            pdata_sender
+                .send(FramedMsg("unread_a".into()))
+                .await
+                .expect("send pdata a");
+            pdata_sender
+                .send(FramedMsg("unread_b".into()))
+                .await
+                .expect("send pdata b");
+            pdata_sender
+                .send(FramedMsg("unread_c".into()))
+                .await
+                .expect("send pdata c");
+
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now().add(Duration::from_millis(200)),
+                    reason: "test: error on shutdown".to_owned(),
+                })
+                .await
+                .expect("send shutdown");
+        }));
+
+        rt.block_on(local_tasks);
+
+        let mut nack_count = 0usize;
+        while let Ok(msg) = pipeline_ctrl_rx.try_recv() {
+            if matches!(msg, crate::control::PipelineControlMsg::DeliverNack { .. }) {
+                nack_count += 1;
+            }
+        }
+
+        assert_eq!(
+            nack_count, 3,
+            "all buffered pdata should be NACKed even when exporter returns Err"
+        );
     }
 }
