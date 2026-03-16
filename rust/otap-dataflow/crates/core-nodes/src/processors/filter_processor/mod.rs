@@ -132,15 +132,13 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let interests = effect_handler.node_interests();
-                let filtered_arrow_records: OtapArrowRecords =
-                    self.compute_duration
-                        .timed(interests, || -> Result<_, Error> {
-                            match signal {
-                                SignalType::Metrics => {
-                                    // ToDo: Add support for metrics
-                                    Ok(arrow_records)
-                                }
+                let filtered_arrow_records: OtapArrowRecords = effect_handler
+                    .timed(&self.compute_duration, || -> Result<_, Error> {
+                        match signal {
+                            SignalType::Metrics => {
+                                // ToDo: Add support for metrics
+                                Ok(arrow_records)
+                            }
                             SignalType::Logs => {
                                 let (
                                     filtered_arrow_records,

@@ -41,6 +41,7 @@ use crate::error::{Error, TypedError};
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::process_duration::ComputeDuration;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -149,6 +150,16 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
+    }
+
+    /// Time a synchronous closure if process-duration timing is enabled.
+    ///
+    /// Delegates to [`ComputeDuration::timed`] with this handler's
+    /// precomputed interests. The closure-based API structurally
+    /// prevents timing from spanning `.await` points.
+    #[inline]
+    pub fn timed<T>(&self, cd: &ComputeDuration, f: impl FnOnce() -> T) -> T {
+        cd.timed(self.core.node_interests(), f)
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.

@@ -377,11 +377,9 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     self.metrics.domains_signal.inc();
                 }
                 // Apply transform across selected domains and collect exact stats.
-                let result = self
-                    .compute_duration
-                    .timed(effect_handler.node_interests(), || {
-                        self.apply_transform_with_stats(&mut records, signal)
-                    });
+                let result = effect_handler.timed(&self.compute_duration, || {
+                    self.apply_transform_with_stats(&mut records, signal)
+                });
                 match result {
                     Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
                         if deleted_total > 0 {
