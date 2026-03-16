@@ -37,6 +37,16 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Max concurrent HTTP requests in flight to the Logs Ingestion API.
+///
+/// Approximation using Little's Law (L = λ × W):
+///   - λ (throughput): LA API allows ~500 req/min per DCR (~8 req/s, estimated)
+///   - W (latency): p99 response time ~0.5-1s (estimated, varies by region/load)
+///   - L ≈ 8 × 0.5 = 4 slots minimum, doubled for burst headroom ≈ 8
+///
+/// Set to 16 to absorb transient latency spikes without throttling.
+/// Worst-case memory for pending requests is roughly: 16 × 1MB = 16MB.
+/// These are rough estimates — tune based on observed metrics in production.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
@@ -75,7 +85,7 @@ impl AzureMonitorExporter {
         ));
 
         // Create log transformer
-        let transformer = Transformer::new(&config, metrics.clone());
+        let transformer = Transformer::new(&config);
 
         // Create Gzip batcher
         let gzip_batcher = GzipBatcher::new();
