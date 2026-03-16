@@ -11,14 +11,15 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow::util::bit_util;
 use smallvec::{SmallVec, smallvec};
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, StringArray, UInt8Array,
-    UInt16Array, make_array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, DictionaryArray,
+    PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
 };
-use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::SlicesIterator;
+use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::{SlicesIterator, max};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -30,6 +31,118 @@ use crate::error::{Error, Result};
 
 // TODO comment on what this is about.
 const SMALLVEC_SIZE: usize = 16;
+
+/// TODO comment on all what this is for
+pub(crate) struct ParentIdSet<'a> {
+    values: ParentIdSetArray<'a>,
+
+    mutable: bool,
+
+    pub bitmap: [u64; 1024],
+
+    next_assignable: u16,
+}
+
+enum ParentIdSetArray<'a> {
+    Original(&'a UInt16Array),
+    Dirty(Vec<u16>, Option<Vec<u8>>),
+}
+
+impl<'a> ParentIdSet<'a> {
+    pub fn new(ids: &'a UInt16Array, mutable: bool) -> Self {
+        let mut bitmap = [0u64; 1024];
+        for pid in ids.iter().flatten() {
+            bitmap[pid as usize / 64] |= 1u64 << (pid as usize % 64);
+        }
+
+        let next_assignable = max(ids).map(|i| i + 1).unwrap_or_default();
+
+        Self {
+            values: ParentIdSetArray::Original(ids),
+            mutable,
+            bitmap,
+            next_assignable,
+        }
+    }
+
+    fn convert_to_mutable(&mut self) {
+        if let ParentIdSetArray::Original(original) = self.values {
+            let ids = original.values().to_vec();
+            let nulls = original.nulls().map(|nulls| nulls.buffer().to_vec());
+            self.values = ParentIdSetArray::Dirty(ids, nulls);
+        }
+    }
+
+    pub fn ensure_all(&mut self) {
+        if let ParentIdSetArray::Original(original) = self.values {
+            if original.null_count() == 0 || !self.mutable {
+                // nothing to do
+                return;
+            }
+            self.convert_to_mutable();
+        }
+
+        let ParentIdSetArray::Dirty(ids, null_bitmap) = &mut self.values else {
+            // TODO is it?
+            unreachable!("TODO")
+        };
+
+        if let Some(null_bitmap) = null_bitmap {
+            for idx in 0..ids.len() {
+                if !bit_util::get_bit(null_bitmap.as_ref(), idx) {
+                    self.bitmap[self.next_assignable as usize / 64] |=
+                        1u64 << (self.next_assignable as usize % 64);
+
+                    ids[idx] = self.next_assignable;
+                    self.next_assignable += 1;
+                    bit_util::set_bit(null_bitmap, idx);
+                }
+            }
+        }
+    }
+
+    fn ensure(&mut self, idx: usize) {
+        todo!()
+        // if let ParentIdSetArray::Original(original) = self.values {
+        //     if original.null_count() == 0 || !self.mutable {
+        //         // nothing to do
+        //         return;
+        //     }
+        //     self.convert_to_mutable();
+        // }
+
+        // let ParentIdSetArray::Dirty(ids, null_bitmap) = &mut self.values else {
+        //     // TODO is it?
+        //     unreachable!("TODO")
+        // };
+
+        // if !bit_util::get_bit(null_bitmap.as_ref(), idx) {
+        //     ids[idx] = self.next_assignable;
+        //     self.next_assignable += 1;
+        //     bit_util::set_bit(null_bitmap, idx);
+        // }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        matches!(self.values, ParentIdSetArray::Dirty(_, _))
+    }
+
+    pub fn into_id_col(self) -> Cow<'a, UInt16Array> {
+        match self.values {
+            ParentIdSetArray::Original(original) => Cow::Borrowed(original),
+            ParentIdSetArray::Dirty(ids, nulls) => {
+                let nulls = nulls
+                    .map(|nulls| Buffer::from(nulls))
+                    .map(|buff| BooleanBuffer::new(buff, 0, ids.len()))
+                    .map(NullBuffer::from);
+
+                Cow::Owned(UInt16Array::new(ScalarBuffer::from(ids), nulls))
+            }
+        }
+    }
+
+    // TODO methods to get the thing back
+}
 
 /// A single attribute upsert specification for use with [`upsert_attributes`].
 ///
@@ -1071,18 +1184,14 @@ fn merge_with_unified_dict_batched(
     let mut output_keys: Vec<u16> = Vec::with_capacity(total_output_rows);
 
     // Lazily initialized null bitmap — only allocated when the first inactive row is encountered.
-    let mut nulls: Option<arrow::array::BooleanBufferBuilder> = None;
+    let mut nulls: Option<BooleanBufferBuilder> = None;
 
     /// Helper to mark a range of output positions as null.
     #[inline]
-    fn mark_nulls(
-        nulls: &mut Option<arrow::array::BooleanBufferBuilder>,
-        current_len: usize,
-        count: usize,
-    ) {
+    fn mark_nulls(nulls: &mut Option<BooleanBufferBuilder>, current_len: usize, count: usize) {
         let builder = nulls.get_or_insert_with(|| {
             // First null encountered: allocate and backfill all prior positions as valid.
-            let mut b = arrow::array::BooleanBufferBuilder::new(current_len + count);
+            let mut b = BooleanBufferBuilder::new(current_len + count);
             b.append_n(current_len, true);
             b
         });
@@ -1091,7 +1200,7 @@ fn merge_with_unified_dict_batched(
 
     /// Helper to mark a range of output positions as valid (non-null).
     #[inline]
-    fn mark_valid(nulls: &mut Option<arrow::array::BooleanBufferBuilder>, count: usize) {
+    fn mark_valid(nulls: &mut Option<BooleanBufferBuilder>, count: usize) {
         if let Some(builder) = nulls.as_mut() {
             builder.append_n(count, true);
         }

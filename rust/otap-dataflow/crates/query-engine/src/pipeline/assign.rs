@@ -44,7 +44,7 @@ use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attrs::{AttributeUpsert, upsert_attributes};
+use crate::pipeline::assign::attrs::{AttributeUpsert, ParentIdSet, upsert_attributes};
 use crate::pipeline::expr::join::{JoinExec, RootAttrsToRootJoin, RootToAttributesJoin};
 use crate::pipeline::expr::types::{
     ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
@@ -296,13 +296,26 @@ impl AssignPipelineStage {
         eval_results: &mut [Option<PhysicalExprEvalResult>],
         attrs_id: AttributesIdentifier,
     ) -> Result<OtapArrowRecords> {
-        let attrs_payload_type = match attrs_id {
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
-            AttributesIdentifier::Root => match otap_batch {
-                OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
-                OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-            },
+        let root_record_batch = match otap_batch.root_record_batch() {
+            Some(root_rb) => root_rb,
+            None => {
+                todo!("add a test case for this and return nothing to do!")
+            }
+        };
+
+        let (attrs_payload_type, id_col) = match attrs_id {
+            AttributesIdentifier::NonRoot(payload_type) => (payload_type, {
+                todo!("extract the parent ID col from struct")
+            }),
+            AttributesIdentifier::Root => {
+                let attrs_payload_type = match otap_batch {
+                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                };
+                let id_col = root_record_batch.column_by_name(consts::ID);
+                (attrs_payload_type, id_col)
+            }
         };
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
@@ -312,6 +325,17 @@ impl AssignPipelineStage {
             }
         };
 
+        // TODO fix the arguments to this w/out unwrapping, and actually compute if the thing is mutable
+        // and comment on why you think scope/resource ID should not be nullable
+        let mut parent_id_set = ParentIdSet::new(
+            id_col
+                .unwrap()
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap(),
+            true,
+        );
+
         // get the rows that will have the value replaced (all others, the value will be inserted)
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
@@ -320,16 +344,16 @@ impl AssignPipelineStage {
         let parent_ids_col = attrs_record_batch
             .column_by_name(consts::PARENT_ID)
             .unwrap();
-        let mut all_parent_ids_mask = [0u64; 1024];
-        for &pid in parent_ids_col
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            // TODO error handling, etc.
-            .unwrap()
-            .values()
-        {
-            all_parent_ids_mask[pid as usize / 64] |= 1u64 << (pid as usize % 64);
-        }
+        // let mut all_parent_ids_mask = [0u64; 1024];
+        // for &pid in parent_ids_col
+        //     .as_any()
+        //     .downcast_ref::<UInt16Array>()
+        //     // TODO error handling, etc.
+        //     .unwrap()
+        //     .values()
+        // {
+        //     all_parent_ids_mask[pid as usize / 64] |= 1u64 << (pid as usize % 64);
+        // }
 
         let mut attrs_upserts = Vec::with_capacity(eval_results.len());
 
@@ -342,6 +366,15 @@ impl AssignPipelineStage {
             let eval_result = eval_result.take().unwrap(); // TODO no unwrap
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
+            match &eval_result.values {
+                ColumnarValue::Scalar(_) => {
+                    parent_id_set.ensure_all();
+                }
+                ColumnarValue::Array(_) => {
+                    // TODO - ensure of indices if lines up with parent ID
+                }
+            }
+
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
             let update_parent_ids_u16 = update_parent_ids
                 .as_any()
@@ -353,9 +386,8 @@ impl AssignPipelineStage {
                 update_parent_ids_mask[pid as usize / 64] |= 1u64 << (pid as usize % 64);
             }
 
-            // get a deduped list of all parent IDs (via bitset, no RoaringBitmap)
-
-            let total = all_parent_ids_mask
+            let total = parent_id_set
+                .bitmap
                 .iter()
                 .map(|w| w.count_ones() as usize)
                 .sum();
@@ -363,7 +395,7 @@ impl AssignPipelineStage {
             let mut update_index = 0;
             let mut insert_index = update_parent_ids.len();
 
-            for (i, &word) in all_parent_ids_mask.iter().enumerate() {
+            for (i, &word) in parent_id_set.bitmap.iter().enumerate() {
                 let mut w = word;
                 while w != 0 {
                     let bit = w.trailing_zeros() as usize;
@@ -431,7 +463,15 @@ impl AssignPipelineStage {
 
         let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
 
-        // replace OTAP batch
+        // maybe replace the root
+        if parent_id_set.is_dirty() {
+            let new_ids = parent_id_set.into_id_col().into_owned();
+            let new_root = try_upsert_column(consts::ID, Arc::new(new_ids), root_record_batch)?;
+
+            otap_batch.set(otap_batch.root_payload_type(), new_root)
+        }
+
+        // replace attributes batch
         otap_batch.set(attrs_payload_type, new_attrs);
 
         Ok(otap_batch)
@@ -489,38 +529,6 @@ impl PipelineStage for AssignPipelineStage {
         }
 
         Ok(otap_batch)
-
-        // match eval_result {
-        //     Some(eval_result) => match &self.dest_columns {
-        //         ColumnAccessor::ColumnName(col_name) => {
-        //             self.assign_to_root(otap_batch, eval_result, col_name)
-        //         }
-        //         ColumnAccessor::Attributes(attrs_id, attrs_key) => {
-        //             self.assign_to_attributes(otap_batch, eval_result, *attrs_id, &attrs_key)
-        //         }
-        //         other_dest => {
-        //             return Err(Error::NotYetSupportedError {
-        //                 message: format!(
-        //                     "assignment to column destination {:?} not yet supported",
-        //                     other_dest
-        //                 ),
-        //             });
-        //         }
-        //     },
-        //     None => match &self.dest_columns {
-        //         ColumnAccessor::ColumnName(col_name) => {
-        //             self.assign_null_root_column(otap_batch, col_name)
-        //         }
-        //         other_dest => {
-        //             return Err(Error::NotYetSupportedError {
-        //                 message: format!(
-        //                     "assignment to column destination {:?} not yet supported",
-        //                     other_dest
-        //                 ),
-        //             });
-        //         }
-        //     },
-        // }
     }
 
     /// Assigns the result of this pipeline stage's source expression to a column on the attributes
@@ -1955,6 +1963,53 @@ mod test {
     #[tokio::test]
     async fn test_insert_attribute_scalar_kql_parser() {
         test_insert_attribute_scalar::<KqlParser>().await
+    }
+
+    async fn test_insert_attribute_scalar_where_some_target_has_no_attrs<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = \"hello\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("y")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("hello")),]
+        );
+    }
+
+    // TODO - need to make versions of these tests where the parent is scope/resource
+    // and maybe there are nulls in the parent_id column?
+
+    #[tokio::test]
+    async fn test_insert_attribute_scalar_where_some_target_has_no_attrs_opl_parser() {
+        test_insert_attribute_scalar_where_some_target_has_no_attrs::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_scalar_where_some_target_has_no_attrs_kql_parser() {
+        test_insert_attribute_scalar_where_some_target_has_no_attrs::<KqlParser>().await
     }
 
     async fn test_upsert_attribute_scalar<P: Parser>() {
