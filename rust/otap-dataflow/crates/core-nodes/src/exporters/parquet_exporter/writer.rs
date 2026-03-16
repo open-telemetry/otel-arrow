@@ -55,6 +55,7 @@ pub struct WriteBatch<'a> {
 }
 
 impl<'a> WriteBatch<'a> {
+    #[must_use]
     pub const fn new(
         batch_id: i64,
         otap_batch: &'a OtapArrowRecords,

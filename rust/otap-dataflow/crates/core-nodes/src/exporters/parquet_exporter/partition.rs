@@ -30,6 +30,7 @@ pub struct Partition {
     pub attributes: Option<Vec<PartitionAttribute>>,
 }
 
+#[must_use]
 pub fn partition(
     otap_batch: &OtapArrowRecords,
     strategies: &[PartitioningStrategy],

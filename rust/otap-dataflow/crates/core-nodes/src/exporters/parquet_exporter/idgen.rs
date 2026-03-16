@@ -37,7 +37,14 @@ pub struct PartitionSequenceIdGenerator {
 
 pub const PARTITION_METADATA_KEY: &str = "_part_id";
 
+impl Default for PartitionSequenceIdGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionSequenceIdGenerator {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             part_id: Uuid::new_v4(),
