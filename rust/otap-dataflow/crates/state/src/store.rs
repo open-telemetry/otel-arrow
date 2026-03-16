@@ -397,7 +397,7 @@ mod tests {
         );
     }
 
-    /// Exercises the shipped `send_timeout(1ms)` default path (P2 gap).
+    /// Exercises the shipped `send_timeout(1ms)` default path.
     /// With a size-1 channel and no consumer, `send_timeout(1ms)` should
     /// still drop almost all events from a burst of 64 Admitted sends.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -440,18 +440,17 @@ mod tests {
         );
     }
 
-    /// End-to-end reproduction of issue #2328: dropped `Admitted` events
-    /// leave cores stuck in `Pending`, and subsequent `Ready` events for
-    /// those cores are rejected as invalid transitions.
+    /// End-to-end reproduction: dropped `Admitted` events leave cores stuck
+    /// in `Pending`, and subsequent `Ready` events for those cores are
+    /// rejected as invalid transitions.
     ///
     /// Uses `multi_thread` so the blocking `send_timeout` in `spawn_blocking`
     /// does not starve the async consumer task.
     ///
-    /// To avoid the P3 reliability gap (cores appearing stuck only because
-    /// events were undrained at cancellation time), we poll until all cores
-    /// appear in the state map before inspecting phases.  All 64 Ready events
-    /// are delivered reliably via `send_timeout(5s)`, so once `total_cores()`
-    /// reaches 64, the consumer has processed every Ready event.
+    /// We poll until all cores appear in the state map before inspecting
+    /// phases.  All 64 Ready events are delivered reliably via
+    /// `send_timeout(5s)`, so once `total_cores()` reaches 64, the consumer
+    /// has processed every Ready event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_admitted_leaves_cores_stuck_in_pending() {
         let num_cores: usize = 64;
@@ -505,8 +504,8 @@ mod tests {
         // Phase 4: Wait until the consumer has processed all 64 Ready events.
         // Each Ready creates or updates a core entry, so total_cores() == 64
         // means every Ready has been applied (whether it succeeded or hit
-        // InvalidTransition).  This avoids the P3 gap of relying on fixed
-        // sleeps where cores might appear stuck only because they were undrained.
+        // InvalidTransition).  Polling avoids relying on fixed sleeps where
+        // cores might appear stuck only because events were undrained.
         let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
         for _ in 0..200 {
             if let Some(status) = handle.pipeline_status(&pipeline_key) {
@@ -553,10 +552,9 @@ mod tests {
         );
     }
 
-    /// Verifies the fix for issue #2328: using `engine_reporter()`, engine
-    /// lifecycle events are delivered through the dedicated unbounded channel
-    /// and are never dropped, even with a tiny log-channel buffer and high
-    /// concurrency.  All 64 cores should reach Running.
+    /// Verifies the fix: engine lifecycle events delivered through
+    /// `engine_reporter()` are not dropped, even with a tiny log-channel
+    /// buffer and high concurrency.  All 64 cores should reach Running.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn engine_reporter_never_drops_lifecycle_events() {
         let num_cores: usize = 64;
