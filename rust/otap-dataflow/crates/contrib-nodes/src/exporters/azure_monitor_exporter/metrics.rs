@@ -61,6 +61,9 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of HTTP 5xx (server error) responses.
     #[metric(unit = "{response}")]
     pub laclient_http_5xx: Counter<u64>,
+    /// Number of network errors (connect, timeout, etc.) before receiving an HTTP response.
+    #[metric(unit = "{error}")]
+    pub laclient_network_errors: Counter<u64>,
     /// Number of failed authentication attempts.
     pub auth_failures: Counter<u64>,
     /// Authentication success latency in milliseconds (min/max/sum/count).
@@ -317,6 +320,12 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.msg_to_data_count.set(count);
     }
 
+    /// Increment the network error counter.
+    #[inline]
+    pub fn add_network_error(&mut self) {
+        self.metrics.laclient_network_errors.inc();
+    }
+
     /// Increment the log-entry-too-large counter.
     #[inline]
     pub fn add_log_entry_too_large(&mut self) {
@@ -464,6 +473,20 @@ mod tests {
         assert_eq!(stats.metrics().laclient_http_413.get(), 1);
         assert_eq!(stats.metrics().laclient_http_429.get(), 1);
         assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
+    }
+
+    #[test]
+    fn test_network_error_counter() {
+        let mut stats = new_test_tracker();
+
+        assert_eq!(stats.metrics().laclient_network_errors.get(), 0);
+
+        stats.add_network_error();
+        assert_eq!(stats.metrics().laclient_network_errors.get(), 1);
+
+        stats.add_network_error();
+        stats.add_network_error();
+        assert_eq!(stats.metrics().laclient_network_errors.get(), 3);
     }
 
     #[test]
