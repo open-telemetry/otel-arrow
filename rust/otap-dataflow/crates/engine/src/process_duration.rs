@@ -30,10 +30,10 @@ use crate::context::PipelineContext;
 #[derive(Debug, Default, Clone)]
 pub struct ComputeDurationMetrics {
     /// Wall-clock duration of successful compute sections, in nanoseconds.
-    #[metric(name = "compute.duration.success", unit = "ns")]
+    #[metric(name = "compute.success.duration", unit = "ns")]
     pub compute_duration_success: Mmsc,
     /// Wall-clock duration of failed compute sections, in nanoseconds.
-    #[metric(name = "compute.duration.failed", unit = "ns")]
+    #[metric(name = "compute.failed.duration", unit = "ns")]
     pub compute_duration_failed: Mmsc,
 }
 
