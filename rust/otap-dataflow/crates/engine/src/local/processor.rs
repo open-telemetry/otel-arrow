@@ -152,13 +152,20 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Time a synchronous closure if process-duration timing is enabled.
+    /// Time a synchronous, fallible closure if process-duration timing
+    /// is enabled.
     ///
     /// Delegates to [`ComputeDuration::timed`] with this handler's
-    /// precomputed interests. The closure-based API structurally
-    /// prevents timing from spanning `.await` points.
+    /// precomputed interests.  Duration is recorded into the `ok` or
+    /// `err` accumulator based on the closure's `Result` outcome.
+    /// The closure-based API structurally prevents timing from
+    /// spanning `.await` points.
     #[inline]
-    pub fn timed<T>(&self, cd: &ComputeDuration, f: impl FnOnce() -> T) -> T {
+    pub fn timed<T, E>(
+        &self,
+        cd: &ComputeDuration,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
         cd.timed(self.core.node_interests(), f)
     }
 
