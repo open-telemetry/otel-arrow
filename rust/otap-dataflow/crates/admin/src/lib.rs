@@ -3,6 +3,7 @@
 
 //! HTTP server for exposing admin endpoints.
 
+mod dashboard;
 pub mod error;
 mod health;
 mod pipeline;
@@ -13,6 +14,7 @@ use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
@@ -33,7 +35,7 @@ struct AppState {
     metrics_registry: TelemetryRegistryHandle,
 
     /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
+    ctrl_msg_senders: Arc<Mutex<Vec<Arc<dyn PipelineAdminSender>>>>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -47,7 +49,7 @@ pub async fn run(
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
-        ctrl_msg_senders,
+        ctrl_msg_senders: Arc::new(Mutex::new(ctrl_msg_senders)),
     };
 
     let app = Router::new()
@@ -55,6 +57,7 @@ pub async fn run(
         .merge(telemetry::routes())
         .merge(pipeline_group::routes())
         .merge(pipeline::routes())
+        .merge(dashboard::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);
 

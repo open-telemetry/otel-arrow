@@ -24,7 +24,7 @@ pub struct SemConvRegistry {
 impl SemConvRegistry {
     /// Creates a new SemConvRegistry with the specified version.
     #[must_use]
-    pub fn new(version: Cow<'static, str>) -> Self {
+    pub const fn new(version: Cow<'static, str>) -> Self {
         Self {
             version,
             attributes: Vec::new(),

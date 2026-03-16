@@ -1,0 +1,54 @@
+[package]
+name = "otap-df-validation"
+description = "Performs validation for encoding/decoding and pipelines with OTLP/OTAP requests"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+linkme = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true }
+portpicker = { workspace = true }
+humantime-serde = { workspace = true }
+
+minijinja = "1"
+reqwest = { version = "0.12", features = ["json"] }
+
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+
+otap-df-engine = { path = "../engine" }
+otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
+otap-df-core-nodes = { path = "../core-nodes" }
+otap-df-pdata = { path = "../pdata" }
+otap-df-telemetry = { path = "../telemetry" }
+otap-df-telemetry-macros = { path = "../telemetry-macros" }
+otap-df-otap = { path = "../otap" }
+otap-df-controller = { path = "../controller" }
+prost = { workspace = true }
+
+[features]
+experimental-tls = ["otap-df-otap/experimental-tls"]
+crypto-ring = ["otap-df-otap/crypto-ring"]
+crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-openssl = ["otap-df-otap/crypto-openssl"]
+
+[dev-dependencies]
+tempfile = "3"
+otap-test-tls-certs = { workspace = true }

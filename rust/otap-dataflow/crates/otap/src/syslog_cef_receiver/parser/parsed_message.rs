@@ -6,7 +6,6 @@ use crate::syslog_cef_receiver::parser::{
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-use std::borrow::Cow;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
 const SYSLOG_FACILITY: &str = "syslog.facility";
@@ -17,6 +16,7 @@ const SYSLOG_HOST_NAME: &str = "syslog.host_name";
 const SYSLOG_VERSION: &str = "syslog.version";
 const SYSLOG_APP_NAME: &str = "syslog.app_name";
 const SYSLOG_PROCESS_ID: &str = "syslog.process_id";
+const SYSLOG_PROCESS_ID_STR: &str = "syslog.process_id_str";
 const SYSLOG_MSG_ID: &str = "syslog.msg_id";
 const SYSLOG_STRUCTURED_DATA: &str = "syslog.structured_data";
 const SYSLOG_MESSAGE: &str = "syslog.message";
@@ -34,6 +34,9 @@ const CEF_DEVICE_EVENT_CLASS_ID: &str = "cef.device_event_class_id";
 const CEF_NAME: &str = "cef.name";
 const CEF_SEVERITY: &str = "cef.severity";
 
+// Attribute key constant for detected input format
+const INPUT_FORMAT: &str = "input.format";
+
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSyslogMessage<'a> {
@@ -50,14 +53,54 @@ pub enum ParsedSyslogMessage<'a> {
 }
 
 impl ParsedSyslogMessage<'_> {
-    /// Returns the original input received by the receiver
-    pub(crate) fn input(&self) -> Cow<'_, str> {
+    /// Returns whether the message was fully parsed with all expected structure intact.
+    ///
+    /// This is used to determine whether to set the log body:
+    /// - If fully parsed, body is left empty (all data is in attributes)
+    /// - If not fully parsed, body contains the original input for debugging
+    ///
+    /// A message is considered "fully parsed" when:
+    /// - RFC 5424: Always true if parsing succeeded (required fields must be present)
+    /// - RFC 3164: True if priority was successfully parsed (indicates standard syslog format)
+    /// - CEF: Always true if parsing succeeded (all 7 required headers must be present)
+    /// - Combined formats: Both components must be fully parsed
+    pub(crate) const fn is_fully_parsed(&self) -> bool {
         match self {
-            ParsedSyslogMessage::Rfc5424(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::Rfc3164(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::Cef(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::CefWithRfc3164(msg, _) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::CefWithRfc5424(msg, _) => String::from_utf8_lossy(msg.input),
+            // RFC 5424 parsing requires priority and version, so if Ok it's fully parsed
+            ParsedSyslogMessage::Rfc5424(_) => true,
+            // RFC 3164 is fully parsed only if priority was successfully extracted
+            ParsedSyslogMessage::Rfc3164(msg) => msg.priority.is_some(),
+            // CEF parsing requires all 7 header fields, so if Ok it's fully parsed
+            ParsedSyslogMessage::Cef(_) => true,
+            // Combined: RFC 3164 must have priority for it to be fully parsed
+            ParsedSyslogMessage::CefWithRfc3164(msg, _) => msg.priority.is_some(),
+            // Combined: RFC 5424 is always fully parsed if Ok
+            ParsedSyslogMessage::CefWithRfc5424(_, _) => true,
+        }
+    }
+
+    /// Returns the original input received by the receiver
+    pub(crate) const fn input(&self) -> &[u8] {
+        match self {
+            ParsedSyslogMessage::Rfc5424(msg) => msg.input,
+            ParsedSyslogMessage::Rfc3164(msg) => msg.input,
+            ParsedSyslogMessage::Cef(msg) => msg.input,
+            ParsedSyslogMessage::CefWithRfc3164(msg, _) => msg.input,
+            ParsedSyslogMessage::CefWithRfc5424(msg, _) => msg.input,
+        }
+    }
+
+    /// Returns the detected input format as a string.
+    ///
+    /// This is emitted as the `input.format` log attribute so that downstream
+    /// processors can filter or route records by format.
+    pub(crate) const fn format(&self) -> &'static str {
+        match self {
+            ParsedSyslogMessage::Rfc5424(_) => "rfc5424",
+            ParsedSyslogMessage::Rfc3164(_) => "rfc3164",
+            ParsedSyslogMessage::Cef(_) => "cef",
+            ParsedSyslogMessage::CefWithRfc3164(_, _) => "cef_rfc3164",
+            ParsedSyslogMessage::CefWithRfc5424(_, _) => "cef_rfc5424",
         }
     }
 
@@ -129,24 +172,22 @@ impl ParsedSyslogMessage<'_> {
         &self,
         log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
     ) -> u16 {
-        let mut attributes_count = 0;
-
-        match self {
+        let mut attributes_count: u16 = match self {
             ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
                 // Add syslog RFC5424 attributes
-                attributes_count +=
+                let mut count =
                     self.add_rfc5424_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
-                attributes_count
+                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count
             }
             ParsedSyslogMessage::CefWithRfc3164(syslog_msg, cef_msg) => {
                 // Add syslog RFC3164 attributes
-                attributes_count +=
+                let mut count =
                     self.add_rfc3164_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                attributes_count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
-                attributes_count
+                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count
             }
             ParsedSyslogMessage::Rfc5424(msg) => {
                 self.add_rfc5424_attributes(msg, log_attributes_arrow_records)
@@ -157,7 +198,16 @@ impl ParsedSyslogMessage<'_> {
             ParsedSyslogMessage::Cef(msg) => {
                 self.add_cef_attributes(msg, log_attributes_arrow_records)
             }
-        }
+        };
+
+        // Always emit the detected input format attribute
+        log_attributes_arrow_records.append_key(INPUT_FORMAT);
+        log_attributes_arrow_records
+            .any_values_builder
+            .append_str(self.format().as_bytes());
+        attributes_count += 1;
+
+        attributes_count
     }
 
     // Extract the attribute adding logic into helper methods to avoid duplication
@@ -200,14 +250,24 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(proc_id) = msg.proc_id {
-            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
-            log_attributes_arrow_records.any_values_builder.append_int(
-                std::str::from_utf8(proc_id)
-                    .unwrap_or_default()
-                    .parse::<i64>()
-                    .unwrap_or(0),
-            );
+            // Always store the original string value (per RFC 5424: PROCID = 1*128PRINTUSASCII)
+            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID_STR);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(proc_id);
             attributes_count += 1;
+
+            // Additionally store as integer if parseable
+            if let Ok(proc_id_int) = std::str::from_utf8(proc_id)
+                .unwrap_or_default()
+                .parse::<i64>()
+            {
+                log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+                log_attributes_arrow_records
+                    .any_values_builder
+                    .append_int(proc_id_int);
+                attributes_count += 1;
+            }
         }
 
         if let Some(msg_id) = msg.msg_id {
@@ -284,6 +344,8 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(proc_id) = msg.proc_id {
+            // RFC 3164 proc_id is always numeric (parser filters to numeric-only),
+            // so we store only as integer
             log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
             log_attributes_arrow_records.any_values_builder.append_int(
                 std::str::from_utf8(proc_id)
@@ -442,10 +504,71 @@ mod tests {
         let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
         let result = parse(input).unwrap();
 
-        let input_str = result.input();
+        let input_bytes = result.input();
         assert_eq!(
-            input_str,
-            "<34>1 2003-10-11T22:14:15.003Z host app - - - Test message"
+            input_bytes,
+            b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message"
+        );
+    }
+
+    #[test]
+    fn test_is_fully_parsed() {
+        // RFC 5424 with valid priority should be fully parsed
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
+        let result = parse(input).unwrap();
+        assert!(result.is_fully_parsed(), "RFC 5424 should be fully parsed");
+
+        // RFC 3164 with valid priority should be fully parsed
+        let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed";
+        let result = parse(input).unwrap();
+        assert!(
+            result.is_fully_parsed(),
+            "RFC 3164 with priority should be fully parsed"
+        );
+
+        // RFC 3164 without priority (no "<") should NOT be fully parsed
+        let input = b"Oct 11 22:14:15 mymachine su: 'su root' failed";
+        let result = parse(input).unwrap();
+        assert!(
+            !result.is_fully_parsed(),
+            "RFC 3164 without priority should NOT be fully parsed"
+        );
+
+        // RFC 3164 with invalid priority should NOT be fully parsed
+        let input = b"<00>Oct 11 22:14:15 mymachine su: message";
+        let result = parse(input).unwrap();
+        assert!(
+            !result.is_fully_parsed(),
+            "RFC 3164 with invalid priority should NOT be fully parsed"
+        );
+
+        // CEF should be fully parsed
+        let input = b"CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(result.is_fully_parsed(), "CEF should be fully parsed");
+
+        // CEF with RFC 5424 header should be fully parsed
+        let input = b"<134>1 2024-10-09T12:34:56.789Z host CEF - - CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(
+            result.is_fully_parsed(),
+            "CEF with RFC 5424 should be fully parsed"
+        );
+
+        // CEF with RFC 3164 header (with priority) should be fully parsed
+        let input = b"<134>Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(
+            result.is_fully_parsed(),
+            "CEF with RFC 3164 (with priority) should be fully parsed"
+        );
+
+        // CEF with RFC 3164 header (without priority) should NOT be fully parsed
+        let input = b"Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(
+            !result.is_fully_parsed(),
+            "CEF with RFC 3164 (without priority) should NOT be fully parsed"
         );
     }
 
@@ -601,5 +724,33 @@ mod tests {
             }
             _ => panic!("Expected CefWithRfc3164, got {:?}", result),
         }
+    }
+
+    #[test]
+    fn test_parsed_syslog_message_format() {
+        // RFC 5424
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "rfc5424");
+
+        // RFC 3164
+        let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "rfc3164");
+
+        // Pure CEF
+        let input = b"CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef");
+
+        // CEF with RFC 5424 header
+        let input = b"<134>1 2024-10-09T12:34:56.789Z host CEF - - CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef_rfc5424");
+
+        // CEF with RFC 3164 header
+        let input = b"<134>Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert_eq!(result.format(), "cef_rfc3164");
     }
 }

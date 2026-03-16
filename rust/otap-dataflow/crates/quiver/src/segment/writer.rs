@@ -63,7 +63,7 @@
 //! open_segment.append(&bundle)?;
 //!
 //! // Write directly to disk (streaming serialization)
-//! let writer = SegmentWriter::new(SegmentSeq::new(1));
+//! let writer = SegmentWriter::new(SegmentSeq::new(1), true);
 //! let (bytes_written, checksum) = writer.write_segment(&path, open_segment).await?;
 //! ```
 //!
@@ -119,18 +119,38 @@ const STREAM_ALIGNMENT: u64 = 64;
 pub struct SegmentWriter {
     /// Sequence number for this segment.
     segment_seq: SegmentSeq,
+    /// Whether to set files read-only after writing.
+    ///
+    /// When `true` (the default), finalized segment files have their
+    /// permissions set to `0o440` (Unix) or read-only (other platforms)
+    /// to enforce immutability.  When `false`, the permission change is
+    /// skipped — this is necessary on filesystems that do not support
+    /// `chmod` (e.g., SMB/CIFS mounts, certain Kubernetes volumeMounts).
+    enforce_file_readonly: bool,
 }
 
 impl SegmentWriter {
     /// Creates a new segment writer.
+    ///
+    /// # Arguments
+    ///
+    /// * `segment_seq` - Sequence number for the segment being written.
+    /// * `enforce_file_readonly` - When `true`, finalized segment files are
+    ///   `chmod`-ed to `0o440` (Unix) or marked read-only (other platforms)
+    ///   to enforce immutability.  Pass `false` on filesystems that don't
+    ///   support permission changes (e.g., SMB/CIFS mounts, certain
+    ///   Kubernetes volumeMounts).
     #[must_use]
-    pub fn new(segment_seq: SegmentSeq) -> Self {
-        Self { segment_seq }
+    pub const fn new(segment_seq: SegmentSeq, enforce_file_readonly: bool) -> Self {
+        Self {
+            segment_seq,
+            enforce_file_readonly,
+        }
     }
 
     /// Returns the segment sequence number.
     #[must_use]
-    pub fn segment_seq(&self) -> SegmentSeq {
+    pub const fn segment_seq(&self) -> SegmentSeq {
         self.segment_seq
     }
 
@@ -162,7 +182,6 @@ impl SegmentWriter {
     ) -> Result<(u64, u32), SegmentError> {
         let path = path.as_ref().to_path_buf();
         let (accumulators, manifest) = segment.into_parts()?;
-        let segment_seq = self.segment_seq;
 
         // Create the file asynchronously, then convert to std::fs::File for Arrow IPC.
         let async_file = tokio::fs::File::create(&path)
@@ -179,9 +198,7 @@ impl SegmentWriter {
             move || -> Result<(File, (u64, u32)), SegmentError> {
                 let mut writer = BufWriter::new(std_file);
 
-                let segment_writer = SegmentWriter::new(segment_seq);
-                let result =
-                    segment_writer.write_streaming(&mut writer, accumulators, manifest, &path)?;
+                let result = Self::write_streaming(&mut writer, accumulators, manifest, &path)?;
 
                 // Extract the underlying file for fsync
                 let file = writer
@@ -206,7 +223,9 @@ impl SegmentWriter {
         // Required on some filesystems (older ext3, NFS) for crash consistency.
         sync_parent_dir(&path).await?;
 
-        Self::set_readonly(&path).await?;
+        if self.enforce_file_readonly {
+            Self::set_readonly(&path).await?;
+        }
 
         Ok(result)
     }
@@ -244,7 +263,6 @@ impl SegmentWriter {
     /// Serializes each stream directly to the writer, avoiding the need to
     /// buffer all IPC bytes in memory before writing.
     fn write_streaming<W: Write>(
-        &self,
         writer: &mut W,
         accumulators: Vec<super::StreamAccumulator>,
         manifest: Vec<ManifestEntry>,
@@ -302,7 +320,7 @@ impl SegmentWriter {
         // 2. Write stream directory (as Arrow IPC)
         // ─────────────────────────────────────────────────────────────────────
         let directory_offset = offset;
-        let directory_bytes = self.encode_stream_directory(&stream_metadata_list)?;
+        let directory_bytes = Self::encode_stream_directory(&stream_metadata_list)?;
         writer
             .write_all(&directory_bytes)
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
@@ -314,7 +332,7 @@ impl SegmentWriter {
         // 3. Write batch manifest (as Arrow IPC)
         // ─────────────────────────────────────────────────────────────────────
         let manifest_offset = offset;
-        let manifest_bytes = self.encode_manifest(&manifest)?;
+        let manifest_bytes = Self::encode_manifest(&manifest)?;
         writer
             .write_all(&manifest_bytes)
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
@@ -378,7 +396,7 @@ impl SegmentWriter {
     /// - byte_length: UInt64
     /// - row_count: UInt64
     /// - chunk_count: UInt32
-    fn encode_stream_directory(&self, streams: &[StreamMetadata]) -> Result<Vec<u8>, SegmentError> {
+    fn encode_stream_directory(streams: &[StreamMetadata]) -> Result<Vec<u8>, SegmentError> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("stream_id", StreamId::arrow_data_type(), false),
             Field::new("slot_id", SlotId::arrow_data_type(), false),
@@ -446,7 +464,7 @@ impl SegmentWriter {
     /// The `expect()` calls in this function cannot panic because the field
     /// builders are created with the exact same types in the same order as
     /// the indices used to access them.
-    fn encode_manifest(&self, entries: &[ManifestEntry]) -> Result<Vec<u8>, SegmentError> {
+    fn encode_manifest(entries: &[ManifestEntry]) -> Result<Vec<u8>, SegmentError> {
         // Define the inner struct type for slot references.
         // Uses ArrowPrimitive::arrow_data_type() to ensure the Arrow schema stays
         // synchronized with the Rust primitive types.
@@ -459,6 +477,7 @@ impl SegmentWriter {
         // Note: The list item field must be nullable to match what ListBuilder produces
         let schema = Arc::new(Schema::new(vec![
             Field::new("bundle_index", DataType::UInt32, false),
+            Field::new("item_count", DataType::UInt64, false),
             Field::new(
                 "slot_refs",
                 DataType::List(Arc::new(Field::new_struct(
@@ -471,6 +490,7 @@ impl SegmentWriter {
         ]));
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
+        let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
 
         // Create the list builder with a struct builder inside
         let struct_builder = StructBuilder::from_fields(
@@ -481,6 +501,7 @@ impl SegmentWriter {
 
         for entry in entries {
             bundle_index_builder.append_value(entry.bundle_index);
+            item_count_builder.append_value(entry.item_count());
 
             // Get the struct builder from the list builder
             let struct_builder = slot_refs_builder.values();
@@ -511,6 +532,7 @@ impl SegmentWriter {
             schema.clone(),
             vec![
                 Arc::new(bundle_index_builder.finish()),
+                Arc::new(item_count_builder.finish()),
                 Arc::new(slot_refs_builder.finish()),
             ],
         )
@@ -551,7 +573,7 @@ struct HashingWriter<'a, W> {
 }
 
 impl<'a, W> HashingWriter<'a, W> {
-    fn new(inner: &'a mut W, hasher: &'a mut Hasher) -> Self {
+    const fn new(inner: &'a mut W, hasher: &'a mut Hasher) -> Self {
         Self { inner, hasher }
     }
 }
@@ -614,7 +636,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.qseg");
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let open_segment = OpenSegment::new();
 
         // Empty segment should fail
@@ -644,7 +666,7 @@ mod tests {
         let _ = open_segment.append(&bundle1).unwrap();
         let _ = open_segment.append(&bundle2).unwrap();
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         // File should be non-empty
@@ -688,11 +710,77 @@ mod tests {
 
         let _ = open_segment.append(&bundle).unwrap();
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         // File should be non-empty
         assert!(bytes_written > 0);
+    }
+
+    #[tokio::test]
+    async fn write_segment_skips_readonly_when_disabled() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.qseg");
+
+        let schema = test_schema();
+        let batch = make_batch(&schema, &[1, 2], &["a", "b"]);
+
+        let mut open_segment = OpenSegment::new();
+        let fp = test_fingerprint();
+        let bundle = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch);
+        let _ = open_segment.append(&bundle).unwrap();
+
+        // Write with enforce_file_readonly disabled
+        let writer = SegmentWriter::new(SegmentSeq::new(1), false);
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
+        assert!(bytes_written > 0);
+
+        // File should still be writable (permissions not changed to read-only)
+        let perms = fs::metadata(&path).unwrap().permissions();
+        assert!(
+            !perms.readonly(),
+            "file should not be read-only when enforce_file_readonly is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_segment_sets_readonly_when_enabled() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.qseg");
+
+        let schema = test_schema();
+        let batch = make_batch(&schema, &[1, 2], &["a", "b"]);
+
+        let mut open_segment = OpenSegment::new();
+        let fp = test_fingerprint();
+        let bundle = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch);
+        let _ = open_segment.append(&bundle).unwrap();
+
+        // Write with enforce_file_readonly enabled (default)
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
+        assert!(bytes_written > 0);
+
+        // File should be read-only
+        let perms = fs::metadata(&path).unwrap().permissions();
+        assert!(
+            perms.readonly(),
+            "file should be read-only when enforce_file_readonly is true"
+        );
+
+        // On Unix, verify the exact permission bits
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = perms.mode() & 0o777;
+            assert_eq!(mode, 0o440, "file should have mode 0o440 on Unix");
+        }
     }
 
     #[tokio::test]
@@ -717,7 +805,7 @@ mod tests {
         let _ = open_segment.append(&bundle).unwrap();
 
         // Write using the streaming API
-        let writer = SegmentWriter::new(SegmentSeq::new(42));
+        let writer = SegmentWriter::new(SegmentSeq::new(42), true);
         let (bytes_written, crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         assert!(bytes_written > 0);
@@ -804,8 +892,6 @@ mod tests {
 
     #[test]
     fn encode_stream_directory_produces_valid_ipc() {
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
-
         let streams = vec![
             StreamMetadata::new(
                 StreamId::new(0),
@@ -827,7 +913,7 @@ mod tests {
             ),
         ];
 
-        let ipc_bytes = writer.encode_stream_directory(&streams).unwrap();
+        let ipc_bytes = SegmentWriter::encode_stream_directory(&streams).unwrap();
 
         // Should produce non-empty IPC
         assert!(!ipc_bytes.is_empty());
@@ -844,18 +930,16 @@ mod tests {
 
     #[test]
     fn encode_manifest_produces_valid_ipc() {
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
-
-        let mut entry0 = ManifestEntry::new(0);
+        let mut entry0 = ManifestEntry::new(0, 10);
         entry0.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(0));
 
-        let mut entry1 = ManifestEntry::new(1);
+        let mut entry1 = ManifestEntry::new(1, 20);
         entry1.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(1));
         entry1.add_slot(SlotId::new(1), StreamId::new(1), ChunkIndex::new(0));
 
         let entries = vec![entry0, entry1];
 
-        let ipc_bytes = writer.encode_manifest(&entries).unwrap();
+        let ipc_bytes = SegmentWriter::encode_manifest(&entries).unwrap();
 
         // Should produce non-empty IPC
         assert!(!ipc_bytes.is_empty());
@@ -872,7 +956,7 @@ mod tests {
 
     #[test]
     fn segment_seq_accessor_returns_correct_value() {
-        let writer = SegmentWriter::new(SegmentSeq::new(42));
+        let writer = SegmentWriter::new(SegmentSeq::new(42), true);
         assert_eq!(writer.segment_seq(), SegmentSeq::new(42));
     }
 

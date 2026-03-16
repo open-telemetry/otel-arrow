@@ -73,6 +73,9 @@ pub struct BundleHandle<C: ResolutionCallback> {
     callback: Arc<C>,
     /// Whether the handle has been explicitly resolved.
     resolved: bool,
+    /// Number of logical data items in this bundle (from the segment manifest).
+    /// Zero for legacy segments that pre-date item_count tracking.
+    item_count: u64,
 }
 
 impl<C: ResolutionCallback> BundleHandle<C> {
@@ -80,11 +83,12 @@ impl<C: ResolutionCallback> BundleHandle<C> {
     ///
     /// This is called by the registry when claiming a bundle.
     #[must_use]
-    pub(crate) fn new(
+    pub(crate) const fn new(
         bundle_ref: BundleRef,
         subscriber_id: SubscriberId,
         data: ReconstructedBundle,
         callback: Arc<C>,
+        item_count: u64,
     ) -> Self {
         Self {
             bundle_ref,
@@ -92,24 +96,35 @@ impl<C: ResolutionCallback> BundleHandle<C> {
             data,
             callback,
             resolved: false,
+            item_count,
         }
     }
 
     /// Returns a reference to the bundle data.
     #[must_use]
-    pub fn data(&self) -> &ReconstructedBundle {
+    pub const fn data(&self) -> &ReconstructedBundle {
         &self.data
     }
 
     /// Returns the bundle reference (for retry scheduling).
     #[must_use]
-    pub fn bundle_ref(&self) -> BundleRef {
+    pub const fn bundle_ref(&self) -> BundleRef {
         self.bundle_ref
+    }
+
+    /// Returns the number of logical data items in this bundle.
+    ///
+    /// This value comes from the segment manifest and avoids re-scanning
+    /// bundle data on the drain path. Returns 0 for legacy segments that
+    /// pre-date item_count tracking.
+    #[must_use]
+    pub const fn item_count(&self) -> u64 {
+        self.item_count
     }
 
     /// Returns the subscriber ID.
     #[must_use]
-    pub fn subscriber_id(&self) -> &SubscriberId {
+    pub const fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
 
@@ -223,7 +238,7 @@ mod tests {
         let subscriber_id = SubscriberId::new("test-sub").unwrap();
         let data = ReconstructedBundle::empty();
 
-        BundleHandle::new(bundle_ref, subscriber_id, data, callback)
+        BundleHandle::new(bundle_ref, subscriber_id, data, callback, 0)
     }
 
     #[test]

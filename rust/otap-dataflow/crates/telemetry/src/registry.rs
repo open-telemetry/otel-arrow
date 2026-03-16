@@ -10,7 +10,7 @@ use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
     MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
-use crate::otel_info;
+use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::new_key_type;
@@ -76,7 +76,7 @@ impl TelemetryRegistryHandle {
             // TODO(#1907): This could benefit from logging a human-readable form
             // of the entity that we refer to later in the logs, instead of logging
             // every key/value in every line of console_async output.
-            otel_info!("registry.define_entity", schema, definition);
+            otel_debug!("registry.define_entity", schema, definition);
         }
         outcome.key()
     }
@@ -238,7 +238,7 @@ mod tests {
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                values: vec![MetricValue::from(0u64), MetricValue::from(0u64)],
             }
         }
     }
@@ -349,7 +349,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let mut handles = Vec::new();
 
-        for i in 0..5 {
+        for i in 0u64..5 {
             let telemetry_registry_clone = telemetry_registry.clone();
             let thread_handle = thread::spawn(move || {
                 let attrs = MockAttributeSet::new(format!("value_{i}"));
@@ -359,7 +359,7 @@ mod tests {
 
                 telemetry_registry_clone.accumulate_metric_set_snapshot(
                     metrics_key,
-                    &[MetricValue::U64(i * 10), MetricValue::U64(i * 20)],
+                    &[MetricValue::from(i * 10), MetricValue::from(i * 20)],
                 );
             });
             handles.push(thread_handle);

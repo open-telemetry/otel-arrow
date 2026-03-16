@@ -15,12 +15,12 @@ to produce an OpenTelemetry pipeline support, for use as an embedded
 software component, providing a framework for collecting OpenTelemetry
 data.
 
-> [!NOTE] These Rust libraries are the main deliverable of Phase 2 of
-> the OTel-Arrow project, as defined in the [project
-> phases](../../docs/project-phases.md).  The `df_engine` main
-> program built through `cargo` in [`src/main.rs`](./src/main.rs) is
-> provided as a means to test and validate OTAP pipelines built using
-> the dataflow engine.
+> [!NOTE]
+> These Rust libraries are the main deliverable of Phase 2 of the OTel-Arrow
+> project, as defined in the [project phases](../../docs/project-phases.md).
+> The `df_engine` main program built through `cargo` in
+> [`src/main.rs`](./src/main.rs) is provided as a means to test and validate
+> OTAP pipelines built using the dataflow engine.
 
 ## Architecture
 
@@ -125,7 +125,6 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 ### OTAP: OTel-Arrow Protocol pipeline data
 
 [See crate README.](./crates/otap/README.md)
-
 The OTAP pipeline data type is defined here, therefore all of our
 built-in components are provided here as well.  The main entry point
 into this crate is the `otap_df_otap::pdata::OtapPdata` type with its
@@ -247,6 +246,42 @@ route destinations.
 The Syslog/CEF receiver is considered a core component used to
 establish the performance of the OTAP Dataflow system.
 
+### Core Nodes
+
+[See crate README.](./crates/core-nodes/README.md)
+
+The `otap-df-core-nodes` crate is the destination for core-node
+implementations as they are split out from `otap-df-otap` during the
+ongoing refactor.
+
+Current status:
+
+- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`,
+  `perf_exporter`, `topic_exporter`
+- Processors: `attributes_processor`, `batch_processor`,
+  `content_router`, `debug_processor`, `delay_processor`,
+  `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
+  `retry_processor`, `signal_type_router`, `transform_processor`
+- Receivers: `fake_data_generator`, `internal_telemetry_receiver`,
+  `topic_receiver`
+
+### Contrib Nodes
+
+[See crate README.](./crates/contrib-nodes/README.md)
+
+The `otap-df-contrib-nodes` crate contains optional, feature-gated
+exporters and processors that are registered into the OTAP pipeline
+factory maps when enabled.
+
+Contrib feature model:
+
+- Aggregate exporter feature:
+  - `contrib-exporters` enables all contrib exporters
+- Aggregate processor feature:
+  - `contrib-processors` enables all contrib processors
+- Individual feature flags can still be enabled independently for
+  smaller builds.
+
 ### Controller
 
 [See crate README.](./crates/controller/README.md)
@@ -273,7 +308,8 @@ A number of example configurations are listed in
 [`./configs`](./configs). The engine supports both single-pipeline
 configurations (`-p`) and full engine configurations (`-c`) with
 multiple pipeline groups; see the [configs README](./configs/README.md)
-for details.
+for details. These are deserialized into the
+`otap_df_config::engine::OtelDataflowSpec` structs, defined in this crate.
 
 ### Channel
 

@@ -34,12 +34,24 @@ pub enum Error {
         actual: DataType,
     },
 
+    #[error(
+        "Dictionary `{}` value type mismatch, expect: {}, actual: {}",
+        name,
+        expect,
+        actual
+    )]
+    DictionaryValueTypeMismatch {
+        name: String,
+        expect: DataType,
+        actual: DataType,
+    },
+
     #[error("Failed to compare two columns with unequal length")]
     ColumnLengthMismatch { source: ArrowError },
 
     #[error("Cannot recognize metric type: {metric_type}: {error}")]
     UnrecognizedMetricType {
-        metric_type: i32,
+        metric_type: u8,
         error: TryFromPrimitiveError<MetricType>,
     },
 
@@ -94,8 +106,14 @@ pub enum Error {
     #[error("Invalid attribute transform: {}", reason)]
     InvalidAttributeTransform { reason: String },
 
-    #[error("Unsupported parent id type. Expected u16 or u32, got: {}", actual)]
+    #[error(
+        "Unsupported parent id column type. Expected u16 or u32, got: {}",
+        actual
+    )]
     UnsupportedParentIdType { actual: DataType },
+
+    #[error("parent_id column must not contain nulls")]
+    NullParentId,
 
     #[error("Unsupported payload type, got: {}", actual)]
     UnsupportedPayloadType { actual: i32 },
@@ -168,8 +186,37 @@ pub enum Error {
     )]
     InvalidId { expected: usize, given: usize },
 
+    #[error("Invalid type for an Id column: {}", data_type)]
+    InvalidIdColumnType { data_type: DataType },
+
+    #[error(
+        "Invalid data type for struct, parent: {}, name: {}, data_type: {}",
+        parent,
+        name,
+        data_type
+    )]
+    InvalidDataTypeForStruct {
+        parent: String,
+        name: String,
+        data_type: DataType,
+    },
+
     #[error("Mixed signals")]
     MixedSignals,
+
+    #[error(
+        "Too many items. signal: {:?}, size: {}, max: {}, message: {}",
+        payload_type,
+        count,
+        max,
+        message
+    )]
+    TooManyItems {
+        payload_type: ArrowPayloadType,
+        count: usize,
+        max: u64,
+        message: String,
+    },
 
     #[error("Encoding error: {}", error)]
     Encoding {

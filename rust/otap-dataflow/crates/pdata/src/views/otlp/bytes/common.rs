@@ -15,11 +15,13 @@ use crate::proto::consts::field_num::common::{
     KEY_VALUE_LIST_VALUES, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, ValueType};
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser, field_value_range,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
     read_varint, to_nonzero_range,
+};
+use otap_df_pdata_views::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
 
 /// Implementation of `AttributeView` backed by protobuf serialized `KeyValue` message
@@ -40,7 +42,7 @@ impl<'a> RawKeyValue<'a> {
     /// Create a new RawKeyValue parser from a byte slice containing a KeyValue message.
     #[inline]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             pos: Cell::new(0),
@@ -100,7 +102,7 @@ impl<'a> RawAnyValue<'a> {
     /// create a new instance of RawAnyValue
     #[inline]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             value_offset: Cell::new(None),
@@ -119,7 +121,7 @@ impl<'a> RawInstrumentationScope<'a> {
     /// create a new instance of `RawInstrumentationScope`
     #[inline]
     #[must_use]
-    pub fn new(bytes_parser: ProtoBytesParser<'a, InstrumentationScopeFieldOffsets>) -> Self {
+    pub const fn new(bytes_parser: ProtoBytesParser<'a, InstrumentationScopeFieldOffsets>) -> Self {
         Self { bytes_parser }
     }
 }
@@ -204,7 +206,7 @@ where
 {
     /// Create a new instance of `KeyValueIter`
     #[must_use]
-    pub fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
+    pub const fn new(bytes_parser: RepeatedFieldProtoBytesParser<'a, T>) -> Self {
         Self { bytes_parser }
     }
 }
@@ -259,7 +261,7 @@ impl AttributeView for RawKeyValue<'_> {
         Self: 'val;
 
     #[inline]
-    fn key(&self) -> crate::views::common::Str<'_> {
+    fn key(&self) -> otap_df_pdata_views::views::common::Str<'_> {
         loop {
             if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
             {
@@ -345,7 +347,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
     }
 
     #[inline]
-    fn as_string(&self) -> Option<crate::views::common::Str<'_>> {
+    fn as_string(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         if self.value_type() == ValueType::String {
             // safety: this value should have been initialized in the call to self.value_type
             let value_offset = self
@@ -503,13 +505,13 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
         Self: 'att;
 
     #[inline]
-    fn name(&self) -> Option<crate::views::common::Str<'_>> {
+    fn name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)
     }
 
     #[inline]
-    fn version(&self) -> Option<crate::views::common::Str<'_>> {
+    fn version(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)
     }

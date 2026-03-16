@@ -3,10 +3,10 @@
 
 //! Metric and Attribute descriptor types for metrics reflection.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The type of instrument used to record the metric. Must be one of the following variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
     /// A monotonic sum.
@@ -17,10 +17,15 @@ pub enum Instrument {
     Gauge,
     /// Distribution of recorded values, used for latencies or request sizes
     Histogram,
+    /// Pre-aggregated min/max/sum/count summary.
+    ///
+    /// Internally tracked as an `Mmsc` instrument; the dispatcher exports the
+    /// aggregated snapshot as a synthetic OTel histogram without bucket counts.
+    Mmsc,
 }
 
 /// Aggregation temporality for sum-like instruments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Temporality {
     /// Each snapshot represents a delta over the reporting interval.
@@ -30,7 +35,7 @@ pub enum Temporality {
 }
 
 /// Numeric representation used by a metric field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricValueType {
     /// Unsigned 64-bit integer.
@@ -79,6 +84,8 @@ pub enum AttributeValueType {
     Double,
     /// Boolean attribute value
     Boolean,
+    /// Map attribute value (key-value pairs)
+    Map,
 }
 
 /// Metadata describing a single attribute field.

@@ -17,6 +17,9 @@ cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 4
 # Run with an engine configuration (multiple pipeline groups)
 cargo run --release -- -c configs/engine-conf/continuous_benchmark.yaml
 
+# Validate configuration without starting the engine
+cargo run --release -- -p configs/otlp-otlp.yaml --validate-and-exit
+
 # Get help
 cargo run --release -- --help
 ```

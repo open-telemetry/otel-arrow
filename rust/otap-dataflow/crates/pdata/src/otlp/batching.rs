@@ -16,7 +16,7 @@ struct Position {
 }
 
 impl Position {
-    fn new(input_idx: usize, offset: usize) -> Self {
+    const fn new(input_idx: usize, offset: usize) -> Self {
         Self { input_idx, offset }
     }
 }

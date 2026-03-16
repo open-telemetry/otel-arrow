@@ -43,7 +43,7 @@ where
 {
     /// Creates a new `DeltaDecoder` instance.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             prev_key_value: None,
         }

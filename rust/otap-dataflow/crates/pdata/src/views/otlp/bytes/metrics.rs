@@ -33,7 +33,6 @@ use crate::proto::consts::field_num::metrics::{
 };
 use crate::proto::consts::wire_types;
 use crate::schema::{SpanId, TraceId};
-use crate::views::common::Str;
 use crate::views::metrics::{
     AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
@@ -47,6 +46,7 @@ use crate::views::otlp::bytes::decode::{
     read_len_delim, read_varint, to_nonzero_range,
 };
 use crate::views::otlp::bytes::resource::RawResource;
+use otap_df_pdata_views::views::common::Str;
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {
@@ -56,7 +56,7 @@ pub struct RawMetricsData<'a> {
 impl<'a> RawMetricsData<'a> {
     /// Create a new [`RawMetricsData`]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 }

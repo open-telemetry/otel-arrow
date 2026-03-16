@@ -81,7 +81,7 @@ impl StreamAccumulator {
     /// * `schema_fingerprint` - 256-bit hash of the schema for routing.
     /// * `schema` - Arrow schema that all appended batches must match.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         stream_id: StreamId,
         slot_id: SlotId,
         schema_fingerprint: SchemaFingerprint,
@@ -101,43 +101,43 @@ impl StreamAccumulator {
 
     /// Returns the stream's unique identifier.
     #[must_use]
-    pub fn stream_id(&self) -> StreamId {
+    pub const fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
     /// Returns the slot this stream serves.
     #[must_use]
-    pub fn slot_id(&self) -> SlotId {
+    pub const fn slot_id(&self) -> SlotId {
         self.slot_id
     }
 
     /// Returns the schema fingerprint for this stream.
     #[must_use]
-    pub fn schema_fingerprint(&self) -> SchemaFingerprint {
+    pub const fn schema_fingerprint(&self) -> SchemaFingerprint {
         self.schema_fingerprint
     }
 
     /// Returns the stream key for this accumulator.
     #[must_use]
-    pub fn stream_key(&self) -> StreamKey {
+    pub const fn stream_key(&self) -> StreamKey {
         (self.slot_id, self.schema_fingerprint)
     }
 
     /// Returns the Arrow schema for this stream.
     #[must_use]
-    pub fn schema(&self) -> &SchemaRef {
+    pub const fn schema(&self) -> &SchemaRef {
         &self.schema
     }
 
     /// Returns the number of chunks (batches) accumulated so far.
     #[must_use]
-    pub fn chunk_count(&self) -> u32 {
+    pub const fn chunk_count(&self) -> u32 {
         self.batches.len() as u32
     }
 
     /// Returns the total row count across all accumulated batches.
     #[must_use]
-    pub fn row_count(&self) -> u64 {
+    pub const fn row_count(&self) -> u64 {
         self.row_count
     }
 
@@ -146,19 +146,19 @@ impl StreamAccumulator {
     /// This is the sum of `get_array_memory_size()` for all appended batches,
     /// representing the actual Arrow buffer memory consumption.
     #[must_use]
-    pub fn buffer_size(&self) -> usize {
+    pub const fn buffer_size(&self) -> usize {
         self.buffer_size
     }
 
     /// Returns true if this accumulator has no batches.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.batches.is_empty()
     }
 
     /// Returns true if finalize() has been called.
     #[must_use]
-    pub fn is_finalized(&self) -> bool {
+    pub const fn is_finalized(&self) -> bool {
         self.finalized
     }
 
@@ -280,14 +280,14 @@ struct CountingWriter<W> {
 }
 
 impl<W> CountingWriter<W> {
-    fn new(inner: W) -> Self {
+    const fn new(inner: W) -> Self {
         Self {
             inner,
             bytes_written: 0,
         }
     }
 
-    fn bytes_written(&self) -> usize {
+    const fn bytes_written(&self) -> usize {
         self.bytes_written
     }
 }

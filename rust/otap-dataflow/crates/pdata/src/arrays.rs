@@ -421,7 +421,7 @@ pub enum MaybeDictArrayAccessor<'a, V> {
 impl<'a, V> MaybeDictArrayAccessor<'a, V> {
     /// returns an iterator over the values in the array
     #[must_use]
-    pub fn iter(&'a self) -> MaybeDictArrayIter<'a, V> {
+    pub const fn iter(&'a self) -> MaybeDictArrayIter<'a, V> {
         MaybeDictArrayIter::new(self)
     }
 }
@@ -650,7 +650,7 @@ pub struct MaybeDictArrayIter<'a, V> {
 }
 
 impl<'a, V> MaybeDictArrayIter<'a, V> {
-    fn new(inner: &'a MaybeDictArrayAccessor<'a, V>) -> Self {
+    const fn new(inner: &'a MaybeDictArrayAccessor<'a, V>) -> Self {
         Self { index: 0, inner }
     }
 }
@@ -805,7 +805,7 @@ pub struct StructColumnAccessor<'a> {
 }
 
 impl<'a> StructColumnAccessor<'a> {
-    pub(crate) fn new(arr: &'a StructArray) -> Self {
+    pub(crate) const fn new(arr: &'a StructArray) -> Self {
         Self { inner: arr }
     }
 

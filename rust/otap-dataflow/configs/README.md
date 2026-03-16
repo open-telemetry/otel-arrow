@@ -1,6 +1,7 @@
-# Configuration Examples
+# Engine Configuration Examples
 
-This directory contains example configurations for the OTAP dataflow engine.
+This directory contains example engine configurations for the OTAP dataflow engine.
+Each file uses `version: otel_dataflow/v1` at the root.
 
 Note: These configurations are based on the native OTAP dataflow engine
 configuration model, which is a superset of the Go Collector configuration
@@ -96,13 +97,13 @@ Demonstrates the batch processor:
 A basic pipeline with telemetry export enabled:
 
 - Generates fake data -> debug processor -> noop exporter
-- Includes `service.telemetry` configuration with console metrics export
+- Includes `engine.telemetry` configuration with console metrics export
 
-### `fake-debug-out-port.yaml`
+### `fake-debug-output-ports.yaml`
 
 Demonstrates multiple output ports:
 
-- Generates fake data -> debug processor with multiple out ports -> noop exporter
+- Generates fake data -> debug processor with multiple output ports -> noop exporter
 
 ### `fake-filter-debug-noop.yaml`
 
@@ -143,6 +144,27 @@ Generates fake data with performance metrics:
 
 - Generates fake data -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `fake-multi-tenant-perf.yaml`
+
+Generates mixed-tenant traffic using weighted resource attribute rotation:
+
+- Uses `data_source: static` with two resource attribute sets (`tenant.id:
+  prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
+  per  pipeline.
+- Generates fake data -> performance exporter
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+The `resource_attributes` field accepts three forms:
+
+| Form | Description |
+| ---- | ----------- |
+| Single map | All batches carry the same attributes (weight 1) |
+| List of maps | Equal round-robin rotation across entries (weight 1 each) |
+| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+
+> **Note:** `resource_attributes` only applies to `data_source: static`.
+> With `generation_strategy: pre_generated`, only the first attribute set is used.
 
 ### `otap-otap.yaml`
 
@@ -204,20 +226,21 @@ Syslog/CEF receiver with performance metrics:
 - Measures and exports performance metrics
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
-To send test syslog messages:
+To send a quick test message (UDP):
 
 ```bash
-# Send a single syslog message
 echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
-
-# Send multiple messages
-for i in {1..100}; do
-  echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message #$i" | nc -u -w1 127.0.0.1 5140
-done
-
-# Send CEF format message
-echo "<134>$(date '+%b %d %H:%M:%S') testhost CEF:0|Security|IDS|1.0|100|Test Event|5|src=192.168.1.100 dst=10.0.0.50" | nc -u -w1 127.0.0.1 5140
 ```
+
+For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+
+```bash
+cd tools/pipeline_perf_test/load_generator
+python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+```
+
+> **Note:** The default `syslog-perf.yaml` config only enables UDP.
+> To also accept TCP, add a `tcp` section under `protocol` in the config.
 
 ## Usage
 
@@ -232,4 +255,7 @@ cargo run -- -p configs/otlp-otlp.yaml --num-cores 4
 
 # Run an engine configuration (multiple pipeline groups)
 cargo run -- -c configs/engine-conf/continuous_benchmark.yaml
+
+# Validate a configuration without starting the engine
+cargo run -- -p configs/otlp-otlp.yaml --validate-and-exit
 ```

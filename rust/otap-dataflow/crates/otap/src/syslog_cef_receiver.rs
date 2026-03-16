@@ -20,12 +20,13 @@ use otap_df_engine::{
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
+use std::num::{NonZeroU16, NonZeroU64};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,7 +37,7 @@ use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 #[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -44,48 +45,122 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:receiver:syslog_cef";
 
-/// Maximum time to wait before building an Arrow batch
-const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
-const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
+/// Default maximum time to wait before flushing an Arrow batch.
+const DEFAULT_MAX_BATCH_DURATION: Duration = Duration::from_millis(100);
+/// Default maximum number of messages to build an Arrow batch.
+const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 
-/// Protocol type for the receiver
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-enum Protocol {
-    /// TCP protocol
-    Tcp,
-    /// UDP protocol
-    Udp,
+/// Maximum time to wait for spawned TCP tasks to drain during shutdown.
+const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
+
+/// TCP-specific settings for the syslog CEF receiver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TcpConfig {
+    /// The address to listen on for TCP connections.
+    listening_addr: SocketAddr,
+    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
+    ///
+    /// When configured, TCP connections will require TLS.
+    #[cfg(feature = "experimental-tls")]
+    tls: Option<TlsServerConfig>,
 }
 
-/// config for a syslog cef receiver
+/// UDP-specific settings for the syslog CEF receiver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UdpConfig {
+    /// The address to listen on for UDP datagrams.
+    listening_addr: SocketAddr,
+}
+
+/// Protocol configuration for the syslog CEF receiver.
+///
+/// Exactly one protocol variant must be specified.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // This enum is only used for configuration, so the size is not a concern.
+enum Protocol {
+    /// TCP protocol settings.
+    Tcp(TcpConfig),
+    /// UDP protocol settings.
+    Udp(UdpConfig),
+}
+
+/// Optional batching configuration for the syslog CEF receiver.
+///
+/// Controls how incoming log records are accumulated into Arrow batches
+/// before being forwarded downstream. Reducing these values can limit
+/// the scope of data loss for in-memory records that have not yet been
+/// sent to the next node.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct BatchConfig {
+    /// Maximum time in milliseconds to wait before flushing an Arrow batch.
+    /// Defaults to 100 ms when not specified. Must be greater than zero.
+    #[serde(default)]
+    max_batch_duration_ms: Option<NonZeroU64>,
+    /// Maximum number of messages to accumulate before building an Arrow batch.
+    /// Defaults to 100 when not specified. Must be greater than zero.
+    #[serde(default)]
+    max_size: Option<NonZeroU16>,
+}
+
+/// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    listening_addr: SocketAddr,
-    /// The protocol to use for receiving messages
+    /// Protocol-specific configuration.
     protocol: Protocol,
-    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
-    ///
-    /// When configured, TCP connections will require TLS. This is only applicable
-    /// when `protocol` is `tcp`. UDP does not support TLS.
-    #[cfg(feature = "experimental-tls")]
-    pub tls: Option<TlsServerConfig>,
+    /// Optional batching configuration.
+    /// When omitted, sensible defaults are used.
+    #[serde(default)]
+    batch: Option<BatchConfig>,
 }
 
 impl Config {
+    /// Creates a new Config for TCP.
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
         Self {
-            listening_addr,
-            protocol,
-            #[cfg(feature = "experimental-tls")]
-            tls: None,
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr,
+                #[cfg(feature = "experimental-tls")]
+                tls: None,
+            }),
+            batch: None,
         }
+    }
+
+    /// Creates a new Config for UDP.
+    #[must_use]
+    #[allow(dead_code)]
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp(UdpConfig { listening_addr }),
+            batch: None,
+        }
+    }
+
+    /// Returns the effective max batch duration, using the configured value or the default.
+    fn max_batch_duration(&self) -> Duration {
+        self.batch
+            .as_ref()
+            .and_then(|b| b.max_batch_duration_ms)
+            .map(|ms| Duration::from_millis(ms.get()))
+            .unwrap_or(DEFAULT_MAX_BATCH_DURATION)
+    }
+
+    /// Returns the effective max batch size, using the configured value or the default.
+    fn max_batch_size(&self) -> u16 {
+        self.batch
+            .as_ref()
+            .and_then(|b| b.max_size)
+            .map(|s| s.get())
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
     }
 }
 
@@ -137,34 +212,35 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
-        mut self: Box<Self>,
+        self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otel_info!(
-            "receiver.start",
-            protocol = format!("{:?}", self.config.protocol),
-            listening_addr = self.config.listening_addr.to_string(),
-            message = "Starting Syslog/CEF Receiver"
-        );
-
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        match self.config.protocol {
-            Protocol::Tcp => {
-                let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        match &self.config.protocol {
+            Protocol::Tcp(tcp_config) => {
+                otel_info!(
+                    "syslog_cef_receiver.start",
+                    protocol = "TCP",
+                    listening_addr = tcp_config.listening_addr.to_string()
+                );
+
+                let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
 
                 // Build TLS acceptor if TLS is configured
                 #[cfg(feature = "experimental-tls")]
-                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                let maybe_tls_acceptor = build_tls_acceptor(tcp_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
@@ -175,8 +251,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                 // Extract handshake timeout from TLS config (if present)
                 #[cfg(feature = "experimental-tls")]
-                let maybe_handshake_timeout = self
-                    .config
+                let maybe_handshake_timeout = tcp_config
                     .tls
                     .as_ref()
                     .and_then(|tls| tls.handshake_timeout);
@@ -184,10 +259,19 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 #[cfg(feature = "experimental-tls")]
                 if maybe_tls_acceptor.is_some() {
                     otel_info!(
-                        "receiver.tls_enabled",
+                        "syslog_cef_receiver.tls_enabled",
                         message = "TLS enabled for Syslog/CEF TCP receiver"
                     );
                 }
+
+                // Resolve effective batching settings from config
+                let max_batch_duration = self.config.max_batch_duration();
+                let max_batch_size = self.config.max_batch_size();
+
+                // Flag to signal spawned connection tasks to flush and exit on shutdown
+                let shutdown_flag = Rc::new(Cell::new(false));
+                // Counter to track active connection tasks for graceful shutdown
+                let active_task_count = Rc::new(Cell::new(0usize));
 
                 loop {
                     tokio::select! {
@@ -196,10 +280,31 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
+
+                                    // Wait for active tasks to finish flushing.
+                                    // Use 90% of remaining time (keeping 10% buffer for cleanup),
+                                    // capped at MAX_TASK_DRAIN_WAIT.
+                                    let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
+                                    let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
+                                    let drain_result = tokio::time::timeout(drain_wait, async {
+                                        while active_task_count.get() > 0 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }).await;
+
+                                    if drain_result.is_err() {
+                                        otel_warn!(
+                                            "syslog_cef_receiver.shutdown.drain_timeout",
+                                            active_tasks = active_task_count.get(),
+                                            message = "Shutdown drain timeout expired with tasks still active"
+                                        );
+                                    }
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -218,9 +323,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         accept_result = listener.accept() => {
                             match accept_result {
                                 Ok((socket, peer_addr)) => {
-                                    // Track active connections
-                                    self.metrics.borrow_mut().tcp_connections_active.inc();
-
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
@@ -231,9 +333,23 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     #[cfg(feature = "experimental-tls")]
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
+                                    // Clone shutdown flag for the spawned task
+                                    let task_shutdown_flag = shutdown_flag.clone();
+                                    // Clone active task counter for the spawned task
+                                    let task_active_count = active_task_count.clone();
+
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
+                                        // If already shutting down, exit immediately (nothing to process yet)
+                                        if task_shutdown_flag.get() {
+                                            return;
+                                        }
+
+                                        // Now we're committed to handling this connection
+                                        metrics.borrow_mut().tcp_connections_active.inc();
+                                        task_active_count.set(task_active_count.get() + 1);
+
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         #[cfg(feature = "experimental-tls")]
                                         let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
@@ -243,7 +359,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             match accept_tls_connection(socket, &acceptor, timeout).await {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
-                                                        "tls.handshake.success",
+                                                        "syslog_cef_receiver.tls.handshake.success",
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
@@ -251,13 +367,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                                 Err(e) => {
                                                     otel_warn!(
-                                                        "tls.handshake.failed",
+                                                        "syslog_cef_receiver.tls.handshake.failed",
                                                         peer = %peer_addr,
                                                         error = %e,
                                                         message = "TLS handshake failed, closing connection"
                                                     );
                                                     metrics.borrow_mut().tcp_connections_active.dec();
                                                     metrics.borrow_mut().tls_handshake_failures.inc();
+                                                    task_active_count.set(task_active_count.get() - 1);
                                                     return;
                                                 }
                                             }
@@ -275,10 +392,36 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                                        let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                                        let start = tokio::time::Instant::now() + max_batch_duration;
+                                        let mut interval = tokio::time::interval_at(start, max_batch_duration);
 
                                         loop {
+                                            // Check for shutdown signal (simple bool check - very cheap)
+                                            if task_shutdown_flag.get() {
+                                                if arrow_records_builder.len() > 0 {
+                                                    let items = u64::from(arrow_records_builder.len());
+                                                    match arrow_records_builder.build() {
+                                                        Ok(arrow_records) => {
+                                                            let res = effect_handler.try_send_message_with_source_node(
+                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                            );
+                                                            let mut m = metrics.borrow_mut();
+                                                            match &res {
+                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                            metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                        }
+                                                    }
+                                                }
+                                                metrics.borrow_mut().tcp_connections_active.dec();
+                                                task_active_count.set(task_active_count.get() - 1);
+                                                break;
+                                            }
+
                                             tokio::select! {
                                                 biased; // Prioritize incoming data over timeout
 
@@ -315,20 +458,28 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
                                                                     }
                                                                 }
                                                             }
 
                                                             // Decrement active connections on EOF
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break;
                                                         }
                                                         Ok(_) => {
@@ -365,24 +516,32 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Clear the bytes for the next iteration
                                                             line_bytes.clear();
 
-                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                                            if arrow_records_builder.len() >= max_batch_size {
                                                                 let items = u64::from(arrow_records_builder.len());
 
                                                                 // Build the Arrow records to send them
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        // Reset the builder for the next batch
+                                                                        arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                // Reset the builder for the next batch
-                                                                arrow_records_builder = ArrowRecordsBuilder::new();
+                                                                        // Reset the timer since we already built an arrow record batch due to size constraint
+                                                                        interval.reset();
 
-                                                                // Reset the timer since we already built an arrow record batch due to size constraint
-                                                                interval.reset();
-
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                                                        interval.reset();
                                                                     }
                                                                 }
                                                             }
@@ -391,20 +550,28 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Send any remaining records before closing due to error
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
-                                                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                match arrow_records_builder.build() {
+                                                                    Ok(arrow_records) => {
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
-                                                                {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    match &res {
-                                                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                        {
+                                                                            let mut m = metrics.borrow_mut();
+                                                                            match &res {
+                                                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                        metrics.borrow_mut().received_logs_forward_failed.add(items);
                                                                     }
                                                                 }
                                                             }
 
                                                             // Decrement active connections on read error
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break; // ToDo: Handle read error properly
                                                         }
                                                     }
@@ -415,17 +582,24 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     if arrow_records_builder.len() > 0 {
                                                         // Build the Arrow records and send them
                                                         let items = u64::from(arrow_records_builder.len());
-                                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                        match arrow_records_builder.build() {
+                                                            Ok(arrow_records) => {
+                                                                // Reset the builder for the next batch
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        // Reset the builder for the next batch
-                                                        arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                                        {
-                                                            let mut m = metrics.borrow_mut();
-                                                            match &res {
-                                                                Ok(_) => m.received_logs_forwarded.add(items),
-                                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                {
+                                                                    let mut m = metrics.borrow_mut();
+                                                                    match &res {
+                                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                                metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                                arrow_records_builder = ArrowRecordsBuilder::new();
                                                             }
                                                         }
                                                     }
@@ -449,13 +623,22 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
 
-            Protocol::Udp => {
-                let socket = effect_handler.udp_socket(self.config.listening_addr)?;
+            Protocol::Udp(udp_config) => {
+                otel_info!(
+                    "syslog_cef_receiver.start",
+                    protocol = "UDP",
+                    listening_addr = udp_config.listening_addr.to_string()
+                );
+
+                let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                let max_batch_duration = self.config.max_batch_duration();
+                let max_batch_size = self.config.max_batch_size();
+
+                let start = tokio::time::Instant::now() + max_batch_duration;
+                let mut interval = tokio::time::interval_at(start, max_batch_duration);
 
                 loop {
                     tokio::select! {
@@ -464,10 +647,32 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+
+                                    // Flush any remaining records before shutdown
+                                    if arrow_records_builder.len() > 0 {
+                                        let items = u64::from(arrow_records_builder.len());
+                                        match arrow_records_builder.build() {
+                                            Ok(arrow_records) => {
+                                                let res = effect_handler.try_send_message_with_source_node(
+                                                    OtapPdata::new_todo_context(arrow_records.into())
+                                                );
+                                                let mut m = self.metrics.borrow_mut();
+                                                match &res {
+                                                    Ok(_) => m.received_logs_forwarded.add(items),
+                                                    Err(_) => m.received_logs_forward_failed.add(items),
+                                                }
+                                            }
+                                            Err(e) => {
+                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                            }
+                                        }
+                                    }
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -502,31 +707,39 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     arrow_records_builder.append_syslog(parsed_message);
 
-                                    if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                    if arrow_records_builder.len() >= max_batch_size {
                                         // Build the Arrow records to send them
                                         let items = u64::from(arrow_records_builder.len());
-                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                        match arrow_records_builder.build() {
+                                            Ok(arrow_records) => {
+                                                // Reset the builder for the next batch
+                                                arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        // Reset the builder for the next batch
-                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                                // Reset the timer since we already built an arrow record batch due to size constraint
+                                                interval.reset();
 
-                                        // Reset the timer since we already built an arrow record batch due to size constraint
-                                        interval.reset();
-
-                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                        {
-                                            let mut m = self.metrics.borrow_mut();
-                                            match &res {
-                                                Ok(_) => m.received_logs_forwarded.add(items),
-                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                {
+                                                    let mut m = self.metrics.borrow_mut();
+                                                    match &res {
+                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                    }
+                                                }
+                                                // Do not propagate downstream send errors; keep running
+                                                // so that telemetry can still be collected (tests expect refused
+                                                // to be counted and reported). We already incremented
+                                                // `received_logs_forward_failed` above.
+                                                if res.is_err() {
+                                                    // swallow error
+                                                }
                                             }
-                                        }
-                                        // Do not propagate downstream send errors; keep running
-                                        // so that telemetry can still be collected (tests expect refused
-                                        // to be counted and reported). We already incremented
-                                        // `received_logs_refused` above.
-                                        if res.is_err() {
-                                            // swallow error
+                                            Err(e) => {
+                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                                arrow_records_builder = ArrowRecordsBuilder::new();
+                                                interval.reset();
+                                            }
                                         }
                                     }
                                 }
@@ -547,23 +760,30 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             if arrow_records_builder.len() > 0 {
                                 // Build the Arrow records and send them
                                 let items = u64::from(arrow_records_builder.len());
-                                let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                match arrow_records_builder.build() {
+                                    Ok(arrow_records) => {
+                                        // Reset the builder for the next batch
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                // Reset the builder for the next batch
-                                arrow_records_builder = ArrowRecordsBuilder::new();
-
-                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
-                                {
-                                    let mut m = self.metrics.borrow_mut();
-                                    match &res {
-                                        Ok(_) => m.received_logs_forwarded.add(items),
-                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                        {
+                                            let mut m = self.metrics.borrow_mut();
+                                            match &res {
+                                                Ok(_) => m.received_logs_forwarded.add(items),
+                                                Err(_) => m.received_logs_forward_failed.add(items),
+                                            }
+                                        }
+                                        // Do not propagate downstream send errors; keep running
+                                        // so that telemetry can still be collected and reported.
+                                        if res.is_err() {
+                                            // swallow error (already counted above)
+                                        }
                                     }
-                                }
-                                // Do not propagate downstream send errors; keep running
-                                // so that telemetry can still be collected and reported.
-                                if res.is_err() {
-                                    // swallow error (already counted above)
+                                    Err(e) => {
+                                        otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                        self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                        arrow_records_builder = ArrowRecordsBuilder::new();
+                                    }
                                 }
                             }
                         },
@@ -571,8 +791,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
         }
-
-        Ok(TerminalState::default())
     }
 }
 
@@ -626,7 +844,6 @@ mod tests {
             }
         }
     }
-    use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -821,9 +1038,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -836,57 +1055,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -940,9 +1108,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -955,57 +1125,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -1072,9 +1191,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -1088,56 +1209,6 @@ mod tests {
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
                 );
-
-                // Get all the message bodies from all batches for validation
-                let mut all_bodies = Vec::new();
-                for arrow_records in &received_messages {
-                    let logs_batch = arrow_records
-                        .get(ArrowPayloadType::Logs)
-                        .expect("Expected Logs record batch to be present");
-
-                    let body_column = logs_batch
-                        .column_by_name("body")
-                        .expect("Body column should exist");
-
-                    let struct_array = body_column
-                        .as_any()
-                        .downcast_ref::<arrow::array::StructArray>()
-                        .expect("Body column should be a StructArray");
-
-                    let str_field = struct_array
-                        .column_by_name("str")
-                        .expect("Body struct should have 'str' field");
-
-                    let dict_array = str_field.as_any().downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                        .expect("str field should be a Dictionary array");
-
-                    let values = dict_array
-                        .values()
-                        .as_any()
-                        .downcast_ref::<arrow::array::StringArray>()
-                        .expect("Dictionary values should be StringArray");
-
-                    for i in 0..logs_batch.num_rows() {
-                        let key = dict_array.key(i).expect("Record should exist");
-                        let body = values.value(key);
-                        all_bodies.push(body);
-                    }
-                }
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Verify that both expected messages are present (order doesn't matter)
-                assert!(
-                    all_bodies.contains(&expected_message1),
-                    "First message not found in received bodies"
-                );
-                assert!(
-                    all_bodies.contains(&expected_message2),
-                    "Second message not found in received bodies"
-                );
             })
         }
     }
@@ -1150,9 +1221,8 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Udp);
-        // create our UDP receiver
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let config = Config::new_udp(listening_addr);
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(config),
             test_node(test_runtime.config().name.clone()),
@@ -1175,11 +1245,11 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Tcp);
-        // create our TCP receiver - we need to modify the receiver to support TCP
+        let config = Config::new_tcp(listening_addr);
+        // create our TCP receiver
         let receiver = SyslogCefReceiver::new(config);
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
@@ -1202,11 +1272,11 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Tcp);
+        let config = Config::new_tcp(listening_addr);
         // create our TCP receiver
         let receiver = SyslogCefReceiver::new(config);
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
@@ -1219,6 +1289,331 @@ mod tests {
             .set_receiver(receiver_wrapper)
             .run_test(tcp_incomplete_scenario(listening_addr))
             .run_validation(tcp_incomplete_validation_procedure());
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn valid_tcp() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_ok(), "Valid TCP config should parse successfully");
+    }
+
+    #[test]
+    fn valid_udp() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_ok(), "Valid UDP config should parse successfully");
+    }
+
+    #[test]
+    fn missing_protocol() {
+        let json = serde_json::json!({});
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config without protocol field should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_protocol() {
+        let json = serde_json::json!({
+            "protocol": {
+                "unix": {
+                    "path": "/var/run/syslog.sock"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with unknown protocol should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "extra_field": "unexpected"
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with unknown top-level field should be rejected"
+        );
+    }
+
+    #[test]
+    fn tcp_unknown_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "unknown_option": true
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "TCP config with unknown field should be rejected"
+        );
+    }
+
+    #[test]
+    fn protocol_is_case_sensitive() {
+        // Protocol variants are snake_case; uppercase/mixed-case must be rejected.
+        for variant in &["TCP", "Tcp", "UDP", "Udp"] {
+            let json = serde_json::json!({
+                "protocol": {
+                    *variant: {
+                        "listening_addr": "127.0.0.1:5140"
+                    }
+                }
+            });
+            let config: Result<Config, _> = serde_json::from_value(json);
+            assert!(
+                config.is_err(),
+                "Protocol variant '{variant}' should be rejected (expected lowercase)"
+            );
+        }
+    }
+
+    #[test]
+    fn both_protocols_rejected() {
+        // The Protocol enum is externally tagged, so specifying both tcp and udp
+        // in the same config must be rejected — only one protocol per instance.
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                },
+                "udp": {
+                    "listening_addr": "127.0.0.1:5145"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with both tcp and udp should be rejected"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with valid TLS settings should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls_and_client_ca() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem",
+                        "client_ca_file": "/path/to/ca.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with TLS + mTLS client CA should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls_handshake_timeout() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem",
+                        "handshake_timeout": "5s"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with TLS handshake timeout should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn udp_with_tls_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "UDP config with TLS should be rejected (TLS is TCP-only)"
+        );
+    }
+
+    #[test]
+    fn valid_tcp_with_batch_config() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_batch_duration_ms": 50,
+                "max_size": 200
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.max_batch_duration(), Duration::from_millis(50));
+        assert_eq!(config.max_batch_size(), 200);
+    }
+
+    #[test]
+    fn valid_udp_with_partial_batch_config() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_batch_duration_ms": 25
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.max_batch_duration(), Duration::from_millis(25));
+        assert_eq!(
+            config.max_batch_size(),
+            DEFAULT_MAX_BATCH_SIZE,
+            "max_batch_size should fall back to default when not specified"
+        );
+    }
+
+    #[test]
+    fn batch_defaults_when_omitted() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.max_batch_duration(), DEFAULT_MAX_BATCH_DURATION);
+        assert_eq!(config.max_batch_size(), DEFAULT_MAX_BATCH_SIZE);
+    }
+
+    #[test]
+    fn batch_unknown_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_batch_duration_ms": 50,
+                "unknown_field": true
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Batch config with unknown field should be rejected"
+        );
+    }
+
+    #[test]
+    fn batch_zero_max_batch_duration_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_batch_duration_ms": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "max_batch_duration_ms of 0 should be rejected"
+        );
+    }
+
+    #[test]
+    fn batch_zero_max_size_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_size": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_err(), "max_size of 0 should be rejected");
     }
 }
 
@@ -1246,6 +1641,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1253,10 +1649,19 @@ mod telemetry_tests {
             let listening_port = portpicker::pick_unused_port().expect("No free ports");
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-            // Receiver with metrics enabled via pipeline
+            // Receiver with metrics enabled via pipeline.
+            // Use max_batch_size=1 so that the single record is flushed
+            // immediately in the recv_from handler instead of waiting for
+            // the interval tick, which avoids timing-dependent flakiness.
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                Config::new(listening_addr, Protocol::Udp),
+                Config {
+                    protocol: Protocol::Udp(UdpConfig { listening_addr }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
             );
 
             // Keep downstream open to avoid refused
@@ -1302,7 +1707,7 @@ mod telemetry_tests {
             // To exercise the "invalid" path, send an empty datagram which is rejected by the parser.
             let _ = sock.send_to(b"", listening_addr).await.unwrap();
 
-            // Allow interval to tick
+            // Allow the receiver task to process the incoming messages.
             tokio::time::sleep(Duration::from_millis(150)).await;
 
             // Trigger telemetry collection
@@ -1339,6 +1744,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1346,9 +1752,22 @@ mod telemetry_tests {
             let port = portpicker::pick_unused_port().expect("No free ports");
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
-            // Receiver with pipeline metrics
-            let receiver =
-                SyslogCefReceiver::with_pipeline(pipeline, Config::new(addr, Protocol::Udp));
+            // Receiver with pipeline metrics.
+            // Use max_batch_size=1 so that the single record is flushed
+            // immediately in the recv_from handler instead of waiting for
+            // the interval tick, which avoids timing-dependent flakiness.
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Udp(UdpConfig {
+                        listening_addr: addr,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
 
             // Wire a closed downstream to force refused
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(1);

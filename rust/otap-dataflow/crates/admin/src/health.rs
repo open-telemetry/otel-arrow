@@ -127,7 +127,7 @@ where
         .collect()
 }
 
-fn acceptance_failure(condition: &Condition) -> bool {
+const fn acceptance_failure(condition: &Condition) -> bool {
     match condition.status {
         ConditionStatus::True => false,
         ConditionStatus::Unknown => {
@@ -178,6 +178,8 @@ impl ProbeResponse {
 mod tests {
     use super::*;
 
+    /// Build an Accepted condition with minimal fields to focus tests on the
+    /// acceptance failure predicate behavior.
     fn cond(status: ConditionStatus, reason: Option<ConditionReason>) -> Condition {
         Condition {
             kind: ConditionKind::Accepted,
@@ -188,6 +190,7 @@ mod tests {
         }
     }
 
+    /// Verifies that benign transitional reasons are not treated as failures.
     #[test]
     fn acceptance_failure_ignores_benign_reasons() {
         assert!(!acceptance_failure(&cond(
@@ -204,6 +207,8 @@ mod tests {
         )));
     }
 
+    /// Verifies that true error reasons (or unknown without reason) are marked
+    /// as acceptance failures.
     #[test]
     fn acceptance_failure_flags_errors() {
         assert!(acceptance_failure(&cond(

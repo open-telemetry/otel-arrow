@@ -8,6 +8,16 @@
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until all pipelines have stopped
 //!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
+//!
+//!   Example (fire-and-forget):
+//!   ```sh
+//!   curl -X POST http://localhost:8080/pipeline-groups/shutdown
+//!   ```
+//!   Example (wait for graceful shutdown with 30s timeout):
+//!   ```sh
+//!   curl -X POST "http://localhost:8080/pipeline-groups/shutdown?wait=true&timeout_secs=30"
+//!   ```
+//!
 //!   - 200 OK if `wait=true` and all pipelines stopped successfully
 //!   - 202 Accepted if the stop request was accepted and is being processed (async operation)
 //!   - 400 Bad Request if the pipeline is already stopped (ToDo)
@@ -69,7 +79,7 @@ struct ShutdownParams {
     timeout_secs: u64,
 }
 
-fn default_timeout_secs() -> u64 {
+const fn default_timeout_secs() -> u64 {
     60
 }
 
@@ -95,9 +105,8 @@ async fn shutdown_all_pipelines(
     );
 
     // Send shutdown message to all pipelines
-    let errors: Vec<_> = state
-        .ctrl_msg_senders
-        .iter()
+    let errors: Vec<_> = (*state.ctrl_msg_senders.lock().await)
+        .drain(..)
         .filter_map(|sender| {
             // Use the timeout from params for the shutdown deadline
             let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);

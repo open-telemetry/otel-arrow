@@ -1,0 +1,10 @@
+# Idle State Performance Test - 16 Cores
+# Measures baseline resource consumption with no active telemetry traffic on 16 cores
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "16 Cores"
+    core_range: "0-15"
+    allocated_cores: 16
+    port: 8091
+    result_subdir: "16cores"

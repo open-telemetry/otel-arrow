@@ -1,0 +1,10 @@
+# Idle State Performance Test - 32 Cores
+# Measures baseline resource consumption with no active telemetry traffic on 32 cores
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "32 Cores"
+    core_range: "0-31"
+    allocated_cores: 32
+    port: 8092
+    result_subdir: "32cores"

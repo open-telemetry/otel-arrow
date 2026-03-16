@@ -423,7 +423,7 @@ past the segment to be deleted.
 Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
-| Concern | Quiver (Library) | Embedding Layer (e.g., persistence_processor) |
+| Concern | Quiver (Library) | Embedding Layer (e.g., durable_buffer_processor) |
 | ------- | ---------------- | --------------------------------------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
@@ -462,8 +462,7 @@ Receiver -> [Signal Processor] -> [Quiver Persistence] -> [Exporters]
 
 Protects processed data; smaller footprint, buffers during downstream outages
 
-- **Optional**: Persistence is an optional component; disable for pure memory
-  streaming.
+- **Optional**: The durable buffer processor is an optional component.
 - **Per-Core**: Each core has its own Quiver instance (no cross-core locking).
 - **Durability**: When enabled, data is acknowledged after WAL flush; segment
   finalization happens after.
@@ -1140,48 +1139,29 @@ a naive per-core cap. Preliminary goals:
 - Preserve ordering; escalate to unprocessed deletion only under `drop_oldest`.
 - Limit transient overshoot to ~one segment per concurrently finalizing core.
 
-### Complete otap-dataflow Persistence Configuration Example
+### Complete otap-dataflow Durable Buffer Configuration Example
 
 ```yaml
 nodes:
   otlp_receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - persistence
-        dispatch_strategy: round_robin
+    type: "urn:otel:receiver:otlp"
     config:
       listening_addr: "127.0.0.1:4317"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   otap_receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - persistence
-        dispatch_strategy: round_robin
+    type: "urn:otel:receiver:otap"
     config:
       listening_addr: "127.0.0.1:4318"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
-  persistence:
-    kind: processor
-    plugin_urn: "urn:otap:processor:persistence"
-    out_ports:
-      out_port:
-        destinations:
-          - otap_exporter
-          - otlp_exporter
-        dispatch_strategy: round_robin
+  durable_buffer:
+    type: "urn:otel:processor:durable_buffer"
     config:
       # Platform-appropriate persistent storage location
-      path: ./quiver_data
+      path: /var/lib/otap/buffer
       # Durability mode: "wal" (default) or "segment_only"
       # Use "segment_only" for ~3x throughput when data loss is acceptable
       durability: wal
@@ -1191,31 +1171,40 @@ nodes:
         max_size: 128MB
         flush_interval: 25ms
       retention:
-        max_retain_after_ingestion_hours: 72
+        # Optional: delete segments older than this (omit for no time limit)
+        # max_age: 72h
         size_cap: 500GB
         # or backpressure
         size_cap_policy: drop_oldest
 
   otap_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: "urn:otel:exporter:otap"
     config:
       grpc_endpoint: "http://{{backend_hostname}}:1235"
       compression_method: zstd
       arrow:
         payload_compression: none
-  otlp_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+  otlp_grpc_exporter:
+    type: "urn:otel:exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # Optional: timeout for RPC requests
       # timeout: "15s"
+
+connections:
+  - from: otlp_receiver
+    to: durable_buffer
+  - from: otap_receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: otap_exporter
+  - from: durable_buffer
+    to: otlp_grpc_exporter
 ```
 
 ### Example: Dual Exporters with Completion Tracking
 
-Consider a single `persistence` node feeding both a Parquet exporter (local file
+Consider a single `durable_buffer` node feeding both a Parquet exporter (local file
 writer) and an OTLP exporter (remote endpoint). Each exporter is a Quiver
 subscriber with its own cursor and participates in the OTAP Ack/Nack protocol.
 
@@ -1223,7 +1212,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 
 1. Incoming batches append to the WAL and accumulate in the in-memory open
   segment until finalize triggers; then the data is written as `seg-120.arrow`.
-1. Quiver enqueues a notification for `parquet_exporter` and `otlp_exporter`.
+1. Quiver enqueues a notification for `parquet_exporter` and `otlp_grpc_exporter`.
 1. Each exporter drains the segment's three bundles in order and, after
   finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
   to Quiver. The consumer-side cursor only advances to the next bundle once the
@@ -1237,7 +1226,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
 
-  quiver.sub.otlp_exporter:
+  quiver.sub.otlp_grpc_exporter:
     oldest_incomplete_segment: 121
     (no segment entries - seg-120 complete)
   ```
@@ -1249,7 +1238,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   restore per-subscriber state directly--no log replay required.
 
 Nack handling is owned by the embedding layer, not Quiver. When an exporter
-returns a NACK, the embedding layer (e.g., persistence_processor):
+returns a NACK, the embedding layer (e.g., durable_buffer_processor):
 
 1. Computes retry delay using its backoff policy
 2. Schedules retry via the pipeline's delay mechanism
@@ -1324,7 +1313,7 @@ The key insight for async ingest is that **completion should mean durability**.
 
 This design provides:
 
-- **Correct ACK semantics**: The persistence processor can ACK upstream only
+- **Correct ACK semantics**: The durable buffer processor can ACK upstream only
   after `ingest().await` completes, knowing data is safe on disk.
 - **Natural backpressure**: Slow disk I/O = slow `await` completion = upstream
   gets throttled automatically. No separate backpressure mechanism needed.
@@ -1471,22 +1460,22 @@ and avoids the complexity of maintaining both sync and async code paths.
 | Maintenance | `maintain().await` - async |
 | Flush | `flush().await` - async |
 
-#### Persistence Processor Integration Pattern
+#### Durable Buffer Processor Integration Pattern
 
-With the async API and cancellation support, the persistence processor integration
+With the async API and cancellation support, the durable buffer processor integration
 becomes straightforward:
 
 ```rust
 use quiver::CancellationToken;
 use std::time::Duration;
 
-struct PersistenceProcessor {
+struct DurableBuffer {
     engine: Arc<QuiverEngine>,
     subscriber_id: SubscriberId,
     shutdown: CancellationToken,
 }
 
-impl PersistenceProcessor {
+impl DurableBuffer {
     // Ingest path (receiving upstream data)
     async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
         // ingest().await completes only after WAL fsync

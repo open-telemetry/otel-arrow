@@ -21,9 +21,13 @@ use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
-use crate::views::common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType};
-use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
-use crate::views::resource::ResourceView;
+use otap_df_pdata_views::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
+};
+use otap_df_pdata_views::views::logs::{
+    LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::resource::ResourceView;
 
 use std::ops::Range;
 
@@ -1188,14 +1192,17 @@ fn get_attribute_value<'a>(
 }
 
 #[allow(dead_code)]
-fn get_schema_url_for_resource<'a>(_batch: &'a RecordBatch, _resource_id: u16) -> Option<Str<'a>> {
+const fn get_schema_url_for_resource<'a>(
+    _batch: &'a RecordBatch,
+    _resource_id: u16,
+) -> Option<Str<'a>> {
     // TODO: Implement schema_url lookup for resource
     // Would need to look up in a separate resource table or nested struct
     None
 }
 
 #[allow(dead_code)]
-fn get_schema_url_for_scope<'a>(_batch: &'a RecordBatch, _scope_id: u16) -> Option<Str<'a>> {
+const fn get_schema_url_for_scope<'a>(_batch: &'a RecordBatch, _scope_id: u16) -> Option<Str<'a>> {
     // TODO: Implement schema_url lookup for scope
     // Would need to look up in a separate scope table or nested struct
     None

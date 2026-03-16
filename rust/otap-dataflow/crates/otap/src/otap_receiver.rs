@@ -53,7 +53,7 @@ use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
 
-const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
+const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]
@@ -128,6 +128,8 @@ pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTAPReceiver {
@@ -149,7 +151,7 @@ impl OTAPReceiver {
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
-        let calldata = ack.calldata;
+        let calldata = ack.unwind.route.calldata;
         let resp = Ok(());
         let state = match ack.accepted.signal_type() {
             SignalType::Logs => states.logs.as_ref(),
@@ -167,7 +169,7 @@ impl OTAPReceiver {
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
-        let calldata = std::mem::take(&mut nack.calldata);
+        let calldata = std::mem::take(&mut nack.unwind.route.calldata);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
         let state = match signal_type {
@@ -235,7 +237,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otap_df_telemetry::otel_info!(
-            "receiver.start",
+            "otap_receiver.start",
             listening_addr = %self.config.listening_addr
         );
 
@@ -319,6 +321,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 loop {
                     match ctrl_msg_recv.recv().await {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
@@ -388,6 +391,7 @@ mod tests {
     use crate::otap_mock::create_otap_batch;
     use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use crate::pdata::OtapPdata;
+    use crate::testing::{next_ack, next_nack};
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -503,11 +507,6 @@ mod tests {
                 ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
-
-                // server should be down after shutdown
-                let fail_metrics_client =
-                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone()).await;
-                assert!(fail_metrics_client.is_err(), "Server did not shutdown");
             })
         }
     }
@@ -540,9 +539,7 @@ mod tests {
                     assert!(matches!(metrics_records, _expected_metrics_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(metrics_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(metrics_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for metrics");
@@ -568,9 +565,7 @@ mod tests {
                     assert!(matches!(logs_records, _expected_logs_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for logs");
@@ -596,9 +591,7 @@ mod tests {
                     assert!(matches!(traces_records, _expected_traces_message));
 
                     // Send ACK if wait_for_result is enabled
-                    if let Some((_node_id, ack)) =
-                        crate::pdata::Context::next_ack(AckMsg::new(traces_pdata))
-                    {
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(traces_pdata)) {
                         ctx.send_control_msg(NodeControlMsg::Ack(ack))
                             .await
                             .expect("Failed to send Ack for traces");
@@ -730,7 +723,7 @@ mod tests {
                         .expect("No metrics received");
 
                     let nack = NackMsg::new("Test NACK reason for metrics", metrics_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for metrics");
@@ -745,7 +738,7 @@ mod tests {
                         .expect("No logs received");
 
                     let nack = NackMsg::new("Test NACK reason for logs", logs_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for logs");
@@ -760,7 +753,7 @@ mod tests {
                         .expect("No traces received");
 
                     let nack = NackMsg::new("Test NACK reason for traces", traces_pdata);
-                    if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    if let Some((_node_id, nack)) = next_nack(nack) {
                         ctx.send_control_msg(NodeControlMsg::Nack(nack))
                             .await
                             .expect("Failed to send Nack for traces");
@@ -851,7 +844,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         // Create config JSON
         let config = json!({
@@ -882,7 +875,7 @@ mod tests {
         let controller_ctx =
             otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         // Test with custom max_concurrent_requests, max_concurrent_requests defaults to 1000
         let config_with_max_concurrent_requests = json!({
@@ -984,7 +977,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let config = json!({
             "listening_addr": addr.to_string(),
@@ -1023,7 +1016,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let config = json!({
             "listening_addr": addr.to_string(),

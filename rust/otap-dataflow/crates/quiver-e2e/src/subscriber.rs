@@ -14,7 +14,7 @@ pub struct SubscriberDelay {
 
 impl SubscriberDelay {
     /// Creates a new delay configuration.
-    pub fn new(per_bundle_ms: u64) -> Self {
+    pub const fn new(per_bundle_ms: u64) -> Self {
         Self { per_bundle_ms }
     }
 

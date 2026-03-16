@@ -1356,7 +1356,7 @@ impl SelectScalarExpression {
         ) {
             (Some(value), Some(selectors)) => match selectors.as_ref() {
                 StaticScalarExpression::Array(selectors) => {
-                    let mut selectors: Vec<ScalarStaticResolutionResult> = selectors
+                    let selectors: Vec<ScalarStaticResolutionResult> = selectors
                         .get_values()
                         .iter()
                         .map(|v| Ok(Some(ResolvedStaticScalarExpression::Reference(v))))
@@ -1364,7 +1364,8 @@ impl SelectScalarExpression {
 
                     match value {
                         ResolvedStaticScalarExpression::Computed(c) => {
-                            match ValueAccessor::select_from_value(&c, &mut selectors.drain(..))? {
+                            match ValueAccessor::select_from_value(&c, &mut selectors.into_iter())?
+                            {
                                 None => Ok(None),
                                 Some(s) => {
                                     Ok(Some(ResolvedStaticScalarExpression::Computed(s.clone())))
@@ -1373,7 +1374,7 @@ impl SelectScalarExpression {
                         }
                         ResolvedStaticScalarExpression::Reference(r)
                         | ResolvedStaticScalarExpression::FoldEligibleReference(r) => {
-                            match ValueAccessor::select_from_value(r, &mut selectors.drain(..))? {
+                            match ValueAccessor::select_from_value(r, &mut selectors.into_iter())? {
                                 None => Ok(None),
                                 Some(s) => match s.foldable() {
                                     true => Ok(Some(
@@ -1567,7 +1568,6 @@ impl InvokeFunctionScalarExpression {
         {
             let mut return_statement = None;
             let mut return_count = 0;
-
             for e in expressions {
                 if let PipelineFunctionExpression::Return(r) = e {
                     return_count += 1;
@@ -1576,7 +1576,9 @@ impl InvokeFunctionScalarExpression {
             }
 
             if return_count == 1
-                && let ScalarExpression::Static(s) = return_statement.unwrap()
+                // safety: we can "expect" one return_statement here because if return_count is 
+                // non-zero, then we've set this variable to `Some` in the loop above
+                && let ScalarExpression::Static(s) = return_statement.expect("return_statement not None")
             {
                 return Ok(Some(if s.foldable() {
                     ResolvedStaticScalarExpression::FoldEligibleReference(s)

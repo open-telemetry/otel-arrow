@@ -116,7 +116,7 @@ impl SubscriberError {
 
     /// Creates a new [`SubscriberError::SegmentNotFound`] error.
     #[must_use]
-    pub fn segment_not_found(segment_seq: u64) -> Self {
+    pub const fn segment_not_found(segment_seq: u64) -> Self {
         Self::SegmentNotFound { segment_seq }
     }
 
@@ -162,7 +162,7 @@ impl SubscriberError {
     ///
     /// Cancelled operations should clean up and return without logging errors.
     #[must_use]
-    pub fn is_cancelled(&self) -> bool {
+    pub const fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }
 }

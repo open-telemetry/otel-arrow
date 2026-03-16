@@ -28,12 +28,10 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
-use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
-use otap_df_config::pipeline::service::telemetry::logs::{
-    LogLevel, LoggingProviders, ProviderMode,
-};
+use otap_df_config::pipeline::telemetry::TelemetryConfig;
+use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -66,6 +64,10 @@ pub use tracing_init::TracingSetup;
 #[doc(hidden)]
 pub use internal_events::_private;
 
+// Re-export tracing::Level so callers can use otap_df_telemetry::Level without
+// adding tracing as a direct dependency.
+pub use tracing::Level;
+
 // Re-export tracing span macros and types for crates that need span instrumentation.
 // This allows dependent crates to use spans without adding tracing as a direct dependency.
 // Re-exported with otel_ prefix for naming consistency with otel_info!, otel_warn!, etc.
@@ -81,7 +83,7 @@ pub use self_tracing::LogContext;
 
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
@@ -135,9 +137,6 @@ pub struct InternalTelemetrySystem {
     // === OTel SDK Subsystem ===
     /// OTel SDK meter provider for metrics export.
     sdk_meter_provider: SdkMeterProvider,
-
-    /// OTel SDK logger provider for logs export (optional, only for OpenTelemetry mode).
-    sdk_logger_provider: Option<SdkLoggerProvider>,
 
     /// Tokio runtime for OTLP exporters (kept alive).
     _otel_runtime: Option<tokio::runtime::Runtime>,
@@ -202,10 +201,8 @@ impl InternalTelemetrySystem {
 
         // 2. Create OTel SDK providers
         // OTel Logger is only needed for OpenTelemetry mode
-        let otel_client =
-            otel_sdk::OpentelemetryClient::new(config, config.logs.providers.uses_otel_provider())?;
+        let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
         let sdk_meter_provider = otel_client.meter_provider().clone();
-        let sdk_logger_provider = otel_client.logger_provider().cloned();
         let otel_runtime = otel_client.into_runtime();
 
         // 3. Create ITS channel if any provider uses ITS mode
@@ -231,9 +228,8 @@ impl InternalTelemetrySystem {
             metrics_reporter,
             dispatcher,
             sdk_meter_provider,
-            sdk_logger_provider,
             _otel_runtime: otel_runtime,
-            log_level: config.logs.level,
+            log_level: config.logs.level.clone(),
             provider_modes: config.logs.providers.clone(),
             context_fn,
             console_async_reporter,
@@ -276,16 +272,9 @@ impl InternalTelemetrySystem {
             ProviderMode::ITS => ProviderSetup::InternalAsync {
                 reporter: self.its_reporter.as_ref().expect("has provider").clone(),
             },
-
-            ProviderMode::OpenTelemetry => {
-                let logger = self.sdk_logger_provider.as_ref().expect("has provider");
-                ProviderSetup::OpenTelemetry {
-                    logger_provider: logger.clone(),
-                }
-            }
         };
 
-        TracingSetup::new(provider, self.log_level, self.context_fn)
+        TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -317,8 +306,8 @@ impl InternalTelemetrySystem {
 
     /// Returns the configured log level.
     #[must_use]
-    pub fn log_level(&self) -> LogLevel {
-        self.log_level
+    pub const fn log_level(&self) -> &LogLevel {
+        &self.log_level
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.
@@ -349,15 +338,11 @@ impl InternalTelemetrySystem {
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown_otel(self) -> Result<(), Error> {
         let meter_shutdown_result = self.sdk_meter_provider.shutdown();
-        let logger_shutdown_result = self.sdk_logger_provider.map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
         }
 
-        if let Err(e) = logger_shutdown_result {
-            return Err(Error::ShutdownError(e.to_string()));
-        }
         Ok(())
     }
 }
@@ -382,11 +367,10 @@ impl Default for InternalTelemetrySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::{
-        AttributeValue::I64 as OTelI64,
-        AttributeValue::String as OTelString,
-        logs::{LoggingProviders, ProviderMode},
+    use otap_df_config::pipeline::telemetry::{
+        AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
+    use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
@@ -401,7 +385,7 @@ mod tests {
 
     fn config_with_providers(providers: LoggingProviders) -> TelemetryConfig {
         TelemetryConfig {
-            logs: otap_df_config::pipeline::service::telemetry::logs::LogsConfig {
+            logs: LogsConfig {
                 providers,
                 ..Default::default()
             },

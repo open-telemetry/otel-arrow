@@ -15,6 +15,7 @@ mod assignment;
 mod expression;
 mod operator;
 mod pipeline;
+mod temporal;
 
 #[allow(missing_docs)]
 mod pest {

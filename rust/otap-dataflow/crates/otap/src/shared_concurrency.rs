@@ -71,7 +71,7 @@ pub struct SharedConcurrencyLayer {
 
 impl SharedConcurrencyLayer {
     /// Creates a new layer using the provided semaphore for concurrency control.
-    pub fn new(semaphore: Arc<Semaphore>) -> Self {
+    pub const fn new(semaphore: Arc<Semaphore>) -> Self {
         Self { semaphore }
     }
 }

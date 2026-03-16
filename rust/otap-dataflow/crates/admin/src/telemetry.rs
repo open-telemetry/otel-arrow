@@ -82,20 +82,20 @@ struct MetricSet {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
-    #[default]
     Json,
     JsonCompact,
     LineProtocol,
+    #[default]
     Prometheus,
 }
 
 /// Query parameters for /telemetry/metrics
 #[derive(Debug, Default, Deserialize)]
 pub struct MetricsQuery {
-    /// When true, reset metrics after reading. Default: true.
-    #[serde(default = "default_true")]
+    /// When true, reset metrics after reading. Default: false.
+    #[serde(default = "default_false")]
     reset: bool,
-    /// Output format: json (default), json_compact, line_protocol, prometheus
+    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
     /// When true, metric set which have all zero values are kept in the output. Default: false.
@@ -106,13 +106,13 @@ pub struct MetricsQuery {
 /// Query parameters for /telemetry/metrics/aggregate
 #[derive(Debug, Default, Deserialize)]
 pub struct AggregateQuery {
-    /// When true, reset metrics after reading. Default: true.
-    #[serde(default = "default_true")]
+    /// When true, reset metrics after reading. Default: false.
+    #[serde(default = "default_false")]
     reset: bool,
     /// Comma-separated list of attribute names to group by (in addition to metric set name).
     #[serde(default)]
     attrs: Option<String>,
-    /// Output format: json (default), json_compact, line_protocol, prometheus
+    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
 }
@@ -130,11 +130,6 @@ struct AggregateGroup {
 }
 
 #[inline]
-const fn default_true() -> bool {
-    true
-}
-
-#[inline]
 const fn default_false() -> bool {
     false
 }
@@ -148,12 +143,12 @@ pub async fn get_live_schema(
     Ok(Json(state.metrics_registry.generate_semconv_registry()))
 }
 
-/// Handler for the `/metrics` endpoint.
+/// Handler for the `/telemetry/metrics` endpoint.
 /// Supports multiple output formats and optional reset.
 ///
 /// Query parameters:
-/// - `reset` (bool, default true): whether to reset metrics after reading.
-/// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+/// - `reset` (bool, default false): whether to reset metrics after reading.
+/// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
 pub async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
@@ -227,7 +222,7 @@ pub async fn get_metrics(
 /// Aggregates metrics by metric set name and optionally by a list of attributes.
 ///
 /// Query parameters:
-/// - `reset` (bool, default true): whether to reset metrics after reading.
+/// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `attrs` (string, optional): comma-separated list of attribute names to group by.
 /// - `format` (string, default "json"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
 pub async fn get_metrics_aggregate(
@@ -433,33 +428,51 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
 }
 
 fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
-    let vtype = value_type.unwrap_or(match value {
-        MetricValue::U64(_) => MetricValueType::U64,
-        MetricValue::F64(_) => MetricValueType::F64,
-    });
-    match vtype {
-        MetricValueType::U64 => {
-            let int_val = match value {
-                MetricValue::U64(v) => v,
-                MetricValue::F64(v) => v as u64,
-            };
-            format!("{int_val}i")
+    match value {
+        MetricValue::U64(_) | MetricValue::F64(_) => {
+            let vtype = value_type.unwrap_or(match value {
+                MetricValue::U64(_) => MetricValueType::U64,
+                MetricValue::F64(_) => MetricValueType::F64,
+                MetricValue::Mmsc(_) => unreachable!(),
+            });
+            match vtype {
+                MetricValueType::U64 => {
+                    let int_val = match value {
+                        MetricValue::U64(v) => v,
+                        MetricValue::F64(v) => v as u64,
+                        MetricValue::Mmsc(_) => unreachable!(),
+                    };
+                    format!("{int_val}i")
+                }
+                MetricValueType::F64 => value.to_f64().to_string(),
+            }
         }
-        MetricValueType::F64 => value.to_f64().to_string(),
+        // MMSC values are expanded into multiple fields at the call site;
+        // this arm should not be reached.
+        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
     }
 }
 
 fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
-    let vtype = value_type.unwrap_or(match value {
-        MetricValue::U64(_) => MetricValueType::U64,
-        MetricValue::F64(_) => MetricValueType::F64,
-    });
-    match vtype {
-        MetricValueType::U64 => match value {
-            MetricValue::U64(v) => v.to_string(),
-            MetricValue::F64(v) => (v as u64).to_string(),
-        },
-        MetricValueType::F64 => value.to_f64().to_string(),
+    match value {
+        MetricValue::U64(_) | MetricValue::F64(_) => {
+            let vtype = value_type.unwrap_or(match value {
+                MetricValue::U64(_) => MetricValueType::U64,
+                MetricValue::F64(_) => MetricValueType::F64,
+                MetricValue::Mmsc(_) => unreachable!(),
+            });
+            match vtype {
+                MetricValueType::U64 => match value {
+                    MetricValue::U64(v) => v.to_string(),
+                    MetricValue::F64(v) => (v as u64).to_string(),
+                    MetricValue::Mmsc(_) => unreachable!(),
+                },
+                MetricValueType::F64 => value.to_f64().to_string(),
+            }
+        }
+        // MMSC values are expanded into summary lines at the call site;
+        // this arm should not be reached.
+        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
     }
 }
 
@@ -484,23 +497,54 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
         let mut fields = String::new();
         let mut first = true;
         for (fname, val) in &g.metrics {
-            if first {
-                first = false;
-            } else {
-                fields.push(',');
-            }
             let field_type = g
                 .brief
                 .metrics
                 .iter()
                 .find(|f| f.name == fname.as_str())
                 .map(|f| f.value_type);
-            let _ = write!(
-                &mut fields,
-                "{}={}",
-                escape_lp_field_key(fname),
-                format_lp_value(*val, field_type)
-            );
+            match val {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}={}",
+                        escape_lp_field_key(fname),
+                        format_lp_value(*val, field_type)
+                    );
+                }
+                MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(fname),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(fname),
+                        s.count
+                    );
+                }
+            }
         }
         if !fields.is_empty() {
             let _ = writeln!(&mut out, "{measurement}{tags} {fields}{ts_suffix}");
@@ -546,31 +590,80 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
         for field in g.brief.metrics.iter() {
             if let Some(value) = g.metrics.get(field.name) {
                 let metric_name = sanitize_prom_metric_name(field.name);
-                if seen.insert(metric_name.clone()) {
-                    if !field.brief.is_empty() {
-                        let _ = writeln!(
-                            &mut out,
-                            "# HELP {} {}",
-                            metric_name,
-                            escape_prom_help(field.brief)
-                        );
+                match value {
+                    MetricValue::U64(_) | MetricValue::F64(_) => {
+                        if seen.insert(metric_name.clone()) {
+                            if !field.brief.is_empty() {
+                                let _ = writeln!(
+                                    &mut out,
+                                    "# HELP {} {}",
+                                    metric_name,
+                                    escape_prom_help(field.brief)
+                                );
+                            }
+                            let prom_type = match field.instrument {
+                                Instrument::Counter => "counter",
+                                Instrument::UpDownCounter => "gauge",
+                                Instrument::Gauge => "gauge",
+                                Instrument::Histogram => "gauge",
+                                Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+                            };
+                            let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
+                        }
+                        let value_str = format_prom_value(*value, Some(field.value_type));
+                        if base_labels.is_empty() {
+                            let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
+                        } else {
+                            let _ = writeln!(
+                                &mut out,
+                                "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
+                            );
+                        }
                     }
-                    let prom_type = match field.instrument {
-                        Instrument::Counter => "counter",
-                        Instrument::UpDownCounter => "gauge",
-                        Instrument::Gauge => "gauge",
-                        Instrument::Histogram => "histogram",
-                    };
-                    let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
-                }
-                let value_str = format_prom_value(*value, Some(field.value_type));
-                if base_labels.is_empty() {
-                    let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
-                } else {
-                    let _ = writeln!(
-                        &mut out,
-                        "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
-                    );
+                    MetricValue::Mmsc(s) => {
+                        if s.count == 0 {
+                            continue;
+                        }
+                        let brief = escape_prom_help(field.brief);
+                        for (suffix, prom_type, val) in [
+                            ("_min", "gauge", s.min),
+                            ("_max", "gauge", s.max),
+                            ("_sum", "counter", s.sum),
+                        ] {
+                            let sub_name = format!("{metric_name}{suffix}");
+                            if seen.insert(sub_name.clone()) {
+                                if !field.brief.is_empty() {
+                                    let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
+                                }
+                                let _ = writeln!(&mut out, "# TYPE {sub_name} {prom_type}");
+                            }
+                            if base_labels.is_empty() {
+                                let _ = writeln!(&mut out, "{sub_name} {val}{ts_suffix}");
+                            } else {
+                                let _ = writeln!(
+                                    &mut out,
+                                    "{sub_name}{{{base_labels}}} {val}{ts_suffix}"
+                                );
+                            }
+                        }
+                        // _count as counter with integer value
+                        let count_name = format!("{metric_name}_count");
+                        if seen.insert(count_name.clone()) {
+                            if !field.brief.is_empty() {
+                                let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
+                            }
+                            let _ = writeln!(&mut out, "# TYPE {count_name} counter");
+                        }
+                        if base_labels.is_empty() {
+                            let _ = writeln!(&mut out, "{count_name} {}{ts_suffix}", s.count);
+                        } else {
+                            let _ = writeln!(
+                                &mut out,
+                                "{count_name}{{{base_labels}}} {}{ts_suffix}",
+                                s.count
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -749,17 +842,48 @@ fn format_line_protocol(
         let mut fields = String::new();
         let mut first = true;
         for (field, value) in metrics_iter {
-            if first {
-                first = false;
-            } else {
-                fields.push(',');
+            match value {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}={}",
+                        escape_lp_field_key(field.name),
+                        format_lp_value(value, Some(field.value_type))
+                    );
+                }
+                MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(field.name),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(field.name),
+                        s.count
+                    );
+                }
             }
-            let _ = write!(
-                &mut fields,
-                "{}={}",
-                escape_lp_field_key(field.name),
-                format_lp_value(value, Some(field.value_type))
-            );
         }
 
         if !fields.is_empty() {
@@ -814,37 +938,79 @@ fn format_prometheus_text(
         for (field, value) in metrics_iter {
             let metric_name = sanitize_prom_metric_name(field.name);
 
-            // HELP/TYPE once per metric name
-            if seen.insert(metric_name.clone()) {
-                if !field.brief.is_empty() {
-                    let _ = writeln!(
-                        &mut out,
-                        "# HELP {} {}",
-                        metric_name,
-                        escape_prom_help(field.brief)
-                    );
+            match value {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
+                    // HELP/TYPE once per metric name
+                    if seen.insert(metric_name.clone()) {
+                        if !field.brief.is_empty() {
+                            let _ = writeln!(
+                                &mut out,
+                                "# HELP {} {}",
+                                metric_name,
+                                escape_prom_help(field.brief)
+                            );
+                        }
+                        let prom_type = match field.instrument {
+                            Instrument::Counter => "counter",
+                            Instrument::UpDownCounter => "gauge",
+                            Instrument::Gauge => "gauge",
+                            Instrument::Histogram => "gauge",
+                            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+                        };
+                        let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
+                    }
+                    let value_str = format_prom_value(value, Some(field.value_type));
+                    if base_labels.is_empty() {
+                        let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
+                    } else {
+                        let _ = writeln!(
+                            &mut out,
+                            "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
+                        );
+                    }
                 }
-                let prom_type = match field.instrument {
-                    Instrument::Counter => "counter",
-                    Instrument::UpDownCounter => "gauge",
-                    Instrument::Gauge => "gauge",
-                    Instrument::Histogram => "gauge",
-                };
-                let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
-            }
-
-            if base_labels.is_empty() {
-                let _ = writeln!(
-                    &mut out,
-                    "{metric_name} {}{ts_suffix}",
-                    format_prom_value(value, Some(field.value_type))
-                );
-            } else {
-                let _ = writeln!(
-                    &mut out,
-                    "{metric_name}{{{base_labels}}} {}{ts_suffix}",
-                    format_prom_value(value, Some(field.value_type))
-                );
+                MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
+                    let brief = escape_prom_help(field.brief);
+                    for (suffix, prom_type, val) in [
+                        ("_min", "gauge", s.min),
+                        ("_max", "gauge", s.max),
+                        ("_sum", "counter", s.sum),
+                    ] {
+                        let sub_name = format!("{metric_name}{suffix}");
+                        if seen.insert(sub_name.clone()) {
+                            if !field.brief.is_empty() {
+                                let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
+                            }
+                            let _ = writeln!(&mut out, "# TYPE {sub_name} {prom_type}");
+                        }
+                        if base_labels.is_empty() {
+                            let _ = writeln!(&mut out, "{sub_name} {val}{ts_suffix}");
+                        } else {
+                            let _ =
+                                writeln!(&mut out, "{sub_name}{{{base_labels}}} {val}{ts_suffix}");
+                        }
+                    }
+                    // _count as counter with integer value
+                    let count_name = format!("{metric_name}_count");
+                    if seen.insert(count_name.clone()) {
+                        if !field.brief.is_empty() {
+                            let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
+                        }
+                        let _ = writeln!(&mut out, "# TYPE {count_name} counter");
+                    }
+                    if base_labels.is_empty() {
+                        let _ = writeln!(&mut out, "{count_name} {}{ts_suffix}", s.count);
+                    } else {
+                        let _ = writeln!(
+                            &mut out,
+                            "{count_name}{{{base_labels}}} {}{ts_suffix}",
+                            s.count
+                        );
+                    }
+                }
             }
         }
     };
@@ -1020,6 +1186,8 @@ mod tests {
         }],
     };
 
+    /// Ensures aggregate group ordering is deterministic: metric-set name first,
+    /// then metric count when names are equal.
     #[test]
     fn test_aggregate_metric_groups_sorting_logic() {
         // Test the sorting logic with mock AggregateGroup structs
@@ -1030,7 +1198,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), MetricValue::U64(10));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(10u64));
                     m
                 },
             },
@@ -1040,8 +1208,8 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), MetricValue::U64(5));
-                    let _ = m.insert("metric2".to_string(), MetricValue::U64(15));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(5u64));
+                    let _ = m.insert("metric2".to_string(), MetricValue::from(15u64));
                     m
                 },
             },
@@ -1051,7 +1219,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), MetricValue::U64(8));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(8u64));
                     m
                 },
             },
@@ -1078,6 +1246,8 @@ mod tests {
         assert_eq!(groups[2].metrics.len(), 1);
     }
 
+    /// Verifies attribute-based grouping splits and aggregates metric sets by the
+    /// selected group keys (`env`, `region`) and preserves grouped attributes.
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
         use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
@@ -1141,7 +1311,7 @@ mod tests {
                 &TEST_METRICS_DESCRIPTOR
             }
             fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::U64(10), MetricValue::U64(1)]
+                vec![MetricValue::from(10u64), MetricValue::from(1u64)]
             } // requests_total=10, errors_total=1
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1153,7 +1323,7 @@ mod tests {
                 &TEST_METRICS_DESCRIPTOR
             }
             fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::U64(5), MetricValue::U64(0)]
+                vec![MetricValue::from(5u64), MetricValue::from(0u64)]
             } // requests_total=5, errors_total=0
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1165,7 +1335,7 @@ mod tests {
                 &TEST_METRICS_DESCRIPTOR
             }
             fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::U64(5), MetricValue::U64(4)]
+                vec![MetricValue::from(5u64), MetricValue::from(4u64)]
             } // requests_total=5, errors_total=4
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1177,7 +1347,7 @@ mod tests {
                 &TEST_METRICS_DESCRIPTOR
             }
             fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::U64(2), MetricValue::U64(2)]
+                vec![MetricValue::from(2u64), MetricValue::from(2u64)]
             } // requests_total=2, errors_total=2
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1220,11 +1390,11 @@ mod tests {
                     prod_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&MetricValue::U64(10 + 5))
+                        Some(&MetricValue::from(10u64 + 5))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&MetricValue::U64(1 + 4))
+                        Some(&MetricValue::from(1u64 + 4))
                     );
                     // Only grouped attribute should be present (env), not region
                     assert!(g.attributes.contains_key("env"));
@@ -1234,9 +1404,12 @@ mod tests {
                     dev_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&MetricValue::U64(5 + 2))
+                        Some(&MetricValue::from(5u64 + 2))
                     );
-                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(2)));
+                    assert_eq!(
+                        g.metrics.get("errors_total"),
+                        Some(&MetricValue::from(2u64))
+                    );
                     assert!(g.attributes.contains_key("env"));
                     assert!(!g.attributes.contains_key("region"));
                 }
@@ -1274,26 +1447,38 @@ mod tests {
                     prod_us_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&MetricValue::U64(10 + 5))
+                        Some(&MetricValue::from(10u64 + 5))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&MetricValue::U64(1 + 4))
+                        Some(&MetricValue::from(1u64 + 4))
                     );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }
                 (Some("dev"), Some("eu")) => {
                     dev_eu_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&MetricValue::U64(5)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(0)));
+                    assert_eq!(
+                        g.metrics.get("requests_total"),
+                        Some(&MetricValue::from(5u64))
+                    );
+                    assert_eq!(
+                        g.metrics.get("errors_total"),
+                        Some(&MetricValue::from(0u64))
+                    );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }
                 (Some("dev"), Some("us")) => {
                     dev_us_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&MetricValue::U64(2)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(2)));
+                    assert_eq!(
+                        g.metrics.get("requests_total"),
+                        Some(&MetricValue::from(2u64))
+                    );
+                    assert_eq!(
+                        g.metrics.get("errors_total"),
+                        Some(&MetricValue::from(2u64))
+                    );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }
@@ -1303,12 +1488,14 @@ mod tests {
         assert!(prod_us_found && dev_us_found && dev_eu_found);
     }
 
+    /// Validates line-protocol escaping rules for measurement names.
     #[test]
     fn test_escape_lp_measurement() {
         assert_eq!(escape_lp_measurement("cpu, name=avg"), "cpu\\,\\ name=avg");
         assert_eq!(escape_lp_measurement("plain"), "plain");
     }
 
+    /// Validates line-protocol escaping rules for tag keys.
     #[test]
     fn test_escape_lp_tag_key() {
         assert_eq!(
@@ -1318,6 +1505,7 @@ mod tests {
         assert_eq!(escape_lp_tag_key("plain"), "plain");
     }
 
+    /// Validates line-protocol escaping rules for tag values.
     #[test]
     fn test_escape_lp_tag_value() {
         assert_eq!(
@@ -1325,5 +1513,101 @@ mod tests {
             "us\\ west\\,zone\\=1"
         );
         assert_eq!(escape_lp_tag_value("plain"), "plain");
+    }
+
+    static MMSC_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "latency_metrics",
+        metrics: &[MetricsField {
+            name: "request_duration",
+            unit: "ms",
+            instrument: Instrument::Mmsc,
+            temporality: Some(Temporality::Delta),
+            brief: "Request duration",
+            value_type: MetricValueType::F64,
+        }],
+    };
+
+    /// Ensures Prometheus rendering expands MMSC values into min/max/sum/count
+    /// sub-metrics with expected HELP/TYPE lines.
+    #[test]
+    fn test_agg_prometheus_mmsc_metrics() {
+        use otap_df_telemetry::instrument::MmscSnapshot;
+
+        let groups = vec![AggregateGroup {
+            name: "latency_metrics".to_string(),
+            brief: &MMSC_METRICS_DESCRIPTOR,
+            attributes: HashMap::new(),
+            metrics: {
+                let mut m = HashMap::new();
+                let _ = m.insert(
+                    "request_duration".to_string(),
+                    MetricValue::Mmsc(MmscSnapshot {
+                        min: 1.5,
+                        max: 100.0,
+                        sum: 250.5,
+                        count: 10,
+                    }),
+                );
+                m
+            },
+        }];
+
+        let output = agg_prometheus_text(&groups, Some(1000));
+
+        // Each sub-metric should have its own HELP and TYPE
+        assert!(output.contains("# HELP request_duration_min Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_min gauge\n"));
+        assert!(output.contains("request_duration_min{set=\"latency_metrics\"} 1.5 1000\n"));
+
+        assert!(output.contains("# HELP request_duration_max Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_max gauge\n"));
+        assert!(output.contains("request_duration_max{set=\"latency_metrics\"} 100 1000\n"));
+
+        assert!(output.contains("# HELP request_duration_sum Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_sum counter\n"));
+        assert!(output.contains("request_duration_sum{set=\"latency_metrics\"} 250.5 1000\n"));
+
+        assert!(output.contains("# HELP request_duration_count Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_count counter\n"));
+        assert!(output.contains("request_duration_count{set=\"latency_metrics\"} 10 1000\n"));
+
+        // Should NOT contain the base metric name without suffix
+        assert!(!output.contains("# TYPE request_duration gauge"));
+        assert!(!output.contains("# TYPE request_duration counter"));
+        assert!(!output.contains("# TYPE request_duration summary"));
+        assert!(!output.contains("# TYPE request_duration histogram"));
+    }
+
+    /// Ensures line-protocol rendering outputs all MMSC sub-fields for a metric.
+    #[test]
+    fn test_agg_line_protocol_mmsc_metrics() {
+        use otap_df_telemetry::instrument::MmscSnapshot;
+
+        let groups = vec![AggregateGroup {
+            name: "latency_metrics".to_string(),
+            brief: &MMSC_METRICS_DESCRIPTOR,
+            attributes: HashMap::new(),
+            metrics: {
+                let mut m = HashMap::new();
+                let _ = m.insert(
+                    "request_duration".to_string(),
+                    MetricValue::Mmsc(MmscSnapshot {
+                        min: 1.5,
+                        max: 100.0,
+                        sum: 250.5,
+                        count: 10,
+                    }),
+                );
+                m
+            },
+        }];
+
+        let output = agg_line_protocol_text(&groups, Some(1000));
+
+        // All four sub-fields should appear in a single line
+        assert!(output.contains("request_duration_min=1.5"));
+        assert!(output.contains("request_duration_max=100"));
+        assert!(output.contains("request_duration_sum=250.5"));
+        assert!(output.contains("request_duration_count=10i"));
     }
 }

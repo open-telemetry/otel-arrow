@@ -40,7 +40,7 @@
 //! via `next_bundle()`. The embedding layer does NOT need to track deferred
 //! bundles separately—Quiver handles this internally.
 //!
-//! The embedding layer (e.g., otap-dataflow's persistence_processor) may still
+//! The embedding layer (e.g., otap-dataflow's durable_buffer_processor) may still
 //! choose to track deferred bundles for custom retry timing, backoff strategies,
 //! or priority scheduling—but this is optional.
 //!
@@ -68,6 +68,8 @@ pub use progress::{
     SegmentProgressEntry, SubscriberProgress, delete_progress_file, progress_file_path,
     read_progress_file, scan_progress_files, write_progress_file,
 };
-pub use registry::{RegistryCallback, RegistryConfig, SegmentProvider, SubscriberRegistry};
-pub use state::SubscriberState;
+pub use registry::{
+    BundleMetadata, RegistryCallback, RegistryConfig, SegmentProvider, SubscriberRegistry,
+};
+pub use state::{SegmentProgress, SubscriberState};
 pub use types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};

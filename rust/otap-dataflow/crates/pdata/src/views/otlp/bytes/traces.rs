@@ -35,11 +35,10 @@ use crate::{
             read_varint, to_nonzero_range,
         },
         otlp::bytes::resource::RawResource,
-        trace::{
-            EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView,
-            TracesView,
-        },
     },
+};
+use otap_df_pdata_views::views::trace::{
+    EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 
 /// Implementation of [`TracesView`] backed by protobuf serialized `TracesData` message
@@ -50,7 +49,7 @@ pub struct RawTraceData<'a> {
 impl<'a> RawTraceData<'a> {
     /// Create a new [`RawTraceData`] instance
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 }
@@ -600,7 +599,7 @@ impl ResourceSpansView for RawResourceSpans<'_> {
     }
 
     #[inline]
-    fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
+    fn schema_url(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.byte_parser
             .advance_to_find_field(RESOURCE_SPANS_SCHEMA_URL)
     }
@@ -634,7 +633,7 @@ impl ScopeSpansView for RawScopeSpans<'_> {
         Self: 'scp;
 
     #[inline]
-    fn schema_url(&self) -> Option<crate::views::common::Str<'_>> {
+    fn schema_url(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.byte_parser
             .advance_to_find_field(SCOPE_SPANS_SCHEMA_URL)
     }
@@ -774,7 +773,7 @@ impl SpanView for RawSpan<'_> {
     }
 
     #[inline]
-    fn name(&self) -> Option<crate::views::common::Str<'_>> {
+    fn name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser.advance_to_find_field(SPAN_NAME)
     }
 
@@ -817,7 +816,7 @@ impl SpanView for RawSpan<'_> {
     }
 
     #[inline]
-    fn trace_state(&self) -> Option<crate::views::common::Str<'_>> {
+    fn trace_state(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser.advance_to_find_field(SPAN_TRACE_STATE)
     }
 }
@@ -851,7 +850,7 @@ impl EventView for RawSpanEvent<'_> {
     }
 
     #[inline]
-    fn name(&self) -> Option<crate::views::common::Str<'_>> {
+    fn name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser.advance_to_find_field(SPAN_EVENT_NAME)
     }
 
@@ -908,7 +907,7 @@ impl LinkView for RawSpanLink<'_> {
     }
 
     #[inline]
-    fn trace_state(&self) -> Option<crate::views::common::Str<'_>> {
+    fn trace_state(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(SPAN_LINK_TRACE_STATE)
     }
@@ -932,7 +931,7 @@ impl StatusView for RawSpanStatus<'_> {
     }
 
     #[inline]
-    fn message(&self) -> Option<crate::views::common::Str<'_>> {
+    fn message(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser.advance_to_find_field(SPAN_STATUS_MESSAGE)
     }
 }

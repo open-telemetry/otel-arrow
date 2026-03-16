@@ -67,19 +67,27 @@ use crate::record_bundle::SlotId;
 mod cursor_sidecar;
 mod header;
 mod reader;
+mod replay;
 #[cfg(test)]
 mod tests;
 mod writer;
 
-// Keep reader exports visible even though only tests consume them today.
-#[allow(unused_imports)]
-pub(crate) use reader::{DecodedWalSlot, WalConsumerCursor, WalReader, WalRecordBundle};
-// Writer is used broadly soon; suppress warnings while integration lands.
-#[allow(unused_imports)]
+// Reader exports for WAL iteration and replay.
+#[cfg(test)]
+pub(super) use reader::WalRecordBundle;
+pub(crate) use reader::{MultiFileWalReader, WalConsumerCursor};
+// WalReader is used internally by MultiFileWalReader and by tests
+#[cfg(test)]
+pub(crate) use reader::WalReader;
+// ReplayBundle is used by engine to decode WAL entries during replay.
+pub(crate) use replay::ReplayBundle;
+// Writer is used for WAL append operations.
 pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};
-// Re-export for integration tests that need to verify cursor state.
-#[allow(unused_imports)]
+// CursorSidecar is used by engine to read the persisted cursor position.
 pub(crate) use cursor_sidecar::CursorSidecar;
+// CURSOR_SIDECAR_FILENAME is only used in tests.
+#[cfg(test)]
+pub(crate) use cursor_sidecar::CURSOR_SIDECAR_FILENAME;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAL Format Constants
@@ -209,7 +217,7 @@ impl WalError {
     /// WAL capacity errors are recoverable—the caller should wait for
     /// segment finalization to advance the cursor and reclaim space.
     #[must_use]
-    pub fn is_at_capacity(&self) -> bool {
+    pub const fn is_at_capacity(&self) -> bool {
         matches!(self, Self::WalAtCapacity(_))
     }
 }

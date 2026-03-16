@@ -16,12 +16,10 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceR
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
     LogsService, LogsServiceServer,
 };
-use otap_df_telemetry::otel_debug;
+use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use prost::Message;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
-};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
@@ -30,6 +28,7 @@ use std::sync::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio_rustls::TlsAcceptor;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
@@ -51,37 +50,6 @@ impl LogsService for LogsServiceMock {
             partial_success: None,
         }))
     }
-}
-
-fn new_ca() -> (Certificate, Issuer<'static, KeyPair>) {
-    let mut params = CertificateParams::new(Vec::default()).expect("empty SAN");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "Test CA");
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    params.key_usages.push(KeyUsagePurpose::CrlSign);
-    let key_pair = KeyPair::generate().expect("ca key");
-    let ca = params.self_signed(&key_pair).expect("ca cert");
-    let issuer = Issuer::new(params, key_pair);
-    (ca, issuer)
-}
-
-fn new_leaf(
-    cn: &str,
-    san: &str,
-    eku: ExtendedKeyUsagePurpose,
-    issuer: &Issuer<'_, KeyPair>,
-) -> (String, String) {
-    let mut params = CertificateParams::new(vec![san.to_string()]).expect("SAN");
-    params.distinguished_name.push(DnType::CommonName, cn);
-    params.use_authority_key_identifier_extension = true;
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.extended_key_usages.push(eku);
-    let key_pair = KeyPair::generate().expect("leaf key");
-    let cert = params.signed_by(&key_pair, issuer).expect("leaf cert");
-    (cert.pem(), key_pair.serialize_pem())
 }
 
 async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
@@ -183,6 +151,133 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
     addr
 }
 
+async fn start_tls_connect_proxy(target_hits: Arc<AtomicUsize>) -> (SocketAddr, String) {
+    otap_df_otap::crypto::ensure_crypto_provider();
+
+    let proxy_ca = generate_ca("Proxy CA");
+    let proxy_ca_pem = proxy_ca.cert_pem.clone();
+    let proxy_server = proxy_ca.issue_leaf(
+        "localhost",
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
+    );
+
+    let cert_chain: Vec<_> = CertificateDer::pem_slice_iter(proxy_server.cert_pem.as_bytes())
+        .collect::<Result<_, _>>()
+        .expect("parse proxy cert chain");
+    let private_key =
+        PrivateKeyDer::from_pem_slice(proxy_server.key_pem.as_bytes()).expect("parse proxy key");
+
+    let tls_server_cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, private_key)
+        .expect("build proxy tls server config");
+    let tls_acceptor = TlsAcceptor::from(Arc::new(tls_server_cfg));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
+    let addr = listener.local_addr().expect("local_addr failed");
+
+    let _proxy_task = tokio::spawn(async move {
+        loop {
+            let (downstream_tcp, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+
+            let tls_acceptor = tls_acceptor.clone();
+            let target_hits = target_hits.clone();
+            let _conn_task = tokio::spawn(async move {
+                let mut downstream = match tls_acceptor.accept(downstream_tcp).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+
+                let mut buf = vec![0u8; 8192];
+                let mut read = 0usize;
+
+                // Read until end of headers.
+                loop {
+                    let n = downstream.read(&mut buf[read..]).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    read += n;
+                    if read >= 4 && buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if read == buf.len() {
+                        return;
+                    }
+                }
+
+                let headers = String::from_utf8_lossy(&buf[..read]);
+                let mut lines = headers.lines();
+                let request_line = lines.next().unwrap_or("");
+
+                // CONNECT host:port HTTP/1.1
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("");
+                let authority = parts.next().unwrap_or("");
+                let version = parts.next().unwrap_or("");
+
+                if method != "CONNECT" {
+                    let _ = downstream
+                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                        .await;
+                    return;
+                }
+
+                if version != "HTTP/1.1" && version != "HTTP/1.0" {
+                    let _ = downstream
+                        .write_all(b"HTTP/1.1 505 HTTP Version Not Supported\r\n\r\n")
+                        .await;
+                    return;
+                }
+
+                let (host, port) = match authority.rsplit_once(':') {
+                    Some((h, p)) => (h, p),
+                    None => {
+                        let _ = downstream
+                            .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                };
+
+                let port: u16 = match port.parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let _ = downstream
+                            .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                };
+
+                let mut upstream = match TcpStream::connect((host, port)).await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let _ = downstream
+                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                };
+
+                let _ = downstream
+                    .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    .await;
+
+                let _ = target_hits.fetch_add(1, Ordering::Relaxed);
+
+                let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+            });
+        }
+    });
+
+    (addr, proxy_ca_pem)
+}
+
 async fn start_tls_logs_server() -> (
     SocketAddr,
     String,
@@ -191,25 +286,20 @@ async fn start_tls_logs_server() -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<()>,
 ) {
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
-        // It's fine if the provider is already installed (e.g. by another test)
-        otel_debug!("rustls default provider installation failed in test", error = ?err);
-    }
+    otap_df_otap::crypto::ensure_crypto_provider();
 
-    let (ca, ca_issuer) = new_ca();
-    let ca_pem = ca.pem();
-    let (server_cert_pem, server_key_pem) = new_leaf(
+    let ca = generate_ca("Test CA");
+    let ca_pem = ca.cert_pem.clone();
+    let server = ca.issue_leaf(
         "localhost",
-        "localhost",
-        ExtendedKeyUsagePurpose::ServerAuth,
-        &ca_issuer,
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
     );
-    let (client_cert_pem, client_key_pem) = new_leaf(
-        "client",
-        "client",
-        ExtendedKeyUsagePurpose::ClientAuth,
-        &ca_issuer,
-    );
+    let server_cert_pem = server.cert_pem;
+    let server_key_pem = server.key_pem;
+    let client = ca.issue_leaf("client", Some("client"), Some(ExtendedKeyUsage::ClientAuth));
+    let client_cert_pem = client.cert_pem;
+    let client_key_pem = client.key_pem;
 
     let (tx, rx) = mpsc::channel::<()>(8);
     let logs_service = LogsServiceServer::new(LogsServiceMock { sender: tx });
@@ -336,6 +426,60 @@ async fn otlp_exporter_connects_through_connect_proxy_lazy() {
     assert!(observed.is_some());
 
     assert!(proxy_hits.load(Ordering::Relaxed) >= 1);
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn otlp_exporter_connects_through_https_proxy_to_https_endpoint() {
+    let (srv_addr, ca_pem, client_cert_pem, client_key_pem, server_handle, mut rx) =
+        start_tls_logs_server().await;
+
+    let proxy_hits = Arc::new(AtomicUsize::new(0));
+    let (proxy_addr, proxy_ca_pem) = start_tls_connect_proxy(proxy_hits.clone()).await;
+
+    let settings = GrpcClientSettings {
+        grpc_endpoint: format!("https://localhost:{}", srv_addr.port()),
+        tls: Some(TlsClientConfig {
+            config: TlsConfig {
+                cert_file: None,
+                cert_pem: Some(client_cert_pem),
+                key_file: None,
+                key_pem: Some(client_key_pem),
+                reload_interval: None,
+            },
+            ca_file: None,
+            ca_pem: Some(ca_pem),
+            include_system_ca_certs_pool: Some(false),
+            server_name: Some("localhost".to_string()),
+            ..TlsClientConfig::default()
+        }),
+        proxy: Some(ProxyConfig {
+            https_proxy: Some(format!("https://{}:{}", proxy_addr.ip(), proxy_addr.port()).into()),
+            tls: Some(TlsClientConfig {
+                ca_file: None,
+                ca_pem: Some(proxy_ca_pem),
+                include_system_ca_certs_pool: Some(false),
+                server_name: Some("localhost".to_string()),
+                ..TlsClientConfig::default()
+            }),
+            ..ProxyConfig::default()
+        }),
+        ..GrpcClientSettings::default()
+    };
+
+    let channel = settings.connect_channel(None).await.unwrap();
+    send_one_request(channel).await;
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap();
+    assert!(observed.is_some());
+
+    assert!(
+        proxy_hits.load(Ordering::Relaxed) >= 1,
+        "Expected TLS proxy to be used"
+    );
 
     server_handle.abort();
 }

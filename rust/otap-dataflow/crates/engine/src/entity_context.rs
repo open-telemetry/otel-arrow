@@ -162,6 +162,8 @@ pub(crate) fn with_node_telemetry_handle<T>(
     })
 }
 
+/// Handle for per-node telemetry state, including entity keys, metric sets,
+/// channel associations, and custom log record attributes.
 #[derive(Clone)]
 pub(crate) struct NodeTelemetryHandle {
     registry: TelemetryRegistryHandle,
@@ -181,6 +183,7 @@ impl Debug for NodeTelemetryHandle {
 struct NodeTelemetryState {
     entity_key: EntityKey,
     metric_keys: Vec<MetricSetKey>,
+    extra_entity_keys: Vec<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
@@ -195,6 +198,7 @@ impl NodeTelemetryHandle {
             state: Rc::new(RefCell::new(NodeTelemetryState {
                 entity_key,
                 metric_keys: Vec::new(),
+                extra_entity_keys: Vec::new(),
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
@@ -223,6 +227,11 @@ impl NodeTelemetryHandle {
     /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
+    }
+
+    /// Track an additional entity key so it is cleaned up with the node telemetry lifecycle.
+    pub(crate) fn track_entity(&self, entity_key: EntityKey) {
+        self.state.borrow_mut().extra_entity_keys.push(entity_key);
     }
 
     /// Associate the inbound channel entity key with this node for task-local scoping.
@@ -277,6 +286,7 @@ impl NodeTelemetryHandle {
         }
         state.cleaned = true;
         let keys = std::mem::take(&mut state.metric_keys);
+        let extra_entity_keys = std::mem::take(&mut state.extra_entity_keys);
         let entity_key = state.entity_key;
         let input_channel_key = state.input_channel_key.take();
         let output_channel_keys = std::mem::take(&mut state.output_channel_keys);
@@ -295,6 +305,9 @@ impl NodeTelemetryHandle {
         for (_, key) in output_channel_keys {
             let _ = self.registry.unregister_entity(key);
         }
+        for key in extra_entity_keys {
+            let _ = self.registry.unregister_entity(key);
+        }
         let _ = self.registry.unregister_entity(entity_key);
     }
 }
@@ -305,7 +318,7 @@ pub struct NodeTelemetryGuard {
 }
 
 impl NodeTelemetryGuard {
-    pub(crate) fn new(handle: NodeTelemetryHandle) -> Self {
+    pub(crate) const fn new(handle: NodeTelemetryHandle) -> Self {
         Self { handle }
     }
 
@@ -336,23 +349,32 @@ mod tests {
     use otap_df_config::node::NodeKind;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
+    use std::collections::HashMap;
 
     #[test]
     fn pipeline_cleanup_unregisters_entities() {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry.clone());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 0);
+            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 1, 0);
 
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let _pipeline_metrics = PipelineMetricsMonitor::new(pipeline_ctx.clone());
 
-        let source_ctx =
-            pipeline_ctx.with_node_context("source".into(), "urn:test".into(), NodeKind::Receiver);
-        let dest_ctx =
-            pipeline_ctx.with_node_context("dest".into(), "urn:test".into(), NodeKind::Processor);
+        let source_ctx = pipeline_ctx.with_node_context(
+            "source".into(),
+            "urn:test:receiver:example".into(),
+            NodeKind::Receiver,
+            HashMap::new(),
+        );
+        let dest_ctx = pipeline_ctx.with_node_context(
+            "dest".into(),
+            "urn:test:processor:example".into(),
+            NodeKind::Processor,
+            HashMap::new(),
+        );
 
         let source_entity_key = source_ctx.register_node_entity();
         let dest_entity_key = dest_ctx.register_node_entity();

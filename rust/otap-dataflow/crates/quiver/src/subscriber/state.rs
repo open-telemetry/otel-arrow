@@ -98,19 +98,19 @@ impl SegmentProgress {
 
     /// Checks if all bundles in this segment are resolved.
     #[must_use]
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.resolved_count == self.bundle_count
     }
 
     /// Returns the total number of bundles in this segment.
     #[must_use]
-    pub fn bundle_count(&self) -> u32 {
+    pub const fn bundle_count(&self) -> u32 {
         self.bundle_count
     }
 
     /// Returns the number of resolved bundles.
     #[must_use]
-    pub fn resolved_count(&self) -> u32 {
+    pub const fn resolved_count(&self) -> u32 {
         self.resolved_count
     }
 
@@ -180,23 +180,32 @@ impl SubscriberState {
 
     /// Returns the subscriber's identifier.
     #[must_use]
-    pub fn id(&self) -> &SubscriberId {
+    pub const fn id(&self) -> &SubscriberId {
         &self.id
     }
 
     /// Returns whether the subscriber is active.
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         self.active
     }
 
+    /// Returns a reference to the per-segment progress map.
+    ///
+    /// Each entry maps a [`SegmentSeq`] to its [`SegmentProgress`], which
+    /// tracks which bundles have been resolved via a bitmap.
+    #[must_use]
+    pub const fn segments(&self) -> &BTreeMap<SegmentSeq, SegmentProgress> {
+        &self.segments
+    }
+
     /// Activates the subscriber to receive new bundles.
-    pub fn activate(&mut self) {
+    pub const fn activate(&mut self) {
         self.active = true;
     }
 
     /// Deactivates the subscriber.
-    pub fn deactivate(&mut self) {
+    pub const fn deactivate(&mut self) {
         self.active = false;
     }
 

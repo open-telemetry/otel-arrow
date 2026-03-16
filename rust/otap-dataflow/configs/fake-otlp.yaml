@@ -1,28 +1,33 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
 
-nodes:
-  receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
-    config:
-      data_source: static
-      generation_strategy: pre_generated
-      traffic_config:
-        signals_per_second: 100000
-        max_signal_count: null
-        metric_weight: 0
-        trace_weight: 0
-        log_weight: 30
-  exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
-    config:
-      grpc_endpoint: "http://127.0.0.1:4317"
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+
+        connections:
+          - from: receiver
+            to: exporter

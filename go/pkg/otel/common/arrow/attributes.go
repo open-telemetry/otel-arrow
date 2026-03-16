@@ -10,40 +10,10 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-
-	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/schema/builder"
-	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
-)
-
-// ToDo Standard attributes (i.e. AttributesDT) will be removed in the future. They are still used as shared attributes in the metrics.
-// ToDo this file must be redistributed into `attributes_16.go` and `attributes_32.go` files.
-
-// Arrow data types used to build the attribute map.
-var (
-	// KDT is the Arrow key data type.
-	KDT = arrow.BinaryTypes.String
-
-	// AttributesDT is the Arrow attribute data type.
-	AttributesDT = arrow.MapOfWithMetadata(
-		KDT, schema.Metadata(schema.Dictionary8),
-		AnyValueDT, schema.Metadata(),
-	)
 )
 
 type (
-	// AttributesBuilder is a helper to build a map of attributes.
-	AttributesBuilder struct {
-		released bool
-
-		builder *builder.MapBuilder    // map builder
-		kb      *builder.StringBuilder // key builder
-		ib      *AnyValueBuilder       // item any value builder
-	}
-
 	// Attr16 is an attribute with a 16-bit ParentID.
 	Attr16 struct {
 		ParentID uint16
@@ -90,79 +60,6 @@ type (
 		sorter        Attrs32Sorter
 	}
 )
-
-// NewAttributesBuilder creates a new AttributesBuilder with a given allocator.
-//
-// Once the builder is no longer needed, Build() or Release() must be called to free the
-// memory allocated by the builder.
-func NewAttributesBuilder(builder *builder.MapBuilder) *AttributesBuilder {
-	return AttributesBuilderFrom(builder)
-}
-
-// AttributesBuilderFrom creates a new AttributesBuilder from an existing MapBuilder.
-func AttributesBuilderFrom(mb *builder.MapBuilder) *AttributesBuilder {
-	ib := AnyValueBuilderFrom(mb.ItemSparseUnionBuilder())
-
-	return &AttributesBuilder{
-		released: false,
-		builder:  mb,
-		kb:       mb.KeyStringBuilder(),
-		ib:       ib,
-	}
-}
-
-// Build builds the attribute array map.
-//
-// Once the returned array is no longer needed, Release() must be called to free the
-// memory allocated by the array.
-func (b *AttributesBuilder) Build() (*array.Map, error) {
-	if b.released {
-		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	defer b.Release()
-	return b.builder.NewMapArray(), nil
-}
-
-func (b *AttributesBuilder) AppendNull() error {
-	if b.released {
-		return werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	b.builder.AppendNull()
-	return nil
-}
-
-// Append appends a new set of attributes to the builder.
-// Note: empty keys are skipped.
-func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
-	if b.released {
-		return werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	return b.builder.Append(attrs.Len(), func() error {
-		var err error
-		attrs.Range(func(key string, v pcommon.Value) bool {
-			// Attribute without key or without value are ignored.
-			if key == "" || v.Type() == pcommon.ValueTypeEmpty {
-				return true
-			}
-
-			b.kb.AppendNonEmpty(key)
-			return b.ib.Append(&v) == nil
-		})
-		return werror.Wrap(err)
-	})
-}
-
-// Release releases the memory allocated by the builder.
-func (b *AttributesBuilder) Release() {
-	if !b.released {
-		b.builder.Release()
-
-		b.released = true
-	}
-}
 
 func NewAttributes16Accumulator(sorter Attrs16Sorter) *Attributes16Accumulator {
 	return &Attributes16Accumulator{

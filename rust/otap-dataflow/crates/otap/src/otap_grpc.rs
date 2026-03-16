@@ -290,7 +290,7 @@ where
 {
     let batch_id = batch.batch_id;
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
-        otel_error!("Error decoding OTAP Batch. Closing stream", error = ?e);
+        otel_error!("otap.batch.decode_failed", error = ?e, message = "Error decoding OTAP Batch. Closing stream");
     })?;
 
     let batch = from_record_messages::<T>(batch);
@@ -305,7 +305,7 @@ where
             match guard_result {
                 Ok(mut guard) => guard.allocate(|| oneshot::channel()),
                 Err(_) => {
-                    otel_error!("Mutex poisoned");
+                    otel_error!("otap.mutex.poisoned", message = "Mutex poisoned");
                     return Err(());
                 }
             }
@@ -313,7 +313,10 @@ where
 
         let (key, rx) = match allocation_result {
             None => {
-                otel_error!("Too many concurrent requests");
+                otel_error!(
+                    "otap.request.concurrency_limit",
+                    message = "Too many concurrent requests"
+                );
 
                 // Send backpressure response
                 tx.send(Ok(BatchStatus {
@@ -326,7 +329,7 @@ where
                 }))
                 .await
                 .map_err(|e| {
-                    otel_error!("Error sending BatchStatus response", error = ?e);
+                    otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
                 })?;
 
                 return Ok(());
@@ -352,7 +355,7 @@ where
     {
         Ok(_) => {}
         Err(e) => {
-            otel_error!("Failed to send to pipeline", error = ?e);
+            otel_error!("otap.pipeline.send_failed", error = ?e, message = "Failed to send to pipeline");
             return Err(());
         }
     };
@@ -378,13 +381,16 @@ where
                 }))
                 .await
                 .map_err(|e| {
-                    otel_error!("Error sending BatchStatus response", error = ?e);
+                    otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
                 })?;
 
                 return Ok(());
             }
             Err(_) => {
-                otel_error!("Response channel closed unexpectedly");
+                otel_error!(
+                    "otap.response.channel_closed",
+                    message = "Response channel closed unexpectedly"
+                );
                 return Err(());
             }
         }
@@ -397,7 +403,7 @@ where
     }))
     .await
     .map_err(|e| {
-        otel_error!("Error sending BatchStatus response", error = ?e);
+        otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
     })
 }
 

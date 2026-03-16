@@ -18,14 +18,10 @@ pub mod otap_receiver;
 /// produce for the pipeline OTAP PData
 pub mod otlp_receiver;
 
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
+/// Implementation of OTLP gRPC exporter that implements the exporter trait
+pub mod otlp_grpc_exporter;
 
-/// Batch processor
-pub mod batch_processor;
-
-// Retry processor that is aware of the OTAP PData/context.
-pub mod retry_processor;
+pub mod otlp_http_exporter;
 
 /// Receiver that reads in syslog data
 pub mod syslog_cef_receiver;
@@ -35,29 +31,9 @@ pub mod accessory;
 
 pub mod pdata;
 
+mod pdata_conversions;
+
 pub mod parquet_exporter;
-
-pub mod perf_exporter;
-
-pub mod fake_data_generator;
-
-/// Implementation of debug processor that outputs received signals in a string format for user view
-pub mod debug_processor;
-
-pub mod filter_processor;
-
-/// Implementation of a noop exporter that acts as a exporter placeholder
-pub mod noop_exporter;
-
-/// An error-exporter returns a static error.
-pub mod error_exporter;
-
-/// Experimental exporters and processors
-#[cfg(any(
-    feature = "experimental-exporters",
-    feature = "experimental-processors"
-))]
-pub mod experimental;
 
 /// testing utilities
 #[cfg(test)]
@@ -68,20 +44,8 @@ mod otlp_mock;
 #[cfg(test)]
 mod fixtures;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
-
-/// validation process to verify that encoding/decoding works properly with otlp request
-#[cfg(test)]
-pub mod validation;
-
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
-
-/// Attributes processor (OTAP-based)
-pub mod attributes_processor;
-
-pub mod transform_processor;
 
 /// compression formats
 pub mod compression;
@@ -102,18 +66,16 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
-/// Internal telemetry receiver
-pub mod internal_telemetry_receiver;
-
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
+
+/// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
+pub mod crypto;
+
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
-
-/// Console exporter similar using built-in OTLP-bytes formatting.
-pub mod console_exporter;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

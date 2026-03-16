@@ -1,0 +1,30 @@
+# Engine-wide settings
+{% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: {{ admin_bind_address }}
+
+groups:
+  validation_test:
+    pipelines:
+      # ======================================================================
+      # Validation pipeline to validate equivalence
+      # ======================================================================
+{{ capture_pipeline | indent(6, true)}}
+      # ======================================================================
+      # System Under Validation pipeline
+      # ======================================================================
+      suv:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: {{ suv_core_start | default(0) }}
+                  end: {{ suv_core_end | default(0) }}
+{{ suv_pipeline | indent(8, true)}}
+      # ======================================================================
+      # Pipeline generating traffic
+      # ======================================================================
+{{ generator_pipeline | indent(6, true)}}

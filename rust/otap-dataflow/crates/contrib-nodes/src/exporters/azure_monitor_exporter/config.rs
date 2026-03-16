@@ -1,0 +1,491 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use super::Error;
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+
+/// Configuration for the Azure Monitor Exporter matching the Collector's schema.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// API configuration for Azure Monitor
+    pub api: ApiConfig,
+
+    /// Authentication configuration
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// Authentication method for Azure
+#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethod {
+    /// Use Managed Identity (system or user-assigned with client_id)
+    #[serde(alias = "msi", alias = "managed_identity")]
+    #[default]
+    ManagedIdentity,
+
+    /// Use developer tools (Azure CLI, Azure Developer CLI)
+    #[serde(alias = "dev", alias = "developer", alias = "cli")]
+    Development,
+}
+
+/// Authentication configuration for Azure
+#[derive(Debug, Deserialize, Clone)]
+pub struct AuthConfig {
+    /// Authentication method to use
+    #[serde(default)]
+    pub method: AuthMethod,
+
+    /// Client ID for user-assigned managed identity (optional)
+    /// Only used when method is ManagedIdentity
+    /// If not provided with ManagedIdentity, system-assigned identity will be used
+    pub client_id: Option<String>,
+
+    /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+impl AuthConfig {
+    /// Returns a human-readable name for the configured authentication method.
+    #[must_use]
+    pub fn auth_method_name(&self) -> &'static str {
+        match self.method {
+            AuthMethod::ManagedIdentity => {
+                if self.client_id.is_some() {
+                    "user_assigned_managed_identity"
+                } else {
+                    "system_assigned_managed_identity"
+                }
+            }
+            AuthMethod::Development => "developer_tools",
+        }
+    }
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            method: AuthMethod::default(),
+            client_id: None,
+            scope: default_scope(),
+        }
+    }
+}
+
+fn default_scope() -> String {
+    "https://monitor.azure.com/.default".to_string()
+}
+
+/// API configuration for connecting to Azure Monitor
+#[derive(Debug, Deserialize, Clone)]
+pub struct ApiConfig {
+    /// Data Collection Rule endpoint
+    pub dcr_endpoint: String,
+
+    /// Stream name for the logs
+    pub stream_name: String,
+
+    /// Data Collection Rule identifier
+    pub dcr: String,
+
+    /// Schema mapping configuration
+    #[serde(default)]
+    pub schema: SchemaConfig,
+}
+
+/// Schema mapping configuration
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SchemaConfig {
+    /// Resource attribute mappings
+    #[serde(default)]
+    pub resource_mapping: HashMap<String, String>,
+
+    /// Scope attribute mappings
+    #[serde(default)]
+    pub scope_mapping: HashMap<String, String>,
+
+    /// Log record field mappings
+    #[serde(default)]
+    pub log_record_mapping: HashMap<String, Value>,
+}
+
+impl Config {
+    /// Validate the configuration
+    pub fn validate(&self) -> Result<(), Error> {
+        // Validate auth configuration
+        if self.auth.scope.is_empty() {
+            return Err(Error::Config(
+                "Invalid configuration: auth scope must be non-empty".to_string(),
+            ));
+        }
+
+        // Validate API configuration
+        if self.api.dcr_endpoint.is_empty() {
+            return Err(Error::Config(
+                "Invalid configuration: dcr_endpoint must be non-empty".to_string(),
+            ));
+        }
+        if self.api.stream_name.is_empty() {
+            return Err(Error::Config(
+                "Invalid configuration: stream_name must be non-empty".to_string(),
+            ));
+        }
+        if self.api.dcr.is_empty() {
+            return Err(Error::Config(
+                "Invalid configuration: dcr must be non-empty".to_string(),
+            ));
+        }
+
+        self.validate_schema_unique_columns()?;
+
+        Ok(())
+    }
+
+    fn validate_schema_unique_columns(&self) -> Result<(), Error> {
+        let mut seen = HashSet::new();
+        let mut duplicates = HashSet::new();
+
+        for value in self.api.schema.resource_mapping.values() {
+            if !seen.insert(value.clone()) {
+                _ = duplicates.insert(value.clone());
+            }
+        }
+
+        for value in self.api.schema.scope_mapping.values() {
+            if !seen.insert(value.clone()) {
+                _ = duplicates.insert(value.clone());
+            }
+        }
+
+        for (key, value) in &self.api.schema.log_record_mapping {
+            match value {
+                Value::String(s) => {
+                    if !seen.insert(s.clone()) {
+                        _ = duplicates.insert(s.clone());
+                    }
+                }
+                Value::Object(map) => {
+                    if key != "attributes" {
+                        return Err(Error::Config(
+                            "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed".to_string(),
+                        ));
+                    }
+
+                    for (_, v) in map {
+                        if let Value::String(s) = v {
+                            if !seen.insert(s.clone()) {
+                                _ = duplicates.insert(s.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !duplicates.is_empty() {
+            let mut columns: Vec<String> = duplicates.into_iter().collect();
+            columns.sort();
+            return Err(Error::ConfigDuplicateColumns { columns });
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_valid_config() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig::default(),
+            },
+            auth: AuthConfig {
+                scope: "https://monitor.azure.com/.default".to_string(),
+                client_id: Some("myclientid".to_string()),
+                method: AuthMethod::ManagedIdentity,
+            },
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_config_missing_api_fields() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "".to_string(),
+                stream_name: "".to_string(),
+                dcr: "".to_string(),
+                schema: SchemaConfig::default(),
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: dcr_endpoint must be non-empty"
+        );
+    }
+
+    #[test]
+    fn test_schema_duplicate_columns() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        ("severity_text".into(), json!("Body")),
+                        ("attributes".into(), json!({"user.name": "Name"})),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Name".to_string()));
+                assert!(columns.contains(&"Body".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schema_duplicate_columns_in_nested_log_record_mapping() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([(
+                        "service.name".into(),
+                        "ServiceName".into(),
+                    )]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        (
+                            "attributes".into(),
+                            json!({
+                                "user.id": "UserId",
+                                "user.name": "UserName",
+                                "request.user": "UserName"
+                            }),
+                        ),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"UserName".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schema_nested_object_only_allowed_for_attributes() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "body".into(),
+                        json!({"nested": "NotAllowed"}),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed"
+        );
+    }
+
+    // The following tests ensure that cross-level duplicate column detection works
+    // correctly. This is critical for the transformer's pre-serialized prefix
+    // optimization which assumes non-overlapping destination columns across
+    // resource, scope, and log record levels.
+
+    #[test]
+    fn test_resource_scope_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
+                    log_record_mapping: HashMap::new(),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Name".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resource_log_record_field_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("host.name".into(), "TimeGenerated".into())]),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "time_unix_nano".into(),
+                        json!("TimeGenerated"),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"TimeGenerated".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resource_log_record_attribute_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "Source".into())]),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "attributes".into(),
+                        json!({"log.source": "Source"}),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Source".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scope_log_record_attribute_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::from([("scope.version".into(), "Version".into())]),
+                    log_record_mapping: HashMap::from([(
+                        "attributes".into(),
+                        json!({"app.version": "Version"}),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Version".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_non_overlapping_mappings_accepted() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([
+                        ("service.name".into(), "ServiceName".into()),
+                        ("host.name".into(), "HostName".into()),
+                    ]),
+                    scope_mapping: HashMap::from([
+                        ("scope.name".into(), "ScopeName".into()),
+                        ("scope.version".into(), "ScopeVersion".into()),
+                    ]),
+                    log_record_mapping: HashMap::from([
+                        ("time_unix_nano".into(), json!("TimeGenerated")),
+                        ("severity_text".into(), json!("SeverityText")),
+                        ("body".into(), json!("Body")),
+                        (
+                            "attributes".into(),
+                            json!({"env": "Environment", "request.id": "RequestId"}),
+                        ),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert!(config.validate().is_ok());
+    }
+}

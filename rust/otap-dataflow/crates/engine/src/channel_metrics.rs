@@ -9,7 +9,7 @@
 
 use crate::node::NodeId;
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
@@ -17,6 +17,20 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+
+/// Represents the outcome of a request for metrics recording.
+///
+/// Used to consolidate success/failure/refused counter updates into a single
+/// method call, reducing code duplication in both producer and consumer metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestOutcome {
+    /// Request completed successfully (ack received).
+    Success,
+    /// Request failed but may be retried (transient / retryable, non-permanent nack).
+    Failure,
+    /// Request was permanently refused (permanent nack).
+    Refused,
+}
 
 #[metric_set(name = "channel.sender")]
 #[derive(Debug, Default, Clone)]
@@ -61,6 +75,53 @@ pub struct ChannelReceiverMetrics {
     pub capacity: Gauge<u64>,
 }
 
+/// Ack/nack metrics for consumed requests, owned exclusively by the pipeline controller.
+/// Registered under the input channel entity key so they share the same
+/// channel attributes as the transport metrics.
+#[metric_set(name = "node.consumer")]
+#[derive(Debug, Default, Clone)]
+pub struct ConsumedMetrics {
+    /// Duration from entry until the corresponding ack or nack is
+    /// routed, in nanoseconds. This is reported at the detailed level.
+    ///
+    /// TODO: make this Option<Box<Mmsc or Histogram>>.
+    #[metric(name = "consumed.duration", unit = "ns")]
+    pub consumed_duration_ns: Mmsc,
+    /// Consumed requests successfully processed.
+    #[metric(name = "consumed.success", unit = "{requests}")]
+    pub consumed_success: Counter<u64>,
+    /// Consumed requests that failed, this are retryable errors.
+    #[metric(name = "consumed.failure", unit = "{requests}")]
+    pub consumed_failure: Counter<u64>,
+    /// Consumed requests refused, also known as permanent failures.
+    #[metric(name = "consumed.refused", unit = "{requests}")]
+    pub consumed_refused: Counter<u64>,
+}
+
+/// Ack/nack metrics for produced requests, owned exclusively by the pipeline controller.
+/// Registered under the output channel entity key so they share the same
+/// channel attributes as the transport metrics.
+#[metric_set(name = "node.producer")]
+#[derive(Debug, Default, Clone)]
+pub struct ProducedMetrics {
+    /// Duration from production until the corresponding ack or nack is
+    /// routed, in nanoseconds. This is reported at the detailed level,
+    /// only in receivers. Processors report consumed_refused.
+    ///
+    /// TODO: make this Option<Box<Mmsc or Histogram>>.
+    #[metric(name = "produced.duration", unit = "ns")]
+    pub produced_duration_ns: Mmsc,
+    /// Produced requests acknowledged by downstream.
+    #[metric(name = "produced.success", unit = "{requests}")]
+    pub produced_success: Counter<u64>,
+    /// Produced requests that failed, this are retryable errors.
+    #[metric(name = "produced.failure", unit = "{requests}")]
+    pub produced_failure: Counter<u64>,
+    /// Produced requests refused, also known as permanent failures.
+    #[metric(name = "produced.refused", unit = "{requests}")]
+    pub produced_refused: Counter<u64>,
+}
+
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";
 pub(crate) const CHANNEL_KIND_PDATA: &str = "pdata";
 pub(crate) const CHANNEL_MODE_LOCAL: &str = "local";
@@ -80,7 +141,7 @@ pub(crate) struct ChannelSenderMetricsState {
 }
 
 impl ChannelSenderMetricsState {
-    pub(crate) fn new(metrics: MetricSet<ChannelSenderMetrics>) -> Self {
+    pub(crate) const fn new(metrics: MetricSet<ChannelSenderMetrics>) -> Self {
         Self { metrics }
     }
 
@@ -114,7 +175,7 @@ pub(crate) struct ChannelReceiverMetricsState {
 }
 
 impl ChannelReceiverMetricsState {
-    pub(crate) fn new(metrics: MetricSet<ChannelReceiverMetrics>, capacity: u64) -> Self {
+    pub(crate) const fn new(metrics: MetricSet<ChannelReceiverMetrics>, capacity: u64) -> Self {
         Self { metrics, capacity }
     }
 
@@ -209,13 +270,19 @@ mod tests {
     use otap_df_telemetry::metrics::MetricSetHandler;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
 
     fn test_context() -> PipelineContext {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx
-            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
-            .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
+            .with_node_context(
+                "node".into(),
+                "urn:test:receiver:example".into(),
+                NodeKind::Receiver,
+                HashMap::new(),
+            )
     }
 
     fn take_local_sender_handle(
@@ -278,7 +345,7 @@ mod tests {
         let (sender, receiver) = mpsc::Channel::new(1);
         let sender = LocalSender::mpsc(sender);
         let channel_entity_key = pipeline_ctx.register_channel_entity(
-            "test:receiver".into(),
+            "receiver:test".into(),
             "input".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,

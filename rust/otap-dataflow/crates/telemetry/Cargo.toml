@@ -21,6 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
+otap-df-pdata-views = { workspace = true }
 
 axum = { workspace = true }
 bytes = { workspace = true }
@@ -37,15 +38,16 @@ prost = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
 tonic = { workspace = true, optional = true }
+# TODO: Note we do not have any compression features enabled for the OTel SDK used for OTLP/Prometheus export.
 opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-opentelemetry-stdout = { workspace = true }
-opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "tls", "metrics", "logs"] }
+opentelemetry_sdk = { workspace = true, default-features = false, features = ["metrics", "internal-logs"] }
+opentelemetry-stdout = { workspace = true, default-features = false, features = ["metrics"] }
+opentelemetry-otlp = { workspace = true, default-features = false, features = ["grpc-tonic", "tls", "metrics" ] }
 opentelemetry-prometheus = { workspace = true }
-opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
 [dev-dependencies]
 tower = { workspace = true }
 tempfile = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

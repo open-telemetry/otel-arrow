@@ -15,7 +15,7 @@ use arrow_schema::{DataType, Field, Schema};
 use quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
-use rand::Rng;
+use rand::RngExt;
 
 /// Configuration for test bundle generation.
 #[derive(Debug, Clone)]

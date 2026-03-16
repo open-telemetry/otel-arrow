@@ -36,16 +36,12 @@ pub enum QuiverError {
     ///
     /// Callers should slow down or pause ingestion until space is reclaimed.
     /// This is not a fatal error—retry after cleanup or subscriber catch-up.
-    #[error(
-        "storage at capacity: requested {requested} bytes, only {available} available (cap: {cap})"
-    )]
+    #[error("storage at capacity: {available} bytes available (soft cap: {soft_cap})")]
     StorageAtCapacity {
-        /// Bytes requested for the operation.
-        requested: u64,
-        /// Bytes currently available before hitting the cap.
+        /// Bytes currently available before hitting the soft cap.
         available: u64,
-        /// The configured storage cap.
-        cap: u64,
+        /// The configured soft cap (ingest threshold).
+        soft_cap: u64,
     },
     /// Wrapper for WAL-specific failures.
     #[error("wal error: {source}")]
@@ -74,7 +70,7 @@ impl QuiverError {
 
     /// Helper for creating [`QuiverError::Unimplemented`] values.
     #[must_use]
-    pub fn unimplemented(context: &'static str) -> Self {
+    pub const fn unimplemented(context: &'static str) -> Self {
         Self::Unimplemented { context }
     }
 
@@ -90,7 +86,7 @@ impl QuiverError {
     ///
     /// Cancelled operations should clean up and return without logging errors.
     #[must_use]
-    pub fn is_cancelled(&self) -> bool {
+    pub const fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }
 
@@ -102,7 +98,7 @@ impl QuiverError {
     /// This returns `true` for both disk budget capacity (`StorageAtCapacity`)
     /// and WAL capacity (`WalAtCapacity`) errors.
     #[must_use]
-    pub fn is_at_capacity(&self) -> bool {
+    pub const fn is_at_capacity(&self) -> bool {
         match self {
             Self::StorageAtCapacity { .. } => true,
             Self::Wal { source } => source.is_at_capacity(),

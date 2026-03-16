@@ -52,8 +52,10 @@ use crate::tls_utils::build_tls_acceptor;
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 
+pub mod client_settings;
+
 /// OTLP protobuf content type
-const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
+pub(crate) const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 
 /// Settings for the OTLP/HTTP server.
 #[derive(Debug, Deserialize, Clone)]
@@ -187,7 +189,7 @@ const fn default_accept_compressed_requests() -> bool {
     true
 }
 
-fn default_http_timeout() -> Option<Duration> {
+const fn default_http_timeout() -> Option<Duration> {
     // Conservative default chosen to mitigate slow-client DoS while keeping parity
     // with common collector defaults.
     Some(Duration::from_secs(30))
@@ -321,11 +323,20 @@ fn internal_error() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
 }
 
+/// OTLP HTTP path for logs endpoint
+pub const LOGS_PATH: &str = "/v1/logs";
+
+/// OTLP HTTP path for metrics endpoint
+pub const METRICS_PATH: &str = "/v1/metrics";
+
+/// OTLP HTTP path for traces endpoint
+pub const TRACES_PATH: &str = "/v1/traces";
+
 fn map_path_to_signal(path: &str) -> Option<SignalType> {
     match path {
-        "/v1/logs" => Some(SignalType::Logs),
-        "/v1/metrics" => Some(SignalType::Metrics),
-        "/v1/traces" => Some(SignalType::Traces),
+        LOGS_PATH => Some(SignalType::Logs),
+        METRICS_PATH => Some(SignalType::Metrics),
+        TRACES_PATH => Some(SignalType::Traces),
         _ => None,
     }
 }
@@ -359,7 +370,7 @@ fn decode_content_encoding(
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "gzip",
                     max_len = max_len,
@@ -369,7 +380,7 @@ fn decode_content_encoding(
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "gzip",
                     error = err_msg.as_str()
@@ -389,7 +400,7 @@ fn decode_content_encoding(
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "deflate",
                     max_len = max_len,
@@ -399,7 +410,7 @@ fn decode_content_encoding(
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "deflate",
                     error = err_msg.as_str()
@@ -416,7 +427,7 @@ fn decode_content_encoding(
         let mut decoder = ZstdDecoder::new(body.as_ref()).map_err(|e| {
             let err_msg = e.to_string();
             otap_df_telemetry::otel_debug!(
-                "HttpRequestRejected",
+                "otlp_http_receiver.request_rejected",
                 reason = "invalid_encoding",
                 encoding = "zstd",
                 error = err_msg.as_str()
@@ -432,7 +443,7 @@ fn decode_content_encoding(
             let err_msg = e.to_string();
             if err_msg.contains("decoded body too large") {
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "zstd",
                     max_len = max_len,
@@ -441,7 +452,7 @@ fn decode_content_encoding(
                 limited_body_too_large()
             } else {
                 otap_df_telemetry::otel_debug!(
-                    "HttpRequestRejected",
+                    "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "zstd",
                     error = err_msg.as_str()
@@ -490,7 +501,11 @@ struct HttpHandler {
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
     settings: HttpServerSettings,
-    semaphore: Arc<Semaphore>,
+    /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
+    /// receiver-wide backpressure tied to downstream capacity.
+    global_semaphore: Option<Arc<Semaphore>>,
+    /// Protocol-local semaphore enforcing HTTP's `max_concurrent_requests`.
+    local_semaphore: Arc<Semaphore>,
 }
 
 impl HttpHandler {
@@ -520,15 +535,49 @@ impl HttpHandler {
         let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
 
         let fut = async move {
-            let permit_result =
-                tokio::time::timeout(permit_timeout, self.semaphore.clone().acquire_owned()).await;
+            // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
+            // HTTP are enabled: global (if any) first, then protocol-local.
+            let _global_permit = if let Some(global) = &self.global_semaphore {
+                let permit_result =
+                    tokio::time::timeout(permit_timeout, global.clone().acquire_owned()).await;
+                match permit_result {
+                    Ok(Ok(permit)) => Some(permit),
+                    Ok(Err(_)) => {
+                        // Semaphore closed (shouldn't happen)
+                        otap_df_telemetry::otel_error!(
+                            "otlp_http_receiver.semaphore_closed",
+                            kind = "global",
+                            path = path_for_fut.as_str()
+                        );
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(internal_error());
+                    }
+                    Err(_) => {
+                        otap_df_telemetry::otel_warn!(
+                            "otlp_http_receiver.request_rejected",
+                            reason = "global_concurrency_limit_timeout",
+                            path = path_for_fut.as_str(),
+                            timeout_ms = permit_timeout.as_millis() as u64
+                        );
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(service_unavailable());
+                    }
+                }
+            } else {
+                None
+            };
 
-            let _permit = match permit_result {
+            let permit_result =
+                tokio::time::timeout(permit_timeout, self.local_semaphore.clone().acquire_owned())
+                    .await;
+
+            let _local_permit = match permit_result {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
                     // Semaphore closed (shouldn't happen)
                     otap_df_telemetry::otel_error!(
-                        "HttpSemaphoreClosed",
+                        "otlp_http_receiver.semaphore_closed",
+                        kind = "local",
                         path = path_for_fut.as_str()
                     );
                     self.metrics.lock().rejected_requests.inc();
@@ -537,7 +586,7 @@ impl HttpHandler {
                 Err(_) => {
                     // Timeout waiting for permit
                     otap_df_telemetry::otel_warn!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "concurrency_limit_timeout",
                         path = path_for_fut.as_str(),
                         max_concurrent = self.settings.max_concurrent_requests,
@@ -560,7 +609,7 @@ impl HttpHandler {
             if let Some(upper) = size_hint.upper() {
                 if (upper as usize) > max_len {
                     otap_df_telemetry::otel_debug!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_hint",
                         max_len = max_len,
                         size_hint = upper,
@@ -574,7 +623,7 @@ impl HttpHandler {
             let collected = Limited::new(body, max_len).collect().await.map_err(|e| {
                 if e.downcast_ref::<LengthLimitError>().is_some() {
                     otap_df_telemetry::otel_debug!(
-                        "HttpRequestRejected",
+                        "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_collected",
                         max_len = max_len,
                         path = parts.uri.path().to_string()
@@ -583,7 +632,10 @@ impl HttpHandler {
                     return limited_body_too_large();
                 }
 
-                otap_df_telemetry::otel_warn!("HttpBodyCollectionFailed", error = e.to_string());
+                otap_df_telemetry::otel_warn!(
+                    "otlp_http_receiver.body_collection_failed",
+                    error = e.to_string()
+                );
                 internal_error()
             })?;
             let body = collected.to_bytes();
@@ -643,6 +695,7 @@ impl HttpHandler {
             } else {
                 None
             };
+
             if self
                 .effect_handler
                 .send_message_with_source_node(pdata)
@@ -650,7 +703,7 @@ impl HttpHandler {
                 .is_err()
             {
                 otap_df_telemetry::otel_warn!(
-                    "HttpPipelineSendFailed",
+                    "otlp_http_receiver.pipeline_send_failed",
                     path = parts.uri.path().to_string(),
                     signal = format!("{:?}", signal)
                 );
@@ -662,7 +715,7 @@ impl HttpHandler {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
                         otap_df_telemetry::otel_debug!(
-                            "HttpRequestNacked",
+                            "otlp_http_receiver.request_nacked",
                             reason = nack.reason.as_str(),
                             signal = format!("{:?}", signal)
                         );
@@ -688,7 +741,7 @@ impl HttpHandler {
                 Ok(inner) => inner,
                 Err(_) => {
                     otap_df_telemetry::otel_warn!(
-                        "HttpRequestTimeout",
+                        "otlp_http_receiver.request_timeout",
                         path = path.as_str(),
                         timeout_ms = timeout_duration.as_millis() as u64,
                         signal = format!("{:?}", signal)
@@ -719,29 +772,31 @@ impl Drop for SlotGuard {
 ///
 /// # Parameters
 ///
-/// - `shared_semaphore`: Optional semaphore shared with other protocol servers
-///   (e.g., gRPC). When provided, all protocols draw from the same concurrency
-///   pool. When `None`, creates a dedicated semaphore based on `settings.max_concurrent_requests`.
+/// - `global_semaphore`: Optional semaphore shared across protocols (e.g., gRPC + HTTP)
+///   to apply a receiver-wide concurrency cap.
+///
+/// The HTTP server always enforces its own `settings.max_concurrent_requests` as a
+/// protocol-local limit.
 pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
-    shared_semaphore: Option<Arc<Semaphore>>,
+    global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let listener = effect_handler
         .tcp_listener(settings.listening_addr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-    // Use shared semaphore if provided, otherwise create a dedicated one
-    let semaphore = shared_semaphore.unwrap_or_else(|| {
-        debug_assert!(
-            settings.max_concurrent_requests > 0,
-            "tune_max_concurrent_requests should have been called before serve()"
-        );
-        Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)))
-    });
+    debug_assert!(
+        settings.max_concurrent_requests > 0,
+        "tune_max_concurrent_requests should have been called before serve()"
+    );
+
+    // Always enforce the HTTP-local concurrency limit. When both protocols are enabled,
+    // `global_semaphore` provides an additional receiver-wide cap.
+    let local_semaphore = Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)));
 
     let tracker = TaskTracker::new();
 
@@ -768,7 +823,7 @@ pub async fn serve(
                     Ok(s) => s,
                     Err(e) => {
                         otap_df_telemetry::otel_warn!(
-                            "HttpSocketOptionsFailed",
+                            "otlp_http_receiver.socket_options_failed",
                             peer = peer_addr.to_string(),
                             error = e.to_string(),
                             message = "Failed to apply socket options to connection, skipping"
@@ -782,7 +837,8 @@ pub async fn serve(
                     ack_registry: ack_registry.clone(),
                     metrics: metrics.clone(),
                     settings: settings.clone(),
-                    semaphore: semaphore.clone(),
+                    global_semaphore: global_semaphore.clone(),
+                    local_semaphore: local_semaphore.clone(),
                 };
 
                 #[cfg(feature = "experimental-tls")]
@@ -795,15 +851,16 @@ pub async fn serve(
                                 Err(_) => return,
                             };
                             let io = TokioIo::new(tls_stream);
-                            let conn = hyper::server::conn::http1::Builder::new()
-                                .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
+                            let executor = hyper_util::rt::TokioExecutor::new();
+                            let conn = hyper_util::server::conn::auto::Builder::new(executor);
+                            let conn = conn.serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
 
                             let mut conn = std::pin::pin!(conn);
 
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {
@@ -827,7 +884,7 @@ pub async fn serve(
                     tokio::select! {
                         res = &mut conn => {
                             if let Err(err) = res {
-                                otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                             }
                         },
                         _ = shutdown.cancelled() => {
@@ -854,7 +911,7 @@ pub async fn serve(
         .is_err()
     {
         otap_df_telemetry::otel_warn!(
-            "HttpShutdownTimeout",
+            "otlp_http_receiver.shutdown_timeout",
             timeout_ms = drain_timeout.as_millis() as u64,
             message = "Timed out waiting for in-flight HTTP requests to drain"
         );
@@ -918,7 +975,7 @@ mod tests {
         let controller_ctx =
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(
             pipeline_ctx.register_metrics::<crate::otlp_receiver::OtlpReceiverMetrics>(),
         ));
@@ -989,7 +1046,9 @@ mod tests {
         );
 
         // Send ACK back
-        if let Some((_, ack)) = Context::next_ack(otap_df_engine::control::AckMsg::new(received)) {
+        if let Some((_, ack)) =
+            crate::testing::next_ack(otap_df_engine::control::AckMsg::new(received))
+        {
             let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
         }
 

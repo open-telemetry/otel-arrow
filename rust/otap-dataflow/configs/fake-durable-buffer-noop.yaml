@@ -1,0 +1,54 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        # Fake Data -> Durable Buffer -> Noop pipeline for throughput testing
+        #
+        # This configuration uses the fake data generator to produce synthetic OTAP data,
+        # persists it through Quiver, and sends to noop exporter.
+        #
+        # Build with: cargo build --release
+        # Run with:   ./target/release/df_engine --config configs/fake-durable-buffer-noop.yaml
+
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                # Generate signals continuously (null = unlimited)
+                max_signal_count: null
+                # Batch size of 100 signals per message
+                max_batch_size: 100
+                # Rate: 10000 signals/sec for sustainable throughput testing
+                signals_per_second: 10000
+                # Only generate logs (100% weight to logs)
+                log_weight: 100
+
+          durable_buffer:
+            type: processor:durable_buffer
+            config:
+              path: /var/lib/otap/fake-durable-buffer-noop-example/buffer
+              poll_interval: 10ms
+              retention_size_cap: "10GB"
+              size_cap_policy: backpressure
+              # Faster segment finalization for testing
+              max_segment_open_duration: 500ms
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: noop

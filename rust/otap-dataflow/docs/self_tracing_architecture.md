@@ -2,7 +2,7 @@
 
 This documents the choices available in the internal logging
 configuration object in
-`otap_df_config::pipeline::service::telemetry::logs`. See the
+`otap_df_config::settings::telemetry::logs`. See the
 [internal telemetry crate's README](../crates/telemetry/README.md) for
 the motivation behind this configuration as well as for a description
 of the internal metrics pipeline.
@@ -237,13 +237,8 @@ form of console logging (unlike the use of the `raw` provider mode, which
 is synchronous).
 
 ```yaml
-nodes:
-  # pipeline nodes
-
-internal:
-  # internal telemetry pipeline nodes
-
-service:
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: info
@@ -252,6 +247,14 @@ service:
         engine: console_async
         admin: console_direct
         internal: noop
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # pipeline nodes
+        connections:
+          # pipeline connections
 ```
 
 ## Internal Telemetry Receiver configuration
@@ -262,7 +265,8 @@ pipeline. The internal provider is configured to print directly to the
 console in case the internal telemetry pipeline experiences errors.
 
 ```yaml
-service:
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: info
@@ -271,20 +275,24 @@ service:
         engine: its
         admin: noop
         internal: console_direct
-
-# Normal pipeline node
-nodes:
-  ...
-
-# Internal telemetry pipeline nodes
-internal:
-  kind: receiver
-  plugin_urn: "urn:otel:otlp:telemetry:receiver"
-  out_ports:
-    out_port:
-      destinations:
-        - otlp_exporter
-  otlp_exporter:
-    kind: exporer
-    ...
+  observability:
+    pipeline:
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config: {}
+        otlp_grpc_exporter:
+          type: exporter:otlp_grpc
+          config: {}
+      connections:
+        - from: telemetry
+          to: otlp_grpc_exporter
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # normal pipeline nodes
+        connections:
+          # normal pipeline connections
 ```
