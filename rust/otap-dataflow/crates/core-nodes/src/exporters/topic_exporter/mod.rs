@@ -3,8 +3,6 @@
 
 //! Topic exporter.
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
@@ -25,6 +23,8 @@ use otap_df_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedTryPublishOutcome,
 };
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -363,8 +363,6 @@ impl Exporter<OtapPdata> for TopicExporter {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
     use otap_df_engine::Interests;
@@ -381,6 +379,8 @@ mod tests {
         PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
         TopicBroker, TopicOptions, TopicSet,
     };
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;

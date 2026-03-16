@@ -6,8 +6,6 @@
 //! This receiver consumes internal logs from the logging channel and emits
 //! the logs as OTLP ExportLogsRequest messages into the pipeline.
 
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -21,6 +19,8 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_telemetry::event::{LogEvent, ObservedEvent};
