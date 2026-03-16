@@ -669,9 +669,9 @@ mod tests {
         assert_eq!(p.phase, PipelinePhase::Pending); // unchanged
     }
 
-    /// Reproduces the case where a dropped `Admitted` leaves a core in `Pending`.
-    /// When `Ready` arrives later for that core, it is rejected because
-    /// `Pending -> Ready` is not a valid state transition.
+    /// Validates that the state machine rejects `Ready` when `Admitted` was
+    /// never applied.  A core stuck in `Pending` must not silently advance
+    /// to `Running`.
     #[test]
     fn skipped_admitted_causes_ready_rejection() {
         use std::collections::HashSet;

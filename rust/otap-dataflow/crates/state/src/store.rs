@@ -362,8 +362,9 @@ mod tests {
         }
     }
 
-    /// Verifies that a size-1 channel with `try_send` drops almost all
-    /// events from a burst of 64 Admitted sends.
+    /// Validates that a bounded channel with `try_send` cannot buffer more
+    /// than its capacity.  When the channel is full, excess events must be
+    /// dropped rather than delivered.
     #[test]
     fn try_send_drops_admitted_events_when_channel_full() {
         let config = ObservedStateSettings {
@@ -397,9 +398,9 @@ mod tests {
         );
     }
 
-    /// Exercises the shipped `send_timeout(1ms)` default path.
-    /// With a size-1 channel and no consumer, `send_timeout(1ms)` should
-    /// still drop almost all events from a burst of 64 Admitted sends.
+    /// Validates that `send_timeout(1ms)` on a full bounded channel drops
+    /// events the same way `try_send` does.  The timeout is too short to
+    /// survive a burst without a consumer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_timeout_1ms_drops_admitted_events() {
         let config = ObservedStateSettings {
@@ -440,9 +441,10 @@ mod tests {
         );
     }
 
-    /// End-to-end reproduction: dropped `Admitted` events leave cores stuck
-    /// in `Pending`, and subsequent `Ready` events for those cores are
-    /// rejected as invalid transitions.
+    /// Validates that when `Admitted` events are dropped by a bounded
+    /// channel, cores remain in `Pending` and subsequent `Ready` events
+    /// are rejected as invalid transitions.  Cores must not silently
+    /// advance past a missing lifecycle step.
     ///
     /// Uses `multi_thread` so the blocking `send_timeout` in `spawn_blocking`
     /// does not starve the async consumer task.
@@ -552,9 +554,9 @@ mod tests {
         );
     }
 
-    /// Verifies the fix: engine lifecycle events delivered through
-    /// `engine_reporter()` are not dropped, even with a tiny log-channel
-    /// buffer and high concurrency.  All 64 cores should reach Running.
+    /// Validates that engine lifecycle events delivered through
+    /// `engine_reporter()` are never dropped, even with a tiny log-channel
+    /// buffer and high concurrency.  All cores must reach `Running`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn engine_reporter_never_drops_lifecycle_events() {
         let num_cores: usize = 64;
@@ -630,10 +632,10 @@ mod tests {
         );
     }
 
-    /// Verifies that flooding the bounded log channel does not interfere with
-    /// engine event delivery.  The log channel is size-1 with `try_send`, so
-    /// almost all log events are dropped.  Engine events go through the
-    /// dedicated unbounded channel and must all arrive.
+    /// Validates that saturation of the bounded channel does not interfere
+    /// with engine event delivery through the dedicated engine channel.
+    /// Engine events must all arrive regardless of bounded-channel
+    /// backpressure.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bounded_channel_contention_does_not_block_engine_events() {
         let num_cores: usize = 64;
