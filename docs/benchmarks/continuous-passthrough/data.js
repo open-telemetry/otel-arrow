@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773686851896,
+  "lastUpdate": 1773687809991,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "a937480942fe1e15b940eab5321ddc1abcc0eea5",
-          "message": "feat: Support EnvFilter directives in log level config (#2146)\n\n# Change Summary\n\nChange LogLevel from a fixed enum (Off/Debug/Info/Warn/Error) to a\nstring that accepts full tracing EnvFilter directive strings. This\nallows per-crate log filtering directly from the YAML config without\nrelying on RUST_LOG.\n\nExample:\n\nThe change is backward compatible — simple keywords like \"info\" or\n\"warn\" continue to work as before. The default value is\n\"info,h2=off,hyper=off\" to maintain the existing behavior of silencing\nnoisy dependencies.\n\n## How are these changes tested?\n\nLocally.\n\n## Are there any user-facing changes?\n\nYes, but back-compatible. Advanced filtering can be now provided in\nconfig itself.",
-          "timestamp": "2026-03-02T17:59:28Z",
-          "tree_id": "c9b7c177e14ad57c41f9101bb17d7a1421812fdb",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/a937480942fe1e15b940eab5321ddc1abcc0eea5"
-        },
-        "date": 1772479682918,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9524313807487488,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.20947274940731,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.57425875657285,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 49.979817708333336,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 51.609375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 483797.2413245077,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 488405.0778999038,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002128,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11356080.900072498,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11295375.24354739,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10555289.862405144,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "geukhanuslu@gmail.com",
+            "name": "Gokhan Uslu",
+            "username": "gouslu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "344fc645961dfb6035cd4d7f7a11d1bb7477905f",
+          "message": "azure monitor exporter: optimize transformer with direct JSON serialization (#2318)\n\n# Change Summary\n\n- Pre-serialize resource+scope fields once per ScopeLogs as a JSON byte\nprefix\n- Write per-record fields directly to byte buffer using itoa/ryu,\nbypassing serde_json::Map entirely\n- Add write_json_string, write_json_hex, write_field_value_json for\nzero-allocation JSON output\n- Make config and metrics modules public for benchmark access\n- Add criterion benchmark under\ncontrib-nodes/benches/exporters/azure_monitor_exporter/\n- Added contrib bench to rust-bench workflow.\n\nBenchmark results (1000 records):\n  Original:       1.60ms (~625K records/s)\n  Hoisted:        1.36ms (~735K records/s)  +17%\n  Hoisted + Direct Serialization:  425us  (~2.35M records/s) +275%\n\n## What issue does this PR close?\n\n## How are these changes tested?\n\n- Existing unit tests cover already mapping uniqueness, also added tests\nto make sure that overlapping fields are rejected by the config\nvaliation across resource -> scope -> log hiearchy.\n- Added tests for validating against encoding issues for non ASCII\ncharacters.\n\n## Are there any user-facing changes?\n\nNone.",
+          "timestamp": "2026-03-16T15:45:10Z",
+          "tree_id": "cb14f9b208e67aed1be6714700ffa3d54fbc428c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/344fc645961dfb6035cd4d7f7a11d1bb7477905f"
+        },
+        "date": 1773687809427,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.39595481753349304,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.49650078220976,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 97.07490757594545,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 55.3640625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 56.91015625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 478430.47400181403,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 476536.1053851875,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.000994,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10935314.209106205,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10869079.059088744,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
