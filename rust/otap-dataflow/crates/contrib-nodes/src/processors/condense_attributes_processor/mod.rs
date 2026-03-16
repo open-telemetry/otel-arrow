@@ -222,18 +222,7 @@ impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor from configuration for testing.
     #[cfg(test)]
     fn from_config_for_test(config: &Value) -> Result<Self, ConfigError> {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx = controller_ctx.pipeline_context_with(
-            "test_grp".into(),
-            "test_pipeline".into(),
-            0,
-            1,
-            0,
-        );
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
         Self::from_config(pipeline_ctx, config)
     }
 

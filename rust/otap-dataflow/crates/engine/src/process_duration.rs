@@ -109,25 +109,8 @@ impl ComputeDuration {
 #[cfg(all(test, feature = "test-utils"))]
 mod tests {
     use super::*;
-    use crate::context::ControllerContext;
-    use otap_df_config::node::NodeKind;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use crate::testing::test_pipeline_ctx;
     use otap_df_telemetry::reporter::MetricsReporter;
-    use std::collections::HashMap;
-
-    fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry.clone());
-        let ctx = controller
-            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
-            .with_node_context(
-                "node".into(),
-                "urn:test:processor:example".into(),
-                NodeKind::Processor,
-                HashMap::new(),
-            );
-        (ctx, registry)
-    }
 
     /// timed() routes duration into success/failed accumulators based on outcome.
     #[test]
