@@ -3,11 +3,13 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+/// Docker container configuration for validation scenarios
+pub mod container;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
 pub mod error;
-/// temp fanout processor to use use for validation test
+/// temp fanout processor to use for validation test
 pub mod fanout_processor;
 /// metric definition to serialize json result from metric admin endpoint
 pub mod metrics_types;
@@ -17,6 +19,8 @@ pub mod pipeline;
 pub mod scenario;
 /// internal pipeline simulation utilities
 mod simulate;
+/// shared Jinja2 template rendering helper
+mod template;
 /// define structs to describe the traffic being created and captured for validation
 pub mod traffic;
 /// validation exporter to receive messages and assert their equivalence
@@ -24,6 +28,8 @@ pub mod validation_exporter;
 /// invariants/checks helpers (attribute diff, filtering detection, etc.)
 pub mod validation_types;
 
+pub use container::ContainerConfig;
+pub use error::ValidationError;
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
