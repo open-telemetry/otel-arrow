@@ -21,7 +21,6 @@ const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
-const DEFAULT_PROPAGATION_DELAY: Duration = Duration::from_secs(20);
 const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(140);
 
 /// Programmatic scenario builder used by tests.
@@ -34,7 +33,6 @@ pub struct Scenario {
     ready_max_attempts: usize,
     ready_backoff: Duration,
     metrics_poll: Duration,
-    propagation_delay: Duration,
     runtime: Duration,
 }
 
@@ -57,7 +55,6 @@ impl Scenario {
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
             ready_backoff: DEFAULT_READY_BACKOFF,
             metrics_poll: DEFAULT_METRICS_POLL,
-            propagation_delay: DEFAULT_PROPAGATION_DELAY,
             runtime: DEFAULT_SCENARIO_RUNTIME,
         }
     }
@@ -97,7 +94,6 @@ impl Scenario {
         let ready_max_attempts = self.ready_max_attempts;
         let ready_backoff = self.ready_backoff;
         let metrics_poll = self.metrics_poll;
-        let propagation_delay = self.propagation_delay;
         let timeout = self.runtime;
 
         self.update_configs()?;
@@ -121,7 +117,6 @@ impl Scenario {
                 ready_max_attempts,
                 ready_backoff,
                 metrics_poll,
-                propagation_delay,
             )
             .await
         })
@@ -275,6 +270,7 @@ impl Scenario {
                 capture_core_start => capture.core_start,
                 capture_core_end => capture.core_end,
                 capture_label => label,
+                idle_timeout_secs => capture.idle_timeout.as_secs(),
             };
             captures_rendered.push(
                 tmpl.render(ctx)

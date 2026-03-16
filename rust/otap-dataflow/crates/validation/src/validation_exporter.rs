@@ -32,6 +32,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
+/// Default number of seconds the exporter waits without receiving any messages
+/// before declaring the data stream settled and performing the final validation.
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
+
 /// URN that identifies the validation exporter within OTAP pipelines.
 pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:exporter:validation";
 
@@ -43,6 +47,14 @@ struct ValidationExporterConfig {
     /// Validation rules to run.
     #[serde(default)]
     validations: Vec<ValidationInstructions>,
+    /// Seconds to wait with no incoming messages before declaring the stream
+    /// settled and performing the final validation check.
+    #[serde(default = "default_idle_timeout_secs")]
+    idle_timeout_secs: u64,
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    DEFAULT_IDLE_TIMEOUT_SECS
 }
 
 #[metric_set(name = "validation.exporter.metrics")]
@@ -59,6 +71,10 @@ struct ValidationExporterMetrics {
     /// 1 -> valid
     #[metric(unit = "{input}")]
     valid: otap_df_telemetry::instrument::Gauge<u64>,
+    /// Whether the exporter has finished processing
+    /// 0 -> still receiving / processing
+    /// 1 -> idle timeout reached, final validation performed
+    finished: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
@@ -69,6 +85,9 @@ pub struct ValidationExporter {
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<(OtlpProtoMessage, Duration)>,
     metrics: MetricSet<ValidationExporterMetrics>,
+    /// Duration to wait with no incoming messages before declaring the stream
+    /// settled and performing the final validation.
+    idle_timeout: Duration,
 }
 
 #[allow(unsafe_code)]
@@ -141,6 +160,7 @@ impl ValidationExporter {
             metrics,
             control_msgs: Vec::new(),
             suv_msgs: Vec::new(),
+            idle_timeout: Duration::from_secs(config.idle_timeout_secs),
         })
     }
 }
@@ -156,17 +176,29 @@ impl Exporter<OtapPdata> for ValidationExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
         let mut time = Instant::now();
+        let mut last_message_time = Instant::now();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
+                    // Check idle timeout: if enough time has passed since the
+                    // last message and we have received at least one SUV
+                    // message, perform the final validation and signal
+                    // finished.
+                    if last_message_time.elapsed() >= self.idle_timeout
+                    {
+                        self.validate_and_record();
+                        self.metrics.finished.set(1);
+                    }
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     return Ok(TerminalState::new(deadline, [self.metrics]));
                 }
                 Message::PData(pdata) => {
+                    last_message_time = Instant::now();
+                    self.metrics.finished.set(0);
                     let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();

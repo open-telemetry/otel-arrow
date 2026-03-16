@@ -11,6 +11,7 @@ use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const DEFAULT_SUV_PORT: u16 = 4318;
 const DEFAULT_SUV_ENDPOINT_PORT: u16 = 4317;
@@ -19,6 +20,7 @@ const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
 const DEFAULT_WEIGHT_ZERO: u32 = 0;
 const DEFAULT_LOG_WEIGHT: u32 = 100;
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Protocols supported by generators and receivers.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -165,6 +167,9 @@ pub struct Capture {
     pub(crate) control_streams: Vec<String>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
+    /// Duration to wait with no incoming messages before declaring the data
+    /// stream settled and performing the final validation check.
+    pub(crate) idle_timeout: Duration,
 }
 
 impl Generator {
@@ -324,6 +329,14 @@ impl Capture {
         self
     }
 
+    /// Set how long the validation exporter should wait with no incoming
+    /// messages before declaring the data stream settled.
+    #[must_use]
+    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
+    }
+
     /// Serialize the configured validations as JSON (for template contexts).
     #[must_use]
     pub fn validations_config(&self) -> String {
@@ -345,6 +358,7 @@ impl Default for Capture {
             control_ports: vec![],
             control_streams: vec![],
             validate: vec![],
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
