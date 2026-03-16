@@ -270,7 +270,6 @@ fn collect_metric_attrs<'a>(
 }
 
 /// helper to convert KeyValue type to ProtoKeyValue
-#[allow(dead_code)]
 fn keyvalue_to_proto(kv: &KeyValue) -> Option<ProtoKeyValue> {
     anyvalue_to_proto(&kv.value).map(|val| ProtoKeyValue {
         key: kv.key.clone(),
@@ -279,7 +278,6 @@ fn keyvalue_to_proto(kv: &KeyValue) -> Option<ProtoKeyValue> {
 }
 
 /// helper to convert AnyValue type to ProtoValue
-#[allow(dead_code)]
 fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
     let proto = match val {
         AnyValue::String(s) => ProtoAnyValue::StringValue(s.clone()),
