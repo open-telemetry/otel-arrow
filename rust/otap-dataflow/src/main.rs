@@ -9,17 +9,17 @@ use otap_df_config::engine::{
 };
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, CoreRange};
-// Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (contrib processors/exporters) are visible
-// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
 use otap_df_config::{PipelineGroupId, PipelineId};
-use otap_df_contrib_nodes as _;
 // Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (contrib processors/exporters) are visible
+// distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_contrib_nodes as _;
 use otap_df_controller::Controller;
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (core nodes) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
@@ -34,6 +34,42 @@ use sysinfo::System;
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+);
+
+// Crypto provider features are mutually exclusive.
+// The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
+// pattern so that `cargo test --all-features` (used in CI) does not fail.
+// When all features are enabled (e.g. --all-features), crypto.rs uses a
+// priority order (ring > aws-lc > openssl) so the binary still works.
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-aws-lc",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-aws-lc` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-ring",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-ring` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
+);
+#[cfg(all(
+    feature = "crypto-aws-lc",
+    feature = "crypto-openssl",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
+     Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
 
 #[cfg(feature = "mimalloc")]
@@ -154,7 +190,7 @@ fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg.policies.resources.core_allocation = core_allocation;
+        engine_cfg.policies.resources = Some(ResourcesPolicy { core_allocation });
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);
@@ -253,12 +289,10 @@ fn validate_engine_components(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize rustls crypto provider (required for rustls 0.23+)
-    // We use ring as the default provider
-    #[cfg(feature = "experimental-tls")]
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+    // Install the rustls crypto provider selected by the crypto-* feature flag.
+    // This must happen before any TLS connections (reqwest, tonic, etc.).
+    otap_df_otap::crypto::install_crypto_provider()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let Args {
         config,
@@ -614,7 +648,7 @@ connections:
         apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
 
         assert_eq!(
-            cfg.policies.resources.core_allocation,
+            cfg.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
         assert_eq!(
@@ -632,7 +666,7 @@ connections:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources.core_allocation,
+            main.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
     }
@@ -672,7 +706,7 @@ groups:
 
         // CLI updates top-level/global policy.
         assert_eq!(
-            cfg.policies.resources.core_allocation,
+            cfg.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 2 }
         );
 
@@ -684,8 +718,54 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources.core_allocation,
+            main.policies.effective_resources().core_allocation,
             CoreAllocation::CoreCount { count: 5 }
+        );
+    }
+
+    /// Regression test for the bug where a group-level `policies:` block that
+    /// only configures `channel_capacity` (or another non-resources field) would
+    /// cause serde to fill `resources` with `AllCores` default, silently
+    /// shadowing a `--num-cores` CLI flag written to the top-level config.
+    #[test]
+    fn cli_num_cores_not_shadowed_by_implicit_default_resources() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    policies:
+      channel_capacity:
+        pdata: 500
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let mut cfg = OtelDataflowSpec::from_yaml(yaml).expect("config should parse");
+        // The group has a policies block (for channel_capacity) but no resources.
+        // Before the fix, serde would fill in resources=AllCores at the group level,
+        // and the resolver would return that instead of the CLI value.
+        apply_cli_overrides(&mut cfg, Some(4), None, None);
+
+        let resolved = cfg.resolve();
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
+            .expect("default/main should exist");
+        assert_eq!(
+            main.policies.effective_resources().core_allocation,
+            CoreAllocation::CoreCount { count: 4 },
+            "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
     }
 }

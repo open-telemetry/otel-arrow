@@ -13,8 +13,8 @@ use arrow::compute::{and, filter_record_batch, not, or};
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use async_trait::async_trait;
 use data_engine_expressions::{
-    ContainsLogicalExpression, Expression, LogicalExpression, MatchesLogicalExpression,
-    ScalarExpression, StaticScalarExpression,
+    BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
+    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -450,10 +450,15 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
                 Ok(Self::from(FilterPlan::try_from(matches_expr)?))
             }
 
-            // TODO add support for these expressions eventually
-            LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
-                message: format!("Logical expression not yet supported {logical_expr:?}"),
-            }),
+            LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
+                ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
+                    Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
+                }
+                // TODO add support for these expressions eventually
+                _ => Err(Error::NotYetSupportedError {
+                    message: format!("Logical expression not yet supported {logical_expr:?}"),
+                }),
+            },
         }
     }
 }
@@ -715,7 +720,8 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    predicate: Option<AdaptivePhysicalExprExec>,
+    pub(crate) predicate: Option<AdaptivePhysicalExprExec>,
+
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
     /// determines how we treat rows that where there are no attributes. if false, this cause the
@@ -1143,7 +1149,7 @@ impl AdaptivePhysicalExprExec {
 
     /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
     /// vector for the rows that pass the predicate.
-    fn evaluate_filter(
+    pub(crate) fn evaluate_filter(
         &mut self,
         record_batch: &RecordBatch,
         session_ctx: &SessionContext,
@@ -1527,6 +1533,41 @@ impl PipelineStage for FilterPipelineStage {
 
         Ok(otap_batch)
     }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        let planning_error = || {
+            // we shouldn't end up here, unless there was a bug in the planner and it didn't call
+            // the correct optimizers on the FilterPlan to turn it into something that can operate
+            // directly on the attrs record batch
+            Error::InvalidPipelineError {
+                cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                query_location: None,
+            }
+        };
+
+        match &mut self.filter_exec {
+            Composite::Base(filter) => {
+                let predicate = filter.predicate.as_mut().ok_or_else(planning_error)?;
+                let selection_vec =
+                    predicate.evaluate_filter(&attrs_record_batch, session_context)?;
+                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
+
+                Ok(new_batch)
+            }
+            _ => Err(planning_error()),
+        }
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1651,6 +1692,18 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()]
         );
+
+        let result =
+            exec_logs_pipeline::<P>("logs | where true", to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records
+        );
+
+        // assert everything filtered out:
+        let result =
+            exec_logs_pipeline::<P>("logs | where false", to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0);
     }
 
     #[tokio::test]

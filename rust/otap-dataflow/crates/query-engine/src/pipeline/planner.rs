@@ -4,11 +4,12 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
-    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
-    OutputExpression, PipelineExpression, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
+    BooleanScalarExpression, BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression,
+    IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
+    PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+    StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -21,10 +22,13 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
+use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
 use crate::pipeline::assign::AssignPipelineStage;
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
+use crate::pipeline::filter::optimize::{
+    AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
+};
 use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
@@ -35,12 +39,22 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// - Which operations can be handled by DataFusion stages
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
-pub struct PipelinePlanner {}
+pub struct PipelinePlanner {
+    plan_for_attributes: bool,
+}
 
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
     pub const fn new() -> Self {
-        Self {}
+        Self {
+            plan_for_attributes: false,
+        }
+    }
+
+    pub const fn new_for_attributes() -> Self {
+        Self {
+            plan_for_attributes: true,
+        }
     }
 
     /// Create pipeline stages from the pipeline definition.
@@ -58,18 +72,41 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        self.plan_data_exprs(pipeline.get_expressions(), session_ctx, otap_batch)
+        self.plan_data_exprs(
+            pipeline.get_expressions(),
+            pipeline.get_functions(),
+            session_ctx,
+            otap_batch,
+        )
     }
 
     fn plan_data_exprs(
         &self,
         data_exprs: &[DataExpression],
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<BoxedPipelineStage>> {
         let mut results = Vec::new();
         for data_expr in data_exprs {
-            let mut expr_results = self.plan_data_expr(data_expr, session_ctx, otap_batch)?;
+            let mut expr_results =
+                self.plan_data_expr(data_expr, functions, session_ctx, otap_batch)?;
+
+            // validate the pipeline stages are valid for attributes if planning pipeline to apply
+            // to attrs batches only
+            if self.plan_for_attributes {
+                for stage in &expr_results {
+                    if !stage.supports_exec_on_attributes() {
+                        return Err(Error::InvalidPipelineError {
+                            cause: format!(
+                                "Data expression not supported on attributes stream: {data_expr:?}"
+                            ),
+                            query_location: Some(data_expr.get_query_location().clone()),
+                        });
+                    }
+                }
+            }
+
             results.append(&mut expr_results);
         }
 
@@ -79,6 +116,7 @@ impl PipelinePlanner {
     fn plan_data_expr(
         &self,
         data_expr: &DataExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
@@ -91,6 +129,39 @@ impl PipelinePlanner {
                 // build the filter.
                 Some(LogicalExpression::Not(not_expr)) => {
                     self.plan_filter(not_expr.get_inner_expression(), session_ctx, otap_batch)
+                }
+
+                // the discard expression's `not` statement may get folded into a static constant
+                // filter in which case we don't produce logical expression as `not(true)`, instead
+                // it just gets folded into `false`. In this case, we just invert the static bool
+                Some(LogicalExpression::Scalar(scalar_expr)) => match scalar_expr {
+                    ScalarExpression::Static(StaticScalarExpression::Boolean(bool_expr)) => {
+                        let keep_plan = LogicalExpression::Scalar(ScalarExpression::Static(
+                            StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                                bool_expr.get_query_location().clone(),
+                                !bool_expr.get_value(),
+                            )),
+                        ));
+                        self.plan_filter(&keep_plan, session_ctx, otap_batch)
+                    }
+                    invalid => Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "unsupported Static for discard expression. Expected boolean, found {invalid:?}"
+                        ),
+                        query_location: Some(discard_expr.get_query_location().clone()),
+                    }),
+                },
+                // discard expression with `None` predicate indicates the default behaviour which
+                // discards everything. In this case, what we want is a static filter that rejects
+                // all rows
+                None => {
+                    let predicate = LogicalExpression::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            discard_expr.get_query_location().clone(),
+                            false,
+                        )),
+                    ));
+                    self.plan_filter(&predicate, session_ctx, otap_batch)
                 }
                 invalid => Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -108,7 +179,9 @@ impl PipelinePlanner {
                 TransformExpression::ReduceMap(reduce_map_exr) => {
                     Self::plan_reduce_map(reduce_map_exr)
                 }
-                TransformExpression::Set(set_expr) => self.plan_set(set_expr),
+                TransformExpression::Set(set_expr) => {
+                    self.plan_set(set_expr, functions, session_ctx, otap_batch)
+                }
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
                         "transform expression not yet supported {}",
@@ -121,10 +194,14 @@ impl PipelinePlanner {
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
                     let predicate =
-                        Self::plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
+                        self.plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
 
-                    let pipeline_stages =
-                        self.plan_data_exprs(branch.get_expressions(), session_ctx, otap_batch)?;
+                    let pipeline_stages = self.plan_data_exprs(
+                        branch.get_expressions(),
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
 
                     pipeline_branches.push(ConditionalPipelineStageBranch::new(
                         predicate,
@@ -134,7 +211,9 @@ impl PipelinePlanner {
 
                 let default_branch = conditional_expr
                     .get_default_branch()
-                    .map(|data_exprs| self.plan_data_exprs(data_exprs, session_ctx, otap_batch))
+                    .map(|data_exprs| {
+                        self.plan_data_exprs(data_exprs, functions, session_ctx, otap_batch)
+                    })
                     .transpose()?;
 
                 let pipeline_stage =
@@ -161,7 +240,7 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec = Self::plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
+        let filter_exec = self.plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
@@ -169,6 +248,7 @@ impl PipelinePlanner {
 
     /// plan a [`FilterExec`] from a [`LogicalExpression`]
     fn plan_filter_exec(
+        &self,
         logical_expr: &LogicalExpression,
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
@@ -176,7 +256,20 @@ impl PipelinePlanner {
         let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
 
         // optimize the to the plan
-        let filter_plan = AttrsFilterCombineOptimizerRule::optimize(filter_plan);
+        let filter_plan = if self.plan_for_attributes {
+            // Currently using a two step transformation of the FilterPlan to turn this into
+            // something that can be applied directly to the attributes record batch.
+            // First, we combine all the filter expressions in some Composite<FilterPlan> into
+            // a single Composite::Base containing a single expression.
+            // Next, we look for any places we are doing a binary expression like `value == "x"`,
+            // and determining the _actual_ values column (str, int, bool, etc.) to use in this
+            // expression, as "value" is just being treated as a logical column to make it easier
+            // to write the expressions
+            CompositeToBaseFilterPlan::optimize(filter_plan)
+                .and_then(AttrValueColumnSelectionOptimizer::optimize)?
+        } else {
+            AttrsFilterCombineOptimizerRule::optimize(filter_plan)
+        };
 
         // transform logical plan into executable plan
         filter_plan.to_exec(session_ctx, otap_batch)
@@ -414,12 +507,88 @@ impl PipelinePlanner {
         Ok(pipeline_stages)
     }
 
-    fn plan_set(&self, set_expr: &SetTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
+    fn plan_set(
+        &self,
+        set_expr: &SetTransformExpression,
+        functions: &[PipelineFunction],
+        session_ctx: &SessionContext,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let MutableValueExpression::Source(dest) = set_expr.get_destination() else {
             return Err(Error::NotYetSupportedError {
                 message: "set expression only supports source destinations".to_string(),
             });
         };
+
+        // handle if this "set" expr is a nested pipeline that should be applied to attributes.
+        // In our AST expression tree, these are modeled as function invocations.
+        //
+        // TODO - in the future we may want some way to identify that this is the special type
+        // of "function" that represents a nested pipeline applied to attributes, either by
+        // its name or some additional metadata. For now, we just know this is the only type
+        // of function invocation supported.
+        if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
+            let function_id = func.get_function_id();
+            let function =
+                functions
+                    .get(function_id)
+                    .ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!("did not find function with id {}", function_id),
+                        query_location: Some(func.get_query_location().clone()),
+                    })?;
+
+            let PipelineFunctionImplementation::Expressions(function_exprs) =
+                function.get_implementation()
+            else {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "only functions with 'Expressions' implementation is currently supported"
+                            .into(),
+                });
+            };
+
+            let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
+            for func_expr in function_exprs {
+                let data_expr = match func_expr {
+                    PipelineFunctionExpression::Conditional(c) => {
+                        DataExpression::Conditional(c.clone())
+                    }
+                    PipelineFunctionExpression::Discard(d) => DataExpression::Discard(d.clone()),
+                    PipelineFunctionExpression::Transform(t) => {
+                        DataExpression::Transform(t.clone())
+                    }
+                    PipelineFunctionExpression::Return(_r) => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "return statement in function not yet supported".into(),
+                        });
+                    }
+                };
+                inner_pipeline_data_exprs.push(data_expr);
+            }
+
+            let planner = Self::new_for_attributes();
+            let child_pipeline = planner.plan_data_exprs(
+                &inner_pipeline_data_exprs,
+                functions,
+                session_ctx,
+                otap_batch,
+            )?;
+
+            let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
+                Error::InvalidPipelineError {
+                    cause: format!(
+                        "Invalid source for nested apply pipeline to attributes {:?}",
+                        dest,
+                    ),
+                    query_location: Some(dest.get_query_location().clone()),
+                }
+            })?;
+
+            return Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
+                attributes_id,
+                child_pipeline,
+            ))]);
+        }
 
         let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
         match dest_accessor {
@@ -470,6 +639,45 @@ impl PipelinePlanner {
                     static_val
                 ),
             }),
+        }
+    }
+
+    /// when we receive an expression representing a nested pipeline, we currently assume it is
+    /// being applied to attributes. This attempts to determine to which set of attributes the
+    /// pipeline should be applied. Returns an error if the source does not identify a set of
+    /// attributes.
+    ///
+    /// Example valid inputs would include: attributes, resource/scope.attributes
+    ///
+    fn source_to_apply_attrs_id(
+        source_expr: &SourceScalarExpression,
+    ) -> Option<AttributesIdentifier> {
+        let values_accessor = source_expr.get_value_accessor();
+        let selectors = values_accessor.get_selectors();
+        match selectors.len() {
+            1 => match &selectors[0] {
+                ScalarExpression::Static(StaticScalarExpression::String(column)) => {
+                    (column.get_value() == ATTRIBUTES_FIELD_NAME)
+                        .then_some(AttributesIdentifier::Root)
+                }
+                _ => None,
+            },
+            2 => match (&selectors[0], &selectors[1]) {
+                (
+                    ScalarExpression::Static(StaticScalarExpression::String(column0)),
+                    ScalarExpression::Static(StaticScalarExpression::String(column1)),
+                ) => match (column0.get_value(), column1.get_value()) {
+                    (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
+                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                    ),
+                    (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => {
+                        Some(AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
         }
     }
 }

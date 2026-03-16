@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use serde::Deserialize;
 
-use crate::otlp_exporter::default_max_in_flight;
+use crate::otlp_grpc_exporter::default_max_in_flight;
 use crate::otlp_http::client_settings::HttpClientSettings;
 
 /// Configuration for OTLP HTTP Exporter

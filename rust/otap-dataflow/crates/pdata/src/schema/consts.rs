@@ -73,6 +73,40 @@ pub const ATTRIBUTE_BOOL: &str = "bool";
 pub const ATTRIBUTE_BYTES: &str = "bytes";
 pub const ATTRIBUTE_SER: &str = "ser";
 
+// body sub-fields
+pub const BODY_TYPE: &str = "body.type";
+pub const BODY_STR: &str = "body.str";
+pub const BODY_INT: &str = "body.int";
+pub const BODY_DOUBLE: &str = "body.double";
+pub const BODY_BOOL: &str = "body.bool";
+pub const BODY_BYTES: &str = "body.bytes";
+pub const BODY_SER: &str = "body.ser";
+
+// resource sub-fields
+pub const RESOURCE_ID: &str = "resource.id";
+pub const RESOURCE_DROPPED_ATTRIBUTES_COUNT: &str = "resource.dropped_attributes_count";
+pub const RESOURCE_SCHEMA_URL: &str = "resource.schema_url";
+
+// scope sub-fields
+pub const SCOPE_ID: &str = "scope.id";
+pub const SCOPE_DROPPED_ATTRIBUTES_COUNT: &str = "scope.dropped_attributes_count";
+pub const SCOPE_NAME: &str = "scope.name";
+pub const SCOPE_VERSION: &str = "scope.version";
+
+// status sub-fields
+pub const STATUS_DOT_CODE: &str = "status.code";
+pub const STATUS_DOT_STATUS_MESSAGE: &str = "status.status_message";
+
+// quantile sub-fields
+pub const QUANTILE_QUANTILE: &str = "quantile.quantile";
+pub const QUANTILE_VALUE: &str = "quantile.value";
+
+// exp histogram positive/negative sub-fields
+pub const POSITIVE_BUCKET_COUNTS: &str = "positive.bucket_counts";
+pub const POSITIVE_OFFSET: &str = "positive.offset";
+pub const NEGATIVE_BUCKET_COUNTS: &str = "negative.bucket_counts";
+pub const NEGATIVE_OFFSET: &str = "negative.offset";
+
 pub mod metadata {
     /// schema metadata for which columns the record batch is sorted by
     pub const SORT_COLUMNS: &str = "sort_columns";

@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::error::DataFusionError;
+use datafusion::logical_expr::{BinaryExpr, Expr, and, col, not, or};
+use otap_df_pdata::schema::consts;
+
+use crate::consts::VALUE_FIELD_NAME;
+use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterPlan};
 
 /// This performs an optimization on the composite [`FilterPlan`] to combine the attribute filters
@@ -193,6 +201,147 @@ impl AttrsFilterCombineOptimizerRule {
             }
 
             input => input,
+        }
+    }
+}
+
+/// Composes the filter plan into a single Datafusion logical expression by combining all
+/// `And`/`Or`/`Not` variants of the `Composite` enum into their equivalent `logical_expr::Expr`
+/// variants. This then assigns the resulting `Expr` as the source filter Composite `Base` variant.
+///
+/// The nominal use case for this is for when we plan filtering that we know will always apply to
+/// a single record batch; for example - when creating a filter plan for attributes. In this case,
+/// there are no nested attribute filters, so it makes more sense to drop these and have the filter
+/// just be a single logical `Expr`
+pub struct CompositeToBaseFilterPlan {}
+
+impl CompositeToBaseFilterPlan {
+    pub fn optimize(input: Composite<FilterPlan>) -> Result<Composite<FilterPlan>> {
+        Self::optimize_internal(input)
+            .map(FilterPlan::from)
+            .map(Composite::Base)
+    }
+
+    fn optimize_internal(input: Composite<FilterPlan>) -> Result<Expr> {
+        match input {
+            Composite::And(left, right) => {
+                let left = Self::optimize_internal(*left)?;
+                let right = Self::optimize_internal(*right)?;
+                Ok(and(left, right))
+            }
+            Composite::Or(left, right) => {
+                let left = Self::optimize_internal(*left)?;
+                let right = Self::optimize_internal(*right)?;
+                Ok(or(left, right))
+            }
+            Composite::Not(inner) => {
+                let inner = Self::optimize_internal(*inner)?;
+                Ok(not(inner))
+            }
+            Composite::Base(base) => {
+                // Note: from where this is currently being called in the planner, we should have
+                // a source_filter here, since it's for filtering attributes as the source. These
+                // filter plans shouldn't have source_filter None
+                base.source_filter.ok_or_else(|| Error::InvalidPipelineError {
+                    cause: "No source filter found on base Composite<FilterPlan> in CompositeToBaseFilterPlan".into(), 
+                    query_location: None
+                })
+            }
+        }
+    }
+}
+
+/// This filter optimizer will search for binary expressions where one side is referencing a
+/// virtual column called "value", and then attempt to determine the real attributes values
+/// column based on the type on the other side of the binary expression.
+///
+/// This makes it possible for users to write expressions on attributes like: `value = "1"`
+/// and we will transparently change the expression on the left from `col("value")` to
+/// `col("str")`.
+///
+/// Note - the transformation is only applied to the source_filter in the Composite::Base variant,
+/// so it is recommended to call [`CompositeToBaseFilterPlan::optimize`] on the input to ensure
+/// that the entire filter tree will be optimized.
+pub struct AttrValueColumnSelectionOptimizer {}
+
+impl AttrValueColumnSelectionOptimizer {
+    pub fn optimize(input: Composite<FilterPlan>) -> Result<Composite<FilterPlan>> {
+        match input {
+            Composite::Base(filter) => {
+                let Some(expr) = filter.source_filter else {
+                    return Ok(Composite::Base(filter));
+                };
+
+                let transformed = expr.transform_up(|expr| match expr {
+                    Expr::BinaryExpr(mut binary) => {
+                        if Self::is_values_col(&binary.left) {
+                            Self::replace_left(&mut binary)?;
+                            return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+                        }
+
+                        if Self::is_values_col(&binary.right) {
+                            Self::replace_right(&mut binary)?;
+                            return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+                        }
+
+                        Ok(Transformed::no(Expr::BinaryExpr(binary)))
+                    }
+                    _ => Ok(Transformed::no(expr)),
+                })?;
+
+                Ok(Composite::Base(FilterPlan::from(transformed.data)))
+            }
+            _ => Ok(input),
+        }
+    }
+
+    fn is_values_col(expr: &Expr) -> bool {
+        match expr {
+            Expr::Column(col) => col.name() == VALUE_FIELD_NAME,
+            _ => false,
+        }
+    }
+
+    fn replace_left(binary: &mut BinaryExpr) -> std::result::Result<(), DataFusionError> {
+        let new_left = Self::to_col_name_from_epr_type(&binary.right).ok_or_else(|| {
+            DataFusionError::Plan(
+                format!("Could not determine physical column for values virtual column in expression {binary}")
+            )
+        })?;
+        *binary.left = new_left;
+
+        Ok(())
+    }
+
+    fn replace_right(binary: &mut BinaryExpr) -> std::result::Result<(), DataFusionError> {
+        let new_right = Self::to_col_name_from_epr_type(&binary.left).ok_or_else(|| {
+            DataFusionError::Plan(
+                format!("Could not determine physical column for values virtual column in expression {binary}")
+            )
+        })?;
+        *binary.right = new_right;
+
+        Ok(())
+    }
+
+    /// return the column type by examining the type returned by the expression
+    fn to_col_name_from_epr_type(expr: &Expr) -> Option<Expr> {
+        // TODO the logic in here isn't yet very sophisticated yet, but column values/literal
+        // are the only types of arguments the expression planner for attributes pipelines
+        // currently supports. As we support additional, this logic will need to be amended and
+        // it may be safer to reimplement it by calling expr.get_type() with a representative
+        // attributes batch schema
+
+        match expr {
+            Expr::Literal(scalar_val, _) => Some(match scalar_val.data_type() {
+                DataType::Binary => col(consts::ATTRIBUTE_BYTES),
+                DataType::Boolean => col(consts::ATTRIBUTE_BOOL),
+                DataType::Utf8 => col(consts::ATTRIBUTE_STR),
+                DataType::Float64 => col(consts::ATTRIBUTE_DOUBLE),
+                dt if dt.is_integer() => col(consts::ATTRIBUTE_INT),
+                _ => return None,
+            }),
+            _ => None,
         }
     }
 }

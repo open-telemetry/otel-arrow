@@ -48,7 +48,7 @@ where
                         p.get_query_location(),
                         s.get_value(),
                     )?
-                    .drain(..)
+                    .into_iter()
                     .map(|v| match v {
                         ParsedSelector::Index(i) => {
                             OwnedValue::Integer(IntegerValueStorage::new(i))

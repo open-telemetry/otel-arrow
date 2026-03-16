@@ -1,13 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use data_engine_expressions::{
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-    DiscardDataExpression, Expression, LogicalExpression, MapKeyRenameSelector,
-    MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
-    OutputDataExpression, OutputExpression, QueryLocation, ReduceMapTransformExpression,
+    ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
+    DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression,
+    LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
+    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+    PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
+    PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
+    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor, ValueType,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -16,9 +20,10 @@ use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::{
-    parse_attribute_selection_expression, parse_expression, parse_index_expression,
+    no_inner_rule_error, parse_attribute_selection_expression, parse_expression,
+    parse_index_expression, parse_member_expression,
 };
-use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
+use crate::parser::pipeline::{InnerPipelineBuilder, PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_operator_call(
@@ -35,6 +40,7 @@ pub(crate) fn parse_operator_call(
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
+            Rule::apply_operator_call => parse_apply_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
                 let query_location = to_query_location(&rule);
                 return Err(invalid_child_rule_error(
@@ -219,7 +225,7 @@ pub(crate) fn parse_if_else_operator_call(
     let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
-    let mut next_branch: Vec<DataExpression> = Vec::new();
+    let mut next_branch = InnerPipelineBuilder::new(pipeline_builder.child_func_id_offset());
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -254,8 +260,11 @@ pub(crate) fn parse_if_else_operator_call(
                 }
 
                 // take the data expressions for the branch and reset next_branch
-                let curr_branch = next_branch;
-                next_branch = Vec::new();
+                let (curr_branch_data_exprs, curr_branch_funcs) = next_branch.into_parts();
+                for (func_name, func_def) in curr_branch_funcs {
+                    _ = pipeline_builder.push_function_definition(&func_name, func_def);
+                }
+                next_branch = InnerPipelineBuilder::new(pipeline_builder.child_func_id_offset());
 
                 let query_location = QueryLocation::new(
                     branch_location_start,
@@ -281,9 +290,12 @@ pub(crate) fn parse_if_else_operator_call(
                     )
                 })?;
 
-                conditional_expr = conditional_expr.with_branch(
-                    ConditionalDataExpressionBranch::new(query_location, condition, curr_branch),
-                );
+                conditional_expr =
+                    conditional_expr.with_branch(ConditionalDataExpressionBranch::new(
+                        query_location,
+                        condition,
+                        curr_branch_data_exprs,
+                    ));
             }
 
             // parse the data expressions for the else branch
@@ -300,13 +312,21 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 let inner_rules = branch_rules.into_inner();
-                let mut else_branch_exprs = Vec::with_capacity(inner_rules.len());
+                let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacities(
+                    pipeline_builder.child_func_id_offset(),
+                    Some(inner_rules.len()),
+                    None,
+                );
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
 
-                conditional_expr = conditional_expr.with_default_branch(else_branch_exprs);
+                let (else_branch_data_exprs, else_branch_funcs) = else_branch_exprs.into_parts();
+                for (func_name, func_def) in else_branch_funcs {
+                    _ = pipeline_builder.push_function_definition(&func_name, func_def);
+                }
+                conditional_expr = conditional_expr.with_default_branch(else_branch_data_exprs);
             }
             _ => {
                 return Err(ParserError::SyntaxError(
@@ -354,16 +374,122 @@ pub(crate) fn parse_where_operator_call(
     Ok(())
 }
 
+pub(crate) fn parse_apply_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+
+    // we'll be creating a pipeline function to represent the pipeline, and we'll use this hash
+    // as part of the function name ...
+    let mut hasher = DefaultHasher::new();
+    operator_call_rule.as_str().hash(&mut hasher);
+    let func_hash = hasher.finish();
+
+    let mut inner_rules = operator_call_rule.into_inner();
+
+    // parse the target of the nested pipeline application:
+    let target_identifier_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let target_rule_query_location = to_query_location(&target_identifier_rule);
+    let target_expr: ScalarExpression = parse_member_expression(target_identifier_rule)?.into();
+    let target_source_expr = match target_expr {
+        ScalarExpression::Source(source_expr) => source_expr,
+        other => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!(
+                    "invalid parser result parsing member_expression. Expected ScalarExpression, got {:?}",
+                    other
+                ),
+            ));
+        }
+    };
+
+    // parse the child stages of the nested pipeline
+    let mut inner_pipeline = InnerPipelineBuilder::new_with_capacities(
+        pipeline_builder.child_func_id_offset(),
+        Some(inner_rules.len()),
+        None,
+    );
+    for inner_rule in inner_rules {
+        parse_pipeline_stage(inner_rule, &mut inner_pipeline)?;
+    }
+    let (inner_data_exprs, inner_data_funcs) = inner_pipeline.into_parts();
+    for (func_name, func_def) in inner_data_funcs {
+        _ = pipeline_builder.push_function_definition(&func_name, func_def);
+    }
+
+    // convert child stages to pipeline functions
+    let mut function_exprs = Vec::with_capacity(inner_data_exprs.len());
+    for data_expr in inner_data_exprs {
+        let function_expr = match data_expr {
+            DataExpression::Discard(d) => PipelineFunctionExpression::Discard(d.with_target(
+                MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    Some(ValueType::Map),
+                    0,
+                    ValueAccessor::new(),
+                )),
+            )),
+            DataExpression::Conditional(c) => PipelineFunctionExpression::Conditional(c),
+            DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
+            other => {
+                return Err(ParserError::SyntaxNotSupported(
+                    other.get_query_location().clone(),
+                    format!(
+                        "Expression type not supported in apply operator call {}",
+                        other.get_name()
+                    ),
+                ));
+            }
+        };
+
+        function_exprs.push(function_expr);
+    }
+
+    let pipeline_function = PipelineFunction::new_with_expressions(
+        query_location.clone(),
+        vec![PipelineFunctionParameter::new(
+            target_rule_query_location.clone(),
+            PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+        )],
+        Some(ValueType::Map),
+        function_exprs,
+    );
+
+    let fn_name = format!("__apply__{func_hash}");
+    let function_id = pipeline_builder.push_function_definition(&fn_name, pipeline_function);
+
+    let transform_expr = TransformExpression::Set(SetTransformExpression::new(
+        target_rule_query_location,
+        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            query_location.clone(),
+            None,
+            function_id,
+            Vec::new(),
+        )),
+        MutableValueExpression::Source(target_source_expr),
+    ));
+
+    pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use data_engine_expressions::{
-        ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MapKeyRenameSelector,
+        ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
+        DataExpression, DiscardDataExpression, EqualToLogicalExpression,
+        InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector,
         MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
-        OutputDataExpression, OutputExpression, QueryLocation, ReduceMapTransformExpression,
-        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        TransformExpression, ValueAccessor,
+        OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression,
+        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
+        ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
+        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -371,6 +497,7 @@ mod tests {
 
     use crate::parser::operator::parse_operator_call;
     use crate::parser::pest::OplPestParser;
+    use crate::parser::pipeline::RootPipelineBuilder;
     use crate::parser::{OplParser, Rule};
 
     #[test]
@@ -380,7 +507,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -403,7 +530,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -437,7 +564,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 2);
@@ -675,7 +802,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -731,7 +858,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
@@ -812,7 +939,7 @@ mod tests {
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
         let rule = parse_result.into_iter().next().unwrap();
-        parse_operator_call(rule, &mut state).unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
 
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
@@ -842,5 +969,289 @@ mod tests {
         );
 
         assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_apply_operator_call() {
+        let query = r#"apply attributes {
+            where value == "x" |
+            where key == "y"
+        }"#;
+
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    0,
+                    Vec::new(),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "attributes",
+                        )),
+                    )]),
+                )),
+            )));
+        assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 1);
+
+        let expected = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
+            vec![
+                PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake())
+                        .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "value",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                                )),
+                                true,
+                            )),
+                        )))
+                        .with_target(MutableValueExpression::Argument(
+                            ArgumentScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Some(ValueType::Map),
+                                0,
+                                ValueAccessor::new(),
+                            ),
+                        )),
+                ),
+                PipelineFunctionExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake())
+                        .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "key",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                                )),
+                                true,
+                            )),
+                        )))
+                        .with_target(MutableValueExpression::Argument(
+                            ArgumentScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                Some(ValueType::Map),
+                                0,
+                                ValueAccessor::new(),
+                            ),
+                        )),
+                ),
+            ],
+        );
+        assert_eq!(&functions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_apply_operator_call_in_nested_pipeline() {
+        let query = r#"if (severity_text == "ERROR") {
+            apply attributes { where key == "y" }
+        } else {
+            apply attributes { where key == "x" }
+        }"#;
+
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "severity_text",
+                                )),
+                            )]),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                        )),
+                        true,
+                    )),
+                    vec![DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                None,
+                                0,
+                                Vec::new(),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attributes",
+                                    )),
+                                )]),
+                            )),
+                        ),
+                    ))],
+                ))
+                .with_default_branch(vec![DataExpression::Transform(TransformExpression::Set(
+                    SetTransformExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            None,
+                            1,
+                            Vec::new(),
+                        )),
+                        MutableValueExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                )),
+                            )]),
+                        )),
+                    ),
+                ))]),
+        );
+        assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 2);
+
+        let expected0 = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake())
+                    .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "key",
+                                    )),
+                                )]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                            )),
+                            true,
+                        )),
+                    )))
+                    .with_target(MutableValueExpression::Argument(
+                        ArgumentScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Some(ValueType::Map),
+                            0,
+                            ValueAccessor::new(),
+                        ),
+                    )),
+            )],
+        );
+        assert_eq!(&functions[0], &expected0);
+
+        let expected1 = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake())
+                    .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "key",
+                                    )),
+                                )]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                            )),
+                            true,
+                        )),
+                    )))
+                    .with_target(MutableValueExpression::Argument(
+                        ArgumentScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            Some(ValueType::Map),
+                            0,
+                            ValueAccessor::new(),
+                        ),
+                    )),
+            )],
+        );
+        assert_eq!(&functions[1], &expected1);
     }
 }

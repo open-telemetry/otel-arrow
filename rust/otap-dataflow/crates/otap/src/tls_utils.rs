@@ -1310,7 +1310,14 @@ fn parse_certified_key(
     let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
+    let provider = rustls::crypto::CryptoProvider::get_default().ok_or_else(|| {
+        io::Error::other(
+            "no rustls CryptoProvider installed — call install_crypto_provider() first",
+        )
+    })?;
+    let signing_key = provider
+        .key_provider
+        .load_private_key(key.clone_key())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     Ok(CertifiedKey::new(certs, signing_key))
@@ -1660,7 +1667,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lazy_reload_resolver() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let cert_path = path.join("server.crt");
@@ -1815,7 +1822,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(target_os = "macos", ignore = "Skipping on macOS due to flakiness")]
     async fn test_reloadable_client_ca_verifier_file_watch() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca_path = path.join("ca.crt");
@@ -1855,7 +1862,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_reloadable_client_ca_verifier_from_pem() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
@@ -1878,7 +1885,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_build_reloadable_server_config_with_mtls() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
@@ -1919,7 +1926,7 @@ mod tests {
     /// 4. Data can be exchanged over the encrypted connection
     #[tokio::test]
     async fn test_accept_tls_connection_server_only() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2030,7 +2037,7 @@ mod tests {
     /// 4. TLS handshake completes successfully
     #[tokio::test]
     async fn test_accept_tls_connection_mtls() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2149,7 +2156,7 @@ mod tests {
     /// Test accept_tls_connection timeout when client doesn't complete handshake.
     #[tokio::test]
     async fn test_accept_tls_connection_timeout() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2223,7 +2230,7 @@ mod tests {
     /// - Handshake should fail
     #[tokio::test]
     async fn test_accept_tls_connection_untrusted_server() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2316,7 +2323,7 @@ mod tests {
     /// - Handshake should fail
     #[tokio::test]
     async fn test_accept_tls_connection_untrusted_client() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2424,7 +2431,7 @@ mod tests {
     /// - Handshake should fail due to hostname mismatch
     #[tokio::test]
     async fn test_accept_tls_connection_hostname_mismatch() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();

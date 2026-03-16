@@ -99,9 +99,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --user --upgrade pip
-          pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
-          pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run pipeline performance test suite
         run: |
