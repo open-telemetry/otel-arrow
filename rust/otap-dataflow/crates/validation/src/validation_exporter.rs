@@ -74,6 +74,7 @@ struct ValidationExporterMetrics {
     /// Whether the exporter has finished processing
     /// 0 -> still receiving / processing
     /// 1 -> idle timeout reached, final validation performed
+    #[metric(unit = "{state}")]
     finished: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
@@ -186,7 +187,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     // last message and we have received at least one SUV
                     // message, perform the final validation and signal
                     // finished.
-                    if last_message_time.elapsed() >= self.idle_timeout
+                    if last_message_time.elapsed() >= self.idle_timeout && self.metrics.finished.get() != 1
                     {
                         self.validate_and_record();
                         self.metrics.finished.set(1);

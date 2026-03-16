@@ -121,7 +121,7 @@ mod tests {
                     .validate(vec![deny, require])
                     .core_range(2, 2),
             )
-            .expect_within(Duration::from_secs(500))
+            .expect_within(Duration::from_secs(200))
             .run()
             .expect("attribute processor validation failed");
     }

@@ -199,12 +199,15 @@ fn loadgen_reached_limit(
         return true;
     }
 
+    let mut loadgen_metric_set_seen = false;
+
     for set in snapshot
         .metric_sets
         .iter()
         .filter(|set| set.name == LOADGEN_METRIC_SET)
     {
         if let Some(label) = attribute_node_id(&set.attributes) {
+            loadgen_metric_set_seen = true;
             let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
                 + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
                 + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
@@ -213,7 +216,10 @@ fn loadgen_reached_limit(
             }
         }
     }
-    true
+
+    // No loadgen metric sets found yet — generators have not reported their
+    // first telemetry tick. Keep polling.
+    loadgen_metric_set_seen
 }
 
 /// Result of checking whether all validation exporters have finished.
@@ -232,12 +238,14 @@ enum ValidationPollResult {
 /// so that the caller can decide to keep polling or report success/failure.
 fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollResult {
     let mut failed_validation_exporters = vec![];
+    let mut validation_metrics_seen = false;
 
     for set in snapshot
         .metric_sets
         .iter()
         .filter(|set: &&MetricSetSnapshot| set.name == VALIDATION_METRIC_SET)
     {
+        validation_metrics_seen = true;
         // If any exporter has not yet signaled finished, keep waiting.
         if metric_value(set, VALIDATION_FINISHED_METRIC_NAME).is_none_or(|v| v < 1) {
             return ValidationPollResult::NotFinished;
@@ -248,6 +256,12 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
                 failed_validation_exporters.push(label);
             }
         }
+    }
+
+    // No validation exporter metric sets found yet — the exporter has not
+    // reported its first telemetry tick. Keep polling.
+    if !validation_metrics_seen {
+        return ValidationPollResult::NotFinished;
     }
 
     if failed_validation_exporters.is_empty() {
@@ -300,6 +314,17 @@ mod tests {
         assert!(loadgen_reached_limit(&snap, &expected));
 
         _ = expected.insert("genB".into(), 5);
+        assert!(!loadgen_reached_limit(&snap, &expected));
+    }
+
+    #[test]
+    fn loadgen_empty_snapshot_returns_false() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![],
+        };
+        let mut expected = HashMap::new();
+        _ = expected.insert("genA".into(), 5);
         assert!(!loadgen_reached_limit(&snap, &expected));
     }
 
@@ -381,6 +406,35 @@ mod tests {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: sets,
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
+    }
+
+    #[test]
+    fn validation_empty_snapshot_returns_not_finished() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![],
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
+    }
+
+    #[test]
+    fn validation_no_matching_metric_sets_returns_not_finished() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![set_with_node(
+                LOADGEN_METRIC_SET,
+                LOADGEN_METRIC_NAME_LOGS,
+                100,
+                "genA",
+            )],
         };
         assert!(matches!(
             validation_finished_and_passed(&snap),
