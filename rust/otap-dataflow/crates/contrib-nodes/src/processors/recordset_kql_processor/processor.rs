@@ -25,7 +25,6 @@ use otap_df_engine::{
     process_duration::ComputeDuration,
 };
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-use otap_df_telemetry::instrument::Timer;
 
 /// URN identifier for the processor
 pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset_kql";
@@ -133,8 +132,9 @@ impl RecordsetKqlProcessor {
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
         // Process based on signal type (timed).
-        let interests = effect_handler.node_interests();
-        let timer = Timer::start();
+        let timer = self
+            .compute_duration
+            .start_timer(effect_handler.node_interests());
         let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
@@ -150,7 +150,7 @@ impl RecordsetKqlProcessor {
                 message: "Traces processing not yet implemented in KQL bridge".to_string(),
             }),
         };
-        self.compute_duration.record_elapsed(interests, timer);
+        self.compute_duration.record_elapsed(timer);
 
         match result {
             Ok(processed_bytes) => {

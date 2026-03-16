@@ -27,7 +27,6 @@ use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_telemetry::instrument::Timer;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
@@ -133,8 +132,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let interests = effect_handler.node_interests();
-                let timer = Timer::start();
+                let timer = self
+                    .compute_duration
+                    .start_timer(effect_handler.node_interests());
                 let filtered_arrow_records: OtapArrowRecords = match signal {
                     SignalType::Metrics => {
                         // ToDo: Add support for metrics
@@ -185,7 +185,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         filtered_arrow_records
                     }
                 };
-                self.compute_duration.record_elapsed(interests, timer);
+                self.compute_duration.record_elapsed(timer);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

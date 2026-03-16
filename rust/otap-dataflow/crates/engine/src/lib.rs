@@ -250,6 +250,8 @@ pub struct Interests: u8 {
     const SOURCE_TAGGING = 1 << 6;
 
     /// Process-duration timing requested for processors.
+    // NOTE: this is the last available bit in u8. Adding another flag
+    // requires widening the repr to u16.
     const PROCESS_DURATION = 1 << 7;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.

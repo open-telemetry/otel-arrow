@@ -640,16 +640,21 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 otel_debug!("condense_attributes_processor.processing", input_items);
 
-                let result = self
-                    .compute_duration
-                    .timed(effect_handler.node_interests(), || match signal {
+                let result = {
+                    let timer = self
+                        .compute_duration
+                        .start_timer(effect_handler.node_interests());
+                    let r = match signal {
                         SignalType::Logs => self.condense(&mut records),
                         _ => Err(Error::InternalError {
                             message:
                                 "CondenseAttributesProcessor only supported for SignalType 'Logs'"
                                     .to_string(),
                         }),
-                    });
+                    };
+                    self.compute_duration.record_elapsed(timer);
+                    r
+                };
 
                 match result {
                     Ok(condensed) => {

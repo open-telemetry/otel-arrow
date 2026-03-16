@@ -2,7 +2,8 @@ version: otel_dataflow/v1
 
 policies:
   telemetry:
-    channel_metrics: detailed
+    # Normal level enables processor compute-duration metrics (e.g. KQL).
+    channel_metrics: normal
 
 engine:
   telemetry:

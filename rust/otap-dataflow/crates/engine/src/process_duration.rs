@@ -11,8 +11,6 @@
 //! The closure-based API structurally prevents timing from spanning
 //! `.await` points.
 
-use std::cell::Cell;
-
 use crate::Interests;
 use otap_df_telemetry::instrument::{Mmsc, Timer};
 use otap_df_telemetry::metrics::MetricSet;
@@ -33,10 +31,9 @@ pub struct ComputeDurationMetrics {
 /// Wrapper providing interests-gated duration recording and reporting.
 pub struct ComputeDuration {
     metrics: MetricSet<ComputeDurationMetrics>,
-    /// Accumulator for duration samples recorded via [`timed`](Self::timed).
-    /// Uses `Cell` for interior mutability so `timed` can take `&self`,
-    /// allowing callers to hold disjoint `&mut` borrows of sibling fields.
-    accumulator: Cell<Mmsc>,
+    /// Accumulator for duration samples recorded via [`timed`](Self::timed)
+    /// and [`record_elapsed`](Self::record_elapsed).
+    accumulator: Mmsc,
 }
 
 impl ComputeDuration {
@@ -45,7 +42,7 @@ impl ComputeDuration {
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             metrics: pipeline_ctx.register_metrics::<ComputeDurationMetrics>(),
-            accumulator: Cell::new(Mmsc::default()),
+            accumulator: Mmsc::default(),
         }
     }
 
@@ -57,31 +54,42 @@ impl ComputeDuration {
     /// async, so the compiler enforces that only synchronous work is
     /// measured.
     #[inline]
-    pub fn timed<T>(&self, interests: Interests, f: impl FnOnce() -> T) -> T {
+    pub fn timed<T>(&mut self, interests: Interests, f: impl FnOnce() -> T) -> T {
         if interests.contains(Interests::PROCESS_DURATION) {
             let timer = Timer::start();
             let result = f();
-            let mut acc = self.accumulator.get();
-            acc.record(timer.elapsed_nanos());
-            self.accumulator.set(acc);
+            self.accumulator.record(timer.elapsed_nanos());
             result
         } else {
             f()
         }
     }
 
+    /// Start a timer if interests include `PROCESS_DURATION`.
+    ///
+    /// Returns `Some(Timer)` when timing is active, `None` otherwise.
+    /// Pass the result to [`record_elapsed`](Self::record_elapsed)
+    /// after the work completes.
+    #[inline]
+    #[must_use]
+    pub fn start_timer(&self, interests: Interests) -> Option<Timer> {
+        if interests.contains(Interests::PROCESS_DURATION) {
+            Some(Timer::start())
+        } else {
+            None
+        }
+    }
+
     /// Record an externally-managed [`Timer`] into the accumulator.
     ///
     /// Use this when the work spans `.await` points and cannot be
-    /// wrapped in [`timed`](Self::timed).  The caller is responsible
-    /// for starting the timer and passing it in after the work
-    /// completes.
+    /// wrapped in [`timed`](Self::timed).  Pass the `Option<Timer>`
+    /// returned by [`start_timer`](Self::start_timer); if `None`,
+    /// this is a no-op.
     #[inline]
-    pub fn record_elapsed(&self, interests: Interests, timer: Timer) {
-        if interests.contains(Interests::PROCESS_DURATION) {
-            let mut acc = self.accumulator.get();
-            acc.record(timer.elapsed_nanos());
-            self.accumulator.set(acc);
+    pub fn record_elapsed(&mut self, timer: Option<Timer>) {
+        if let Some(timer) = timer {
+            self.accumulator.record(timer.elapsed_nanos());
         }
     }
 
@@ -90,7 +98,7 @@ impl ComputeDuration {
     /// Drains the accumulator into the metric set, then reports
     /// and resets as usual.
     pub fn report(&mut self, reporter: &mut MetricsReporter) {
-        let acc = self.accumulator.replace(Mmsc::default());
+        let acc = std::mem::take(&mut self.accumulator);
         self.metrics.compute_duration.merge(acc);
         let _ = reporter.report(&mut self.metrics);
     }
@@ -122,25 +130,27 @@ mod tests {
     #[test]
     fn timed_and_record_elapsed_accumulate() {
         let ctx = test_pipeline_ctx();
-        let cd = ComputeDuration::new(&ctx);
+        let mut cd = ComputeDuration::new(&ctx);
         let active = Interests::PROCESS_DURATION;
 
-        // Two timed() calls and one record_elapsed() → 3 samples.
+        // Two timed() calls and one start_timer/record_elapsed() → 3 samples.
         let _ = cd.timed(active, || std::hint::black_box(42));
         let _ = cd.timed(active, || std::hint::black_box(43));
-        let timer = Timer::start();
+        let timer = cd.start_timer(active);
         let _ = std::hint::black_box(0);
-        cd.record_elapsed(active, timer);
+        cd.record_elapsed(timer);
 
-        let snap = cd.accumulator.get().get();
+        let snap = cd.accumulator.get();
         assert_eq!(snap.count, 3);
         assert!(snap.min >= 0.0);
         assert!(snap.sum >= snap.min);
 
         // With interests disabled, nothing is recorded.
-        let cd2 = ComputeDuration::new(&ctx);
+        let mut cd2 = ComputeDuration::new(&ctx);
         let _ = cd2.timed(Interests::empty(), || 1);
-        cd2.record_elapsed(Interests::empty(), Timer::start());
-        assert_eq!(cd2.accumulator.get().get().count, 0);
+        let timer = cd2.start_timer(Interests::empty());
+        assert!(timer.is_none());
+        cd2.record_elapsed(timer);
+        assert_eq!(cd2.accumulator.get().count, 0);
     }
 }
