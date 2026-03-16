@@ -29,71 +29,102 @@ const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 // when attempting to build a filter for a optional record batch
 const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
 
-/// A flat bitmap for fast membership testing of dense ID values.
+/// Number of u64 words per page. Each page covers 65,536 IDs (one full u16 range).
+const PAGE_WORDS: usize = 1024;
+
+/// A paged bitmap for fast membership testing of u32 ID values.
 ///
-/// This is designed for ID spaces that are dense and start near 0, which OTAP's ID columns will
-/// often be. This provides O(1) insert and contains operations with minimal overhead.
+/// The u32 ID space is partitioned into pages of 65,536 IDs each (8 KiB per page). Pages are only
+/// allocated on first use, so sparse ID spaces (e.g. a few IDs near 0 and a few near `u32::MAX`)
+/// only allocate the pages they touch rather than the full 512 MiB a flat bitmap would require.
 ///
-/// Note that the internals of this are heap allocated, so the implementation is designed to be
-/// reused via [`IdBitmap::populate`], which clears the existing bitmap and repopulates it without
-/// deallocating the underlying storage.
-#[derive(Debug, PartialEq)]
+/// For the common case of dense IDs starting near 0 (typical of OTAP batches), there is exactly
+/// one page. The per-operation overhead vs a flat bitmap is a single pointer dereference and a
+/// well-predicted null check.
+///
+/// The bitmap is designed to be reused across batches via [`IdBitmapPool`]. On [`clear`](IdBitmap::clear),
+/// pages are zeroed but not deallocated, so subsequent batches reuse the same heap allocations.
 pub struct IdBitmap {
-    bits: Vec<u64>,
+    pages: Vec<Option<Box<[u64; PAGE_WORDS]>>>,
 }
 
 impl IdBitmap {
     /// Creates a new empty `IdBitmap`.
     #[must_use]
     pub fn new() -> Self {
-        Self { bits: Vec::new() }
+        Self { pages: Vec::new() }
     }
 
-    /// Clears all bits in the bitmap (without deallocating).
+    /// Clears all bits in the bitmap without deallocating pages.
+    ///
+    /// After calling this, `contains` will return `false` for all IDs, but existing page
+    /// allocations are retained for reuse.
     pub fn clear(&mut self) {
-        self.bits.iter_mut().for_each(|w| *w = 0);
+        for p in self.pages.iter_mut().flatten() {
+            p.fill(0)
+        }
     }
 
-    /// Ensures the bitmap has capacity to store the given ID (inclusive).
+    /// Returns the page index and bit position within the page for the given ID.
     #[inline]
-    fn ensure_capacity(&mut self, id: u32) {
-        let needed = (id as usize / 64) + 1;
-        if needed > self.bits.len() {
-            self.bits.resize(needed, 0);
+    const fn page_and_bit(id: u32) -> (usize, usize) {
+        let page_idx = (id >> 16) as usize;
+        let bit_idx = (id & 0xFFFF) as usize;
+        (page_idx, bit_idx)
+    }
+
+    /// Ensures the page for the given page index exists, allocating it if necessary.
+    #[inline]
+    fn ensure_page(&mut self, page_idx: usize) -> &mut [u64; PAGE_WORDS] {
+        if page_idx >= self.pages.len() {
+            self.pages.resize_with(page_idx + 1, || None);
         }
+        self.pages[page_idx].get_or_insert_with(|| Box::new([0u64; PAGE_WORDS]))
     }
 
     /// Inserts an ID into the bitmap.
     #[inline]
     pub fn insert(&mut self, id: u32) {
-        self.ensure_capacity(id);
-        self.bits[id as usize / 64] |= 1 << (id % 64);
+        let (page_idx, bit_idx) = Self::page_and_bit(id);
+        let page = self.ensure_page(page_idx);
+        page[bit_idx / 64] |= 1 << (bit_idx % 64);
     }
 
     /// Returns `true` if the bitmap contains the given ID.
     #[inline]
     #[must_use]
     pub fn contains(&self, id: u32) -> bool {
-        let word_idx = id as usize / 64;
-        word_idx < self.bits.len() && (self.bits[word_idx] & (1 << (id % 64))) != 0
+        let (page_idx, bit_idx) = Self::page_and_bit(id);
+        match self.pages.get(page_idx) {
+            Some(Some(page)) => page[bit_idx / 64] & (1 << (bit_idx % 64)) != 0,
+            _ => false,
+        }
     }
 
     /// Returns the number of IDs stored in the bitmap (popcount).
     #[must_use]
     pub fn len(&self) -> u64 {
-        self.bits.iter().map(|w| w.count_ones() as u64).sum()
+        self.pages
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .flat_map(|p| p.iter())
+            .map(|w| w.count_ones() as u64)
+            .sum()
     }
 
     /// Returns `true` if the bitmap contains no IDs.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bits.iter().all(|&w| w == 0)
+        self.pages
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .all(|p| p.iter().all(|&w| w == 0))
     }
 
     /// Clears the bitmap and repopulates it from the given iterator.
     ///
-    /// This reuses the existing allocation when possible. The bitmap will grow if necessary
-    /// to accommodate the largest ID in the iterator, but will never shrink.
+    /// This reuses existing page allocations when possible. New pages are allocated as needed,
+    /// but existing pages are never deallocated.
     pub fn populate(&mut self, iter: impl Iterator<Item = u32>) {
         self.clear();
         for id in iter {
@@ -102,30 +133,57 @@ impl IdBitmap {
     }
 
     /// In-place union: `self |= other`.
+    ///
+    /// After this operation, `self` contains all IDs that were in either `self` or `other`.
     pub fn union_with(&mut self, other: &Self) {
-        if other.bits.len() > self.bits.len() {
-            self.bits.resize(other.bits.len(), 0);
+        if other.pages.len() > self.pages.len() {
+            self.pages.resize_with(other.pages.len(), || None);
         }
-        for (s, o) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *s |= o;
+        for (i, other_page) in other.pages.iter().enumerate() {
+            if let Some(op) = other_page {
+                let sp = self.ensure_page(i);
+                for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                    *sw |= ow;
+                }
+            }
         }
     }
 
     /// In-place intersection: `self &= other`.
+    ///
+    /// After this operation, `self` contains only IDs that were in both `self` and `other`.
+    /// Pages in `self` that have no corresponding page in `other` are zeroed.
     pub fn intersect_with(&mut self, other: &Self) {
-        for (i, word) in self.bits.iter_mut().enumerate() {
-            if i < other.bits.len() {
-                *word &= other.bits[i];
-            } else {
-                *word = 0;
+        for (i, self_page) in self.pages.iter_mut().enumerate() {
+            if let Some(sp) = self_page {
+                match other.pages.get(i) {
+                    Some(Some(op)) => {
+                        for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                            *sw &= ow;
+                        }
+                    }
+                    _ => {
+                        // No corresponding page in other — zero this page
+                        sp.fill(0);
+                    }
+                }
             }
         }
     }
 
     /// In-place difference: `self &= !other`.
+    ///
+    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
+    /// Pages in `self` beyond `other`'s length are unchanged.
     pub fn difference_with(&mut self, other: &Self) {
-        for (s, o) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *s &= !o;
+        for (i, self_page) in self.pages.iter_mut().enumerate() {
+            if let Some(sp) = self_page {
+                if let Some(Some(op)) = other.pages.get(i) {
+                    for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                        *sw &= !ow;
+                    }
+                }
+            }
         }
     }
 }
@@ -136,7 +194,48 @@ impl Default for IdBitmap {
     }
 }
 
+impl std::fmt::Debug for IdBitmap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let allocated_pages = self.pages.iter().filter(|p| p.is_some()).count();
+        f.debug_struct("IdBitmap")
+            .field("total_pages", &self.pages.len())
+            .field("allocated_pages", &allocated_pages)
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl PartialEq for IdBitmap {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare the logical content: for each page index, both bitmaps must have
+        // the same bits set. Missing or None pages are treated as all-zeros.
+        let max_pages = self.pages.len().max(other.pages.len());
+        for i in 0..max_pages {
+            let self_page = self.pages.get(i).and_then(|p| p.as_deref());
+            let other_page = other.pages.get(i).and_then(|p| p.as_deref());
+            match (self_page, other_page) {
+                (Some(sp), Some(op)) => {
+                    if sp != op {
+                        return false;
+                    }
+                }
+                (Some(sp), None) | (None, Some(sp)) => {
+                    if sp.iter().any(|&w| w != 0) {
+                        return false;
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        true
+    }
+}
+
 /// A pool of reusable [`IdBitmap`] instances to avoid repeated heap allocations.
+///
+/// When acquiring a bitmap, the pool returns a previously released bitmap (already cleared) or
+/// creates a new one if the pool is empty. When releasing a bitmap, it is returned to the pool
+/// for future reuse. The bitmaps retain their page allocations across reuse cycles.
 pub struct IdBitmapPool {
     bitmaps: Vec<IdBitmap>,
 }
@@ -152,7 +251,7 @@ impl IdBitmapPool {
 
     /// Acquires an [`IdBitmap`] from the pool, or creates a new empty one if the pool is empty.
     ///
-    /// The returned bitmap is cleared.
+    /// The returned bitmap is cleared and ready for use.
     pub fn acquire(&mut self) -> IdBitmap {
         match self.bitmaps.pop() {
             Some(mut bm) => {
@@ -1619,8 +1718,9 @@ mod tests {
         let bm2 = pool.acquire();
         assert!(bm2.is_empty());
         assert!(!bm2.contains(42));
-        // the internal vec should still have capacity from the previous use
-        assert!(bm2.bits.capacity() > 0);
+        // the page allocation should still be present from the previous use
+        assert!(!bm2.pages.is_empty());
+        assert!(bm2.pages[0].is_some());
     }
 
     #[test]
@@ -1638,5 +1738,93 @@ mod tests {
         // third should create a new one
         let bm3 = pool.acquire();
         assert!(bm3.is_empty());
+    }
+
+    // --- Paged bitmap tests ---
+
+    #[test]
+    fn test_id_bitmap_sparse_pages() {
+        // Adversarial case: IDs in distant pages. Should only allocate 2 pages (16 KiB),
+        // not the full 512 MiB a flat bitmap would require.
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(1);
+        bitmap.insert(u32::MAX - 10);
+
+        assert!(bitmap.contains(0));
+        assert!(bitmap.contains(1));
+        assert!(bitmap.contains(u32::MAX - 10));
+        assert!(!bitmap.contains(2));
+        assert!(!bitmap.contains(u32::MAX));
+        assert_eq!(bitmap.len(), 3);
+
+        // Only 2 pages should be allocated (page 0 and page 65535)
+        let allocated_pages = bitmap.pages.iter().filter(|p| p.is_some()).count();
+        assert_eq!(allocated_pages, 2);
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_clear_preserves_pages() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(100_000); // page 1
+
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        bitmap.clear();
+        assert!(bitmap.is_empty());
+        // Pages should still be allocated
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        // Reuse should work
+        bitmap.insert(0);
+        assert!(bitmap.contains(0));
+        assert!(!bitmap.contains(100_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_set_operations_different_pages() {
+        // union across different pages
+        let mut a = bitmap_from(&[0, 1]);
+        let b = bitmap_from(&[100_000, 100_001]); // page 1
+        a.union_with(&b);
+
+        assert!(a.contains(0));
+        assert!(a.contains(1));
+        assert!(a.contains(100_000));
+        assert!(a.contains(100_001));
+
+        // intersect: only page 0 has IDs in both
+        let mut c = bitmap_from(&[0, 1, 100_000]);
+        let d = bitmap_from(&[0, 1]);
+        c.intersect_with(&d);
+
+        assert!(c.contains(0));
+        assert!(c.contains(1));
+        assert!(!c.contains(100_000)); // zeroed because d has no page 1
+
+        // difference across pages
+        let mut e = bitmap_from(&[0, 1, 100_000]);
+        let f = bitmap_from(&[1, 100_000]);
+        e.difference_with(&f);
+
+        assert!(e.contains(0));
+        assert!(!e.contains(1));
+        assert!(!e.contains(100_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_equality() {
+        // Two bitmaps with same logical content but different page structures should be equal
+        let a = bitmap_from(&[1, 2, 3]);
+        let b = bitmap_from(&[1, 2, 3]);
+        assert_eq!(a, b);
+
+        // Empty bitmap with allocated pages should equal a fresh empty bitmap
+        let mut c = IdBitmap::new();
+        c.insert(42);
+        c.clear();
+        let d = IdBitmap::new();
+        assert_eq!(c, d);
     }
 }
