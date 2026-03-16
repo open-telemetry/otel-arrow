@@ -521,7 +521,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
                         otel_info!(
                             "azure_monitor_exporter.auth.initial_token_acquired",
-                            refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
+                            next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
                         );
                         next
                     }

@@ -57,7 +57,7 @@ use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Trace
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 
-use crate::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slot ID Constants
