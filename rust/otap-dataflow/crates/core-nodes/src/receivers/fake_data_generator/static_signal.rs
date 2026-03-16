@@ -56,9 +56,7 @@ fn static_metric_attributes() -> Vec<KeyValue> {
     ]
 }
 
-/// Static log attributes for load testing.
-/// TODO: Currently sized to produce approximately 300 bytes per log record.
-/// Consider increasing to ~1 KB for more realistic production workloads.
+/// Static log attributes (default when `num_log_attributes` is not configured).
 fn static_log_attributes() -> Vec<KeyValue> {
     vec![
         KeyValue::new("thread.id", AnyValue::new_int(1)),
@@ -98,7 +96,25 @@ pub fn static_otlp_logs(
     signal_count: usize,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> LogsData {
-    let logs = static_logs(signal_count);
+    static_otlp_logs_with_config(signal_count, None, None, extra_attrs)
+}
+
+/// Generates LogsData with configurable body size, attribute count, and
+/// optional extra resource attributes.
+///
+/// - `log_body_size_bytes`: When `Some(n)`, generates a log body of approximately `n` bytes.
+///   When `None`, uses the default body ("Order processed successfully").
+/// - `num_log_attributes`: When `Some(n)`, generates `n` key-value string attributes.
+///   When `None`, uses the default 2 attributes (thread.id, thread.name).
+/// - `extra_attrs`: Optional extra key-value pairs merged into the resource attributes.
+#[must_use]
+pub fn static_otlp_logs_with_config(
+    signal_count: usize,
+    log_body_size_bytes: Option<usize>,
+    num_log_attributes: Option<usize>,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> LogsData {
+    let logs = static_logs(signal_count, log_body_size_bytes, num_log_attributes);
 
     let scopes = vec![ScopeLogs::new(
         InstrumentationScope::build()
@@ -206,23 +222,54 @@ fn static_metrics(signal_count: usize) -> Vec<Metric> {
         .collect()
 }
 
+/// Generate a log body string of the specified size in bytes.
+/// Produces a repeating pattern of printable ASCII characters.
+fn generate_body(size_bytes: usize) -> String {
+    const PATTERN: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut body = String::with_capacity(size_bytes);
+    for i in 0..size_bytes {
+        body.push(PATTERN[i % PATTERN.len()] as char);
+    }
+    body
+}
+
+/// Generate synthetic log attributes with the specified count.
+/// Each attribute is a string key-value pair like `attr_0 = "value_0"`.
+fn generate_log_attributes(count: usize) -> Vec<KeyValue> {
+    (0..count)
+        .map(|i| KeyValue::new(format!("attr_{i}"), AnyValue::new_string(format!("value_{i}"))))
+        .collect()
+}
+
 /// Generate static log records for load testing.
-/// TODO: Currently produces approximately 300 bytes per log record.
-/// Consider increasing to ~1 KB for more realistic production workloads.
-fn static_logs(signal_count: usize) -> Vec<LogRecord> {
-    let attributes = static_log_attributes();
+///
+/// When `log_body_size_bytes` or `num_log_attributes` are `None`, the
+/// function falls back to the original hardcoded defaults.
+fn static_logs(
+    signal_count: usize,
+    log_body_size_bytes: Option<usize>,
+    num_log_attributes: Option<usize>,
+) -> Vec<LogRecord> {
+    let attributes = match num_log_attributes {
+        Some(n) => generate_log_attributes(n),
+        None => static_log_attributes(),
+    };
+
+    let body_str = match log_body_size_bytes {
+        Some(n) => generate_body(n),
+        None => "Order processed successfully".to_string(),
+    };
 
     (0..signal_count)
         .map(|_| {
             let timestamp = current_time();
 
-            // TODO: Consider increasing body size to ~1KB for more realistic production workloads
             LogRecord::build()
                 .time_unix_nano(timestamp)
                 .observed_time_unix_nano(timestamp)
                 .severity_number(SeverityNumber::Info)
                 .severity_text("INFO")
-                .body(AnyValue::new_string("Order processed successfully"))
+                .body(AnyValue::new_string(&body_str))
                 .attributes(attributes.clone())
                 .finish()
         })
@@ -267,5 +314,66 @@ mod tests {
         let logs = static_otlp_logs(5, Some(&extra));
         let attrs = &logs.resource_logs[0].resource.as_ref().unwrap().attributes;
         assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    #[test]
+    fn test_static_logs_with_custom_body_size() {
+        let logs = static_otlp_logs_with_config(5, Some(1024), None, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 5);
+        // Check body is the expected size
+        if let Some(body) = &records[0].body {
+            if let Some(ref value) = body.value {
+                match value {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                        assert_eq!(s.len(), 1024);
+                    }
+                    _ => panic!("Expected string body"),
+                }
+            }
+        }
+        // Default attributes (2) should be used
+        assert_eq!(records[0].attributes.len(), 2);
+    }
+
+    #[test]
+    fn test_static_logs_with_custom_attributes() {
+        let logs = static_otlp_logs_with_config(3, None, Some(5), None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].attributes.len(), 5);
+        assert_eq!(records[0].attributes[0].key, "attr_0");
+        assert_eq!(records[0].attributes[4].key, "attr_4");
+    }
+
+    #[test]
+    fn test_static_logs_with_both_custom() {
+        let logs = static_otlp_logs_with_config(2, Some(512), Some(10), None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].attributes.len(), 10);
+    }
+
+    #[test]
+    fn test_static_logs_zero_body_size() {
+        let logs = static_otlp_logs_with_config(1, Some(0), None, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        if let Some(body) = &records[0].body {
+            if let Some(ref value) = body.value {
+                match value {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                        assert!(s.is_empty());
+                    }
+                    _ => panic!("Expected string body"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_static_logs_zero_attributes() {
+        let logs = static_otlp_logs_with_config(1, None, Some(0), None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert!(records[0].attributes.is_empty());
     }
 }
