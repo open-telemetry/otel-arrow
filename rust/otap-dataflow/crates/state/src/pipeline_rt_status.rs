@@ -669,9 +669,9 @@ mod tests {
         assert_eq!(p.phase, PipelinePhase::Pending); // unchanged
     }
 
-    /// Validates that the state machine rejects `Ready` when `Admitted` was
-    /// never applied.  A core stuck in `Pending` must not silently advance
-    /// to `Running`.
+    /// Validates that the state machine rejects `Ready` if `Admitted` was never
+    /// applied. A core in `Pending` must not silently advance to `Running` on an
+    /// incomplete lifecycle sequence.
     #[test]
     fn skipped_admitted_causes_ready_rejection() {
         use std::collections::HashSet;
