@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
@@ -59,6 +59,18 @@ use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
 mod attrs;
+
+static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
+    RecordBatch::new_empty(Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            false,
+        ),
+    ])))
+});
 
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
@@ -320,22 +332,19 @@ impl AssignPipelineStage {
         };
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(attrs_batch) => Cow::Borrowed(attrs_batch),
-            None => {
-                todo!("create new batch")
-            }
+            Some(attrs_batch) => attrs_batch,
+            None => EMPTY_ATTRS_RECORD_BATCH.deref(),
         };
 
         // TODO fix the arguments to this w/out unwrapping, and actually compute if the thing is mutable
         // and comment on why you think scope/resource ID should not be nullable
-        let mut parent_id_set = ParentIdSet::new(
-            id_col
-                .unwrap()
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .unwrap(),
-            true,
-        );
+
+        let mut parent_id_set = match id_col {
+            Some(id_col) => {
+                ParentIdSet::new(id_col.as_any().downcast_ref::<UInt16Array>().unwrap(), true)
+            }
+            None => ParentIdSet::new_empty(root_record_batch.num_rows(), true),
+        };
 
         // get the rows that will have the value replaced (all others, the value will be inserted)
         let key_column = attrs_record_batch
@@ -345,16 +354,6 @@ impl AssignPipelineStage {
         let parent_ids_col = attrs_record_batch
             .column_by_name(consts::PARENT_ID)
             .unwrap();
-        // let mut all_parent_ids_mask = [0u64; 1024];
-        // for &pid in parent_ids_col
-        //     .as_any()
-        //     .downcast_ref::<UInt16Array>()
-        //     // TODO error handling, etc.
-        //     .unwrap()
-        //     .values()
-        // {
-        //     all_parent_ids_mask[pid as usize / 64] |= 1u64 << (pid as usize % 64);
-        // }
 
         let mut attrs_upserts = Vec::with_capacity(eval_results.len());
 
@@ -2249,5 +2248,35 @@ mod test {
     #[tokio::test]
     async fn test_upsert_multi_attribute_scalar_kql_parser() {
         test_upsert_multi_attribute_scalar::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_inserting_scalar_root_attribute_when_no_attrs_exist() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = \"hello\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("hello")),]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("hello")),]
+        );
     }
 }

@@ -44,6 +44,7 @@ pub(crate) struct ParentIdSet<'a> {
 }
 
 enum ParentIdSetArray<'a> {
+    Empty(usize),
     Original(&'a UInt16Array),
     Dirty(Vec<u16>, Option<Vec<u8>>),
 }
@@ -65,18 +66,44 @@ impl<'a> ParentIdSet<'a> {
         }
     }
 
+    pub fn new_empty(len: usize, mutable: bool) -> Self {
+        Self {
+            values: ParentIdSetArray::Empty(len),
+            mutable,
+            bitmap: [0u64; 1024],
+            next_assignable: 0,
+        }
+    }
+
     fn convert_to_mutable(&mut self) {
+        // TODO this seems kind of weird like the double type check
         if let ParentIdSetArray::Original(original) = self.values {
             let ids = original.values().to_vec();
             let nulls = original.nulls().map(|nulls| nulls.buffer().to_vec());
             self.values = ParentIdSetArray::Dirty(ids, nulls);
+            return;
+        }
+
+        if let ParentIdSetArray::Empty(len) = self.values {
+            let ids = vec![0; len];
+            let nulls = vec![0u8; bit_util::ceil(len, 8)];
+            self.values = ParentIdSetArray::Dirty(ids, Some(nulls));
+            return;
         }
     }
 
     pub fn ensure_all(&mut self) {
+        // TODO this seems kind of weird like the double type check
         if let ParentIdSetArray::Original(original) = self.values {
             if original.null_count() == 0 || !self.mutable {
                 // nothing to do
+                return;
+            }
+            self.convert_to_mutable();
+        }
+
+        if let ParentIdSetArray::Empty(_) = self.values {
+            if !self.mutable {
                 return;
             }
             self.convert_to_mutable();
@@ -109,7 +136,12 @@ impl<'a> ParentIdSet<'a> {
             }
             self.convert_to_mutable();
         }
-        // }
+        if let ParentIdSetArray::Empty(_) = self.values {
+            if !self.mutable {
+                return;
+            }
+            self.convert_to_mutable();
+        }
 
         let ParentIdSetArray::Dirty(ids, null_bitmap) = &mut self.values else {
             // TODO is it?
@@ -137,6 +169,7 @@ impl<'a> ParentIdSet<'a> {
     // I want to cal it more than once, so it clones, etc. Yuck!
     pub fn as_id_col(&self) -> Cow<'a, UInt16Array> {
         match &self.values {
+            ParentIdSetArray::Empty(len) => Cow::Owned(UInt16Array::new_null(*len)),
             ParentIdSetArray::Original(original) => Cow::Borrowed(original),
             ParentIdSetArray::Dirty(ids, nulls) => {
                 let nulls = nulls
