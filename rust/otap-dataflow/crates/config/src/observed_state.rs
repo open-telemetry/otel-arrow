@@ -10,19 +10,18 @@ use std::time::Duration;
 /// Configuration for the observed state store.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObservedStateSettings {
-    /// The size of the bounded reporting channel used for log (observational)
-    /// events.  Engine lifecycle events use a separate unbounded channel and
-    /// are not affected by this setting.
+    /// Size of the bounded channel used for lossy observed events such as
+    /// async internal logs.
+    ///
+    /// Engine lifecycle events use a separate reliable path and are not
+    /// affected by this setting.
     pub reporting_channel_size: usize,
 
-    /// Policy applied to engine lifecycle events **only** when sent through
-    /// the fallback (lossy) reporter path.
+    /// Send policy for engine events when they are sent through the bounded
+    /// observed-event path.
     ///
-    /// In production the controller obtains an engine reporter via
-    /// `ObservedStateStore::engine_reporter`, which delivers engine events
-    /// through a dedicated unbounded channel, bypassing this policy entirely.
-    /// The policy remains available for backward-compatible or test scenarios
-    /// that create a plain `ObservedStateStore::reporter`.
+    /// The main controller path uses a dedicated reliable channel for engine
+    /// lifecycle events, so this primarily applies to fallback and test usage.
     pub engine_events: SendPolicy,
 
     /// Internal logging

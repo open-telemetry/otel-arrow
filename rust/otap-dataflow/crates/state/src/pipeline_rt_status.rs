@@ -669,11 +669,9 @@ mod tests {
         assert_eq!(p.phase, PipelinePhase::Pending); // unchanged
     }
 
-    /// Deterministic reproduction of issue #2328: when `Admitted` events
-    /// are dropped for some cores (e.g. channel overflow under startup
-    /// burst), those cores stay in `Pending`.  When `Ready` subsequently
-    /// arrives for such a core, it is rejected as an invalid transition
-    /// because `Pending → Ready` is not a valid state transition.
+    /// Reproduces the case where a dropped `Admitted` leaves a core in `Pending`.
+    /// When `Ready` arrives later for that core, it is rejected because
+    /// `Pending -> Ready` is not a valid state transition.
     #[test]
     fn skipped_admitted_causes_ready_rejection() {
         use std::collections::HashSet;

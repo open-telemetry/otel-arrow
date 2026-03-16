@@ -105,12 +105,11 @@ impl ObservedStateStore {
         }
     }
 
-    /// Returns a reporter for engine lifecycle events that delivers reliably
-    /// through a dedicated unbounded channel.
+    /// Returns a reporter for engine lifecycle events.
     ///
-    /// Engine events sent via [`ObservedEventReporter::report`] on this
-    /// reporter will never be silently dropped.  Log events (if any) still
-    /// use the bounded/lossy path.
+    /// Engine events sent through this reporter use the dedicated engine channel
+    /// rather than the bounded observed-event channel. Log events still use the
+    /// bounded path.
     #[must_use]
     pub fn engine_reporter(&self, log_policy: SendPolicy) -> ObservedEventReporter {
         ObservedEventReporter::new_with_engine_sender(
@@ -120,10 +119,10 @@ impl ObservedStateStore {
         )
     }
 
-    /// Returns a reporter that can be used to send observed events to this store.
+    /// Returns a reporter that sends observed events through the bounded channel
+    /// according to `policy`.
     ///
-    /// Events sent through this reporter follow the lossy path governed by
-    /// `policy`.  For engine lifecycle events that must never be dropped, use
+    /// For engine lifecycle events that require the dedicated engine channel, use
     /// [`engine_reporter`](Self::engine_reporter) instead.
     #[must_use]
     pub fn reporter(&self, policy: SendPolicy) -> ObservedEventReporter {
