@@ -70,6 +70,21 @@ impl ComputeDuration {
         }
     }
 
+    /// Record an externally-managed [`Timer`] into the accumulator.
+    ///
+    /// Use this when the work spans `.await` points and cannot be
+    /// wrapped in [`timed`](Self::timed).  The caller is responsible
+    /// for starting the timer and passing it in after the work
+    /// completes.
+    #[inline]
+    pub fn record_elapsed(&self, interests: Interests, timer: Timer) {
+        if interests.contains(Interests::PROCESS_DURATION) {
+            let mut acc = self.accumulator.get();
+            acc.record(timer.elapsed_nanos());
+            self.accumulator.set(acc);
+        }
+    }
+
     /// Report accumulated duration metrics to the collector.
     ///
     /// Drains the accumulator into the metric set, then reports
