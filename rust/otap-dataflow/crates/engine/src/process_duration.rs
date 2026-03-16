@@ -15,7 +15,7 @@
 //! The closure-based API structurally prevents timing from spanning
 //! `.await` points.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 
 use crate::Interests;
 use otap_df_telemetry::instrument::{Mmsc, Timer};
@@ -41,12 +41,13 @@ pub struct ComputeDurationMetrics {
 pub struct ComputeDuration {
     metrics: MetricSet<ComputeDurationMetrics>,
     /// Accumulator for successful durations.
-    /// Uses `Cell` for interior mutability so `timed` can take `&self`,
+    /// Uses `RefCell` for interior mutability so `timed` can take `&self`,
     /// allowing callers to hold shared borrows of sibling fields in the
-    /// closure.
-    acc_success: Cell<Mmsc>,
+    /// closure.  `RefCell` is used instead of `Cell` to support future
+    /// instrument types that are not `Copy` (e.g. histogram buckets).
+    acc_success: RefCell<Mmsc>,
     /// Accumulator for failed durations.
-    acc_failed: Cell<Mmsc>,
+    acc_failed: RefCell<Mmsc>,
 }
 
 impl ComputeDuration {
@@ -55,8 +56,8 @@ impl ComputeDuration {
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             metrics: pipeline_ctx.register_metrics::<ComputeDurationMetrics>(),
-            acc_success: Cell::new(Mmsc::default()),
-            acc_failed: Cell::new(Mmsc::default()),
+            acc_success: RefCell::new(Mmsc::default()),
+            acc_failed: RefCell::new(Mmsc::default()),
         }
     }
 
@@ -85,9 +86,7 @@ impl ComputeDuration {
             } else {
                 &self.acc_failed
             };
-            let mut snapshot = acc.get();
-            snapshot.record(elapsed);
-            acc.set(snapshot);
+            acc.borrow_mut().record(elapsed);
             result
         } else {
             f()
@@ -142,11 +141,11 @@ mod tests {
         let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(43)));
         let _ = cd.timed(active, || Err::<i32, _>("fail"));
 
-        let success_snap = cd.acc_success.get().get();
+        let success_snap = cd.acc_success.borrow().get();
         assert_eq!(success_snap.count, 2);
         assert!(success_snap.min >= 0.0);
 
-        let failed_snap = cd.acc_failed.get().get();
+        let failed_snap = cd.acc_failed.borrow().get();
         assert_eq!(failed_snap.count, 1);
         assert!(failed_snap.min >= 0.0);
     }
@@ -160,8 +159,8 @@ mod tests {
         let _ = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
         let _ = cd.timed(Interests::empty(), || Err::<i32, _>("fail"));
 
-        assert_eq!(cd.acc_success.get().get().count, 0);
-        assert_eq!(cd.acc_failed.get().get().count, 0);
+        assert_eq!(cd.acc_success.borrow().get().count, 0);
+        assert_eq!(cd.acc_failed.borrow().get().count, 0);
     }
 
     /// End-to-end: report() drains accumulators into the registry under
