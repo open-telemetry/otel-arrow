@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(missing_docs)]
-
 //! Parquet exporter for OTAP data
 //!
 //! This writes the parquet files in a denormalized star-schema, where each OTAP payload

@@ -609,6 +609,7 @@ mod tests {
         let input = b"CEF:0|vendor|product|version|id|name|10";
         let result = parse_cef(input);
         assert!(result.is_ok());
+
         // Verify all fields are correctly parsed
         let msg = result.unwrap();
         assert_eq!(msg.version, 0);
