@@ -25,6 +25,7 @@ use otap_df_engine::{
     process_duration::ComputeDuration,
 };
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otap_df_telemetry::instrument::Timer;
 
 /// URN identifier for the processor
 pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset_kql";
@@ -132,20 +133,15 @@ impl RecordsetKqlProcessor {
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
         // Process based on signal type (timed).
-        // Destructure to get disjoint borrows: `compute_duration` for
-        // timing and `pipeline` for the closure's `process_logs` call.
-        let Self {
-            compute_duration,
-            pipeline,
-            ..
-        } = self;
-        let result = compute_duration.timed(effect_handler.node_interests(), || match otlp_bytes {
+        let interests = effect_handler.node_interests();
+        let timer = Timer::start();
+        let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.processing_logs",
                     input_items
                 );
-                Self::process_logs_on(pipeline, bytes, signal)
+                self.process_logs(bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
                 message: "Metrics processing not yet implemented in KQL bridge".to_string(),
@@ -153,7 +149,8 @@ impl RecordsetKqlProcessor {
             OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
                 message: "Traces processing not yet implemented in KQL bridge".to_string(),
             }),
-        });
+        };
+        self.compute_duration.record_elapsed(interests, timer);
 
         match result {
             Ok(processed_bytes) => {
@@ -193,13 +190,13 @@ impl RecordsetKqlProcessor {
         }
     }
 
-    fn process_logs_on(
-        pipeline: &mut BridgePipeline,
+    fn process_logs(
+        &mut self,
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
         let response = process_protobuf_otlp_export_logs_service_request_using_pipeline(
-            pipeline,
+            &self.pipeline,
             RecordSetEngineDiagnosticLevel::Warn,
             &bytes,
         )

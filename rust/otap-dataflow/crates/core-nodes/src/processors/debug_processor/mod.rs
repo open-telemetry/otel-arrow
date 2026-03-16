@@ -25,7 +25,6 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_telemetry::instrument::Timer;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
@@ -345,9 +344,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     }
                                 })
                             })?;
-                            let timer = Timer::start();
                             self.process_log(req, debug_output.as_mut()).await?;
-                            self.compute_duration.record_elapsed(interests, timer);
                         }
                         self.metrics.logs_consumed.add(1);
                     }
@@ -360,9 +357,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     }
                                 })
                             })?;
-                            let timer = Timer::start();
                             self.process_metric(req, debug_output.as_mut()).await?;
-                            self.compute_duration.record_elapsed(interests, timer);
                         }
                         self.metrics.metrics_consumed.add(1);
                     }
@@ -375,9 +370,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                     }
                                 })
                             })?;
-                            let timer = Timer::start();
                             self.process_trace(req, debug_output.as_mut()).await?;
-                            self.compute_duration.record_elapsed(interests, timer);
                         }
                         self.metrics.traces_consumed.add(1);
                     }

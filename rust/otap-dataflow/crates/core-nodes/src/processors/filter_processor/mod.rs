@@ -27,6 +27,7 @@ use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_telemetry::instrument::Timer;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
@@ -35,12 +36,6 @@ mod config;
 mod metrics;
 /// The URN for the filter processor
 pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
-
-/// Discriminant returned from the timed filter closure to tag counter updates.
-enum FilteredSignal {
-    Logs { consumed: u64, filtered: u64 },
-    Traces { consumed: u64, filtered: u64 },
-}
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
@@ -138,71 +133,59 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let result = self
-                    .compute_duration
-                    .timed(effect_handler.node_interests(), || match signal {
-                        SignalType::Metrics => {
-                            // ToDo: Add support for metrics
-                            Ok((arrow_records, None))
-                        }
-                        SignalType::Logs => self
-                            .config
-                            .log_filters()
-                            .filter(arrow_records)
-                            .map(|(filtered, consumed, filtered_count)| {
-                                (
-                                    filtered,
-                                    Some(FilteredSignal::Logs {
-                                        consumed,
-                                        filtered: filtered_count,
-                                    }),
-                                )
-                            })
-                            .map_err(|e| {
-                                let source_detail = format_error_sources(&e);
-                                Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Filter error: {e}"),
-                                    source_detail,
-                                }
-                            }),
-                        SignalType::Traces => self
-                            .config
-                            .trace_filters()
-                            .filter(arrow_records)
-                            .map(|(filtered, consumed, filtered_count)| {
-                                (
-                                    filtered,
-                                    Some(FilteredSignal::Traces {
-                                        consumed,
-                                        filtered: filtered_count,
-                                    }),
-                                )
-                            })
-                            .map_err(|e| {
-                                let source_detail = format_error_sources(&e);
-                                Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Filter error: {e}"),
-                                    source_detail,
-                                }
-                            }),
-                    });
+                let interests = effect_handler.node_interests();
+                let timer = Timer::start();
+                let filtered_arrow_records: OtapArrowRecords = match signal {
+                    SignalType::Metrics => {
+                        // ToDo: Add support for metrics
+                        arrow_records
+                    }
+                    SignalType::Logs => {
+                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) =
+                            self.config
+                                .log_filters()
+                                .filter(arrow_records)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
 
-                let (filtered_arrow_records, stats) = result?;
-                match stats {
-                    Some(FilteredSignal::Logs { consumed, filtered }) => {
-                        self.metrics.log_signals_consumed.add(consumed);
-                        self.metrics.log_signals_filtered.add(filtered);
+                        self.metrics.log_signals_consumed.add(log_signals_consumed);
+                        self.metrics.log_signals_filtered.add(log_signals_filtered);
+
+                        filtered_arrow_records
                     }
-                    Some(FilteredSignal::Traces { consumed, filtered }) => {
-                        self.metrics.span_signals_consumed.add(consumed);
-                        self.metrics.span_signals_filtered.add(filtered);
+                    SignalType::Traces => {
+                        let (filtered_arrow_records, span_signals_consumed, span_signals_filtered) =
+                            self.config
+                                .trace_filters()
+                                .filter(arrow_records)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+
+                        self.metrics
+                            .span_signals_consumed
+                            .add(span_signals_consumed);
+                        self.metrics
+                            .span_signals_filtered
+                            .add(span_signals_filtered);
+
+                        filtered_arrow_records
                     }
-                    None => {}
-                }
+                };
+                self.compute_duration.record_elapsed(interests, timer);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(
