@@ -35,8 +35,6 @@ mod pdata_conversions;
 
 pub mod parquet_exporter;
 
-pub mod perf_exporter;
-
 /// testing utilities
 #[cfg(test)]
 mod otap_mock;
@@ -67,13 +65,6 @@ pub mod otlp_http;
 
 /// Cloud specific auth utilities
 pub mod cloud_auth;
-
-/// Internal telemetry receiver
-pub mod internal_telemetry_receiver;
-
-pub mod topic_receiver;
-
-pub mod topic_exporter;
 
 /// Object storage utilities including integrations for different cloud
 /// providers

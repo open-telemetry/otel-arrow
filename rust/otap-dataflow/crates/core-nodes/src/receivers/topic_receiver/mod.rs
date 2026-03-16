@@ -3,8 +3,6 @@
 
 //! Topic receiver.
 
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::TopicName;
@@ -26,6 +24,8 @@ use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, Subscript
 use otap_df_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -423,8 +423,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN, TopicReceiver, TopicSubscriptionConfig};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{create_test_pdata, next_ack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::topic::TopicAckPropagationMode;
     use otap_df_engine::config::ReceiverConfig;
@@ -440,6 +438,8 @@ mod tests {
         PipelineTopicBinding, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
         TrackedPublishOutcome,
     };
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{create_test_pdata, next_ack};
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;

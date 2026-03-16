@@ -3,30 +3,32 @@
 
 //! Exporter used to measure the performance of the OTAP data pipeline.
 //!
-//! ToDo – Future developments / improvements:
+//! ToDo - Future developments / improvements:
 //! - Replace this exporter with a processor that could be combined with a Noop exporter to achieve
 //!   the same functionality. The advantage would be to allow performance measurements anywhere in
 //!   the pipeline.
 //! - Measure the number of memory allocations for the current thread. This would allow measuring
 //!   the memory used by the pipeline. This is possible using `mimalloc-sys`.
-//! - Measure per-thread CPU usage. This would allow measuring the pipeline’s CPU load. This is
-//!   possible using the "libc" crate function `getrusage(RUSAGE\_THREAD)`.
+//! - Measure per-thread CPU usage. This would allow measuring the pipeline's CPU load. This is
+//!   possible using the "libc" crate function `getrusage(RUSAGE_THREAD)`.
 //! - Measure network usage either via a cgroup or via eBPF.
-//! - Measure per-thread perf counters (see crates perfcnt, perfcnt2, or direct perf\_event\_open
+//! - Measure per-thread perf counters (see crates perfcnt, perfcnt2, or direct perf_event_open
 //!   via nix/libc). We could measure task-clock, context switches, page faults, ...
 //! - Measure the latency of signals traversing the pipeline. This would require adding a timestamp
 //!   in the headers of pdata messages.
 //! - Support live reconfiguration via control message.
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::metrics::ExporterPDataMetrics;
-use crate::pdata::OtapPdata;
-use crate::perf_exporter::config::Config;
-use crate::perf_exporter::metrics::PerfExporterPdataMetrics;
+pub mod config;
+pub mod metrics;
+
+use crate::exporters::perf_exporter::config::Config;
+use crate::exporters::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NodeControlMsg};
@@ -36,7 +38,9 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ExporterFactory, distributed_slice};
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_info;
@@ -267,13 +271,8 @@ impl local::Exporter<OtapPdata> for PerfExporter {
 
 #[cfg(test)]
 mod tests {
-    use crate::fixtures::{
-        SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
-        create_simple_metrics_arrow_record_batches, create_simple_trace_arrow_record_batches,
-    };
-    use crate::pdata::OtapPdata;
-    use crate::perf_exporter::config::Config;
-    use crate::perf_exporter::exporter::{OTAP_PERF_EXPORTER_URN, PerfExporter};
+    use super::{OTAP_PERF_EXPORTER_URN, PerfExporter};
+    use crate::exporters::perf_exporter::config::Config;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::error::Error;
@@ -281,8 +280,8 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::test_node;
-    use otap_df_pdata::Consumer;
-    use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::create_test_pdata;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
     use std::ops::Add;
@@ -297,59 +296,10 @@ mod tests {
     -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
-                // send some messages to the exporter to calculate pipeline statistics
-                for i in 0..3 {
-                    let mut traces_batch_data =
-                        create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 3 * i,
-                            num_rows: 5,
-                            ..Default::default()
-                        });
-                    let mut logs_batch_data =
-                        create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 3 * i + 1,
-                            num_rows: 5,
-                            ..Default::default()
-                        });
-                    let mut metrics_batch_data =
-                        create_simple_metrics_arrow_record_batches(SimpleDataGenOptions {
-                            id_offset: 3 * i + 2,
-                            num_rows: 5,
-                            ..Default::default()
-                        });
-
-                    let trace_batch_data = from_record_messages(
-                        Consumer::default()
-                            .consume_bar(&mut traces_batch_data)
-                            .unwrap(),
-                    );
-                    let logs_batch_data = from_record_messages(
-                        Consumer::default()
-                            .consume_bar(&mut logs_batch_data)
-                            .unwrap(),
-                    );
-                    let metrics_batch_data = from_record_messages(
-                        Consumer::default()
-                            .consume_bar(&mut metrics_batch_data)
-                            .unwrap(),
-                    );
-
-                    // Send a data message
-                    ctx.send_pdata(OtapPdata::new_default(
-                        OtapArrowRecords::Traces(trace_batch_data).into(),
-                    ))
-                    .await
-                    .expect("Failed to send data message");
-                    ctx.send_pdata(OtapPdata::new_default(
-                        OtapArrowRecords::Logs(logs_batch_data).into(),
-                    ))
-                    .await
-                    .expect("Failed to send data message");
-                    ctx.send_pdata(OtapPdata::new_default(
-                        OtapArrowRecords::Metrics(metrics_batch_data).into(),
-                    ))
-                    .await
-                    .expect("Failed to send data message");
+                for _ in 0..3 {
+                    ctx.send_pdata(create_test_pdata())
+                        .await
+                        .expect("Failed to send data message");
                 }
 
                 // TODO ADD DELAY BETWEEN HERE
