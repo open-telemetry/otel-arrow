@@ -95,3 +95,52 @@ impl ComputeDuration {
         let _ = reporter.report(&mut self.metrics);
     }
 }
+
+#[cfg(all(test, feature = "test-utils"))]
+mod tests {
+    use super::*;
+    use crate::context::ControllerContext;
+    use otap_df_config::node::NodeKind;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::collections::HashMap;
+
+    fn test_pipeline_ctx() -> PipelineContext {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        controller
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
+            .with_node_context(
+                "node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            )
+    }
+
+    /// End-to-end: Timer measures real time, timed() and record_elapsed()
+    /// accumulate via Mmsc::merge, and the accumulator drains on report.
+    #[test]
+    fn timed_and_record_elapsed_accumulate() {
+        let ctx = test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+        let active = Interests::PROCESS_DURATION;
+
+        // Two timed() calls and one record_elapsed() → 3 samples.
+        let _ = cd.timed(active, || std::hint::black_box(42));
+        let _ = cd.timed(active, || std::hint::black_box(43));
+        let timer = Timer::start();
+        let _ = std::hint::black_box(0);
+        cd.record_elapsed(active, timer);
+
+        let snap = cd.accumulator.get().get();
+        assert_eq!(snap.count, 3);
+        assert!(snap.min >= 0.0);
+        assert!(snap.sum >= snap.min);
+
+        // With interests disabled, nothing is recorded.
+        let cd2 = ComputeDuration::new(&ctx);
+        let _ = cd2.timed(Interests::empty(), || 1);
+        cd2.record_elapsed(Interests::empty(), Timer::start());
+        assert_eq!(cd2.accumulator.get().get().count, 0);
+    }
+}
