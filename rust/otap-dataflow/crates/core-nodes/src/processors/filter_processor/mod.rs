@@ -36,6 +36,12 @@ mod metrics;
 /// The URN for the filter processor
 pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 
+/// Discriminant returned from the timed filter closure to tag counter updates.
+enum FilteredSignal {
+    Logs { consumed: u64, filtered: u64 },
+    Traces { consumed: u64, filtered: u64 },
+}
+
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
     config: Config,
@@ -143,11 +149,15 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                             .config
                             .log_filters()
                             .filter(arrow_records)
-                            .map(
-                                |(filtered, consumed, filtered_count)| {
-                                    (filtered, Some((consumed, filtered_count, true)))
-                                },
-                            )
+                            .map(|(filtered, consumed, filtered_count)| {
+                                (
+                                    filtered,
+                                    Some(FilteredSignal::Logs {
+                                        consumed,
+                                        filtered: filtered_count,
+                                    }),
+                                )
+                            })
                             .map_err(|e| {
                                 let source_detail = format_error_sources(&e);
                                 Error::ProcessorError {
@@ -161,11 +171,15 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                             .config
                             .trace_filters()
                             .filter(arrow_records)
-                            .map(
-                                |(filtered, consumed, filtered_count)| {
-                                    (filtered, Some((consumed, filtered_count, false)))
-                                },
-                            )
+                            .map(|(filtered, consumed, filtered_count)| {
+                                (
+                                    filtered,
+                                    Some(FilteredSignal::Traces {
+                                        consumed,
+                                        filtered: filtered_count,
+                                    }),
+                                )
+                            })
                             .map_err(|e| {
                                 let source_detail = format_error_sources(&e);
                                 Error::ProcessorError {
@@ -178,14 +192,16 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     });
 
                 let (filtered_arrow_records, stats) = result?;
-                if let Some((consumed, filtered_count, is_logs)) = stats {
-                    if is_logs {
+                match stats {
+                    Some(FilteredSignal::Logs { consumed, filtered }) => {
                         self.metrics.log_signals_consumed.add(consumed);
-                        self.metrics.log_signals_filtered.add(filtered_count);
-                    } else {
-                        self.metrics.span_signals_consumed.add(consumed);
-                        self.metrics.span_signals_filtered.add(filtered_count);
+                        self.metrics.log_signals_filtered.add(filtered);
                     }
+                    Some(FilteredSignal::Traces { consumed, filtered }) => {
+                        self.metrics.span_signals_consumed.add(consumed);
+                        self.metrics.span_signals_filtered.add(filtered);
+                    }
+                    None => {}
                 }
 
                 effect_handler
