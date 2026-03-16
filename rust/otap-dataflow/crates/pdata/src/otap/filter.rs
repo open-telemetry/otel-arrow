@@ -30,38 +30,87 @@ const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
 
 /// Number of u64 words per page. Each page covers 65,536 IDs (one full u16 range).
-const PAGE_WORDS: usize = 1024;
+const ID_BITMAP_PAGE_WORDS: usize = 1024;
 
-/// A paged bitmap for fast membership testing of u32 ID values.
+/// Number of [`clear`](IdBitmap::clear) cycles a page can remain unused before being evicted
+/// (deallocated). A threshold of 16 means a page that hasn't been touched in 16 consecutive
+/// `clear()` calls will be freed, preventing unbounded memory growth from adversarial inputs
+/// while avoiding thrashing for pages that are used intermittently.
+const ID_BITMAP_PAGE_EVICTION_THRESHOLD: u64 = 16;
+
+/// A single page of the [`IdBitmap`], covering 65,536 IDs (8 KiB of bitmap data).
 ///
-/// The u32 ID space is partitioned into pages of 65,536 IDs each (8 KiB per page). Pages are only
-/// allocated on first use, so sparse ID spaces (e.g. a few IDs near 0 and a few near `u32::MAX`)
-/// only allocate the pages they touch rather than the full 512 MiB a flat bitmap would require.
+/// Each page tracks the generation in which it was last written, enabling the bitmap to evict
+/// pages that haven't been touched in several cycles.
+struct IdBitmapPage {
+    words: [u64; ID_BITMAP_PAGE_WORDS],
+    last_used_generation: u64,
+}
+
+impl IdBitmapPage {
+    /// Creates a new zeroed page stamped with the given generation.
+    fn new(generation: u64) -> Self {
+        Self {
+            words: [0u64; ID_BITMAP_PAGE_WORDS],
+            last_used_generation: generation,
+        }
+    }
+}
+
+/// A paged bitmap for fast membership testing of ID values.
 ///
-/// For the common case of dense IDs starting near 0 (typical of OTAP batches), there is exactly
-/// one page. The per-operation overhead vs a flat bitmap is a single pointer dereference and a
-/// well-predicted null check.
+/// The underlying bitmap data is heap allocated, and the intention of this type is that it
+/// can be reused between batches by calling the `clear` method. This method is also called
+/// automatically by the `populate` method, allowing the bitmap to be rewritten from some
+/// input ID column.
 ///
-/// The bitmap is designed to be reused across batches via [`IdBitmapPool`]. On [`clear`](IdBitmap::clear),
-/// pages are zeroed but not deallocated, so subsequent batches reuse the same heap allocations.
+/// The ID space is partitioned into pages of 65,536 IDs each (8 KiB per page). For the common
+/// case of dense IDs starting near 0 (typical of OTAP batches), there few pages are allocated.
+///
+/// The motivation for the paged bitmap is to protect against adversarial situations where we
+/// receive batches containing few, sparse IDs.
+///
+/// ## Page lifecycle
+///
+/// Each page tracks the generation (batch cycle) in which it was last written. On
+/// [`clear`](IdBitmap::clear), the generation counter is incremented and pages are evaluated:
+///
+/// - Pages used within the last [`PAGE_EVICTION_THRESHOLD`] generations are zeroed and retained.
+/// - Pages that haven't been used in more than [`PAGE_EVICTION_THRESHOLD`] generations are
+///   deallocated, preventing unbounded memory growth from adversarial or unusual input patterns.
+///
+/// This means pages that are used regularly (even intermittently) stay allocated, while pages
+/// from one-off anomalous batches are eventually freed.
 pub struct IdBitmap {
-    pages: Vec<Option<Box<[u64; PAGE_WORDS]>>>,
+    pages: Vec<Option<Box<IdBitmapPage>>>,
+    generation: u64,
 }
 
 impl IdBitmap {
     /// Creates a new empty `IdBitmap`.
     #[must_use]
     pub fn new() -> Self {
-        Self { pages: Vec::new() }
+        Self {
+            pages: Vec::new(),
+            generation: 0,
+        }
     }
 
-    /// Clears all bits in the bitmap without deallocating pages.
-    ///
-    /// After calling this, `contains` will return `false` for all IDs, but existing page
-    /// allocations are retained for reuse.
+    /// Clears all bits in the bitmap, evicting stale pages.
     pub fn clear(&mut self) {
-        for p in self.pages.iter_mut().flatten() {
-            p.fill(0)
+        self.generation += 1;
+        for page_slot in &mut self.pages {
+            if let Some(page) = page_slot {
+                if self.generation - page.last_used_generation > ID_BITMAP_PAGE_EVICTION_THRESHOLD {
+                    *page_slot = None;
+                } else {
+                    page.words.fill(0);
+                }
+            }
+        }
+        // Trim trailing None slots to avoid unbounded growth of the outer vec
+        while self.pages.last().is_some_and(|p| p.is_none()) {
+            let _ = self.pages.pop();
         }
     }
 
@@ -73,13 +122,18 @@ impl IdBitmap {
         (page_idx, bit_idx)
     }
 
-    /// Ensures the page for the given page index exists, allocating it if necessary.
+    /// Ensures the page for the given page index exists, allocating it if necessary,
+    /// and stamps it with the current generation.
     #[inline]
-    fn ensure_page(&mut self, page_idx: usize) -> &mut [u64; PAGE_WORDS] {
+    fn ensure_page(&mut self, page_idx: usize) -> &mut IdBitmapPage {
         if page_idx >= self.pages.len() {
             self.pages.resize_with(page_idx + 1, || None);
         }
-        self.pages[page_idx].get_or_insert_with(|| Box::new([0u64; PAGE_WORDS]))
+        let generation = self.generation;
+        let page =
+            self.pages[page_idx].get_or_insert_with(|| Box::new(IdBitmapPage::new(generation)));
+        page.last_used_generation = generation;
+        page
     }
 
     /// Inserts an ID into the bitmap.
@@ -87,7 +141,7 @@ impl IdBitmap {
     pub fn insert(&mut self, id: u32) {
         let (page_idx, bit_idx) = Self::page_and_bit(id);
         let page = self.ensure_page(page_idx);
-        page[bit_idx / 64] |= 1 << (bit_idx % 64);
+        page.words[bit_idx / 64] |= 1 << (bit_idx % 64);
     }
 
     /// Returns `true` if the bitmap contains the given ID.
@@ -96,7 +150,7 @@ impl IdBitmap {
     pub fn contains(&self, id: u32) -> bool {
         let (page_idx, bit_idx) = Self::page_and_bit(id);
         match self.pages.get(page_idx) {
-            Some(Some(page)) => page[bit_idx / 64] & (1 << (bit_idx % 64)) != 0,
+            Some(Some(page)) => page.words[bit_idx / 64] & (1 << (bit_idx % 64)) != 0,
             _ => false,
         }
     }
@@ -107,7 +161,7 @@ impl IdBitmap {
         self.pages
             .iter()
             .filter_map(|p| p.as_ref())
-            .flat_map(|p| p.iter())
+            .flat_map(|p| p.words.iter())
             .map(|w| w.count_ones() as u64)
             .sum()
     }
@@ -118,13 +172,13 @@ impl IdBitmap {
         self.pages
             .iter()
             .filter_map(|p| p.as_ref())
-            .all(|p| p.iter().all(|&w| w == 0))
+            .all(|p| p.words.iter().all(|&w| w == 0))
     }
 
     /// Clears the bitmap and repopulates it from the given iterator.
     ///
     /// This reuses existing page allocations when possible. New pages are allocated as needed,
-    /// but existing pages are never deallocated.
+    /// and stale pages are evicted per the generation-based eviction policy.
     pub fn populate(&mut self, iter: impl Iterator<Item = u32>) {
         self.clear();
         for id in iter {
@@ -133,8 +187,6 @@ impl IdBitmap {
     }
 
     /// In-place union: `self |= other`.
-    ///
-    /// After this operation, `self` contains all IDs that were in either `self` or `other`.
     pub fn union_with(&mut self, other: &Self) {
         if other.pages.len() > self.pages.len() {
             self.pages.resize_with(other.pages.len(), || None);
@@ -142,7 +194,7 @@ impl IdBitmap {
         for (i, other_page) in other.pages.iter().enumerate() {
             if let Some(op) = other_page {
                 let sp = self.ensure_page(i);
-                for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
                     *sw |= ow;
                 }
             }
@@ -150,21 +202,20 @@ impl IdBitmap {
     }
 
     /// In-place intersection: `self &= other`.
-    ///
-    /// After this operation, `self` contains only IDs that were in both `self` and `other`.
-    /// Pages in `self` that have no corresponding page in `other` are zeroed.
     pub fn intersect_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
             if let Some(sp) = self_page {
                 match other.pages.get(i) {
                     Some(Some(op)) => {
-                        for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                        sp.last_used_generation = self.generation;
+                        for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
                             *sw &= ow;
                         }
                     }
                     _ => {
                         // No corresponding page in other — zero this page
-                        sp.fill(0);
+                        sp.last_used_generation = self.generation;
+                        sp.words.fill(0);
                     }
                 }
             }
@@ -172,14 +223,12 @@ impl IdBitmap {
     }
 
     /// In-place difference: `self &= !other`.
-    ///
-    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
-    /// Pages in `self` beyond `other`'s length are unchanged.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
             if let Some(sp) = self_page {
                 if let Some(Some(op)) = other.pages.get(i) {
-                    for (sw, ow) in sp.iter_mut().zip(op.iter()) {
+                    sp.last_used_generation = self.generation;
+                    for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
                         *sw &= !ow;
                     }
                 }
@@ -200,6 +249,7 @@ impl std::fmt::Debug for IdBitmap {
         f.debug_struct("IdBitmap")
             .field("total_pages", &self.pages.len())
             .field("allocated_pages", &allocated_pages)
+            .field("generation", &self.generation)
             .field("len", &self.len())
             .finish()
     }
@@ -207,20 +257,29 @@ impl std::fmt::Debug for IdBitmap {
 
 impl PartialEq for IdBitmap {
     fn eq(&self, other: &Self) -> bool {
-        // Compare the logical content: for each page index, both bitmaps must have
-        // the same bits set. Missing or None pages are treated as all-zeros.
+        // Compare the logical content only (not generation counters): for each page index,
+        // both bitmaps must have the same bits set. Missing or None pages are treated as
+        // all-zeros.
         let max_pages = self.pages.len().max(other.pages.len());
         for i in 0..max_pages {
-            let self_page = self.pages.get(i).and_then(|p| p.as_deref());
-            let other_page = other.pages.get(i).and_then(|p| p.as_deref());
-            match (self_page, other_page) {
-                (Some(sp), Some(op)) => {
-                    if sp != op {
+            let self_words = self
+                .pages
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .map(|p| &p.words[..]);
+            let other_words = other
+                .pages
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .map(|p| &p.words[..]);
+            match (self_words, other_words) {
+                (Some(sw), Some(ow)) => {
+                    if sw != ow {
                         return false;
                     }
                 }
-                (Some(sp), None) | (None, Some(sp)) => {
-                    if sp.iter().any(|&w| w != 0) {
+                (Some(w), None) | (None, Some(w)) => {
+                    if w.iter().any(|&v| v != 0) {
                         return false;
                     }
                 }
@@ -1826,5 +1885,79 @@ mod tests {
         c.clear();
         let d = IdBitmap::new();
         assert_eq!(c, d);
+    }
+
+    #[test]
+    fn test_id_bitmap_page_eviction_after_threshold() {
+        let mut bitmap = IdBitmap::new();
+
+        // Use page 0 and page 1
+        bitmap.insert(0);
+        bitmap.insert(100_000); // page 1
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        // Clear repeatedly, only using page 0 each time. Page 1 should survive for
+        // PAGE_EVICTION_THRESHOLD cycles, then be evicted.
+        for i in 0..ID_BITMAP_PAGE_EVICTION_THRESHOLD {
+            bitmap.clear();
+            bitmap.insert(0); // keep page 0 alive
+            assert!(
+                bitmap.pages.get(1).is_some_and(|p| p.is_some()),
+                "page 1 should still be allocated at cycle {i}"
+            );
+        }
+
+        // One more clear should evict page 1 (it's now threshold+1 cycles old)
+        bitmap.clear();
+        bitmap.insert(0);
+        // Page 1 should be evicted (either None or the slot is gone)
+        let page_1_exists = bitmap.pages.get(1).is_some_and(|p| p.is_some());
+        assert!(
+            !page_1_exists,
+            "page 1 should have been evicted after {} idle cycles",
+            ID_BITMAP_PAGE_EVICTION_THRESHOLD + 1
+        );
+
+        // Page 0 should still be present
+        assert!(bitmap.contains(0));
+    }
+
+    #[test]
+    fn test_id_bitmap_page_eviction_does_not_evict_recently_used() {
+        let mut bitmap = IdBitmap::new();
+
+        // Alternate between page 0 and page 1 every other cycle
+        for _ in 0..50 {
+            bitmap.clear();
+            bitmap.insert(0); // page 0
+
+            bitmap.clear();
+            bitmap.insert(100_000); // page 1
+        }
+
+        // Both pages should still be allocated because neither goes more than
+        // 1 cycle unused, well within the eviction threshold
+        assert!(bitmap.pages[0].is_some());
+        assert!(bitmap.pages[1].is_some());
+    }
+
+    #[test]
+    fn test_id_bitmap_trailing_none_trimmed() {
+        let mut bitmap = IdBitmap::new();
+
+        // Allocate a page at a high index
+        bitmap.insert(200_000); // page 3
+        assert!(bitmap.pages.len() >= 4);
+
+        // Clear enough times to evict the page
+        for _ in 0..=ID_BITMAP_PAGE_EVICTION_THRESHOLD + 1 {
+            bitmap.clear();
+        }
+
+        // The pages vec should have been trimmed — no trailing None slots
+        assert!(
+            bitmap.pages.is_empty() || bitmap.pages.last().unwrap().is_some(),
+            "trailing None slots should be trimmed"
+        );
     }
 }
