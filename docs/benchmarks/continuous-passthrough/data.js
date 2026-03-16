@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773686074097,
+  "lastUpdate": 1773686851896,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "eb91467c84869e57ea46dbde762123e63132189a",
-          "message": "[WIP] fix renovate PR #2140 failing markdown CI (#2148)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #NNN\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
-          "timestamp": "2026-03-02T17:40:02Z",
-          "tree_id": "3e1b5691ce3c198e9eab42a417422bfb5ffefc3f",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/eb91467c84869e57ea46dbde762123e63132189a"
-        },
-        "date": 1772477923499,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9565648436546326,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.78776114805252,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.13629603960396,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 50.859765625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 52.46875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 481670.1635833068,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 486277.6511538975,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006673,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11289289.266045015,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11233114.020081764,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10898037.21537624,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "eb3862db0ac45ddc0d6959f799dc9508568fe4f4",
+          "message": "chore(deps): update opentelemetry-python monorepo to v1.40.0 (#2337)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[opentelemetry-api](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-api/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-api/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-exporter-otlp](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-exporter-otlp-proto-common](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp-proto-common/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp-proto-common/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-exporter-otlp-proto-grpc](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp-proto-grpc/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp-proto-grpc/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-exporter-otlp-proto-http](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp-proto-http/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp-proto-http/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-proto/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-proto/1.39.1/1.40.0?slim=true)\n|\n|\n[opentelemetry-sdk](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.39.1` → `==1.40.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-sdk/1.40.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-sdk/1.39.1/1.40.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-python\n(opentelemetry-api)</summary>\n\n###\n[`v1.40.0`](https://redirect.github.com/open-telemetry/opentelemetry-python/blob/HEAD/CHANGELOG.md#Version-1400061b0-2026-03-04)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-python/compare/v1.39.1...v1.40.0)\n\n- `opentelemetry-sdk`: deprecate `LoggingHandler` in favor of\n`opentelemetry-instrumentation-logging`, see\n`opentelemetry-instrumentation-logging` documentation\n\n([#&#8203;4919](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4919))\n- `opentelemetry-sdk`: Clarify log processor error handling expectations\nin documentation\n\n([#&#8203;4915](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4915))\n- bump semantic-conventions to v1.40.0\n\n([#&#8203;4941](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4941))\n- Add stale PR GitHub Action\n\n([#&#8203;4926](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4926))\n- `opentelemetry-sdk`: Drop unused Jaeger exporter environment variables\n(exporter removed in 1.22.0)\n\n([#&#8203;4918](https://redirect.github.com/open-telemetry/opentelemetry-python/issues/4918))\n- `opentelemetry-sdk`: Clarify timeout units in environment variable\ndocumentation\n\n([#&#8203;4906](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4906))\n- `opentelemetry-exporter-otlp-proto-grpc`: Fix re-initialization of\ngRPC channel on UNAVAILABLE error\n\n([#&#8203;4825](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4825))\n- `opentelemetry-exporter-prometheus`: Fix duplicate HELP/TYPE\ndeclarations for metrics with different label sets\n\n([#&#8203;4868](https://redirect.github.com/open-telemetry/opentelemetry-python/issues/4868))\n- Allow loading all resource detectors by setting\n`OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` to `*`\n\n([#&#8203;4819](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4819))\n- `opentelemetry-sdk`: Fix the type hint of the `_metrics_data` property\nto allow `None`\n\n([#&#8203;4837](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4837)).\n- Regenerate opentelemetry-proto code with v1.9.0 release\n\n([#&#8203;4840](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4840))\n- Add python 3.14 support\n\n([#&#8203;4798](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4798))\n- Silence events API warnings for internal users\n\n([#&#8203;4847](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4847))\n- opentelemetry-sdk: make it possible to override the default processors\nin the SDK configurator\n\n([#&#8203;4806](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4806))\n- Prevent possible endless recursion from happening in\n`SimpleLogRecordProcessor.on_emit`,\n\n([#&#8203;4799](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4799))\nand\n([#&#8203;4867](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4867)).\n- Implement span start/end metrics\n\n([#&#8203;4880](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4880))\n- Add environment variable carriers to API\n\n([#&#8203;4609](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4609))\n- Add experimental composable rule based sampler\n\n([#&#8203;4882](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4882))\n- Make ConcurrentMultiSpanProcessor fork safe\n\n([#&#8203;4862](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4862))\n- `opentelemetry-exporter-otlp-proto-http`: fix retry logic and error\nhandling for connection failures in trace, metric, and log exporters\n\n([#&#8203;4709](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4709))\n- `opentelemetry-sdk`: avoid RuntimeError during iteration of view\ninstrument match dictionary in MetricReaderStorage.collect()\n\n([#&#8203;4891](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4891))\n- Implement experimental TracerConfigurator\n\n([#&#8203;4861](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4861))\n- `opentelemetry-sdk`: Fix instrument creation race condition\n\n([#&#8203;4913](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4913))\n- bump semantic-conventions to v1.39.0\n\n([#&#8203;4914](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4914))\n- `opentelemetry-sdk`: automatically generate configuration models using\nOTel config JSON schema\n\n([#&#8203;4879](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4879))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about these\nupdates again.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My42Ni40IiwidXBkYXRlZEluVmVyIjoiNDMuNjYuNCIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-03-16T15:41:43Z",
+          "tree_id": "51ee751d76b52e8c45d85119cb975300dc76afdd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/eb3862db0ac45ddc0d6959f799dc9508568fe4f4"
+        },
+        "date": 1773686851002,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.2399011850357056,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.03266997579848,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.91059273517541,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 56.25950520833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 58.09765625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 456258.6977569005,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 461915.8550843397,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004695,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10599926.54126341,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10555289.862405144,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
