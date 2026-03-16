@@ -24,6 +24,7 @@ use arrow::array::{
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::{cast, filter, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
+use arrow::util::bit_iterator::BitIndexIterator;
 use async_trait::async_trait;
 use data_engine_expressions::{
     Expression, QueryLocation, ScalarExpression, SourceScalarExpression,
@@ -366,12 +367,30 @@ impl AssignPipelineStage {
             let eval_result = eval_result.take().unwrap(); // TODO no unwrap
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
+            // TODO comment on why we do this
             match &eval_result.values {
                 ColumnarValue::Scalar(_) => {
                     parent_id_set.ensure_all();
                 }
-                ColumnarValue::Array(_) => {
-                    // TODO - ensure of indices if lines up with parent ID
+                ColumnarValue::Array(arr) => {
+                    match eval_result.data_scope.as_ref() {
+                        DataScope::Root => {
+                            println!("nulls = {:?}", arr.nulls());
+                            if let Some(nulls) = arr.nulls() {
+                                // TODO need a test that gets in here
+                                BitIndexIterator::new(nulls.buffer().as_slice(), 0, arr.len())
+                                    .for_each(|i| {
+                                        println!("ensuring index {i}");
+                                        parent_id_set.ensure(i);
+                                    });
+                            } else {
+                                parent_id_set.ensure_all();
+                            }
+                        }
+                        _ => {
+                            // TODO nothing to do?
+                        }
+                    }
                 }
             }
 
@@ -443,6 +462,8 @@ impl AssignPipelineStage {
                                 &OtapArrowRecords::Logs(Logs::default()), // empty placeholder,
                             )?;
 
+                            println!("vals_take_indices = {:?}", vals_take_indices);
+
                             ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
                         }
                         _ => {
@@ -452,6 +473,9 @@ impl AssignPipelineStage {
                     }
                 }
             };
+
+            println!("parent_ids = {:?}", parent_ids);
+            println!("new_values = {:?}", new_values);
 
             attrs_upserts.push(AttributeUpsert {
                 attrs_key,
@@ -2010,6 +2034,58 @@ mod test {
     #[tokio::test]
     async fn test_insert_attribute_scalar_where_some_target_has_no_attrs_kql_parser() {
         test_insert_attribute_scalar_where_some_target_has_no_attrs::<KqlParser>().await
+    }
+
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = event_name";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        arrow::util::pretty::print_batches(&[result
+            .get(ArrowPayloadType::LogAttrs)
+            .unwrap()
+            .clone()])
+        .unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("y")),
+                KeyValue::new("y", AnyValue::new_string("event1")),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("event2")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_opl_parser() {
+        test_insert_attribute_from_root_where_some_target_has_no_attrs::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_kql_parser() {
+        test_insert_attribute_from_root_where_some_target_has_no_attrs::<KqlParser>().await
     }
 
     async fn test_upsert_attribute_scalar<P: Parser>() {

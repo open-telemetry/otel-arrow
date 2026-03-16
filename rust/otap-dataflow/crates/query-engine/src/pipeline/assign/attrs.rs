@@ -101,26 +101,32 @@ impl<'a> ParentIdSet<'a> {
         }
     }
 
-    fn ensure(&mut self, idx: usize) {
-        todo!()
-        // if let ParentIdSetArray::Original(original) = self.values {
-        //     if original.null_count() == 0 || !self.mutable {
-        //         // nothing to do
-        //         return;
-        //     }
-        //     self.convert_to_mutable();
+    pub fn ensure(&mut self, idx: usize) {
+        if let ParentIdSetArray::Original(original) = self.values {
+            if original.is_valid(idx) || !self.mutable {
+                // nothing to do
+                return;
+            }
+            self.convert_to_mutable();
+        }
         // }
 
-        // let ParentIdSetArray::Dirty(ids, null_bitmap) = &mut self.values else {
-        //     // TODO is it?
-        //     unreachable!("TODO")
-        // };
+        let ParentIdSetArray::Dirty(ids, null_bitmap) = &mut self.values else {
+            // TODO is it?
+            unreachable!("TODO")
+        };
 
-        // if !bit_util::get_bit(null_bitmap.as_ref(), idx) {
-        //     ids[idx] = self.next_assignable;
-        //     self.next_assignable += 1;
-        //     bit_util::set_bit(null_bitmap, idx);
-        // }
+        // TODO much duplicated from above
+        if let Some(null_bitmap) = null_bitmap {
+            if !bit_util::get_bit(null_bitmap.as_ref(), idx) {
+                self.bitmap[self.next_assignable as usize / 64] |=
+                    1u64 << (self.next_assignable as usize % 64);
+
+                ids[idx] = self.next_assignable;
+                self.next_assignable += 1;
+                bit_util::set_bit(null_bitmap, idx);
+            }
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
