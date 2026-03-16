@@ -90,33 +90,39 @@ impl PipelinePlanner {
         let mut results = Vec::new();
         let mut i = 0;
 
-        // try to plan multiple assignments at once. This allows us to do an optimized
-        // transformation in cases where we have expressions like:
-        // - set attributes["x"] = "a", attributes["y"] = "b"
-        // - set severity_text = "ERROR", severity_number = 5
-
-        // TODO ben weird, rcrire ça comme un grand
         while i < data_exprs.len() {
             let data_expr = &data_exprs[i];
-            if let Some(set) = Self::as_set_exp(data_expr) {
-                let mut set_exprs = vec![set]; // TODO smallvec
-                let mut j = i + 1;
-                while j < data_exprs.len()
-                    && let Some(set) = Self::as_set_exp(&data_exprs[j])
-                {
-                    set_exprs.push(set);
-                    j += 1;
-                }
-                //
-                let mut expr_results =
-                    self.plan_sets(&set_exprs, functions, session_ctx, otap_batch)?;
-                // TODO - _should_ we validate this like we do in the general case if the thing is
-                // for children? probably not
-                results.append(&mut expr_results);
 
-                i = j + 1;
-                continue;
+            // try to plan multiple assignments at once. This allows us to do an optimized
+            // transformation in cases where we have expressions like:
+            // - set attributes["x"] = "a", attributes["y"] = "b"
+            // - set severity_text = "ERROR", severity_number = 5
+            //
+            // we don't do this if we're planning a pipeline that operates directly on the
+            // attributes record batch because the only kind of assignment currently supported
+            // for this type of pipeline is `value = <expr>`, and it wouldn't make sense to
+            // coalesce `value=<expr>, value=<expr>` into a single assignment.
+            if !self.plan_for_attributes {
+                // TODO ben weird, rcrire ça comme un grand
+                if let Some(set) = Self::as_set_exp(data_expr) {
+                    let mut set_exprs = vec![set]; // TODO smallvec
+                    let mut j = i + 1;
+                    while j < data_exprs.len()
+                        && let Some(set) = Self::as_set_exp(&data_exprs[j])
+                    {
+                        set_exprs.push(set);
+                        j += 1;
+                    }
+                    //
+                    let mut expr_results =
+                        self.plan_sets(&set_exprs, functions, session_ctx, otap_batch)?;
+                    results.append(&mut expr_results);
+
+                    i = j + 1;
+                    continue;
+                }
             }
+
             let mut expr_results =
                 self.plan_data_expr(data_expr, functions, session_ctx, otap_batch)?;
 
@@ -647,10 +653,12 @@ impl PipelinePlanner {
                     }
                 })?;
 
-                return Ok(vec![Box::new(ApplyToAttributesPipelineStage::new(
+                results.push(Box::new(ApplyToAttributesPipelineStage::new(
                     attributes_id,
                     child_pipeline,
-                ))]);
+                )));
+
+                continue;
             }
 
             let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
@@ -678,21 +686,6 @@ impl PipelinePlanner {
         }
 
         Ok(results)
-    }
-
-    fn static_scalar_to_literal(static_val: &StaticScalarExpression) -> Result<LiteralValue> {
-        match static_val {
-            StaticScalarExpression::String(s) => Ok(LiteralValue::Str(s.get_value().to_string())),
-            StaticScalarExpression::Integer(i) => Ok(LiteralValue::Int(i.get_value())),
-            StaticScalarExpression::Boolean(b) => Ok(LiteralValue::Bool(b.get_value())),
-            StaticScalarExpression::Double(d) => Ok(LiteralValue::Double(d.get_value())),
-            _ => Err(Error::NotYetSupportedError {
-                message: format!(
-                    "unsupported static scalar type for attribute insert: {:?}",
-                    static_val
-                ),
-            }),
-        }
     }
 
     /// when we receive an expression representing a nested pipeline, we currently assume it is
