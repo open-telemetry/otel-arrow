@@ -710,10 +710,11 @@ pub(crate) struct PhysicalExprEvalResult {
     pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
-    ids: Option<ArrayRef>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    pub ids: Option<ArrayRef>,
+    // TODO pub for debugging ...
+    pub parent_ids: Option<ArrayRef>,
+    pub scope_ids: Option<ArrayRef>,
+    pub resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalExprEvalResult {

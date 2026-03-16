@@ -133,16 +133,19 @@ impl<'a> ParentIdSet<'a> {
         matches!(self.values, ParentIdSetArray::Dirty(_, _))
     }
 
-    pub fn into_id_col(self) -> Cow<'a, UInt16Array> {
-        match self.values {
+    // TODO not sure I like the interface here? should be into, but
+    // I want to cal it more than once, so it clones, etc. Yuck!
+    pub fn as_id_col(&self) -> Cow<'a, UInt16Array> {
+        match &self.values {
             ParentIdSetArray::Original(original) => Cow::Borrowed(original),
             ParentIdSetArray::Dirty(ids, nulls) => {
                 let nulls = nulls
+                    .clone()
                     .map(|nulls| Buffer::from(nulls))
                     .map(|buff| BooleanBuffer::new(buff, 0, ids.len()))
                     .map(NullBuffer::from);
 
-                Cow::Owned(UInt16Array::new(ScalarBuffer::from(ids), nulls))
+                Cow::Owned(UInt16Array::new(ScalarBuffer::from(ids.clone()), nulls))
             }
         }
     }

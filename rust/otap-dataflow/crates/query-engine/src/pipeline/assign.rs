@@ -364,9 +364,10 @@ impl AssignPipelineStage {
                 unreachable!("")
             };
 
-            let eval_result = eval_result.take().unwrap(); // TODO no unwrap
+            let mut eval_result = eval_result.take().unwrap(); // TODO no unwrap
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
+            println!("eval_result = {:#?}", eval_result);
             // TODO comment on why we do this
             match &eval_result.values {
                 ColumnarValue::Scalar(_) => {
@@ -375,6 +376,7 @@ impl AssignPipelineStage {
                 ColumnarValue::Array(arr) => {
                     match eval_result.data_scope.as_ref() {
                         DataScope::Root => {
+                            println!("arr = {:?}", arr);
                             println!("nulls = {:?}", arr.nulls());
                             if let Some(nulls) = arr.nulls() {
                                 // TODO need a test that gets in here
@@ -385,6 +387,12 @@ impl AssignPipelineStage {
                                     });
                             } else {
                                 parent_id_set.ensure_all();
+                            }
+
+                            if parent_id_set.is_dirty() {
+                                // TODO need to check that this is like assigning to the right column for thea attrs ID
+                                eval_result.ids =
+                                    Some(Arc::new(parent_id_set.as_id_col().into_owned()));
                             }
                         }
                         _ => {
@@ -489,7 +497,7 @@ impl AssignPipelineStage {
 
         // maybe replace the root
         if parent_id_set.is_dirty() {
-            let new_ids = parent_id_set.into_id_col().into_owned();
+            let new_ids = parent_id_set.as_id_col().into_owned();
             let new_root = try_upsert_column(consts::ID, Arc::new(new_ids), root_record_batch)?;
 
             otap_batch.set(otap_batch.root_payload_type(), new_root)
@@ -2086,6 +2094,64 @@ mod test {
     #[tokio::test]
     async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_kql_parser() {
         test_insert_attribute_from_root_where_some_target_has_no_attrs::<KqlParser>().await
+    }
+
+    // TODO this is a ridiculous test name
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results<
+        P: Parser,
+    >() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build().event_name("event2").finish(),
+            LogRecord::build().finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = event_name";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        arrow::util::pretty::print_batches(&[result
+            .get(ArrowPayloadType::LogAttrs)
+            .unwrap()
+            .clone()])
+        .unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("y")),
+                KeyValue::new("y", AnyValue::new_string("event1")),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("event2")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results_opl_parser()
+     {
+        test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_resultskql_parser()
+     {
+        test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results::<KqlParser>().await
     }
 
     async fn test_upsert_attribute_scalar<P: Parser>() {
