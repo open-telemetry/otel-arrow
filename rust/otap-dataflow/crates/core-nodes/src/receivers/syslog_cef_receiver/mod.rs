@@ -322,7 +322,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
-                                Ok((socket, _peer_addr)) => {
+                                Ok((socket, peer_addr)) => {
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
@@ -360,7 +360,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
                                                         "syslog_cef_receiver.tls.handshake.success",
-                                                        peer = %_peer_addr,
+                                                        peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
                                                     Box::new(BufReader::new(tls_stream))
@@ -368,7 +368,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 Err(e) => {
                                                     otel_warn!(
                                                         "syslog_cef_receiver.tls.handshake.failed",
-                                                        peer = %_peer_addr,
+                                                        peer = %peer_addr,
                                                         error = %e,
                                                         message = "TLS handshake failed, closing connection"
                                                     );
@@ -384,6 +384,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         #[cfg(not(feature = "experimental-tls"))]
                                         let mut reader = BufReader::new(socket);
+
+                                        // Suppress unused variable warning when TLS is disabled
+                                        let _ = peer_addr;
 
                                         let mut line_bytes = Vec::new();
 
