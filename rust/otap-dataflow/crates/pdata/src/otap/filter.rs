@@ -214,7 +214,6 @@ impl IdBitmap {
                     }
                     _ => {
                         // No corresponding page in other — zero this page
-                        sp.last_used_generation = self.generation;
                         sp.words.fill(0);
                     }
                 }
