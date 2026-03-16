@@ -270,8 +270,10 @@ structs and conventions used to configure as well as observe the
 pipeline, the engine, and the pipeline components.
 
 A number of example configurations are listed in
-[`./configs`](./configs). These are deserialized into the
-`otap_df_config::engine::EngineConfig` structs, defined in this crate.
+[`./configs`](./configs). The engine supports both single-pipeline
+configurations (`-p`) and full engine configurations (`-c`) with
+multiple pipeline groups; see the [configs README](./configs/README.md)
+for details.
 
 ### Channel
 

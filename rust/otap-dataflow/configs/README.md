@@ -1,12 +1,89 @@
-# Pipeline Configuration Examples
+# Configuration Examples
 
-This directory contains example pipeline configurations for the OTAP dataflow engine.
+This directory contains example configurations for the OTAP dataflow engine.
 
 Note: These configurations are based on the native OTAP dataflow engine
 configuration model, which is a superset of the Go Collector configuration
 model. Support for the Go Collector YAML format is planned for the future.
 
-## Available Configurations
+## Configuration Formats
+
+The engine supports two configuration formats, selected by CLI flag:
+
+### Pipeline Configuration (`-p` / `--pipeline`)
+
+A **pipeline configuration** defines a single pipeline. It is a flat
+YAML file with top-level keys such as `settings`, `quota`, `nodes`,
+and `service`. The engine wraps it automatically into a default
+pipeline group for execution.
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+quota:
+  core_allocation:
+    type: core_count
+    count: 4
+nodes:
+  my_receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - my_exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4327"
+  my_exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
+```
+
+Usage:
+
+```bash
+cargo run --release -- -p configs/otap-noop.yaml
+```
+
+All YAML files in the root of this directory use this format.
+
+### Engine Configuration (`-c` / `--config`)
+
+An **engine configuration** defines the full engine hierarchy: global
+engine settings and one or more pipeline groups, each containing one
+or more pipelines. Each pipeline has the same structure as a pipeline
+configuration.
+
+```yaml
+settings:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+pipeline_groups:
+  my_group:
+    pipelines:
+      pipeline_a:
+        nodes:
+          # ... same node structure as above
+      pipeline_b:
+        nodes:
+          # ...
+```
+
+Usage:
+
+```bash
+cargo run --release -- -c configs/engine-conf/continuous_benchmark.yaml
+```
+
+Engine configuration files are in the [`engine-conf/`](engine-conf/)
+subdirectory.
+
+For the full configuration schema, see the
+[config crate README](../crates/config/README.md).
+
+## Available Pipeline Configurations
 
 ### `fake-batch-debug-noop.yaml`
 
@@ -144,12 +221,15 @@ echo "<134>$(date '+%b %d %H:%M:%S') testhost CEF:0|Security|IDS|1.0|100|Test Ev
 
 ## Usage
 
-You can use these configurations with the following CLI command:
+You can use these configurations with the following CLI commands:
 
 ```bash
-# Use a specific configuration
+# Run a single pipeline configuration
 cargo run -- -p configs/otlp-otlp.yaml
 
 # Combine with custom core count
 cargo run -- -p configs/otlp-otlp.yaml --num-cores 4
+
+# Run an engine configuration (multiple pipeline groups)
+cargo run -- -c configs/engine-conf/continuous_benchmark.yaml
 ```

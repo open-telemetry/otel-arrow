@@ -8,18 +8,18 @@ From the workspace root directory:
 # Build the engine
 cargo build --release
 
-# Run with default configuration
-cargo run --release
-
-# Run with custom configuration file
+# Run with a single pipeline configuration
 cargo run --release -- -p configs/otlp-otlp.yaml
 
 # Run with custom core count
-cargo run --release -- --num-cores 4
+cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 4
 
-# Run with both custom config and cores
-cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 8
+# Run with an engine configuration (multiple pipeline groups)
+cargo run --release -- -c configs/engine-conf/continuous_benchmark.yaml
 
 # Get help
 cargo run --release -- --help
 ```
+
+See the [configs README](../configs/README.md) for the difference between
+pipeline (`-p`) and engine (`-c`) configuration formats.
