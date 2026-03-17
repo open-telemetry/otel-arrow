@@ -636,10 +636,10 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
 ///
 /// Note, the reason we need to join these is because we may have a different set of rows selected
 /// on either side. This would happen for expressions like `attributes["x"] + attributes["y"]`.
-struct AttributeToSameAttributeJoin {}
+pub(crate) struct AttributeToSameAttributeJoin {}
 
 impl AttributeToSameAttributeJoin {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {}
     }
 }
@@ -686,13 +686,13 @@ impl JoinExec for AttributeToSameAttributeJoin {
 ///
 /// i.e. join on left.parent_id == root.id and right.parent_id = root.<scope/resource>.id
 ///
-struct AttributeToDifferentAttributeJoin {
+pub(crate) struct AttributeToDifferentAttributeJoin {
     left: AttributesIdentifier,
     right: AttributesIdentifier,
 }
 
 impl AttributeToDifferentAttributeJoin {
-    fn new(left: AttributesIdentifier, right: AttributesIdentifier) -> Self {
+    pub fn new(left: AttributesIdentifier, right: AttributesIdentifier) -> Self {
         Self { left, right }
     }
 }
