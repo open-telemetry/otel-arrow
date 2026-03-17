@@ -1429,7 +1429,11 @@ pub(crate) fn filter_otap_batch(
     let new_root_batch = filter_record_batch(root_batch, selection_vec)?;
 
     // replace the root batch
-    otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
+    // safety: Filtering a valid payload should produce a valid payload of the
+    // same type.
+    otap_batch
+        .set(otap_batch.root_payload_type(), new_root_batch)
+        .expect("valid otap batch");
 
     // Acquire a reusable bitmap from the pool for child batch filtering. The closure ensures
     // the bitmap is always returned to the pool, even if a filter_child_batch call returns an
@@ -1671,7 +1675,7 @@ where
                 cause: format!("error filtering child batch {:?}", e),
             }
         })?;
-        otap_batch.set(child_payload_type, new_child_rb);
+        otap_batch.set(child_payload_type, new_child_rb)?;
     }
 
     Ok(())
@@ -4525,7 +4529,9 @@ mod test {
         )
         .unwrap();
 
-        otap_batch.set(ArrowPayloadType::LogAttrs, attrs_rb);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, attrs_rb)
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4924,7 +4930,9 @@ mod test {
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::Logs, input.clone())
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4954,7 +4962,9 @@ mod test {
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::Logs, input.clone())
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4990,7 +5000,9 @@ mod test {
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, input.clone())
+            .unwrap();
         let session_ctx = Pipeline::create_session_context();
 
         let mut pool = IdBitmapPool::new();

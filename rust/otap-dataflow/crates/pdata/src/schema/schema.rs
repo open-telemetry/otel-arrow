@@ -6,8 +6,7 @@
 
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
 
-use crate::error::Error;
-use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use crate::schema::error::Error;
 
 /// Leaf Arrow data types used in OTAP schemas.
 ///
@@ -245,11 +244,7 @@ impl Schema {
     /// - Struct/List sub-field validation (recursive)
     ///
     /// The hot path (all columns valid) performs zero heap allocations.
-    pub fn check_match(
-        &self,
-        payload_type: ArrowPayloadType,
-        record_batch: &RecordBatch,
-    ) -> crate::error::Result<()> {
+    pub fn check_match(&self, record_batch: &RecordBatch) -> crate::schema::error::Result<()> {
         let rb_schema = record_batch.schema();
         let mut found_required: usize = 0;
         let required_count = self.fields.iter().filter(|f| f.required).count();
@@ -259,7 +254,6 @@ impl Schema {
             let Some(field_def) = self.get(name) else {
                 return Err(Error::ExtraneousField {
                     name: name.to_string(),
-                    payload_type,
                 });
             };
 
@@ -267,7 +261,6 @@ impl Schema {
             if !field_def.data_type.matches(column) {
                 return Err(Error::FieldTypeMismatch {
                     name: name.to_string(),
-                    payload_type,
                     expected: field_def.data_type,
                     actual: arrow_field.data_type().clone(),
                 });
@@ -278,7 +271,6 @@ impl Schema {
                 if column.null_count() > 0 {
                     return Err(Error::MissingRequiredFields {
                         names: vec![name.to_string()],
-                        payload_type,
                     });
                 }
             }
@@ -296,10 +288,7 @@ impl Schema {
             .map(|n| n.to_string())
             .collect();
 
-        Err(Error::MissingRequiredFields {
-            names: missing,
-            payload_type,
-        })
+        Err(Error::MissingRequiredFields { names: missing })
     }
 }
 
@@ -704,7 +693,7 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["x"]))]).unwrap();
-        match TEST_SCHEMA.check_match(ArrowPayloadType::Unknown, &batch) {
+        match TEST_SCHEMA.check_match(&batch) {
             Err(Error::MissingRequiredFields { names, .. }) => {
                 assert!(names.contains(&"a".to_string()));
             }
@@ -721,7 +710,7 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["x"]))]).unwrap();
-        match TEST_SCHEMA.check_match(ArrowPayloadType::Unknown, &batch) {
+        match TEST_SCHEMA.check_match(&batch) {
             Err(Error::FieldTypeMismatch { .. }) => {}
             other => panic!("expected FieldTypeMismatch, got {other:?}"),
         }

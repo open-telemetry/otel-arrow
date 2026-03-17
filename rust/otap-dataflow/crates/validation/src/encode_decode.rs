@@ -35,11 +35,15 @@ impl OtelProtoSimulator {
             .consume_bar(&mut bar)
             .map_err(|e| e.to_string())?;
         let otap_message = match proto_message {
-            OtlpProtoMessage::Logs(_) => OtapArrowRecords::Logs(from_record_messages(records)),
-            OtlpProtoMessage::Metrics(_) => {
-                OtapArrowRecords::Metrics(from_record_messages(records))
+            OtlpProtoMessage::Logs(_) => {
+                OtapArrowRecords::Logs(from_record_messages(records).map_err(|e| e.to_string())?)
             }
-            OtlpProtoMessage::Traces(_) => OtapArrowRecords::Traces(from_record_messages(records)),
+            OtlpProtoMessage::Metrics(_) => {
+                OtapArrowRecords::Metrics(from_record_messages(records).map_err(|e| e.to_string())?)
+            }
+            OtlpProtoMessage::Traces(_) => {
+                OtapArrowRecords::Traces(from_record_messages(records).map_err(|e| e.to_string())?)
+            }
         };
         Ok(otap_to_otlp(&otap_message))
     }
