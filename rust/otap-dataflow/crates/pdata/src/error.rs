@@ -241,7 +241,7 @@ pub enum Error {
 
     #[error(
         "Column `{name}` type mismatch in payload {payload_type:?}, \
-         expected OTAP type {expected}, actual: {actual}"
+         expected OTAP type {expected:?}, actual: {actual}"
     )]
     FieldTypeMismatch {
         name: String,

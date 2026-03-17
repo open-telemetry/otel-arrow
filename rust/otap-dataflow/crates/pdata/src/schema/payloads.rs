@@ -1328,36 +1328,16 @@ mod tests {
     };
     use std::sync::Arc;
 
-    /// Return all payload types that have non-empty definitions.
-    fn all_payload_types() -> &'static [ArrowPayloadType] {
-        &[
-            ArrowPayloadType::Logs,
-            ArrowPayloadType::LogAttrs,
-            ArrowPayloadType::Spans,
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::SpanLinks,
-            ArrowPayloadType::SpanEventAttrs,
-            ArrowPayloadType::SpanLinkAttrs,
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            ArrowPayloadType::MetricAttrs,
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-        ]
+    /// Return the union of all payload types across Logs, Traces, and Metrics.
+    fn all_payload_types() -> Vec<ArrowPayloadType> {
+        Logs::allowed_payload_types()
+            .iter()
+            .chain(Traces::allowed_payload_types())
+            .chain(Metrics::allowed_payload_types())
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Build a 1-element Arrow array for the given OTAP DataType.
@@ -1564,6 +1544,98 @@ mod tests {
         RecordBatch::try_new(arrow_schema, arrays).unwrap()
     }
 
+    // -- Targeted sub-schema idx tests -----------------------------------------
+
+    /// Verify every field in the resource sub-schema (used by all root signal
+    /// tables) is reachable via its `idx` function, and unknown names return
+    /// `None`.  This exercises `resource_idx` directly.
+    #[test]
+    fn test_resource_idx() {
+        // Reach the resource sub-schema through the Logs payload.
+        let logs_schema = get(ArrowPayloadType::Logs);
+        let res_field = logs_schema.get(RESOURCE).expect("resource field in logs");
+        let res_sub = res_field
+            .data_type
+            .as_struct_schema()
+            .expect("resource is a struct");
+
+        assert!(res_sub.get(ID).is_some(), "resource sub-schema has 'id'");
+        assert!(
+            res_sub.get(DROPPED_ATTRIBUTES_COUNT).is_some(),
+            "resource sub-schema has 'dropped_attributes_count'"
+        );
+        assert!(
+            res_sub.get(SCHEMA_URL).is_some(),
+            "resource sub-schema has 'schema_url'"
+        );
+        assert!(
+            res_sub.get("__unknown__").is_none(),
+            "resource sub-schema rejects unknown field"
+        );
+    }
+
+    /// Verify every field in the quantile-item sub-schema (nested inside the
+    /// `quantile` List column of SummaryDataPoints) is reachable via its `idx`
+    /// function.  This exercises `quantile_idx` directly.
+    #[test]
+    fn test_quantile_idx() {
+        let schema = get(ArrowPayloadType::SummaryDataPoints);
+        let qv_field = schema
+            .get(SUMMARY_QUANTILE_VALUES)
+            .expect("quantile_values field in SummaryDataPoints");
+        let inner_dt = match &qv_field.data_type {
+            DataType::List(inner) => inner,
+            other => panic!("expected List, got {other:?}"),
+        };
+        let item_sub = inner_dt
+            .as_struct_schema()
+            .expect("quantile list item is a struct");
+
+        assert!(
+            item_sub.get(SUMMARY_QUANTILE).is_some(),
+            "quantile item schema has 'quantile'"
+        );
+        assert!(
+            item_sub.get(SUMMARY_VALUE).is_some(),
+            "quantile item schema has 'value'"
+        );
+        assert!(
+            item_sub.get("__unknown__").is_none(),
+            "quantile item schema rejects unknown field"
+        );
+    }
+
+    /// Verify every field in the buckets sub-schema (used by the `positive` and
+    /// `negative` struct columns of ExpHistogramDataPoints) is reachable via its
+    /// `idx` function.  This exercises `buckets_idx` directly.
+    #[test]
+    fn test_buckets_idx() {
+        let schema = get(ArrowPayloadType::ExpHistogramDataPoints);
+
+        for col_name in [EXP_HISTOGRAM_POSITIVE, EXP_HISTOGRAM_NEGATIVE] {
+            let field = schema
+                .get(col_name)
+                .unwrap_or_else(|| panic!("field '{col_name}' in ExpHistogramDataPoints"));
+            let buckets_sub = field
+                .data_type
+                .as_struct_schema()
+                .unwrap_or_else(|| panic!("'{col_name}' is a struct"));
+
+            assert!(
+                buckets_sub.get(EXP_HISTOGRAM_BUCKET_COUNTS).is_some(),
+                "'{col_name}' sub-schema has 'bucket_counts'"
+            );
+            assert!(
+                buckets_sub.get(EXP_HISTOGRAM_OFFSET).is_some(),
+                "'{col_name}' sub-schema has 'offset'"
+            );
+            assert!(
+                buckets_sub.get("__unknown__").is_none(),
+                "'{col_name}' sub-schema rejects unknown field"
+            );
+        }
+    }
+
     // -- Structural tests ------------------------------------------------------
 
     #[test]
@@ -1581,7 +1653,7 @@ mod tests {
 
     #[test]
     fn test_idx_functions_consistent_with_fields() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema = get(pt);
             for (i, field) in schema.fields().iter().enumerate() {
                 let got = schema.get(field.name);
@@ -1601,7 +1673,7 @@ mod tests {
 
     #[test]
     fn test_required_fields_are_in_schema() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema = get(pt);
             for req_name in schema.required_field_names() {
                 let field = schema.get(req_name);
@@ -1619,7 +1691,7 @@ mod tests {
 
     #[test]
     fn test_required_count_le_total_count() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema = get(pt);
             let req_count = schema.required_field_names().count();
             assert!(
@@ -1665,7 +1737,7 @@ mod tests {
 
     #[test]
     fn test_validate_accepts_valid_batch_all_payload_types() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let batch = match build_valid_batch(pt) {
                 Some(b) => b,
                 None => continue,
@@ -1678,7 +1750,7 @@ mod tests {
     fn test_validate_rejects_extraneous_column_all_payload_types() {
         use arrow::array::Int32Array;
 
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema_def = get(pt);
             if schema_def.fields().is_empty() {
                 continue;
@@ -1698,7 +1770,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_missing_required_all_payload_types() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema_def = get(pt);
             if schema_def.fields().is_empty() {
                 continue;
@@ -1728,7 +1800,7 @@ mod tests {
     fn test_validate_rejects_wrong_type_all_payload_types() {
         use arrow::array::{BooleanArray, Int64Array};
 
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema_def = get(pt);
             if schema_def.fields().is_empty() {
                 continue;
@@ -1777,7 +1849,7 @@ mod tests {
 
     #[test]
     fn test_validate_dict_key_size_all_payload_types() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema_def = get(pt);
             if schema_def.fields().is_empty() {
                 continue;
@@ -1876,7 +1948,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_nulls_in_required_all_payload_types() {
-        for &pt in all_payload_types() {
+        for pt in all_payload_types() {
             let schema_def = get(pt);
             if schema_def.fields().is_empty() {
                 continue;

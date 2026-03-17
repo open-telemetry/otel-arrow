@@ -31,26 +31,6 @@ pub enum SimpleType {
     DurationNanosecond,
 }
 
-impl std::fmt::Display for SimpleType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Boolean => f.write_str("Boolean"),
-            Self::UInt8 => f.write_str("UInt8"),
-            Self::UInt16 => f.write_str("UInt16"),
-            Self::UInt32 => f.write_str("UInt32"),
-            Self::UInt64 => f.write_str("UInt64"),
-            Self::Int32 => f.write_str("Int32"),
-            Self::Int64 => f.write_str("Int64"),
-            Self::Float64 => f.write_str("Float64"),
-            Self::Utf8 => f.write_str("Utf8"),
-            Self::Binary => f.write_str("Binary"),
-            Self::FixedSizeBinary(n) => write!(f, "FixedSizeBinary({n})"),
-            Self::TimestampNanosecond => f.write_str("Timestamp(ns)"),
-            Self::DurationNanosecond => f.write_str("Duration(ns)"),
-        }
-    }
-}
-
 impl SimpleType {
     /// Convert to the corresponding [`arrow::datatypes::DataType`].
     #[must_use]
@@ -85,15 +65,6 @@ impl SimpleType {
 pub enum DictKeySize {
     U8,
     U16,
-}
-
-impl std::fmt::Display for DictKeySize {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::U8 => f.write_str("UInt8"),
-            Self::U16 => f.write_str("UInt16"),
-        }
-    }
 }
 
 /// OTAP-level data type.
@@ -205,20 +176,6 @@ impl DataType {
     #[must_use]
     pub fn is_complex(&self) -> bool {
         matches!(self, Self::Struct(_) | Self::List(_))
-    }
-}
-
-impl std::fmt::Display for DataType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Simple(s) => write!(f, "{s}"),
-            Self::Dictionary {
-                min_key_size,
-                value_type,
-            } => write!(f, "Dict(>={min_key_size}, {value_type})"),
-            Self::Struct(_) => f.write_str("Struct(...)"),
-            Self::List(inner) => write!(f, "List({inner})"),
-        }
     }
 }
 
