@@ -23,11 +23,11 @@
 //!            └── Summary
 //! ```
 
-use crate::proto::opentelemetry::metrics::v1 as proto;
-
-use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView, Str};
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::{SpanId, TraceId};
+use crate::views::{
+    common::{AttributeView, InstrumentationScopeView, Str},
+    resource::ResourceView,
+};
+use crate::{SpanId, TraceId};
 
 /// View for top level MetricsData
 pub trait MetricsView {
@@ -153,19 +153,6 @@ pub enum DataType {
 
     /// Summary metric data are used to convey quantile summaries.
     Summary = 5,
-}
-
-impl From<&proto::metric::Data> for DataType {
-    fn from(value: &proto::metric::Data) -> Self {
-        use proto::metric::Data::*;
-        match value {
-            Gauge(_) => DataType::Gauge,
-            Sum(_) => DataType::Sum,
-            Histogram(_) => DataType::Histogram,
-            ExponentialHistogram(_) => DataType::ExponentialHistogram,
-            Summary(_) => DataType::Summary,
-        }
-    }
 }
 
 /// View for Data
@@ -323,26 +310,6 @@ impl Value {
     }
 }
 
-impl From<&proto::exemplar::Value> for Value {
-    fn from(value: &proto::exemplar::Value) -> Self {
-        use proto::exemplar::Value::*;
-        match value {
-            AsDouble(d) => Value::Double(*d),
-            AsInt(i) => Value::Integer(*i),
-        }
-    }
-}
-
-impl From<&proto::number_data_point::Value> for Value {
-    fn from(value: &proto::number_data_point::Value) -> Self {
-        use proto::number_data_point::Value::*;
-        match value {
-            AsDouble(d) => Value::Double(*d),
-            AsInt(i) => Value::Integer(*i),
-        }
-    }
-}
-
 /// View for Exemplar
 pub trait ExemplarView {
     /// The `AttributeView` type associated with this implementation.
@@ -489,17 +456,6 @@ pub enum AggregationTemporality {
     /// CUMULATIVE is an AggregationTemporality for a metric aggregator which reports changes since
     /// a fixed start time.
     Cumulative = 2,
-}
-
-impl From<proto::AggregationTemporality> for AggregationTemporality {
-    fn from(value: proto::AggregationTemporality) -> Self {
-        use AggregationTemporality::*;
-        match value {
-            proto::AggregationTemporality::Unspecified => Unspecified,
-            proto::AggregationTemporality::Delta => Delta,
-            proto::AggregationTemporality::Cumulative => Cumulative,
-        }
-    }
 }
 
 impl From<u32> for AggregationTemporality {
