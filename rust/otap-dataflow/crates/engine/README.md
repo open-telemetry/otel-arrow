@@ -93,6 +93,40 @@ The current message families are:
   `ReceiverDrained`, `Shutdown`
 - **Pipeline return messages**: `DeliverAck`, `DeliverNack`
 
+## Runtime Properties
+
+The runtime is designed around a small set of explicit guarantees:
+
+- **Isolated control paths:** timer and shutdown orchestration, Ack/Nack
+  unwinding, and node-local control delivery use separate bounded channels and
+  dedicated runtime components. This keeps completion traffic, scheduling, and
+  node control independent at the runtime level.
+- **Bounded progress under load:** processor/exporter delivery loops and
+  `PipelineCtrlMsgManager` use bounded-fair scheduling. Control remains
+  responsive, while `pdata`, timer expiry, telemetry collection, and delayed
+  data resumption continue to make progress under sustained control traffic.
+- **Explicit node-level admission control:** processors can temporarily pause
+  `pdata` delivery via `accept_pdata()` while continuing to receive control
+  messages. Exporters can apply the same admission-control pattern in their
+  run loops by using `MessageChannel::recv_when(false)` when they are at
+  capacity. This makes in-flight limits, retry state reduction, and
+  backpressure an explicit part of the runtime contract.
+- **Receiver-first graceful drain:** shutdown begins by draining ingress rather
+  than abruptly stopping the whole DAG. `DrainIngress` stops new external work,
+  receivers keep receiver-local drain state alive for already-admitted work,
+  and `ReceiverDrained` marks the point where downstream shutdown may begin.
+- **Stable completion semantics for admitted work:** receivers that maintain
+  request/response waiters can continue routing downstream Ack/Nack outcomes
+  for already-admitted work during drain, until completion or the shutdown
+  deadline.
+- **Explicit quiescing semantics:** draining cancels recurring timers and does
+  not start new periodic work. Already-queued delayed data is returned
+  immediately to the originating node so it can resolve retries or final
+  outcomes explicitly before exit.
+- **Bounded memory and explicit backpressure:** all runtime communication
+  remains bounded, so pressure is surfaced through the relevant channel family
+  instead of being hidden behind unbounded buffering.
+
 ## Effect Handlers
 
 ### Concept and Purpose
