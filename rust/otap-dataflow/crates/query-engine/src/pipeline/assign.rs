@@ -2173,6 +2173,56 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn test_inserts_attributes_when_eval_result_null_for_only_some_rows() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("z", AnyValue::new_int(5))])
+                .event_name("event2")
+                .finish(),
+            LogRecord::build().event_name("event3").finish(),
+        ]);
+
+        // there is no attribute z
+        let query = "logs | extend attributes[\"y\"] = attributes[\"x\"] * 2";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(5)),
+                KeyValue::new("y", AnyValue::new_int(10)),
+            ]
+        );
+
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("z", AnyValue::new_int(14)),
+                KeyValue::new("y", AnyValue { value: None }),
+            ]
+        );
+
+        let log_2 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[2];
+        assert_eq!(
+            log_2.attributes,
+            vec![KeyValue::new("y", AnyValue { value: None }),]
+        );
+    }
+
     async fn test_insert_attribute_non_string_types<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
