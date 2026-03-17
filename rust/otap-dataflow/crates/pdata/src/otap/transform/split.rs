@@ -760,7 +760,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_logs() {
-        test_split_logs_batches(&[logs!(
+        test_split_stores(&[logs!(
             (Logs,
                 ("id", UInt16, vec![0u16, 1, 2, 3, 4, 5]),
                 ("scope.id", UInt16, vec![0u16, 0, 0, 1, 1, 2]),
@@ -832,7 +832,7 @@ mod tests {
         let resource_pids   = vec![0u16, 0, 1, 1];
 
         // Plain parent_ids
-        test_split_traces_batches(&[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -854,7 +854,7 @@ mod tests {
         )]);
 
         // Dict<UInt8, UInt32> parent_ids for u32 columns
-        test_split_traces_batches(&[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -876,7 +876,7 @@ mod tests {
         )]);
 
         // Dict<UInt16, UInt32> parent_ids for u32 columns
-        test_split_traces_batches(&[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -926,7 +926,7 @@ mod tests {
     fn test_split_overlapping_parent_ranges() {
         // Tests the scenario where some different child ids are associated to the same
         // parent.
-        test_split_traces_batches(&[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, vec![0u16, 1, 2, 3])),
             (SpanEvents,
@@ -958,7 +958,7 @@ mod tests {
         let gauge_types = vec![MetricType::Gauge as u8; 4];
 
         // Plain parent_ids
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -983,7 +983,7 @@ mod tests {
         )]);
 
         // Dict<UInt8, UInt32> parent_ids for u32 columns
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -1008,7 +1008,7 @@ mod tests {
         )]);
 
         // Dict<UInt16, UInt32> parent_ids for u32 columns
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_histogram_dp() {
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::Histogram as u8; 4]),
@@ -1064,7 +1064,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_exp_histogram_dp() {
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::ExponentialHistogram as u8; 4]),
@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_summary_dp() {
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::Summary as u8; 4]),
@@ -1147,7 +1147,7 @@ mod tests {
         //   metric 1 → Histogram    (2 dp)
         //   metric 2 → ExpHistogram (2 dp)
         //   metric 3 → Summary      (2 dp)
-        test_split_metrics_batches(&[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![
@@ -1206,7 +1206,7 @@ mod tests {
             (ResourceAttrs,
                 ("parent_id", UInt16, vec![0u16, 0, 1]))
         );
-        test_split_logs_batches(&[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     #[test]
@@ -1241,7 +1241,7 @@ mod tests {
                 ("id", UInt32, vec![0u32, 1]),
                 ("parent_id", UInt16, vec![1u16, 2]))
         );
-        test_split_traces_batches(&[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     #[test]
@@ -1279,7 +1279,7 @@ mod tests {
                 ("id", UInt32, vec![0u32, 1, 2]),
                 ("parent_id", UInt16, vec![0u16, 0, 1]))
         );
-        test_split_metrics_batches(&[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     fn test_split<const N: usize>(
@@ -1395,18 +1395,6 @@ mod tests {
             store.into()
         };
         test_split::<N>(&to_otap, &batches);
-    }
-
-    fn test_split_logs_batches(stores: &[Logs]) {
-        test_split_stores::<Logs, { Logs::COUNT }>(stores);
-    }
-
-    fn test_split_traces_batches(stores: &[Traces]) {
-        test_split_stores::<Traces, { Traces::COUNT }>(stores);
-    }
-
-    fn test_split_metrics_batches(stores: &[Metrics]) {
-        test_split_stores::<Metrics, { Metrics::COUNT }>(stores);
     }
 
     /// Derive the root `ArrowPayloadType` from the const generic batch size.

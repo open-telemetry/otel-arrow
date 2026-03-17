@@ -188,14 +188,15 @@ where
     }
 }
 
-// /// Utility for pretty printing a bunch of otap batches, nice for debugging
-// pub(crate) fn pretty_print_otap_batches<const N: usize>(batches: &[[Option<RecordBatch>; N]]) {
-//     for (idx, b) in batches.iter().enumerate() {
-//         use arrow::util::pretty;
-//         println!("-----Batch #{}------", idx);
-//         for rb in b.iter().flatten().cloned() {
-//             println!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
-//         }
-//         println!("-----End Batch #{}------", idx);
-//     }
-// }
+/// Utility for pretty printing a bunch of otap batches, nice for debugging
+#[allow(dead_code)]
+pub(crate) fn pretty_print_otap_batches<const N: usize>(batches: &[[Option<RecordBatch>; N]]) {
+    for (idx, b) in batches.iter().enumerate() {
+        use arrow::util::pretty;
+        println!("-----Batch #{}------", idx);
+        for rb in b.iter().flatten().cloned() {
+            println!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
+        }
+        println!("-----End Batch #{}------", idx);
+    }
+}
