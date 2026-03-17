@@ -129,7 +129,9 @@ impl SignalGenerator {
     /// gives each entry a share of batches proportional to its weight.
     fn attrs_for_batch(&self, batch_index: u64) -> Option<&HashMap<String, String>> {
         match self {
-            SignalGenerator::Static { entries, rotation, .. } if !rotation.is_empty() => {
+            SignalGenerator::Static {
+                entries, rotation, ..
+            } if !rotation.is_empty() => {
                 let slot = rotation[batch_index as usize % rotation.len()];
                 Some(&entries[slot].attrs)
             }

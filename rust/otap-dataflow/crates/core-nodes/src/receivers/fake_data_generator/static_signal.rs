@@ -237,7 +237,12 @@ fn generate_body(size_bytes: usize) -> String {
 /// Each attribute is a string key-value pair like `attr_0 = "value_0"`.
 fn generate_log_attributes(count: usize) -> Vec<KeyValue> {
     (0..count)
-        .map(|i| KeyValue::new(format!("attr_{i}"), AnyValue::new_string(format!("value_{i}"))))
+        .map(|i| {
+            KeyValue::new(
+                format!("attr_{i}"),
+                AnyValue::new_string(format!("value_{i}")),
+            )
+        })
         .collect()
 }
 
