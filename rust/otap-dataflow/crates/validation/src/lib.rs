@@ -3,11 +3,13 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+/// Docker container configuration for validation scenarios
+pub mod container;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
 pub mod error;
-/// temp fanout processor to use use for validation test
+/// temp fanout processor to use for validation test
 pub mod fanout_processor;
 /// metric definition to serialize json result from metric admin endpoint
 pub mod metrics_types;
@@ -17,6 +19,8 @@ pub mod pipeline;
 pub mod scenario;
 /// internal pipeline simulation utilities
 mod simulate;
+/// shared Jinja2 template rendering helper
+mod template;
 /// define structs to describe the traffic being created and captured for validation
 pub mod traffic;
 /// validation exporter to receive messages and assert their equivalence
@@ -24,6 +28,8 @@ pub mod validation_exporter;
 /// invariants/checks helpers (attribute diff, filtering detection, etc.)
 pub mod validation_types;
 
+pub use container::ContainerConfig;
+pub use error::ValidationError;
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
@@ -32,6 +38,7 @@ mod tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
+    #[cfg(target_os = "linux")]
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
     use std::time::Duration;
 
@@ -93,7 +100,11 @@ mod tests {
             .expect("validation scenario failed");
     }
 
+    // Pipeline validation tests are end-to-end integration tests that spin up real
+    // gRPC servers and are inherently slow (~60s+). They validate data correctness
+    // through platform-independent code paths, so running on Linux alone is sufficient.
     #[test]
+    #[cfg(target_os = "linux")]
     fn attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
@@ -129,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
@@ -218,7 +230,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline.
     #[test]
     fn tls_no_processor() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
@@ -270,7 +282,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
     fn mtls_no_processor() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();

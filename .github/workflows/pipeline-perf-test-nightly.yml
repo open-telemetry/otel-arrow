@@ -10,7 +10,7 @@ on:
 
 jobs:
   pipeline-perf-test:
-    runs-on: oracle-bare-metal-64cpu-512gb-x86-64
+    runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
@@ -90,6 +90,11 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
 
+      - name: Run syslog TCP performance test log suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-tcp-docker.yaml
+
       - name: Run standard load batch size test suite
         if: ${{ !cancelled() }}
         run: |
@@ -114,6 +119,12 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
+      - name: Run batch processor performance test log suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
+
       - name: Run saturation/scaling performance test suite
         if: ${{ !cancelled() }}
         run: |
@@ -133,6 +144,12 @@ jobs:
         with:
           name: syslog-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
+
+      - name: Upload syslog TCP results for processing
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: syslog-tcp-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_syslog_tcp/gh-actions-benchmark/*.json
 
       - name: Upload standard load batch size results for processing
         if: ${{ !cancelled() }}
@@ -154,6 +171,13 @@ jobs:
         with:
           name: filter-nightly-results
           path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
+
+      - name: Upload batch processor results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: batch-processor-nightly-results
+          path: tools/pipeline_perf_test/results/nightly_batch_processor/gh-actions-benchmark/*.json
 
       - name: Upload otelcol filter results for processing
         if: ${{ !cancelled() }}
@@ -200,6 +224,13 @@ jobs:
           merge-multiple: true
           path: syslog_results
 
+      - name: Download syslog TCP artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: syslog-tcp-nightly-results*
+          merge-multiple: true
+          path: syslog_tcp_results
+
       - name: Download standard load batch size artifacts
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
@@ -220,6 +251,13 @@ jobs:
           pattern: filter-nightly-results*
           merge-multiple: true
           path: filter_results
+
+      - name: Download batch processor artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: batch-processor-nightly-results*
+          merge-multiple: true
+          path: batch_processor_results
 
       - name: Download otelcol filter artifacts
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -245,6 +283,10 @@ jobs:
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
+      - name: Consolidate syslog TCP benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_tcp_results syslog_tcp_output.json
+
       - name: Consolidate standard load batch size benchmark data
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh standardload_batch_size_results standardload_batch_size_output.json
@@ -256,6 +298,10 @@ jobs:
       - name: Consolidate filter benchmark data
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
+
+      - name: Consolidate batch processor benchmark data
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh batch_processor_results batch_processor_output.json
 
       - name: Consolidate otelcol filter benchmark data
         run: |
@@ -274,6 +320,18 @@ jobs:
           max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/nightly/syslog"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update syslog TCP benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: syslog_tcp_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/syslog-tcp"
           auto-push: true
           save-data-file: true
 
@@ -310,6 +368,18 @@ jobs:
           max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update batch processor benchmark data
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: batch_processor_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/batch-processor"
           auto-push: true
           save-data-file: true
 

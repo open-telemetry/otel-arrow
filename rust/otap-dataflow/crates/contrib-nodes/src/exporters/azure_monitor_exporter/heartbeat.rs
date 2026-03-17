@@ -3,7 +3,6 @@
 
 use serde::Serialize;
 
-use super::AZURE_MONITOR_EXPORTER_URN;
 use super::config::ApiConfig;
 use super::error::Error;
 use chrono::Utc;
@@ -33,25 +32,28 @@ struct HeartbeatRow {
     #[serde(rename = "Time")]
     time: String,
 
-    #[serde(rename = "Version")]
-    version: String,
+    #[serde(rename = "Computer")]
+    computer: String,
+
+    #[serde(rename = "OSType")]
+    os_type: String,
 
     #[serde(rename = "OSName")]
     os_name: String,
-
-    #[serde(rename = "Computer")]
-    computer: String,
 
     #[serde(rename = "OSMajorVersion")]
     os_major_version: String,
 
     #[serde(rename = "OSMinorVersion")]
     os_minor_version: String,
+
+    #[serde(rename = "Version")]
+    version: String,
 }
 
 #[inline]
 fn default_heartbeat_version() -> String {
-    std::env::var("IMAGE").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[inline]
@@ -61,8 +63,7 @@ fn default_heartbeat_os_name() -> String {
 
 #[inline]
 fn default_heartbeat_computer() -> String {
-    std::env::var("ARM_RESOURCE_ID")
-        .or_else(|_| std::env::var("HOSTNAME"))
+    std::env::var("HOSTNAME")
         .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "UnknownComputer".to_string()))
 }
 
@@ -97,15 +98,24 @@ fn parse_os_version() -> (String, String) {
 
 #[inline]
 fn default_heartbeat_os_major_version() -> String {
-    std::env::var("POD_NAME").unwrap_or_else(|_| {
-        let (major, _) = parse_os_version();
-        major
-    })
+    let (major, _) = parse_os_version();
+    major
 }
 
 #[inline]
 fn default_heartbeat_os_minor_version() -> String {
-    AZURE_MONITOR_EXPORTER_URN.to_string()
+    let (_, minor) = parse_os_version();
+    minor
+}
+
+#[inline]
+fn default_heartbeat_os_type() -> String {
+    match std::env::consts::OS {
+        "linux" => "Linux".to_string(),
+        "windows" => "Windows".to_string(),
+        "macos" => "MacOS".to_string(),
+        other => other.to_string(),
+    }
 }
 
 impl Heartbeat {
@@ -128,11 +138,12 @@ impl Heartbeat {
             ),
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
-                version: default_heartbeat_version(),
-                os_name: default_heartbeat_os_name(),
                 computer: default_heartbeat_computer(),
+                os_type: default_heartbeat_os_type(),
+                os_name: default_heartbeat_os_name(),
                 os_major_version: default_heartbeat_os_major_version(),
                 os_minor_version: default_heartbeat_os_minor_version(),
+                version: default_heartbeat_version(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         })
@@ -147,11 +158,12 @@ impl Heartbeat {
             endpoint,
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
-                version: "test-version".to_string(),
-                os_name: "test-os".to_string(),
                 computer: "test-computer".to_string(),
+                os_type: "Linux".to_string(),
+                os_name: "test-os".to_string(),
                 os_major_version: "1".to_string(),
                 os_minor_version: "0".to_string(),
+                version: "test-version".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
         }
@@ -222,6 +234,7 @@ mod tests {
     // ==================== Test Helpers ====================
 
     fn create_test_client() -> Client {
+        otap_df_otap::crypto::ensure_crypto_provider();
         Client::builder().build().unwrap()
     }
 
@@ -242,60 +255,66 @@ mod tests {
     #[test]
     fn test_heartbeat_row_serialization() {
         let row = HeartbeatRow {
-            time: "2026-01-22T10:00:00Z".to_string(),
-            version: "1.0.0".to_string(),
-            os_name: "Linux".to_string(),
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test-computer".to_string(),
+            os_type: "Linux".to_string(),
+            os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let json = serde_json::to_value(&row).unwrap();
 
-        assert_eq!(json["Time"], "2026-01-22T10:00:00Z");
-        assert_eq!(json["Version"], "1.0.0");
-        assert_eq!(json["OSName"], "Linux");
+        assert_eq!(json["Time"], "2026-03-11T10:00:00Z");
         assert_eq!(json["Computer"], "test-computer");
+        assert_eq!(json["OSType"], "Linux");
+        assert_eq!(json["OSName"], "Ubuntu");
         assert_eq!(json["OSMajorVersion"], "22");
         assert_eq!(json["OSMinorVersion"], "04");
+        assert_eq!(json["Version"], "1.0.0");
     }
 
     #[test]
     fn test_heartbeat_row_serialization_field_names() {
         let row = HeartbeatRow {
             time: "".to_string(),
-            version: "".to_string(),
-            os_name: "".to_string(),
             computer: "".to_string(),
+            os_type: "".to_string(),
+            os_name: "".to_string(),
             os_major_version: "".to_string(),
             os_minor_version: "".to_string(),
+            version: "".to_string(),
         };
 
         let json = serde_json::to_string(&row).unwrap();
 
         // Verify PascalCase field names
         assert!(json.contains("\"Time\""));
-        assert!(json.contains("\"Version\""));
-        assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"Computer\""));
+        assert!(json.contains("\"OSType\""));
+        assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"OSMajorVersion\""));
         assert!(json.contains("\"OSMinorVersion\""));
+        assert!(json.contains("\"Version\""));
 
         // Verify no snake_case field names
         assert!(!json.contains("\"time\""));
         assert!(!json.contains("\"version\""));
         assert!(!json.contains("\"os_name\""));
+        assert!(!json.contains("\"os_type\""));
     }
 
     #[test]
     fn test_heartbeat_payload_is_array() {
         let row = HeartbeatRow {
-            time: "2026-01-22T10:00:00Z".to_string(),
-            version: "1.0.0".to_string(),
-            os_name: "Linux".to_string(),
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test".to_string(),
+            os_type: "Linux".to_string(),
+            os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let payload = serde_json::json!([row]);
@@ -333,7 +352,6 @@ mod tests {
 
     #[test]
     fn test_default_heartbeat_version_fallback() {
-        // When IMAGE env var is not set, should use CARGO_PKG_VERSION
         let version = default_heartbeat_version();
         assert!(!version.is_empty());
     }
