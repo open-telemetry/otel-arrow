@@ -336,42 +336,39 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Logs) {
-                            let req =
-                                effect_handler.timed(&self.compute_duration, || {
-                                    LogsData::decode(bytes.as_ref()).map_err(|e| {
-                                        Error::PdataConversionError {
-                                            error: format!("error decoding proto bytes: {e}"),
-                                        }
-                                    })
-                                })?;
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                LogsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
+                            })?;
                             self.process_log(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.logs_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
-                            let req =
-                                effect_handler.timed(&self.compute_duration, || {
-                                    MetricsData::decode(bytes.as_ref()).map_err(|e| {
-                                        Error::PdataConversionError {
-                                            error: format!("error decoding proto bytes: {e}"),
-                                        }
-                                    })
-                                })?;
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                MetricsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
+                            })?;
                             self.process_metric(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.metrics_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
-                            let req =
-                                effect_handler.timed(&self.compute_duration, || {
-                                    TracesData::decode(bytes.as_ref()).map_err(|e| {
-                                        Error::PdataConversionError {
-                                            error: format!("error decoding proto bytes: {e}"),
-                                        }
-                                    })
-                                })?;
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                TracesData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
+                            })?;
                             self.process_trace(req, debug_output.as_mut()).await?;
                         }
                         self.metrics.traces_consumed.add(1);

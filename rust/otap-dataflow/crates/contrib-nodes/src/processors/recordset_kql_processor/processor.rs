@@ -132,22 +132,21 @@ impl RecordsetKqlProcessor {
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
         // Process based on signal type (timed).
-        let result =
-            effect_handler.timed(&self.compute_duration, || match otlp_bytes {
-                OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                    otap_df_telemetry::otel_debug!(
-                        "recordset_kql_processor.processing_logs",
-                        input_items
-                    );
-                    self.process_logs(bytes, signal)
-                }
-                OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
-                    message: "Metrics processing not yet implemented in KQL bridge".to_string(),
-                }),
-                OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
-                    message: "Traces processing not yet implemented in KQL bridge".to_string(),
-                }),
-            });
+        let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                otap_df_telemetry::otel_debug!(
+                    "recordset_kql_processor.processing_logs",
+                    input_items
+                );
+                self.process_logs(bytes, signal)
+            }
+            OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
+                message: "Metrics processing not yet implemented in KQL bridge".to_string(),
+            }),
+            OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
+                message: "Traces processing not yet implemented in KQL bridge".to_string(),
+            }),
+        });
 
         match result {
             Ok(processed_bytes) => {

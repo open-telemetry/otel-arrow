@@ -132,8 +132,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let filtered_arrow_records: OtapArrowRecords = effect_handler
-                    .timed(&self.compute_duration, || -> Result<_, Error> {
+                let filtered_arrow_records: OtapArrowRecords =
+                    effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
                         match signal {
                             SignalType::Metrics => {
                                 // ToDo: Add support for metrics
@@ -144,11 +144,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                     filtered_arrow_records,
                                     log_signals_consumed,
                                     log_signals_filtered,
-                                ) = self
-                                    .config
-                                    .log_filters()
-                                    .filter(arrow_records)
-                                    .map_err(|e| {
+                                ) = self.config.log_filters().filter(arrow_records).map_err(
+                                    |e| {
                                         let source_detail = format_error_sources(&e);
                                         Error::ProcessorError {
                                             processor: effect_handler.processor_id(),
@@ -156,7 +153,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                             error: format!("Filter error: {e}"),
                                             source_detail,
                                         }
-                                    })?;
+                                    },
+                                )?;
 
                                 self.metrics.log_signals_consumed.add(log_signals_consumed);
                                 self.metrics.log_signals_filtered.add(log_signals_filtered);
@@ -168,11 +166,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                     filtered_arrow_records,
                                     span_signals_consumed,
                                     span_signals_filtered,
-                                ) = self
-                                    .config
-                                    .trace_filters()
-                                    .filter(arrow_records)
-                                    .map_err(|e| {
+                                ) = self.config.trace_filters().filter(arrow_records).map_err(
+                                    |e| {
                                         let source_detail = format_error_sources(&e);
                                         Error::ProcessorError {
                                             processor: effect_handler.processor_id(),
@@ -180,7 +175,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                                             error: format!("Filter error: {e}"),
                                             source_detail,
                                         }
-                                    })?;
+                                    },
+                                )?;
 
                                 self.metrics
                                     .span_signals_consumed
