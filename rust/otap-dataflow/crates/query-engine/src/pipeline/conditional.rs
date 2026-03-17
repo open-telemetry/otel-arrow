@@ -16,6 +16,8 @@ use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
+use otap_df_pdata::otap::filter::IdBitmapPool;
+
 use crate::error::{Error, Result};
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::state::ExecutionState;
@@ -45,6 +47,9 @@ pub struct ConditionalPipelineStage {
     ///
     /// This is analogous to the `else` branch of an if/else control flow statement.
     default_branch: Option<Vec<BoxedPipelineStage>>,
+
+    /// Pool of reusable bitmaps for attribute filter execution and child batch filtering.
+    id_bitmap_pool: IdBitmapPool,
 }
 
 impl ConditionalPipelineStage {
@@ -55,6 +60,7 @@ impl ConditionalPipelineStage {
         Self {
             branches,
             default_branch,
+            id_bitmap_pool: IdBitmapPool::new(),
         }
     }
 }
@@ -123,7 +129,10 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_selection_vec = branch.condition.execute(&otap_batch, session_ctx)?;
+            let predicate_selection_vec =
+                branch
+                    .condition
+                    .execute(&otap_batch, session_ctx, &mut self.id_bitmap_pool)?;
 
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
 
@@ -138,8 +147,11 @@ impl PipelineStage for ConditionalPipelineStage {
             // branch for every batch. For example, if the branch doesn't read or write some child
             // batch, we could avoid materializing it and sync up the rows once all branches have
             // been evaluated.
-            let mut branch_otap_batch =
-                filter_otap_batch(&branch_selection_vec, otap_batch.clone())?;
+            let mut branch_otap_batch = filter_otap_batch(
+                &branch_selection_vec,
+                otap_batch.clone(),
+                &mut self.id_bitmap_pool,
+            )?;
 
             for stage in &mut branch.pipeline_stages {
                 branch_otap_batch = stage
@@ -159,8 +171,11 @@ impl PipelineStage for ConditionalPipelineStage {
         // handle the default branch - e.g. the rows that did not match the condition from any of
         // the previous branches
         if already_selected_vec.true_count() != root_batch.num_rows() {
-            let mut default_branch_batch =
-                filter_otap_batch(&not(&already_selected_vec)?, otap_batch.clone())?;
+            let mut default_branch_batch = filter_otap_batch(
+                &not(&already_selected_vec)?,
+                otap_batch.clone(),
+                &mut self.id_bitmap_pool,
+            )?;
 
             if let Some(default_branch) = self.default_branch.as_mut() {
                 for stage in default_branch {
