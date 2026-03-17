@@ -3,9 +3,9 @@
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array, Int64Array,
-    RecordBatch, StringArray, UInt16Array, UInt32Array,
+    PrimitiveArray, RecordBatch, StringArray, UInt16Array, UInt32Array,
 };
-use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt8Type, UInt16Type};
 use roaring::RoaringBitmap;
 
 use crate::arrays::get_required_array;
@@ -28,6 +28,309 @@ const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 // default boolean array length to use for filter if there is no record batch set
 // when attempting to build a filter for a optional record batch
 const NO_RECORD_BATCH_FILTER_SIZE: usize = 1;
+
+/// Number of u64 words per page. Each page covers 65,536 IDs (one full u16 range).
+const ID_BITMAP_PAGE_WORDS: usize = 1024;
+
+/// Number of [`clear`](IdBitmap::clear) cycles a page can remain unused before being evicted
+/// (deallocated). A threshold of 16 means a page that hasn't been touched in 16 consecutive
+/// `clear()` calls will be freed, preventing unbounded memory growth from adversarial inputs
+/// while avoiding thrashing for pages that are used intermittently.
+const ID_BITMAP_PAGE_EVICTION_THRESHOLD: u64 = 16;
+
+/// A single page of the [`IdBitmap`], covering 65,536 IDs (8 KiB of bitmap data).
+///
+/// Each page tracks the generation in which it was last written, enabling the bitmap to evict
+/// pages that haven't been touched in several cycles.
+struct IdBitmapPage {
+    words: [u64; ID_BITMAP_PAGE_WORDS],
+    last_used_generation: u64,
+}
+
+impl IdBitmapPage {
+    /// Creates a new zeroed page stamped with the given generation.
+    fn new(generation: u64) -> Self {
+        Self {
+            words: [0u64; ID_BITMAP_PAGE_WORDS],
+            last_used_generation: generation,
+        }
+    }
+}
+
+/// A paged bitmap for fast membership testing of ID values.
+///
+/// The underlying bitmap data is heap allocated, and the intention of this type is that it
+/// can be reused between batches by calling the `clear` method. This method is also called
+/// automatically by the `populate` method, allowing the bitmap to be rewritten from some
+/// input ID column.
+///
+/// The ID space is partitioned into pages of 65,536 IDs each (8 KiB per page). For the common
+/// case of dense IDs starting near 0 (typical of OTAP batches), there few pages are allocated.
+///
+/// The motivation for the paged bitmap is to protect against adversarial situations where we
+/// receive batches containing few, sparse IDs.
+///
+/// ## Page lifecycle
+///
+/// Each page tracks the generation (batch cycle) in which it was last written. On
+/// [`clear`](IdBitmap::clear), the generation counter is incremented and pages are evaluated:
+///
+/// - Pages used within the last [`PAGE_EVICTION_THRESHOLD`] generations are zeroed and retained.
+/// - Pages that haven't been used in more than [`PAGE_EVICTION_THRESHOLD`] generations are
+///   deallocated, preventing unbounded memory growth from adversarial or unusual input patterns.
+///
+/// This means pages that are used regularly (even intermittently) stay allocated, while pages
+/// from one-off anomalous batches are eventually freed.
+pub struct IdBitmap {
+    pages: Vec<Option<Box<IdBitmapPage>>>,
+    generation: u64,
+}
+
+impl IdBitmap {
+    /// Creates a new empty `IdBitmap`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pages: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    /// Clears all bits in the bitmap, evicting stale pages.
+    pub fn clear(&mut self) {
+        self.generation += 1;
+        for page_slot in &mut self.pages {
+            if let Some(page) = page_slot {
+                if self.generation - page.last_used_generation > ID_BITMAP_PAGE_EVICTION_THRESHOLD {
+                    *page_slot = None;
+                } else {
+                    page.words.fill(0);
+                }
+            }
+        }
+        // Trim trailing None slots to avoid unbounded growth of the outer vec
+        while self.pages.last().is_some_and(|p| p.is_none()) {
+            let _ = self.pages.pop();
+        }
+    }
+
+    /// Returns the page index and bit position within the page for the given ID.
+    #[inline]
+    const fn page_and_bit(id: u32) -> (usize, usize) {
+        let page_idx = (id >> 16) as usize;
+        let bit_idx = (id & 0xFFFF) as usize;
+        (page_idx, bit_idx)
+    }
+
+    /// Ensures the page for the given page index exists, allocating it if necessary,
+    /// and stamps it with the current generation.
+    #[inline]
+    fn ensure_page(&mut self, page_idx: usize) -> &mut IdBitmapPage {
+        if page_idx >= self.pages.len() {
+            self.pages.resize_with(page_idx + 1, || None);
+        }
+        let generation = self.generation;
+        let page =
+            self.pages[page_idx].get_or_insert_with(|| Box::new(IdBitmapPage::new(generation)));
+        page.last_used_generation = generation;
+        page
+    }
+
+    /// Inserts an ID into the bitmap.
+    #[inline]
+    pub fn insert(&mut self, id: u32) {
+        let (page_idx, bit_idx) = Self::page_and_bit(id);
+        let page = self.ensure_page(page_idx);
+        page.words[bit_idx / 64] |= 1 << (bit_idx % 64);
+    }
+
+    /// Returns `true` if the bitmap contains the given ID.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, id: u32) -> bool {
+        let (page_idx, bit_idx) = Self::page_and_bit(id);
+        match self.pages.get(page_idx) {
+            Some(Some(page)) => page.words[bit_idx / 64] & (1 << (bit_idx % 64)) != 0,
+            _ => false,
+        }
+    }
+
+    /// Returns the number of IDs stored in the bitmap (popcount).
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.pages
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .flat_map(|p| p.words.iter())
+            .map(|w| w.count_ones() as u64)
+            .sum()
+    }
+
+    /// Returns `true` if the bitmap contains no IDs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pages
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .all(|p| p.words.iter().all(|&w| w == 0))
+    }
+
+    /// Clears the bitmap and repopulates it from the given iterator.
+    ///
+    /// This reuses existing page allocations when possible. New pages are allocated as needed,
+    /// and stale pages are evicted per the generation-based eviction policy.
+    pub fn populate(&mut self, iter: impl Iterator<Item = u32>) {
+        self.clear();
+        for id in iter {
+            self.insert(id);
+        }
+    }
+
+    /// In-place union: `self |= other`.
+    pub fn union_with(&mut self, other: &Self) {
+        if other.pages.len() > self.pages.len() {
+            self.pages.resize_with(other.pages.len(), || None);
+        }
+        for (i, other_page) in other.pages.iter().enumerate() {
+            if let Some(op) = other_page {
+                let sp = self.ensure_page(i);
+                for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                    *sw |= ow;
+                }
+            }
+        }
+    }
+
+    /// In-place intersection: `self &= other`.
+    pub fn intersect_with(&mut self, other: &Self) {
+        for (i, self_page) in self.pages.iter_mut().enumerate() {
+            if let Some(sp) = self_page {
+                match other.pages.get(i) {
+                    Some(Some(op)) => {
+                        sp.last_used_generation = self.generation;
+                        for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                            *sw &= ow;
+                        }
+                    }
+                    _ => {
+                        // No corresponding page in other — zero this page
+                        sp.words.fill(0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// In-place difference: `self &= !other`.
+    pub fn difference_with(&mut self, other: &Self) {
+        for (i, self_page) in self.pages.iter_mut().enumerate() {
+            if let Some(sp) = self_page {
+                if let Some(Some(op)) = other.pages.get(i) {
+                    sp.last_used_generation = self.generation;
+                    for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                        *sw &= !ow;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Default for IdBitmap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for IdBitmap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let allocated_pages = self.pages.iter().filter(|p| p.is_some()).count();
+        f.debug_struct("IdBitmap")
+            .field("total_pages", &self.pages.len())
+            .field("allocated_pages", &allocated_pages)
+            .field("generation", &self.generation)
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl PartialEq for IdBitmap {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare the logical content only (not generation counters): for each page index,
+        // both bitmaps must have the same bits set. Missing or None pages are treated as
+        // all-zeros.
+        let max_pages = self.pages.len().max(other.pages.len());
+        for i in 0..max_pages {
+            let self_words = self
+                .pages
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .map(|p| &p.words[..]);
+            let other_words = other
+                .pages
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .map(|p| &p.words[..]);
+            match (self_words, other_words) {
+                (Some(sw), Some(ow)) => {
+                    if sw != ow {
+                        return false;
+                    }
+                }
+                (Some(w), None) | (None, Some(w)) => {
+                    if w.iter().any(|&v| v != 0) {
+                        return false;
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        true
+    }
+}
+
+/// A pool of reusable [`IdBitmap`] instances to avoid repeated heap allocations.
+///
+/// When acquiring a bitmap, the pool returns a previously released bitmap (already cleared) or
+/// creates a new one if the pool is empty. When releasing a bitmap, it is returned to the pool
+/// for future reuse. The bitmaps retain their page allocations across reuse cycles.
+pub struct IdBitmapPool {
+    bitmaps: Vec<IdBitmap>,
+}
+
+impl IdBitmapPool {
+    /// Creates a new empty pool.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bitmaps: Vec::new(),
+        }
+    }
+
+    /// Acquires an [`IdBitmap`] from the pool, or creates a new empty one if the pool is empty.
+    ///
+    /// The returned bitmap is cleared and ready for use.
+    pub fn acquire(&mut self) -> IdBitmap {
+        match self.bitmaps.pop() {
+            Some(mut bm) => {
+                bm.clear();
+                bm
+            }
+            None => IdBitmap::new(),
+        }
+    }
+
+    /// Returns an [`IdBitmap`] to the pool for future reuse.
+    pub fn release(&mut self, bitmap: IdBitmap) {
+        self.bitmaps.push(bitmap);
+    }
+}
+
+impl Default for IdBitmapPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// MatchType describes how we should match the String values provided
 #[derive(Debug, Clone, Deserialize)]
@@ -426,6 +729,148 @@ fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanA
     match id_set {
         IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, &u16_ids),
         IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, &u32_ids),
+    }
+}
+
+/// Builds a selection [`BooleanArray`] for a native (non-dictionary) [`PrimitiveArray`] by checking
+/// each value against the [`IdBitmap`].
+#[must_use]
+pub fn build_native_selection_vec<T: ArrowPrimitiveType>(
+    array: &PrimitiveArray<T>,
+    id_bitmap: &IdBitmap,
+) -> BooleanArray
+where
+    T::Native: Into<u32>,
+{
+    let mut builder = BooleanBuilder::with_capacity(array.len());
+    let mut seg_val = false;
+    let mut seg_len = 0usize;
+
+    for val in array {
+        let valid = match val {
+            Some(v) => id_bitmap.contains(v.into()),
+            None => false,
+        };
+
+        if valid != seg_val {
+            if seg_len > 0 {
+                builder.append_n(seg_len, seg_val);
+            }
+            seg_val = valid;
+            seg_len = 0;
+        }
+
+        seg_len += 1;
+    }
+
+    if seg_len > 0 {
+        builder.append_n(seg_len, seg_val);
+    }
+
+    builder.finish()
+}
+
+/// Builds a selection [`BooleanArray`] for a dictionary-encoded u32 ID column by checking each
+/// resolved value against the [`IdBitmap`].
+///
+/// Note - only supports Dictionary ID types used for in OTAP (`Dictionary(UInt8, UInt32)`
+/// and `Dictionary(UInt16, UInt32)`, which are used as parent_id in attributes record batches.
+/// This returns an error if the passed id_column is not one of these types.
+pub fn build_dict_u32_selection_vec(
+    id_column: &ArrayRef,
+    id_bitmap: &IdBitmap,
+) -> Result<BooleanArray> {
+    match id_column.data_type() {
+        DataType::Dictionary(key, val) => match (key.as_ref(), val.as_ref()) {
+            (&DataType::UInt8, &DataType::UInt32) => {
+                let dict_array = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::Dictionary(
+                            Box::new(DataType::UInt8),
+                            Box::new(DataType::UInt32),
+                        ),
+                    })?;
+
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: dict_array.data_type().clone(),
+                        expect: DataType::UInt32,
+                    })?;
+
+                let mut builder = BooleanBuilder::with_capacity(dict_array.len());
+                for key in dict_array.keys() {
+                    match key {
+                        Some(k) => {
+                            builder.append_value(id_bitmap.contains(values.value(k as usize)));
+                        }
+                        None => {
+                            builder.append_value(false);
+                        }
+                    }
+                }
+
+                Ok(builder.finish())
+            }
+            (&DataType::UInt16, &DataType::UInt32) => {
+                let dict_array = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::Dictionary(
+                            Box::new(DataType::UInt16),
+                            Box::new(DataType::UInt32),
+                        ),
+                    })?;
+
+                let values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: dict_array.data_type().clone(),
+                        expect: DataType::UInt32,
+                    })?;
+
+                let mut builder = BooleanBuilder::with_capacity(dict_array.len());
+                for key in dict_array.keys() {
+                    match key {
+                        Some(k) => {
+                            builder.append_value(id_bitmap.contains(values.value(k as usize)));
+                        }
+                        None => {
+                            builder.append_value(false);
+                        }
+                    }
+                }
+
+                Ok(builder.finish())
+            }
+            _ => Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+                ],
+                actual: id_column.data_type().clone(),
+            }),
+        },
+        _ => Err(Error::InvalidListArray {
+            expect_oneof: vec![
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+            ],
+            actual: id_column.data_type().clone(),
+        }),
     }
 }
 
@@ -1047,5 +1492,471 @@ mod tests {
         let expected = BooleanArray::from(vec![true, true, true]);
 
         assert_eq!(result, expected);
+    }
+
+    // --- IdBitmap tests ---
+
+    #[test]
+    fn test_id_bitmap_empty() {
+        let bitmap = IdBitmap::new();
+        assert!(bitmap.is_empty());
+        assert_eq!(bitmap.len(), 0);
+        assert!(!bitmap.contains(0));
+        assert!(!bitmap.contains(100));
+    }
+
+    #[test]
+    fn test_id_bitmap_insert_and_contains() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(5);
+        bitmap.insert(63);
+        bitmap.insert(64);
+        bitmap.insert(1000);
+
+        assert!(bitmap.contains(0));
+        assert!(bitmap.contains(5));
+        assert!(bitmap.contains(63));
+        assert!(bitmap.contains(64));
+        assert!(bitmap.contains(1000));
+
+        assert!(!bitmap.contains(1));
+        assert!(!bitmap.contains(62));
+        assert!(!bitmap.contains(65));
+        assert!(!bitmap.contains(999));
+
+        assert_eq!(bitmap.len(), 5);
+        assert!(!bitmap.is_empty());
+    }
+
+    #[test]
+    fn test_id_bitmap_clear_and_reuse() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(10);
+        bitmap.insert(20);
+        assert_eq!(bitmap.len(), 2);
+
+        bitmap.clear();
+        assert!(bitmap.is_empty());
+        assert!(!bitmap.contains(10));
+        assert!(!bitmap.contains(20));
+
+        // reuse after clear - allocation should still be there
+        bitmap.insert(30);
+        assert!(bitmap.contains(30));
+        assert!(!bitmap.contains(10));
+        assert_eq!(bitmap.len(), 1);
+    }
+
+    #[test]
+    fn test_id_bitmap_populate() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([1u32, 3, 5, 7].into_iter());
+
+        assert!(bitmap.contains(1));
+        assert!(!bitmap.contains(2));
+        assert!(bitmap.contains(3));
+        assert!(!bitmap.contains(4));
+        assert!(bitmap.contains(5));
+        assert!(bitmap.contains(7));
+        assert_eq!(bitmap.len(), 4);
+
+        // repopulate with different values
+        bitmap.populate([2u32, 4].into_iter());
+        assert!(!bitmap.contains(1));
+        assert!(bitmap.contains(2));
+        assert!(!bitmap.contains(3));
+        assert!(bitmap.contains(4));
+        assert!(!bitmap.contains(5));
+        assert_eq!(bitmap.len(), 2);
+    }
+
+    #[test]
+    fn test_id_bitmap_contains_out_of_range() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(5);
+        // ID well beyond the allocated range should return false, not panic
+        assert!(!bitmap.contains(1_000_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_word_boundary() {
+        // Test IDs right at word boundaries (multiples of 64)
+        let mut bitmap = IdBitmap::new();
+        for i in (0..256).step_by(64) {
+            bitmap.insert(i);
+        }
+        for i in (0..256).step_by(64) {
+            assert!(bitmap.contains(i), "expected {} to be present", i);
+        }
+        for i in (1..256).step_by(64) {
+            assert!(!bitmap.contains(i), "expected {} to be absent", i);
+        }
+    }
+
+    // --- build_native_selection_vec tests ---
+
+    #[test]
+    fn test_build_native_selection_vec_u16_basic() {
+        let array = UInt16Array::from(vec![1, 2, 3, 4, 5]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([2u32, 4].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, true, false, true, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_u16_with_nulls() {
+        let array = UInt16Array::from(vec![Some(1), None, Some(3), None, Some(5)]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([1u32, 3, 5].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, false, true, false, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_u32_basic() {
+        let array = UInt32Array::from(vec![10, 20, 30, 40, 50]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([20u32, 30, 50].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, true, true, false, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_empty_bitmap() {
+        let array = UInt16Array::from(vec![1, 2, 3]);
+        let bitmap = IdBitmap::new();
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_all_match() {
+        let array = UInt16Array::from(vec![7, 8, 9]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([7u32, 8, 9].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, true, true]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_no_match() {
+        let array = UInt16Array::from(vec![1, 2, 3]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.populate([10u32, 20, 30].into_iter());
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![false, false, false]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_native_selection_vec_contiguous_runs() {
+        // Tests the segment batching optimization with contiguous selected/unselected runs
+        let array = UInt16Array::from(vec![1, 1, 1, 2, 2, 2, 1, 1]);
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(1);
+
+        let result = build_native_selection_vec(&array, &bitmap);
+        let expected = BooleanArray::from(vec![true, true, true, false, false, false, true, true]);
+        assert_eq!(result, expected);
+    }
+
+    // --- IdBitmap set operations tests ---
+
+    fn bitmap_from(ids: &[u32]) -> IdBitmap {
+        let mut bm = IdBitmap::new();
+        for &id in ids {
+            bm.insert(id);
+        }
+        bm
+    }
+
+    #[test]
+    fn test_id_bitmap_union_with() {
+        let mut a = bitmap_from(&[1, 2, 3]);
+        let b = bitmap_from(&[3, 4, 5]);
+        a.union_with(&b);
+
+        for id in [1, 2, 3, 4, 5] {
+            assert!(a.contains(id), "expected {} to be present", id);
+        }
+        assert!(!a.contains(0));
+        assert!(!a.contains(6));
+    }
+
+    #[test]
+    fn test_id_bitmap_union_with_extends() {
+        // other is longer than self — self should grow
+        let mut a = bitmap_from(&[1]);
+        let b = bitmap_from(&[1000]);
+        a.union_with(&b);
+
+        assert!(a.contains(1));
+        assert!(a.contains(1000));
+    }
+
+    #[test]
+    fn test_id_bitmap_intersect_with() {
+        let mut a = bitmap_from(&[1, 2, 3, 4]);
+        let b = bitmap_from(&[2, 4, 6]);
+        a.intersect_with(&b);
+
+        assert!(!a.contains(1));
+        assert!(a.contains(2));
+        assert!(!a.contains(3));
+        assert!(a.contains(4));
+        assert!(!a.contains(6));
+    }
+
+    #[test]
+    fn test_id_bitmap_intersect_with_shorter_other() {
+        // Words beyond other's length should be zeroed
+        let mut a = bitmap_from(&[1, 1000]);
+        let b = bitmap_from(&[1]);
+        a.intersect_with(&b);
+
+        assert!(a.contains(1));
+        assert!(!a.contains(1000));
+    }
+
+    #[test]
+    fn test_id_bitmap_difference_with() {
+        let mut a = bitmap_from(&[1, 2, 3, 4]);
+        let b = bitmap_from(&[2, 3, 5]);
+        a.difference_with(&b);
+
+        assert!(a.contains(1));
+        assert!(!a.contains(2));
+        assert!(!a.contains(3));
+        assert!(a.contains(4));
+        assert!(!a.contains(5));
+    }
+
+    #[test]
+    fn test_id_bitmap_difference_with_shorter_other() {
+        // Words beyond other's length should be unchanged
+        let mut a = bitmap_from(&[1, 1000]);
+        let b = bitmap_from(&[1]);
+        a.difference_with(&b);
+
+        assert!(!a.contains(1));
+        assert!(a.contains(1000));
+    }
+
+    // --- IdBitmapPool tests ---
+
+    #[test]
+    fn test_id_bitmap_pool_acquire_release() {
+        let mut pool = IdBitmapPool::new();
+
+        // first acquire should create a new bitmap
+        let mut bm = pool.acquire();
+        assert!(bm.is_empty());
+
+        // populate it
+        bm.insert(42);
+        assert!(bm.contains(42));
+
+        // release it back
+        pool.release(bm);
+
+        // acquire again should return the same allocation, but cleared
+        let bm2 = pool.acquire();
+        assert!(bm2.is_empty());
+        assert!(!bm2.contains(42));
+        // the page allocation should still be present from the previous use
+        assert!(!bm2.pages.is_empty());
+        assert!(bm2.pages[0].is_some());
+    }
+
+    #[test]
+    fn test_id_bitmap_pool_multiple() {
+        let mut pool = IdBitmapPool::new();
+
+        let bm1 = pool.acquire();
+        let bm2 = pool.acquire();
+        pool.release(bm1);
+        pool.release(bm2);
+
+        // should get two back
+        let _ = pool.acquire();
+        let _ = pool.acquire();
+        // third should create a new one
+        let bm3 = pool.acquire();
+        assert!(bm3.is_empty());
+    }
+
+    // --- Paged bitmap tests ---
+
+    #[test]
+    fn test_id_bitmap_sparse_pages() {
+        // Adversarial case: IDs in distant pages. Should only allocate 2 pages (16 KiB),
+        // not the full 512 MiB a flat bitmap would require.
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(1);
+        bitmap.insert(u32::MAX - 10);
+
+        assert!(bitmap.contains(0));
+        assert!(bitmap.contains(1));
+        assert!(bitmap.contains(u32::MAX - 10));
+        assert!(!bitmap.contains(2));
+        assert!(!bitmap.contains(u32::MAX));
+        assert_eq!(bitmap.len(), 3);
+
+        // Only 2 pages should be allocated (page 0 and page 65535)
+        let allocated_pages = bitmap.pages.iter().filter(|p| p.is_some()).count();
+        assert_eq!(allocated_pages, 2);
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_clear_preserves_pages() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(0);
+        bitmap.insert(100_000); // page 1
+
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        bitmap.clear();
+        assert!(bitmap.is_empty());
+        // Pages should still be allocated
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        // Reuse should work
+        bitmap.insert(0);
+        assert!(bitmap.contains(0));
+        assert!(!bitmap.contains(100_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_set_operations_different_pages() {
+        // union across different pages
+        let mut a = bitmap_from(&[0, 1]);
+        let b = bitmap_from(&[100_000, 100_001]); // page 1
+        a.union_with(&b);
+
+        assert!(a.contains(0));
+        assert!(a.contains(1));
+        assert!(a.contains(100_000));
+        assert!(a.contains(100_001));
+
+        // intersect: only page 0 has IDs in both
+        let mut c = bitmap_from(&[0, 1, 100_000]);
+        let d = bitmap_from(&[0, 1]);
+        c.intersect_with(&d);
+
+        assert!(c.contains(0));
+        assert!(c.contains(1));
+        assert!(!c.contains(100_000)); // zeroed because d has no page 1
+
+        // difference across pages
+        let mut e = bitmap_from(&[0, 1, 100_000]);
+        let f = bitmap_from(&[1, 100_000]);
+        e.difference_with(&f);
+
+        assert!(e.contains(0));
+        assert!(!e.contains(1));
+        assert!(!e.contains(100_000));
+    }
+
+    #[test]
+    fn test_id_bitmap_paged_equality() {
+        // Two bitmaps with same logical content but different page structures should be equal
+        let a = bitmap_from(&[1, 2, 3]);
+        let b = bitmap_from(&[1, 2, 3]);
+        assert_eq!(a, b);
+
+        // Empty bitmap with allocated pages should equal a fresh empty bitmap
+        let mut c = IdBitmap::new();
+        c.insert(42);
+        c.clear();
+        let d = IdBitmap::new();
+        assert_eq!(c, d);
+    }
+
+    #[test]
+    fn test_id_bitmap_page_eviction_after_threshold() {
+        let mut bitmap = IdBitmap::new();
+
+        // Use page 0 and page 1
+        bitmap.insert(0);
+        bitmap.insert(100_000); // page 1
+        assert_eq!(bitmap.pages.iter().filter(|p| p.is_some()).count(), 2);
+
+        // Clear repeatedly, only using page 0 each time. Page 1 should survive for
+        // PAGE_EVICTION_THRESHOLD cycles, then be evicted.
+        for i in 0..ID_BITMAP_PAGE_EVICTION_THRESHOLD {
+            bitmap.clear();
+            bitmap.insert(0); // keep page 0 alive
+            assert!(
+                bitmap.pages.get(1).is_some_and(|p| p.is_some()),
+                "page 1 should still be allocated at cycle {i}"
+            );
+        }
+
+        // One more clear should evict page 1 (it's now threshold+1 cycles old)
+        bitmap.clear();
+        bitmap.insert(0);
+        // Page 1 should be evicted (either None or the slot is gone)
+        let page_1_exists = bitmap.pages.get(1).is_some_and(|p| p.is_some());
+        assert!(
+            !page_1_exists,
+            "page 1 should have been evicted after {} idle cycles",
+            ID_BITMAP_PAGE_EVICTION_THRESHOLD + 1
+        );
+
+        // Page 0 should still be present
+        assert!(bitmap.contains(0));
+    }
+
+    #[test]
+    fn test_id_bitmap_page_eviction_does_not_evict_recently_used() {
+        let mut bitmap = IdBitmap::new();
+
+        // Alternate between page 0 and page 1 every other cycle
+        for _ in 0..50 {
+            bitmap.clear();
+            bitmap.insert(0); // page 0
+
+            bitmap.clear();
+            bitmap.insert(100_000); // page 1
+        }
+
+        // Both pages should still be allocated because neither goes more than
+        // 1 cycle unused, well within the eviction threshold
+        assert!(bitmap.pages[0].is_some());
+        assert!(bitmap.pages[1].is_some());
+    }
+
+    #[test]
+    fn test_id_bitmap_trailing_none_trimmed() {
+        let mut bitmap = IdBitmap::new();
+
+        // Allocate a page at a high index
+        bitmap.insert(200_000); // page 3
+        assert!(bitmap.pages.len() >= 4);
+
+        // Clear enough times to evict the page
+        for _ in 0..=ID_BITMAP_PAGE_EVICTION_THRESHOLD + 1 {
+            bitmap.clear();
+        }
+
+        // The pages vec should have been trimmed — no trailing None slots
+        assert!(
+            bitmap.pages.is_empty() || bitmap.pages.last().unwrap().is_some(),
+            "trailing None slots should be trimmed"
+        );
     }
 }

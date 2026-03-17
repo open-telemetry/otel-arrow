@@ -15,7 +15,7 @@
 //! The closure-based API structurally prevents timing from spanning
 //! `.await` points.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use crate::Interests;
 use otap_df_telemetry::instrument::{Mmsc, Timer};
@@ -41,13 +41,12 @@ pub struct ComputeDurationMetrics {
 pub struct ComputeDuration {
     metrics: MetricSet<ComputeDurationMetrics>,
     /// Accumulator for successful durations.
-    /// Uses `RefCell` for interior mutability so `timed` can take `&self`,
+    /// Uses `Cell` for interior mutability so `timed` can take `&self`,
     /// allowing callers to hold shared borrows of sibling fields in the
-    /// closure.  `RefCell` is used instead of `Cell` to support future
-    /// instrument types that are not `Copy` (e.g. histogram buckets).
-    acc_success: RefCell<Mmsc>,
+    /// closure.  `Cell` works here because `Mmsc` is `Copy`.
+    acc_success: Cell<Mmsc>,
     /// Accumulator for failed durations.
-    acc_failed: RefCell<Mmsc>,
+    acc_failed: Cell<Mmsc>,
 }
 
 impl ComputeDuration {
@@ -56,8 +55,8 @@ impl ComputeDuration {
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             metrics: pipeline_ctx.register_metrics::<ComputeDurationMetrics>(),
-            acc_success: RefCell::new(Mmsc::default()),
-            acc_failed: RefCell::new(Mmsc::default()),
+            acc_success: Cell::new(Mmsc::default()),
+            acc_failed: Cell::new(Mmsc::default()),
         }
     }
 
@@ -86,7 +85,9 @@ impl ComputeDuration {
             } else {
                 &self.acc_failed
             };
-            acc.borrow_mut().record(elapsed);
+            let mut val = acc.get();
+            val.record(elapsed);
+            acc.set(val);
             result
         } else {
             f()
@@ -124,11 +125,11 @@ mod tests {
         let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(43)));
         let _ = cd.timed(active, || Err::<i32, _>("fail"));
 
-        let success_snap = cd.acc_success.borrow().get();
+        let success_snap = cd.acc_success.get().get();
         assert_eq!(success_snap.count, 2);
         assert!(success_snap.min >= 0.0);
 
-        let failed_snap = cd.acc_failed.borrow().get();
+        let failed_snap = cd.acc_failed.get().get();
         assert_eq!(failed_snap.count, 1);
         assert!(failed_snap.min >= 0.0);
     }
@@ -142,8 +143,8 @@ mod tests {
         let _ = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
         let _ = cd.timed(Interests::empty(), || Err::<i32, _>("fail"));
 
-        assert_eq!(cd.acc_success.borrow().get().count, 0);
-        assert_eq!(cd.acc_failed.borrow().get().count, 0);
+        assert_eq!(cd.acc_success.get().get().count, 0);
+        assert_eq!(cd.acc_failed.get().get().count, 0);
     }
 
     /// End-to-end: report() drains accumulators into the registry under
@@ -178,12 +179,12 @@ mod tests {
 
         assert!(found_set, "metric set 'processor.compute' not found");
         assert!(
-            field_names.contains(&"compute.duration.success".to_owned()),
-            "missing compute.duration.success, found: {field_names:?}"
+            field_names.contains(&"compute.success.duration".to_owned()),
+            "missing compute.success.duration, found: {field_names:?}"
         );
         assert!(
-            field_names.contains(&"compute.duration.failed".to_owned()),
-            "missing compute.duration.failed, found: {field_names:?}"
+            field_names.contains(&"compute.failed.duration".to_owned()),
+            "missing compute.failed.duration, found: {field_names:?}"
         );
     }
 }
