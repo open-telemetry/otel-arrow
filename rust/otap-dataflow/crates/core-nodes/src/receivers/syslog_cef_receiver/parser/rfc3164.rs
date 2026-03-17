@@ -1,12 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::syslog_cef_receiver::parser;
+use crate::receivers::syslog_cef_receiver::parser::*;
 
 /// RFC 3164 message structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rfc3164Message<'a> {
-    pub(super) priority: Option<parser::Priority>,
+    pub(super) priority: Option<Priority>,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
     pub(super) tag: Option<&'a [u8]>,
@@ -33,15 +33,15 @@ pub struct Rfc3164Message<'a> {
 /// a process ID in the format `appname[pid]`. This parser extracts:
 /// - `app_name`: The part before `[` (or the entire TAG if no `[` is present)
 /// - `proc_id`: The numeric content between `[` and `]` (only if it's a valid number)
-pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseError> {
+pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, ParseError> {
     if input.is_empty() {
-        return Err(parser::ParseError::EmptyInput);
+        return Err(ParseError::EmptyInput);
     }
 
     // RFC 3164 Section 4.3: Check if we have a valid PRI
     let (priority, mut remaining) = if input.starts_with(b"<") {
         // Try to parse the PRI
-        match parser::parse_priority(input) {
+        match parse_priority(input) {
             Ok((pri, rest)) => (Some(pri), rest),
             Err(_) => {
                 // Invalid PRI format, treat entire input as content
@@ -178,7 +178,7 @@ fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::syslog_cef_receiver::parser::*;
+    use crate::receivers::syslog_cef_receiver::parser::*;
 
     #[test]
     fn test_rfc3164_parsing() {

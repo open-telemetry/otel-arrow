@@ -37,7 +37,14 @@ pub struct PartitionSequenceIdGenerator {
 
 pub const PARTITION_METADATA_KEY: &str = "_part_id";
 
+impl Default for PartitionSequenceIdGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionSequenceIdGenerator {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             part_id: Uuid::new_v4(),
@@ -225,7 +232,9 @@ pub mod test {
     use otap_df_pdata::schema::consts::metadata;
     use otap_df_pdata::schema::get_schema_metadata;
 
-    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
+    use crate::exporters::parquet_exporter::fixtures::{
+        SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
+    };
 
     use super::*;
 
