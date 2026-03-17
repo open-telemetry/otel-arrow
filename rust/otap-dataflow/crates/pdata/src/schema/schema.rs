@@ -4,7 +4,7 @@
 //! OTAP schema definition types. These can be used to describe the schema of
 //! any otap payload type. See [crate::schema::payloads::get]
 
-use arrow::array::RecordBatch;
+use arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
 
 use crate::error::Error;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -117,8 +117,9 @@ impl DataType {
     /// Validate that the given Arrow DataType conforms to this OTAP type
     /// definition, checking struct sub-fields and list item types.
     #[must_use]
-    pub fn matches(&self, arrow_dt: &arrow::datatypes::DataType) -> bool {
+    pub fn matches(&self, array: &ArrayRef) -> bool {
         use arrow::datatypes::DataType as ArrowDT;
+        let arrow_dt = array.data_type();
         match self {
             DataType::Simple(s) => s.matches(arrow_dt),
             DataType::Dictionary {
@@ -144,17 +145,24 @@ impl DataType {
                 false
             }
             DataType::Struct(sub_schema) => {
-                let ArrowDT::Struct(sub_fields) = arrow_dt else {
+                let ArrowDT::Struct(_) = arrow_dt else {
                     return false;
                 };
+                // safety: we just checked that this is a struct
+                let struct_array = array.as_struct();
 
-                for arrow_field in sub_fields.iter() {
-                    let name = arrow_field.name().as_str();
+                for (field, child_array) in struct_array.fields().iter().zip(struct_array.columns())
+                {
+                    let name = field.name().as_str();
                     let Some(field_def) = sub_schema.get(name) else {
                         return false;
                     };
 
-                    if !field_def.data_type.matches(arrow_field.data_type()) {
+                    if !field_def.data_type.matches(child_array) {
+                        return false;
+                    }
+
+                    if field_def.required && child_array.null_count() > 0 {
                         return false;
                     }
                 }
@@ -162,10 +170,14 @@ impl DataType {
                 true
             }
             DataType::List(inner_dt) => {
-                let ArrowDT::List(item_field) = arrow_dt else {
+                let ArrowDT::List(_) = arrow_dt else {
                     return false;
                 };
-                inner_dt.matches(item_field.data_type())
+                // safety: We verified this is a list type.
+                // note: i32 is not the type of the list, but the type of
+                // offsets into the list.
+                let list_array = array.as_list::<i32>();
+                inner_dt.matches(list_array.values())
             }
         }
     }
@@ -294,19 +306,19 @@ impl Schema {
                 });
             };
 
-            let arrow_type = arrow_field.data_type();
-            if !field_def.data_type.matches(arrow_type) {
+            let column = record_batch.column(col_idx);
+            if !field_def.data_type.matches(column) {
                 return Err(Error::FieldTypeMismatch {
                     name: name.to_string(),
                     payload_type,
                     expected: field_def.data_type,
-                    actual: arrow_type.clone(),
+                    actual: arrow_field.data_type().clone(),
                 });
             }
 
             if field_def.required {
                 found_required += 1;
-                if record_batch.column(col_idx).null_count() > 0 {
+                if column.null_count() > 0 {
                     return Err(Error::MissingRequiredFields {
                         names: vec![name.to_string()],
                         payload_type,
@@ -337,11 +349,19 @@ impl Schema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{RecordBatch, StringArray};
+    use arrow::array::{
+        Float64Array, Int32Array, ListArray, RecordBatch, StringArray, StructArray, UInt64Array,
+        new_empty_array,
+    };
     use arrow::datatypes::{
         DataType as ArrowDT, Field as ArrowField, Fields, Schema as ArrowSchema, TimeUnit,
     };
     use std::sync::Arc;
+
+    /// Creates a zero-length array of the given Arrow data type.
+    fn empty_array(dt: &ArrowDT) -> ArrayRef {
+        new_empty_array(dt)
+    }
 
     #[test]
     fn simple_type_to_arrow_roundtrip() {
@@ -378,8 +398,8 @@ mod tests {
     #[test]
     fn data_type_simple_matches() {
         let dt = DataType::Simple(SimpleType::Utf8);
-        assert!(dt.matches(&ArrowDT::Utf8));
-        assert!(!dt.matches(&ArrowDT::Binary));
+        assert!(dt.matches(&empty_array(&ArrowDT::Utf8)));
+        assert!(!dt.matches(&empty_array(&ArrowDT::Binary)));
     }
 
     #[test]
@@ -388,7 +408,7 @@ mod tests {
             min_key_size: DictKeySize::U8,
             value_type: SimpleType::Utf8,
         };
-        assert!(dt.matches(&ArrowDT::Utf8));
+        assert!(dt.matches(&empty_array(&ArrowDT::Utf8)));
     }
 
     #[test]
@@ -397,21 +417,15 @@ mod tests {
             min_key_size: DictKeySize::U8,
             value_type: SimpleType::Utf8,
         };
+        let u8_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt8), Box::new(ArrowDT::Utf8));
+        let u16_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt16), Box::new(ArrowDT::Utf8));
+        let u32_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt32), Box::new(ArrowDT::Utf8));
         // U8 allowed
-        assert!(dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt8),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(dt.matches(&empty_array(&u8_dict)));
         // U16 allowed
-        assert!(dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt16),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(dt.matches(&empty_array(&u16_dict)));
         // U32 not allowed
-        assert!(!dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt32),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(!dt.matches(&empty_array(&u32_dict)));
     }
 
     #[test]
@@ -420,21 +434,15 @@ mod tests {
             min_key_size: DictKeySize::U16,
             value_type: SimpleType::Utf8,
         };
+        let u8_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt8), Box::new(ArrowDT::Utf8));
+        let u16_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt16), Box::new(ArrowDT::Utf8));
+        let u32_dict = ArrowDT::Dictionary(Box::new(ArrowDT::UInt32), Box::new(ArrowDT::Utf8));
         // U8 not allowed
-        assert!(!dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt8),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(!dt.matches(&empty_array(&u8_dict)));
         // U16 allowed
-        assert!(dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt16),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(dt.matches(&empty_array(&u16_dict)));
         // U32 not allowed
-        assert!(!dt.matches(&ArrowDT::Dictionary(
-            Box::new(ArrowDT::UInt32),
-            Box::new(ArrowDT::Utf8),
-        )));
+        assert!(!dt.matches(&empty_array(&u32_dict)));
     }
 
     #[test]
@@ -459,11 +467,18 @@ mod tests {
             },
         };
         let dt = DataType::Struct(&SUB);
-        let fields = Fields::from(vec![
-            ArrowField::new("x", ArrowDT::Int32, false),
-            ArrowField::new("y", ArrowDT::Utf8, true),
-        ]);
-        assert!(dt.matches(&ArrowDT::Struct(fields)));
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![
+                ArrowField::new("x", ArrowDT::Int32, false),
+                ArrowField::new("y", ArrowDT::Utf8, true),
+            ]),
+            vec![
+                Arc::new(Int32Array::from(Vec::<i32>::new())),
+                Arc::new(StringArray::from(Vec::<&str>::new())),
+            ],
+            None,
+        ));
+        assert!(dt.matches(&struct_array));
     }
 
     #[test]
@@ -488,8 +503,12 @@ mod tests {
             },
         };
         let dt = DataType::Struct(&SUB);
-        let subset = Fields::from(vec![ArrowField::new("x", ArrowDT::Int32, false)]);
-        assert!(dt.matches(&ArrowDT::Struct(subset)));
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![ArrowField::new("x", ArrowDT::Int32, false)]),
+            vec![Arc::new(Int32Array::from(Vec::<i32>::new()))],
+            None,
+        ));
+        assert!(dt.matches(&struct_array));
     }
 
     #[test]
@@ -498,8 +517,15 @@ mod tests {
             fields: &[],
             idx: |_| None,
         };
-        let extra = Fields::from(vec![ArrowField::new("z", ArrowDT::Int32, false)]);
-        assert!(!DataType::Struct(&SUB).matches(&ArrowDT::Struct(extra)));
+        let struct_array: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![ArrowField::new("z", ArrowDT::Int32, false)]),
+                vec![Arc::new(Int32Array::from(Vec::<i32>::new()))],
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!DataType::Struct(&SUB).matches(&struct_array));
     }
 
     #[test]
@@ -515,8 +541,15 @@ mod tests {
                 _ => None,
             },
         };
-        let wrong = Fields::from(vec![ArrowField::new("x", ArrowDT::Utf8, false)]);
-        assert!(!DataType::Struct(&SUB).matches(&ArrowDT::Struct(wrong)));
+        let struct_array: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![ArrowField::new("x", ArrowDT::Utf8, false)]),
+                vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!DataType::Struct(&SUB).matches(&struct_array));
     }
 
     #[test]
@@ -525,7 +558,83 @@ mod tests {
             fields: &[],
             idx: |_| None,
         };
-        assert!(!DataType::Struct(&SUB).matches(&ArrowDT::Utf8));
+        assert!(!DataType::Struct(&SUB).matches(&empty_array(&ArrowDT::Utf8)));
+    }
+
+    #[test]
+    fn data_type_struct_rejects_null_in_required_field() {
+        static SUB: Schema = Schema {
+            fields: &[
+                Field {
+                    name: "x",
+                    data_type: DataType::Simple(SimpleType::Int32),
+                    required: true,
+                },
+                Field {
+                    name: "y",
+                    data_type: DataType::Simple(SimpleType::Utf8),
+                    required: false,
+                },
+            ],
+            idx: |n| match n {
+                "x" => Some(0),
+                "y" => Some(1),
+                _ => None,
+            },
+        };
+        let dt = DataType::Struct(&SUB);
+
+        // "x" is required but contains a null — should be rejected.
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![
+                ArrowField::new("x", ArrowDT::Int32, true),
+                ArrowField::new("y", ArrowDT::Utf8, true),
+            ]),
+            vec![
+                Arc::new(Int32Array::from(vec![Some(1), None])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b")])),
+            ],
+            None,
+        ));
+        assert!(!dt.matches(&struct_array));
+    }
+
+    #[test]
+    fn data_type_struct_accepts_null_in_optional_field() {
+        static SUB: Schema = Schema {
+            fields: &[
+                Field {
+                    name: "x",
+                    data_type: DataType::Simple(SimpleType::Int32),
+                    required: false,
+                },
+                Field {
+                    name: "y",
+                    data_type: DataType::Simple(SimpleType::Utf8),
+                    required: false,
+                },
+            ],
+            idx: |n| match n {
+                "x" => Some(0),
+                "y" => Some(1),
+                _ => None,
+            },
+        };
+        let dt = DataType::Struct(&SUB);
+
+        // "x" is optional and contains a null — should be accepted.
+        let struct_array: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![
+                ArrowField::new("x", ArrowDT::Int32, true),
+                ArrowField::new("y", ArrowDT::Utf8, true),
+            ]),
+            vec![
+                Arc::new(Int32Array::from(vec![Some(1), None])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b")])),
+            ],
+            None,
+        ));
+        assert!(dt.matches(&struct_array));
     }
 
     #[test]
@@ -546,33 +655,57 @@ mod tests {
 
         // Matching sub-fields
         let ok_fields = Fields::from(vec![ArrowField::new("q", ArrowDT::Float64, true)]);
-        let ok = ArrowDT::List(Arc::new(ArrowField::new(
-            "item",
-            ArrowDT::Struct(ok_fields),
-            true,
-        )));
-        assert!(dt.matches(&ok));
+        let ok_struct_values: ArrayRef = Arc::new(StructArray::new(
+            ok_fields.clone(),
+            vec![Arc::new(Float64Array::from(Vec::<f64>::new()))],
+            None,
+        ));
+        let ok_list: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(ArrowField::new("item", ArrowDT::Struct(ok_fields), true)),
+            arrow::buffer::OffsetBuffer::new(vec![0i32].into()),
+            ok_struct_values,
+            None,
+        ));
+        assert!(dt.matches(&ok_list));
 
         // Empty struct items - ok (sub-fields optional)
-        let empty = ArrowDT::List(Arc::new(ArrowField::new(
-            "item",
-            ArrowDT::Struct(Fields::empty()),
-            true,
-        )));
-        assert!(dt.matches(&empty));
+        let empty_struct_values: ArrayRef = Arc::new(StructArray::new_empty_fields(0, None));
+        let empty_list: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(ArrowField::new(
+                "item",
+                ArrowDT::Struct(Fields::empty()),
+                true,
+            )),
+            arrow::buffer::OffsetBuffer::new(vec![0i32].into()),
+            empty_struct_values,
+            None,
+        ));
+        assert!(dt.matches(&empty_list));
 
         // Extraneous sub-field
-        let extra = Fields::from(vec![ArrowField::new("bogus", ArrowDT::Int32, true)]);
-        let bad = ArrowDT::List(Arc::new(ArrowField::new(
-            "item",
-            ArrowDT::Struct(extra),
-            true,
-        )));
-        assert!(!dt.matches(&bad));
+        let extra_fields = Fields::from(vec![ArrowField::new("bogus", ArrowDT::Int32, true)]);
+        let extra_struct_values: ArrayRef = Arc::new(StructArray::new(
+            extra_fields.clone(),
+            vec![Arc::new(Int32Array::from(Vec::<i32>::new()))],
+            None,
+        ));
+        let bad_list: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(ArrowField::new("item", ArrowDT::Struct(extra_fields), true)),
+            arrow::buffer::OffsetBuffer::new(vec![0i32].into()),
+            extra_struct_values,
+            None,
+        ));
+        assert!(!dt.matches(&bad_list));
 
         // Non-struct item
-        let wrong = ArrowDT::List(Arc::new(ArrowField::new("item", ArrowDT::UInt64, true)));
-        assert!(!dt.matches(&wrong));
+        let wrong_values: ArrayRef = Arc::new(UInt64Array::from(Vec::<u64>::new()));
+        let wrong_list: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(ArrowField::new("item", ArrowDT::UInt64, true)),
+            arrow::buffer::OffsetBuffer::new(vec![0i32].into()),
+            wrong_values,
+            None,
+        ));
+        assert!(!dt.matches(&wrong_list));
     }
 
     static TEST_SCHEMA: Schema = Schema {
