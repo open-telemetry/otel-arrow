@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::syslog_cef_receiver::parser::{
+use crate::receivers::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
@@ -441,7 +441,7 @@ impl ParsedSyslogMessage<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syslog_cef_receiver::parser::parse;
+    use crate::receivers::syslog_cef_receiver::parser::parse;
 
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc5424() {

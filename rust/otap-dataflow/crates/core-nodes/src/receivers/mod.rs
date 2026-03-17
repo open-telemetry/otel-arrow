@@ -9,3 +9,6 @@ pub mod topic_receiver;
 
 /// Internal telemetry receiver.
 pub mod internal_telemetry_receiver;
+
+/// Syslog CEF receiver.
+pub mod syslog_cef_receiver;
