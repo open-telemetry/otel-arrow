@@ -110,13 +110,14 @@ enum SignalGenerator {
     /// Uses semantic conventions registry via weaver
     SemanticConventions(ResolvedRegistry),
     /// Uses static hardcoded signals with weighted per-batch resource attribute
-    /// rotation.  `entries` holds the typed attribute sets; `rotation` is a
-    /// precomputed index table built from the entry weights so the hot path is
-    /// a single modulo lookup.  Both are empty when no custom attributes are
-    /// configured.
+    /// rotation and optional payload customization.
     Static {
         entries: Vec<ResourceAttributeSet>,
         rotation: Vec<usize>,
+        /// Target log body size in bytes (None = default body)
+        log_body_size_bytes: Option<usize>,
+        /// Number of log attributes (None = default attributes)
+        num_log_attributes: Option<usize>,
     },
 }
 
@@ -128,7 +129,9 @@ impl SignalGenerator {
     /// gives each entry a share of batches proportional to its weight.
     fn attrs_for_batch(&self, batch_index: u64) -> Option<&HashMap<String, String>> {
         match self {
-            SignalGenerator::Static { entries, rotation } if !rotation.is_empty() => {
+            SignalGenerator::Static {
+                entries, rotation, ..
+            } if !rotation.is_empty() => {
                 let slot = rotation[batch_index as usize % rotation.len()];
                 Some(&entries[slot].attrs)
             }
@@ -166,9 +169,16 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, registry))
             }
-            SignalGenerator::Static { .. } => OtlpProtoMessage::Logs(
-                static_signal::static_otlp_logs(count, self.attrs_for_batch(batch_index)),
-            ),
+            SignalGenerator::Static {
+                log_body_size_bytes,
+                num_log_attributes,
+                ..
+            } => OtlpProtoMessage::Logs(static_signal::static_otlp_logs_with_config(
+                count,
+                *log_body_size_bytes,
+                *num_log_attributes,
+                self.attrs_for_batch(batch_index),
+            )),
         }
     }
 }
@@ -285,7 +295,12 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             DataSource::Static => {
                 let entries = self.config.resource_attributes().to_vec();
                 let rotation = build_rotation_table(&entries);
-                SignalGenerator::Static { entries, rotation }
+                SignalGenerator::Static {
+                    entries,
+                    rotation,
+                    log_body_size_bytes: traffic_config.log_body_size_bytes(),
+                    num_log_attributes: traffic_config.num_log_attributes(),
+                }
             }
         };
 
@@ -1344,7 +1359,12 @@ mod tests {
         };
         let entries = vec![make_entry("prod"), make_entry("staging")];
         let rotation = build_rotation_table(&entries);
-        let generator = SignalGenerator::Static { entries, rotation };
+        let generator = SignalGenerator::Static {
+            entries,
+            rotation,
+            log_body_size_bytes: None,
+            num_log_attributes: None,
+        };
 
         // attrs_for_batch should rotate through the two sets
         assert_eq!(generator.attrs_for_batch(0).unwrap()["tenant.id"], "prod");
@@ -1395,6 +1415,8 @@ mod tests {
         let generator = SignalGenerator::Static {
             entries: vec![],
             rotation: vec![],
+            log_body_size_bytes: None,
+            num_log_attributes: None,
         };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());
