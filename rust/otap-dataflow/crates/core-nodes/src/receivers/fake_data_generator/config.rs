@@ -412,7 +412,6 @@ fn default_resource_weight() -> NonZeroU32 {
 /// ```
 /// An empty table means no custom attributes are configured.
 ///
-/// # Example
 /// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
 ///
 /// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.
