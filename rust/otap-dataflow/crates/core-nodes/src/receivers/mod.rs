@@ -3,3 +3,9 @@
 
 /// Fake data generator receiver.
 pub mod fake_data_generator;
+
+/// Topic receiver.
+pub mod topic_receiver;
+
+/// Internal telemetry receiver.
+pub mod internal_telemetry_receiver;

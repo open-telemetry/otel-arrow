@@ -33,6 +33,7 @@ bytes.workspace = true
 data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
 humantime-serde.workspace = true
+futures.workspace = true
 linkme.workspace = true
 prost.workspace = true
 rand.workspace = true
