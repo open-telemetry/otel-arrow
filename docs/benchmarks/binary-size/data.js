@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773620781786,
+  "lastUpdate": 1773707082234,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2562,6 +2562,33 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/6933f8e2d5629a7b76983b60ff43526d67e7f33f"
         },
         "date": 1773620775821,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.59,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Trask Stalnaker",
+            "username": "trask",
+            "email": "trask.stalnaker@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "59ef72fdbe2003a1425bb5c700d3de0579ffb050",
+          "message": "Migrate to new bare metal runner (Ubuntu 24) (#2338)\n\nOld runner:\n\n- name: `oracle-bare-metal-64cpu-512gb-x86-64`\n- 512gb memory\n- Oracle Linux 8\n\nNew runner:\n\n-  name: `oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24`\n- 1024gb memory\n-  Ubuntu 24\n\nI realize this could have some impact on benchmark baselines, so please\npost on https://github.com/open-telemetry/community/issues/3333 once you\nhave migrated and are comfortable with the old one being removed.",
+          "timestamp": "2026-03-16T22:28:38Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/59ef72fdbe2003a1425bb5c700d3de0579ffb050"
+        },
+        "date": 1773707076267,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
