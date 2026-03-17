@@ -78,6 +78,13 @@ steps:
                 # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
                 engine_hostname: df-engine
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                data_source: '{{data_source | default("semantic_conventions")}}'
+                {%- if log_body_size_bytes is defined %}
+                log_body_size_bytes: {{log_body_size_bytes}}
+                {%- endif %}
+                {%- if num_log_attributes is defined %}
+                num_log_attributes: {{num_log_attributes}}
+                {%- endif %}
 
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).

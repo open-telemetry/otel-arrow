@@ -63,6 +63,13 @@ steps:
                 log_weight: {{log_weight | default(100)}}
                 engine_hostname: df-engine
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                data_source: '{{data_source | default("semantic_conventions")}}'
+                {%- if log_body_size_bytes is defined %}
+                log_body_size_bytes: {{log_body_size_bytes}}
+                {%- endif %}
+                {%- if num_log_attributes is defined %}
+                num_log_attributes: {{num_log_attributes}}
+                {%- endif %}
         post:
           - ready_check_http:
               url: http://localhost:8085/telemetry/metrics?reset=false
