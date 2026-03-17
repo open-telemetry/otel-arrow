@@ -19,11 +19,12 @@ use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
-    RecordBatch, StringArray, UInt8Array, UInt16Array,
+    RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::{cast, filter, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
+use arrow::record_batch;
 use arrow::util::bit_iterator::BitIndexIterator;
 use async_trait::async_trait;
 use data_engine_expressions::{
@@ -343,10 +344,21 @@ impl AssignPipelineStage {
             }
         };
 
-        let (attrs_payload_type, id_col) = match dest_attrs_id {
-            AttributesIdentifier::NonRoot(payload_type) => (payload_type, {
-                todo!("extract the parent ID col from struct")
-            }),
+        let (attrs_payload_type, id_col, mutable_root_id_column) = match dest_attrs_id {
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let struct_col_name = match payload_type {
+                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                    _ => {
+                        todo!("return error")
+                    }
+                };
+                let id_col = root_record_batch
+                    .column_by_name(struct_col_name)
+                    .map(|s| s.as_any().downcast_ref::<StructArray>().unwrap())
+                    .and_then(|s| s.column_by_name(consts::ID));
+                (payload_type, id_col, false)
+            }
             AttributesIdentifier::Root => {
                 let attrs_payload_type = match otap_batch {
                     OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
@@ -354,7 +366,7 @@ impl AssignPipelineStage {
                     OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
                 };
                 let id_col = root_record_batch.column_by_name(consts::ID);
-                (attrs_payload_type, id_col)
+                (attrs_payload_type, id_col, true)
             }
         };
 
@@ -367,10 +379,11 @@ impl AssignPipelineStage {
         // and comment on why you think scope/resource ID should not be nullable
 
         let mut parent_id_set = match id_col {
-            Some(id_col) => {
-                ParentIdSet::new(id_col.as_any().downcast_ref::<UInt16Array>().unwrap(), true)
-            }
-            None => ParentIdSet::new_empty(root_record_batch.num_rows(), true),
+            Some(id_col) => ParentIdSet::new(
+                id_col.as_any().downcast_ref::<UInt16Array>().unwrap(),
+                mutable_root_id_column,
+            ),
+            None => ParentIdSet::new_empty(root_record_batch.num_rows(), mutable_root_id_column),
         };
 
         // get the rows that will have the value replaced (all others, the value will be inserted)
@@ -2220,6 +2233,193 @@ mod test {
     #[tokio::test]
     async fn test_insert_attribute_scalar_kql_parser() {
         test_insert_attribute_scalar::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upsert_non_root_attribute_from_scalar() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = &result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("a")),
+                KeyValue::new("y", AnyValue::new_string("b")),
+            ]
+        );
+        let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upsert_non_root_attribute_from_other_attribute() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![
+                        KeyValue::new("x", AnyValue::new_string("a")),
+                        KeyValue::new("y", AnyValue::new_string("b1")),
+                    ])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("b2"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend resource.attributes[\"x\"] = resource.attributes[\"y\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = &result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("b1")),
+                KeyValue::new("y", AnyValue::new_string("b1")),
+            ]
+        );
+        let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("b2")),
+                KeyValue::new("x", AnyValue::new_string("b2")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_non_root_attribute_from_scalar() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+            // ensure we handle inserting when the non-root attr has no attributes
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = &result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("a")),
+                KeyValue::new("y", AnyValue::new_string("b")),
+            ]
+        );
+        let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_non_root_attribute_no_existing_batch() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        assert!(input.get(ArrowPayloadType::ResourceAttrs).is_none());
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = &result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
+        let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
     }
 
     async fn test_insert_attribute_scalar_where_some_target_has_no_attrs<P: Parser>() {
