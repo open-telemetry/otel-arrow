@@ -12,7 +12,7 @@ use otap_df_pdata::{
 
 use otap_df_pdata::encode::Result;
 
-use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 
 /// Builder for creating Arrow record batches from parsed syslog messages.
 pub struct ArrowRecordsBuilder {
@@ -126,7 +126,7 @@ impl ArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syslog_cef_receiver::parser::parse;
+    use crate::receivers::syslog_cef_receiver::parser::parse;
     use otap_df_pdata::{
         otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
