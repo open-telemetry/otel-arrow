@@ -30,6 +30,10 @@ pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
 
+/// Testing utilities for constructing OTAP batches in tests.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
@@ -180,7 +184,7 @@ impl From<Traces> for OtapArrowRecords {
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-pub trait OtapBatchStore: Default + Clone {
+pub trait OtapBatchStore: Default + Clone + Into<OtapArrowRecords> {
     /// Internally, implementers should use a bitmask for the types they support.
     /// The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
