@@ -2053,6 +2053,106 @@ mod test {
         test_upserts_attribute_computed_from_existing_attr::<KqlParser>().await
     }
 
+    async fn test_insert_attribute_non_string_types<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .event_name("event1")
+                .finish(),
+        ]);
+        let query = "logs | 
+            extend attributes[\"k_int\"] = 5,
+            attributes[\"k_bool\"] = true,
+            attributes[\"k_double\"] = 4.0
+        ";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        // TODO - need to validate the types (which are dict encoded, which are not!)
+
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("a")),
+                KeyValue::new("k_int", AnyValue::new_int(5)),
+                KeyValue::new("k_bool", AnyValue::new_bool(true)),
+                KeyValue::new("k_double", AnyValue::new_double(4.0)),
+            ]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_non_string_types_opl_parser() {
+        test_insert_attribute_non_string_types::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_attribute_non_string_types_kql_parser() {
+        test_insert_attribute_non_string_types::<KqlParser>().await
+    }
+
+    /// this test is different than the insert test above because we're inserting into new
+    /// values columns instead of creating new ones
+    async fn test_upserts_attribute_non_string_types<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("k_int", AnyValue::new_int(9)),
+                    KeyValue::new("k_bool", AnyValue::new_bool(false)),
+                    KeyValue::new("k_double", AnyValue::new_double(2)),
+                ])
+                .event_name("event1")
+                .finish(),
+        ]);
+        let query = "logs | 
+            extend attributes[\"k_int\"] = 5,
+            attributes[\"k_bool\"] = true, 
+            attributes[\"k_double\"] = 4.0,
+            attributes[\"k_int2\"] = 5,
+            attributes[\"k_bool2\"] = false, 
+            attributes[\"k_double2\"] = 6
+        ";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("a")),
+                KeyValue::new("k_int", AnyValue::new_int(5)),
+                KeyValue::new("k_bool", AnyValue::new_bool(true)),
+                KeyValue::new("k_double", AnyValue::new_double(4.0)),
+                KeyValue::new("k_int2", AnyValue::new_int(5)),
+                KeyValue::new("k_bool2", AnyValue::new_bool(false)),
+                KeyValue::new("k_double2", AnyValue::new_double(6.0)),
+            ]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_upserts_attribute_non_string_types_opl_parser() {
+        test_upserts_attribute_non_string_types::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upsert_attribute_non_string_types_kql_parser() {
+        test_upserts_attribute_non_string_types::<KqlParser>().await
+    }
+
     async fn test_upserts_attribute_computed_from_existing_non_root_attr<P: Parser>() {
         let logs_data = LogsData::new(vec![
             ResourceLogs::new(

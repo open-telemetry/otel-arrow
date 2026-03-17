@@ -1003,8 +1003,6 @@ fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Option<&'a [u8]> {
                 .as_any()
                 .downcast_ref::<arrow::array::Int64Array>()
                 .unwrap();
-            // Borrow directly from the underlying values buffer -- the ScalarBuffer<i64>
-            // is backed by a contiguous byte buffer, so we can slice 8 bytes per element.
             let buf: &[u8] = int_arr.values().inner().as_slice();
             let offset = idx * size_of::<i64>();
             Some(&buf[offset..offset + size_of::<i64>()])
