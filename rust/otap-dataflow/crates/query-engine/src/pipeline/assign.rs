@@ -410,40 +410,47 @@ impl AssignPipelineStage {
                 .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
-            println!("eval_result = {:#?}", eval_result);
-            // TODO comment on why we do this
-            match &eval_result.values {
-                ColumnarValue::Scalar(_) => {
-                    parent_id_set.ensure_all();
-                }
-                ColumnarValue::Array(arr) => {
-                    match eval_result.data_scope.as_ref() {
-                        DataScope::Root => {
-                            println!("arr = {:?}", arr);
-                            println!("nulls = {:?}", arr.nulls());
-                            if let Some(nulls) = arr.nulls() {
-                                // TODO need a test that gets in here
-                                BitIndexIterator::new(nulls.buffer().as_slice(), 0, arr.len())
-                                    .for_each(|i| {
-                                        println!("ensuring index {i}");
-                                        parent_id_set.ensure(i);
-                                    });
-                            } else {
-                                parent_id_set.ensure_all();
-                            }
-
-                            if parent_id_set.is_dirty() {
-                                // TODO need to check that this is like assigning to the right column for thea attrs ID
-                                eval_result.ids =
-                                    Some(Arc::new(parent_id_set.as_id_col().into_owned()));
-                            }
-                        }
-                        _ => {
-                            // TODO nothing to do?
-                        }
-                    }
-                }
+            // TODO even simpler than what we do correct (and probably more accurate)
+            parent_id_set.ensure_all();
+            if parent_id_set.is_dirty() {
+                // TODO need to check that this is like assigning to the right column for thea attrs ID
+                eval_result.ids = Some(Arc::new(parent_id_set.as_id_col().into_owned()));
             }
+
+            // println!("eval_result = {:#?}", eval_result);
+            // // TODO comment on why we do this
+            // match &eval_result.values {
+            //     ColumnarValue::Scalar(_) => {
+            //         parent_id_set.ensure_all();
+            //     }
+            //     ColumnarValue::Array(arr) => {
+            //         match eval_result.data_scope.as_ref() {
+            //             DataScope::Root => {
+            //                 println!("arr = {:?}", arr);
+            //                 println!("nulls = {:?}", arr.nulls());
+            //                 if let Some(nulls) = arr.nulls() {
+            //                     // TODO need a test that gets in here
+            //                     BitIndexIterator::new(nulls.buffer().as_slice(), 0, arr.len())
+            //                         .for_each(|i| {
+            //                             println!("ensuring index {i}");
+            //                             parent_id_set.ensure(i);
+            //                         });
+            //                 } else {
+            //                     parent_id_set.ensure_all();
+            //                 }
+
+            //                 if parent_id_set.is_dirty() {
+            //                     // TODO need to check that this is like assigning to the right column for thea attrs ID
+            //                     eval_result.ids =
+            //                         Some(Arc::new(parent_id_set.as_id_col().into_owned()));
+            //                 }
+            //             }
+            //             _ => {
+            //                 // TODO nothing to do?
+            //             }
+            //         }
+            //     }
+            // }
 
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
             let update_parent_ids_u16 = update_parent_ids
@@ -2181,7 +2188,7 @@ mod test {
                 .event_name("event1")
                 .finish(),
             LogRecord::build()
-                .attributes(vec![KeyValue::new("z", AnyValue::new_int(5))])
+                .attributes(vec![KeyValue::new("z", AnyValue::new_int(14))])
                 .event_name("event2")
                 .finish(),
             LogRecord::build().event_name("event3").finish(),
@@ -2194,6 +2201,14 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
+
+        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
+            .unwrap();
+        arrow::util::pretty::print_batches(&[result
+            .get(ArrowPayloadType::LogAttrs)
+            .unwrap()
+            .clone()])
+        .unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");

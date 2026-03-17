@@ -11,6 +11,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow::util::bit_iterator::BitSliceIterator;
 use arrow::util::bit_util;
 use smallvec::{SmallVec, smallvec};
 
@@ -571,17 +572,68 @@ fn merge_type_column_batched(
                 output.extend_from_slice(&existing_types.values()[run.start..run.end]);
             }
             Some(idx) => {
+                let resolved_upsert = &resolved[idx as usize];
+                if let Some(arr) = &resolved_upsert.new_values_array {
+                    if let Some(nulls) = arr.nulls() {
+                        let validity_slice_iter = BitSliceIterator::new(
+                            nulls.buffer().as_slice(),
+                            run.start,
+                            run.end - run.start,
+                        );
+                        for range in validity_slice_iter {
+                            println!("RANGE = {range:?}")
+                        }
+
+                        todo!()
+                    }
+                }
                 // Owned: fill with this upsert's type discriminant.
-                let discriminant = resolved[idx as usize].attr_value_type as u8;
+                let discriminant = resolved_upsert.attr_value_type as u8;
                 output.extend(std::iter::repeat_n(discriminant, run.end - run.start));
             }
         }
     }
 
     // Insert rows: each upsert's type discriminant × its insert count.
-    for upsert in resolved {
-        let discriminant = upsert.attr_value_type as u8;
-        output.extend(std::iter::repeat_n(discriminant, upsert.num_inserts));
+    for resolved_upsert in resolved {
+        let discriminant = resolved_upsert.attr_value_type as u8;
+        if let Some(arr) = &resolved_upsert.new_values_array {
+            if let Some(nulls) = arr.nulls() {
+                let validity_slice_iter = BitSliceIterator::new(
+                    nulls.buffer().as_slice(),
+                    resolved_upsert.num_updates,
+                    resolved_upsert.num_inserts,
+                );
+                let mut last_valid_range_end = 0;
+                for (start, end) in validity_slice_iter {
+                    // put the null range that came before the last valid range
+                    if start != last_valid_range_end {
+                        output.extend(std::iter::repeat_n(
+                            AttributeValueType::Empty as u8,
+                            start - last_valid_range_end,
+                        ));
+                    }
+                    output.extend(std::iter::repeat_n(discriminant, end - start));
+
+                    last_valid_range_end = end;
+                }
+
+                // put the remaining nulls
+                if last_valid_range_end != resolved_upsert.num_inserts {
+                    output.extend(std::iter::repeat_n(
+                        AttributeValueType::Empty as u8,
+                        resolved_upsert.num_inserts - last_valid_range_end,
+                    ));
+                }
+
+                continue;
+            }
+        }
+
+        output.extend(std::iter::repeat_n(
+            discriminant,
+            resolved_upsert.num_inserts,
+        ));
     }
 
     let result: ArrayRef = Arc::new(UInt8Array::from(output));
