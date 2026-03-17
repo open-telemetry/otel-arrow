@@ -350,14 +350,6 @@ impl<T> Receiver<T> {
         let state = self.channel.state.borrow();
         state.buffer.is_empty()
     }
-
-    /// Returns `true` if the sender side has been closed (all senders dropped or
-    /// explicitly closed). Note that there may still be buffered items to drain.
-    #[must_use]
-    pub fn is_closed(&self) -> bool {
-        let state = self.channel.state.borrow();
-        state.is_closed
-    }
 }
 
 struct SendFuture<T> {
