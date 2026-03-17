@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -18,6 +16,8 @@ use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -33,9 +33,9 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[cfg(feature = "experimental-tls")]
-use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
+#[cfg(feature = "experimental-tls")]
+use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_debug;
 
