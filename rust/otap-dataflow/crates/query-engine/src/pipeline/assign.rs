@@ -22,10 +22,8 @@ use arrow::array::{
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::compute::kernels::cmp::{eq, neq};
-use arrow::compute::{cast, filter, take};
+use arrow::compute::{cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
-use arrow::record_batch;
-use arrow::util::bit_iterator::BitIndexIterator;
 use async_trait::async_trait;
 use data_engine_expressions::{
     Expression, QueryLocation, ScalarExpression, SourceScalarExpression,
@@ -40,9 +38,8 @@ use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
-use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -508,9 +505,6 @@ impl AssignPipelineStage {
                 }
             };
 
-            println!("parent_ids = {:?}", parent_ids);
-            println!("new_values = {:?}", new_values);
-
             attrs_upserts.push(AttributeUpsert {
                 attrs_key,
                 existing_key_mask: existing_key_mask,
@@ -534,6 +528,76 @@ impl AssignPipelineStage {
 
         Ok(otap_batch)
     }
+
+    /// Fills in any nulls in the root batch's ID column with newly assigned IDs.
+    ///
+    /// when we are setting attributes, we must ensure that the record to which the attribute is
+    /// being assigned has a non-null value in its ID column so that the parent_id of the new
+    /// attribute has something to point to.
+    ///
+    /// Note: we only do this when assigning attributes to the root log/span/metric. We don't do
+    /// this for scope/resource attributes because a null in these positions means there is no
+    /// scope/resource associated with the record, meaning there is nothing for which to assign the
+    /// attribute.
+    fn fill_root_id_column_nulls(&self, otap_batch: &mut OtapArrowRecords) -> Result<()> {
+        let id_col = match otap_batch
+            .root_record_batch()
+            .and_then(|rb| rb.column_by_name(consts::ID))
+        {
+            Some(id) => id,
+            None => {
+                // nothing to do.
+                return Ok(());
+            }
+        };
+
+        if id_col.null_count() == 0 {
+            // nothing to do - there are no nulls
+            return Ok(());
+        }
+
+        let id_col = id_col
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "invalid ID column. expected u16 type, found {:?}",
+                    id_col.data_type()
+                ),
+            })?;
+
+        let mut max_id = max(id_col).unwrap_or(0);
+
+        let mut new_ids = id_col.values().to_vec();
+        for i in 0..id_col.len() {
+            if id_col.is_null(i) {
+                // very unfortunate error, but nothing we can really do here. We're not in a
+                // position at this point to automatically split the batch to give us more IDs
+                if max_id == u16::MAX {
+                    return Err(Error::ExecutionError {
+                        cause: "ID space saturated when assigning attributes. \
+                            Please try a smaller batch size"
+                            .into(),
+                    });
+                }
+                max_id += 1;
+                new_ids[i] = max_id;
+            }
+        }
+
+        // safety: we're OK to expect here because if we're here, it means we were able to access
+        // the id column from this record batch, which means the record batch must exist so this
+        // call will not return None.
+        let root_record_batch = otap_batch.root_record_batch().expect("no root batch");
+        let new_root = try_upsert_column(
+            consts::ID,
+            Arc::new(UInt16Array::from(new_ids)),
+            root_record_batch,
+        )?;
+        otap_batch.set(otap_batch.root_payload_type(), new_root);
+
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -546,44 +610,45 @@ impl PipelineStage for AssignPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        let mut eval_results = Vec::new(); // TODO reuse this between invocations
-        for source in &mut self.sources {
-            let eval_result = source.execute(&otap_batch, session_context)?;
-            eval_results.push(eval_result);
+        // if we're assigning to attributes, do it as a bulk attribute upsert for best performance:
+        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
+            if *attrs_id == AttributesIdentifier::Root {
+                self.fill_root_id_column_nulls(&mut otap_batch)?;
+            }
+
+            let mut eval_results = Vec::new();
+            for source in &mut self.sources {
+                let eval_result = source.execute(&otap_batch, session_context)?;
+                eval_results.push(eval_result);
+            }
+            let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
+
+            return Ok(result);
         }
 
-        // TODO ensure can't be empty
-        match &self.dest_columns[0] {
-            // TODO - still need to ensure in constructor if dest_col is variant for one, it's
-            // variant for all
-            ColumnAccessor::ColumnName(_) => {
-                // assigning to columns - this doesn't support multi assign yet so we just
-                // do em all one at a time
-                for (i, eval_result) in eval_results.into_iter().enumerate() {
-                    let dest_scope = &self.dest_scopes[i];
-                    let ColumnAccessor::ColumnName(col_name) = &self.dest_columns[i] else {
-                        // TODO - is it?
-                        unreachable!("")
-                    };
-                    otap_batch = match eval_result {
-                        Some(eval_result) => {
-                            self.assign_to_root(otap_batch, eval_result, dest_scope, col_name)
-                        }
-                        None => self.assign_null_root_column(otap_batch, col_name),
-                    }?;
+        // otherwise, assigning to the root batch. this currently doesn't support bulk assignment
+        // so we just evaluate the expressions and update the columns one at a time:
+        for i in 0..self.sources.len() {
+            let dest_col_name = match &self.dest_columns[i] {
+                ColumnAccessor::ColumnName(col_name) => col_name,
+                other_dest => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "assignment to column destination {:?} not yet supported",
+                            other_dest
+                        ),
+                    });
                 }
-            }
-            ColumnAccessor::Attributes(attrs_id, _) => {
-                otap_batch = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
-            }
-            other_dest => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
-                        "assignment to column destination {:?} not yet supported",
-                        other_dest
-                    ),
-                });
-            }
+            };
+
+            let eval_result = self.sources[i].execute(&otap_batch, session_context)?;
+            let dest_scope = &self.dest_scopes[i];
+            otap_batch = match eval_result {
+                Some(eval_result) => {
+                    self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
+                }
+                None => self.assign_null_root_column(otap_batch, &dest_col_name),
+            }?;
         }
 
         Ok(otap_batch)

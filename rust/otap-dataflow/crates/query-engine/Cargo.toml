@@ -19,7 +19,7 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 
-otap-df-pdata = { path = "../pdata" }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
