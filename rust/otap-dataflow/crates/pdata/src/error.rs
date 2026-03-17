@@ -226,4 +226,27 @@ pub enum Error {
 
     #[error("Format error: {}", error)]
     Format { error: String },
+
+    #[error("Extraneous column `{name}` in payload {payload_type:?}")]
+    ExtraneousField {
+        name: String,
+        payload_type: ArrowPayloadType,
+    },
+
+    #[error("Missing required columns {names:?} in payload {payload_type:?}")]
+    MissingRequiredFields {
+        names: Vec<String>,
+        payload_type: ArrowPayloadType,
+    },
+
+    #[error(
+        "Column `{name}` type mismatch in payload {payload_type:?}, \
+         expected OTAP type {expected:?}, actual: {actual}"
+    )]
+    FieldTypeMismatch {
+        name: String,
+        payload_type: ArrowPayloadType,
+        expected: crate::schema::schema::DataType,
+        actual: DataType,
+    },
 }
