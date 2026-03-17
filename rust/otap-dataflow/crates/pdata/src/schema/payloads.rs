@@ -5,8 +5,6 @@
 //!
 //! Each payload type has a [`Schema`] that describes its columns, their OTAP
 //! data types, dictionary encoding constraints, and required/optional status.
-//!
-//! All definitions are `const`/`static` — no heap allocation, no `LazyLock`.
 
 use super::schema::{DataType, DictKeySize, Field, Schema, SimpleType};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;

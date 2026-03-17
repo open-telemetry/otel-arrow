@@ -1,12 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP schema definition types.
-//!
-//! These types describe the expected schema of Arrow record batches for each
-//! OTAP payload type. They are fully `const`-constructible — no `Arc`, no
-//! `LazyLock`, no heap allocation — so payload definitions can be declared as
-//! plain `static` items.
+//! OTAP schema definition types. These can be used to describe the schema of
+//! any otap payload type. See [crate::schema::payloads::get]
 
 use arrow::array::RecordBatch;
 
@@ -101,19 +97,17 @@ impl std::fmt::Display for DictKeySize {
 }
 
 /// OTAP-level data type.
-///
-/// Wraps Arrow types with OTAP-specific constraints (dictionary key size
-/// minimums, nested sub-schemas for struct/list columns).
 #[derive(Debug, Clone, Copy)]
 pub enum DataType {
-    /// A simple (non-dictionary, non-recursive) Arrow type.
+    /// Simple
     Simple(SimpleType),
-    /// Dictionary-encoded column with a minimum key size constraint.
+    /// A column which MAY be dictionary encoded along with the minimum size.
+    /// Note that the max key size in OTAP is always U16.
     Dictionary {
         min_key_size: DictKeySize,
         value_type: SimpleType,
     },
-    /// Struct with a nested OTAP schema.
+    /// Struct
     Struct(&'static Schema),
     /// List whose items have the given OTAP data type.
     List(&'static DataType),
@@ -122,9 +116,6 @@ pub enum DataType {
 impl DataType {
     /// Validate that the given Arrow DataType conforms to this OTAP type
     /// definition, checking struct sub-fields and list item types.
-    ///
-    /// On the happy path no heap allocation occurs. On the error path a
-    /// dotted field-path string is constructed.
     #[must_use]
     pub fn matches(&self, arrow_dt: &arrow::datatypes::DataType) -> bool {
         use arrow::datatypes::DataType as ArrowDT;
@@ -241,9 +232,6 @@ impl std::fmt::Debug for Field {
 }
 
 /// OTAP schema definition for a payload type (or a nested struct).
-///
-/// Holds a static slice of [`Field`]s and a lookup function for O(1) field
-/// access by name.
 #[derive(Debug, Clone, Copy)]
 pub struct Schema {
     pub(crate) fields: &'static [Field],
