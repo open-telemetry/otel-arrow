@@ -31,7 +31,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-core-nodes = { path = "../core-nodes", features = ["dev-tools"] }
-otap-df-pdata = { path = "../pdata" }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
