@@ -3,6 +3,8 @@
 
 //! This module contains code for planning pipeline execution
 
+use std::collections::HashSet;
+
 use data_engine_expressions::{
     BooleanScalarExpression, BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression,
     IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
@@ -26,6 +28,7 @@ use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
 use crate::pipeline::assign::AssignPipelineStage;
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
+use crate::pipeline::expr::{DataScope, ExprLogicalPlanner, LogicalExprDataSource};
 use crate::pipeline::filter::optimize::{
     AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
 };
@@ -566,15 +569,26 @@ impl PipelinePlanner {
 
         let mut assignments = Vec::new();
         let mut dest_accessors = Vec::new();
+        let mut attr_key_set = HashSet::new();
 
-        fn can_be_combined(a: &ColumnAccessor, b: &ColumnAccessor) -> bool {
-            match (a, b) {
+        fn check_combine(
+            prev: &ColumnAccessor,
+            next: &ColumnAccessor,
+            attr_key_set: &HashSet<String>,
+        ) -> bool {
+            match (prev, next) {
                 (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(_)) => true,
                 (
-                    ColumnAccessor::Attributes(a_attrs_id, _),
-                    ColumnAccessor::Attributes(b_attrs_id, _),
-                ) => a_attrs_id == b_attrs_id,
+                    ColumnAccessor::Attributes(prev_attrs_id, _),
+                    ColumnAccessor::Attributes(next_attrs_id, next_key),
+                ) => prev_attrs_id == next_attrs_id && !attr_key_set.contains(next_key),
                 _ => false,
+            }
+        }
+
+        fn set_dest_attr_key(dest_accessor: &ColumnAccessor, attr_key_set: &mut HashSet<String>) {
+            if let ColumnAccessor::Attributes(_, key) = dest_accessor {
+                _ = attr_key_set.insert(key.into());
             }
         }
 
@@ -661,10 +675,30 @@ impl PipelinePlanner {
 
             let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
 
-            let combine = dest_accessors
+            let mut combine = dest_accessors
                 .last()
-                .map(|prev_dest| can_be_combined(prev_dest, &dest_accessor))
+                .map(|prev_dest| check_combine(prev_dest, &dest_accessor, &attr_key_set))
                 .unwrap_or(true);
+
+            // TODO about to do something really weird - we duplicate the planning
+            let source = set_expr.get_source();
+            let logical_planner = ExprLogicalPlanner::default();
+            let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
+            combine &= source_logical_plan.visit(&mut |logical_expr| {
+                if let LogicalExprDataSource::DataSource(data_source) = &logical_expr.source {
+                    match data_source {
+                        DataScope::Attributes(_, key) => {
+                            if attr_key_set.contains(key) {
+                                return false;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                true
+            });
+
             if !combine {
                 let pipeline_stage = AssignPipelineStage::try_new(&assignments)?;
                 results.push(Box::new(pipeline_stage));
@@ -672,7 +706,9 @@ impl PipelinePlanner {
                 assignments.clear();
                 dest_accessors.clear();
             }
+
             assignments.push((dest, set_expr.get_source()));
+            set_dest_attr_key(&dest_accessor, &mut attr_key_set);
             dest_accessors.push(dest_accessor);
         }
 
