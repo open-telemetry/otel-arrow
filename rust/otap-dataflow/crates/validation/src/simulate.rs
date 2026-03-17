@@ -198,27 +198,25 @@ fn loadgen_reached_limit(
         return true;
     }
 
-    let mut loadgen_metric_set_seen = false;
-
-    for set in snapshot
+    let mut iter = snapshot
         .metric_sets
         .iter()
         .filter(|set| set.name == LOADGEN_METRIC_SET)
-    {
-        if let Some(label) = attribute_node_id(&set.attributes) {
-            loadgen_metric_set_seen = true;
-            let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-                + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-                + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
-            if &loadgen_signals_produced < expected_per_gen.get(&label).unwrap_or(&0u64) {
-                return false;
-            }
-        }
-    }
+        .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
+        .peekable();
 
     // No loadgen metric sets found yet — generators have not reported their
     // first telemetry tick. Keep polling.
-    loadgen_metric_set_seen
+    if iter.peek().is_none() {
+        return false;
+    }
+
+    iter.all(|(set, label)| {
+        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
+            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
+            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
+        loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
+    })
 }
 
 /// Result of checking whether all validation exporters have finished.
@@ -237,14 +235,18 @@ enum ValidationPollResult {
 /// so that the caller can decide to keep polling or report success/failure.
 fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollResult {
     let mut failed_validation_exporters = vec![];
-    let mut validation_metrics_seen = false;
 
-    for set in snapshot
+    let mut iter = snapshot
         .metric_sets
         .iter()
         .filter(|set: &&MetricSetSnapshot| set.name == VALIDATION_METRIC_SET)
-    {
-        validation_metrics_seen = true;
+        .peekable();
+
+    if iter.peek().is_none() {
+        return ValidationPollResult::NotFinished;
+    }
+
+    for set in iter {
         // If any exporter has not yet signaled finished, keep waiting.
         if metric_value(set, VALIDATION_FINISHED_METRIC_NAME).is_none_or(|v| v < 1) {
             return ValidationPollResult::NotFinished;
@@ -255,12 +257,6 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
                 failed_validation_exporters.push(label);
             }
         }
-    }
-
-    // No validation exporter metric sets found yet — the exporter has not
-    // reported its first telemetry tick. Keep polling.
-    if !validation_metrics_seen {
-        return ValidationPollResult::NotFinished;
     }
 
     if failed_validation_exporters.is_empty() {

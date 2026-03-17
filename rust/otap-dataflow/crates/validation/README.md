@@ -332,24 +332,25 @@ Scenario::new()
 
 - **Capture example (with validations)**
 
-  ```rust
-  use otap_df_validation::traffic::Capture;
-  use otap_df_validation::ValidationInstructions;
-  use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   ```rust
+   use otap_df_validation::traffic::Capture;
+   use otap_df_validation::ValidationInstructions;
+   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
-  let capture = Capture::default()
-      .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
-      .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
-      .core_range(3, 5)    // optional; default 1-1
-      .validate(vec![           // required; define your validation instructions
-          ValidationInstructions::Equivalence,
-          ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
-          ValidationInstructions::AttributeRequireKeyValue {
-              domains: vec![AttributeDomain::Signal],
-              pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
-          },
-      ]);
-  ```
+   let capture = Capture::default()
+       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+       .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
+       .core_range(3, 5)    // optional; default 1-1
+       .idle_timeout(5)     // optional; seconds to wait for messages before validating; default 3
+       .validate(vec![           // required; define your validation instructions
+           ValidationInstructions::Equivalence,
+           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
+           ValidationInstructions::AttributeRequireKeyValue {
+               domains: vec![AttributeDomain::Signal],
+               pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
+           },
+       ]);
+   ```
 
 - `Capture::default()` - create a Capture
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
@@ -368,6 +369,10 @@ should receive control signals from
   - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
+- `idle_timeout(u8)` - set how long (in seconds) the validation exporter
+  waits without receiving any messages before declaring the data stream
+  settled and performing the final validation
+  - default: 3 seconds
 - `from_container(ContainerConnection)` - use a custom receiver that reads from
   a test container instead of directly from the SUV pipeline exporter
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -375,6 +380,19 @@ should receive control signals from
 
 > NOTE: When using `otlp_grpc()` / `otap_grpc()`, the node names must match
 the keys under `nodes:` in your pipeline YAML.
+
+### How `idle_timeout` works
+
+The validation exporter tracks the timestamp of the last received message.
+On each periodic telemetry tick (every 1 second), it checks whether the
+elapsed time since the last message exceeds the configured idle timeout. If
+so, it considers the data stream settled, performs the final validation, and
+signals completion.
+
+A shorter timeout makes tests complete faster but may trigger validation
+prematurely if there are natural pauses in message delivery. A longer
+timeout is safer for pipelines with bursty or delayed output but increases
+overall test runtime.
 
 ### Validation instructions (used with `Capture::validate`)
 

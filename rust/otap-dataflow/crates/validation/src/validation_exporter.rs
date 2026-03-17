@@ -34,7 +34,7 @@ use tokio::time::{Duration, Instant};
 
 /// Default number of seconds the exporter waits without receiving any messages
 /// before declaring the data stream settled and performing the final validation.
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3;
 
 /// URN that identifies the validation exporter within OTAP pipelines.
 pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:exporter:validation";

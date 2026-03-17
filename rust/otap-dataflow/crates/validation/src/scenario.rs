@@ -362,7 +362,7 @@ impl Scenario {
                     capture_core_end => capture.core_end,
                     capture_label => label,
                     custom_suv_receiver => &custom_suv_receiver,
-                    idle_timeout_secs => capture.idle_timeout.as_secs(),
+                    idle_timeout_secs => capture.idle_timeout,
                 },
             )?);
         }

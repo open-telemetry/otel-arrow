@@ -6,7 +6,7 @@
 {% set suv_port = suv_port | default(4318) -%}
 {% set validate = validate | default("") -%}
 {% set control_ports = control_ports | default([]) -%}
-{% set idle_timeout_secs = idle_timeout_secs | default(5) -%}
+{% set idle_timeout_secs = idle_timeout_secs | default(3) -%}
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
 {% set capture_label = capture_label | default("validation_exporter") -%}
