@@ -132,7 +132,7 @@ impl From<&ColumnAccessor> for DataScope {
 
 /// Identifier of the incoming source data for some scoped expression.
 #[derive(Debug)]
-enum LogicalExprDataSource {
+pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
 
@@ -161,7 +161,7 @@ pub struct ScopedLogicalExpr {
     pub expr_type: ExprLogicalType,
 
     /// identifies the source for the incoming data
-    source: LogicalExprDataSource,
+    pub(crate) source: LogicalExprDataSource,
 
     /// flag for whether the type of expression requires that dictionary encoding is removed from
     /// the input columns.
@@ -203,6 +203,26 @@ impl ScopedLogicalExpr {
                 downcast_dicts: self.requires_dict_downcast,
             },
         })
+    }
+
+    pub(crate) fn visit<F>(&self, visitor: &mut F) -> bool
+    where
+        F: FnMut(&Self) -> bool,
+    {
+        if !visitor(self) {
+            return false;
+        }
+
+        if let LogicalExprDataSource::Join(left, right) = &self.source {
+            if !left.visit(visitor) {
+                return false;
+            }
+            if !right.visit(visitor) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 

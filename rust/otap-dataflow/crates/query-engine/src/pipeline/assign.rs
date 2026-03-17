@@ -51,8 +51,9 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, PhysicalExprEvalResult,
-    SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
+    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource,
+    PhysicalExprEvalResult, SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr,
+    VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
@@ -99,22 +100,45 @@ pub(crate) struct AssignPipelineStage {
 
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
-    pub fn try_new(
-        dests: &[&SourceScalarExpression],
-        sources: &[&ScalarExpression],
-    ) -> Result<Self> {
-        // TODO
-        // - either assert same lengths, or change argument to be a slice of tuples
-        // - assert that the arguments are like, basically for the same table or whatever
-        // - ensure it's not empty
+    pub fn try_new(assignments: &[(&SourceScalarExpression, &ScalarExpression)]) -> Result<Self> {
+        // validate the inputs:
+        if assignments.is_empty() {
+            return Err(Error::InvalidPipelineError {
+                cause: "assignments cannot be empty".into(),
+                query_location: None,
+            });
+        }
 
-        let mut dest_columns = Vec::with_capacity(dests.len());
-        let mut source_physical_exprs = Vec::with_capacity(sources.len());
-        for (source, dest) in sources.iter().zip(dests) {
+        let mut dest_columns = Vec::with_capacity(assignments.len());
+        let mut source_physical_exprs = Vec::with_capacity(assignments.len());
+        for (dest, source) in assignments {
             let logical_planner = ExprLogicalPlanner::default();
             let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
 
             let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
+
+            // validate that all the assignments are for the same record batch:
+            if let Some(last_dest_col) = dest_columns.last() {
+                let same_dest = match (&dest_column, last_dest_col) {
+                    (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(_)) => true,
+                    (
+                        ColumnAccessor::Attributes(last_attr_id, _),
+                        ColumnAccessor::Attributes(curr_attr_id, _),
+                    ) => last_attr_id == curr_attr_id,
+                    _ => false,
+                };
+
+                if !same_dest {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "all assignments must be for same record batch. \
+                            Found destinations {last_dest_col:?}, {dest_column:?}"
+                        ),
+                        query_location: None,
+                    });
+                }
+            }
+
             validate_assign(
                 &dest_column,
                 dest.get_query_location(),
@@ -926,10 +950,63 @@ fn validate_assign(
                 });
             }
         }
-        ColumnAccessor::Attributes(attrs_id, _) => {
-            // TODO validate type
-            // TODO validate source
-            // println!("TODO validate assignment");
+        ColumnAccessor::Attributes(dest_attrs_id, _) => {
+            if !can_assign_type(&ExprLogicalType::AnyValue, &source_logical_plan.expr_type) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign expression of type {:?} to type AnyValue",
+                        source_logical_plan.expr_type
+                    ),
+                    query_location: Some(dest_query_location.clone()),
+                });
+            }
+
+            if *dest_attrs_id != AttributesIdentifier::Root {
+                // TODO blah blah comments about relationship cardinality
+                let mut invalid_data_scope = None;
+                _ = source_logical_plan.visit(&mut |source_logical_plan: &ScopedLogicalExpr| {
+                    if let LogicalExprDataSource::DataSource(data_scope) =
+                        &source_logical_plan.source
+                    {
+                        let is_valid = match data_scope {
+                            DataScope::Root => false,
+                            DataScope::Attributes(source_attr_id, _) => {
+                                if dest_attrs_id == source_attr_id {
+                                    true
+                                } else if matches!(
+                                    dest_attrs_id,
+                                    AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                                ) && matches!(
+                                    dest_attrs_id,
+                                    AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                                ) {
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            DataScope::StaticScalar => true,
+                        };
+
+                        if !is_valid {
+                            invalid_data_scope = Some(data_scope.clone())
+                        }
+                    }
+
+                    return true;
+                });
+
+                // TODO - we need have a better error message here
+                if let Some(invalid_data_scope) = invalid_data_scope {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "cannot assign data scope {invalid_data_scope:?} to \
+                            attributes {dest_attrs_id:?}"
+                        ),
+                        query_location: Some(dest_query_location.clone()),
+                    });
+                }
+            }
         }
         other_dest => {
             // TODO other assignment destinations will be supported soon
@@ -2277,6 +2354,85 @@ mod test {
         assert_eq!(
             log_1.attributes,
             vec![KeyValue::new("y", AnyValue::new_string("hello")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assigning_to_resource_attributes_invalid_assignments() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend resource.attributes[\"y\"] = event_name";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ResourceAttrs)"),
+            "unexpected error message {}",
+            err_msg
+        );
+
+        // ensure we can't assign from attributes
+        let query = "logs | extend resource.attributes[\"y\"] = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
+            "unexpected error message {}",
+            err_msg
+        );
+
+        // ensure we can't assign from attributes
+        let query =
+            "logs | extend resource.attributes[\"y\"] = instrumentation_scope.attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cannot assign data scope Attributes(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            "unexpected error message {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assigning_to_scope_attributes_invalid_assignments() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend instrumentation_scope.attributes[\"y\"] = event_name";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ScopeAttrs)"),
+            "unexpected error message {}",
+            err_msg
+        );
+
+        // ensure we can't assign from attributes
+        let query = "logs | extend instrumentation_scope.attributes[\"y\"] = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains(
+                "cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
+            ),
+            "unexpected error message {}",
+            err_msg
         );
     }
 }

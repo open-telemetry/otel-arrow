@@ -564,10 +564,8 @@ impl PipelinePlanner {
         // TODO - somewhere in here we gotta make sure we don't combine sets for the same key
         // and either produce an error if this is happening or have some defined behaviour
 
-        // TODO this is super hokey
-        let mut sources = Vec::new();
+        let mut assignments = Vec::new();
         let mut dest_accessors = Vec::new();
-        let mut dests = Vec::new();
 
         fn can_be_combined(a: &ColumnAccessor, b: &ColumnAccessor) -> bool {
             match (a, b) {
@@ -668,20 +666,18 @@ impl PipelinePlanner {
                 .map(|prev_dest| can_be_combined(prev_dest, &dest_accessor))
                 .unwrap_or(true);
             if !combine {
-                let pipeline_stage = AssignPipelineStage::try_new(&dests, &sources)?;
+                let pipeline_stage = AssignPipelineStage::try_new(&assignments)?;
                 results.push(Box::new(pipeline_stage));
 
-                sources.clear();
+                assignments.clear();
                 dest_accessors.clear();
-                dests.clear();
             }
-            sources.push(set_expr.get_source());
+            assignments.push((dest, set_expr.get_source()));
             dest_accessors.push(dest_accessor);
-            dests.push(dest);
         }
 
-        if !sources.is_empty() {
-            let pipeline_stage = AssignPipelineStage::try_new(&dests, &sources)?;
+        if !assignments.is_empty() {
+            let pipeline_stage = AssignPipelineStage::try_new(&assignments)?;
             results.push(Box::new(pipeline_stage));
         }
 
