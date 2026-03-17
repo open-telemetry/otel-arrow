@@ -58,6 +58,45 @@ pub mod tracing_init;
 // Re-export tracing setup types for per-thread subscriber configuration.
 pub use tracing_init::TracingSetup;
 
+#[cfg(test)]
+#[allow(unsafe_code)] // std::env mutation is synchronized and restored for test isolation.
+pub(crate) fn with_cleared_rust_log<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    use std::env;
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    use std::sync::{Mutex, OnceLock};
+
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+
+    let _guard = GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let previous = env::var_os("RUST_LOG");
+    unsafe {
+        env::remove_var("RUST_LOG");
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(f));
+
+    match previous {
+        Some(value) => unsafe {
+            env::set_var("RUST_LOG", value);
+        },
+        None => unsafe {
+            env::remove_var("RUST_LOG");
+        },
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
 // without requiring them to add tracing as a direct dependency.
@@ -395,49 +434,51 @@ mod tests {
 
     #[test]
     fn its_receiver_presence_depends_on_provider_mode() {
-        // Default (no ITS) -> no receiver
-        let its = InternalTelemetrySystem::new(
-            &TelemetryConfig::default(),
-            TelemetryRegistryHandle::new(),
-            Some(test_reporter()),
-            LogContext::new,
-        )
-        .expect("should create");
-        assert!(
-            its.internal_telemetry_settings().is_none(),
-            "no ITS mode -> no receiver"
-        );
+        with_cleared_rust_log(|| {
+            // Default (no ITS) -> no receiver
+            let its = InternalTelemetrySystem::new(
+                &TelemetryConfig::default(),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                LogContext::new,
+            )
+            .expect("should create");
+            assert!(
+                its.internal_telemetry_settings().is_none(),
+                "no ITS mode -> no receiver"
+            );
 
-        // ITS mode on engine -> receiver present and receives logs
-        let providers = LoggingProviders {
-            global: ProviderMode::Noop,
-            engine: ProviderMode::ITS,
-            internal: ProviderMode::Noop,
-            admin: ProviderMode::Noop,
-        };
-        let its = InternalTelemetrySystem::new(
-            &config_with_providers(providers),
-            TelemetryRegistryHandle::new(),
-            Some(test_reporter()),
-            LogContext::new,
-        )
-        .expect("should create");
-        let its_settings = its.internal_telemetry_settings();
-        let rx = its_settings
-            .expect("ITS mode should provide receiver")
-            .logs_receiver;
-        assert!(rx.is_empty(), "receiver starts empty");
+            // ITS mode on engine -> receiver present and receives logs
+            let providers = LoggingProviders {
+                global: ProviderMode::Noop,
+                engine: ProviderMode::ITS,
+                internal: ProviderMode::Noop,
+                admin: ProviderMode::Noop,
+            };
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                LogContext::new,
+            )
+            .expect("should create");
+            let its_settings = its.internal_telemetry_settings();
+            let rx = its_settings
+                .expect("ITS mode should provide receiver")
+                .logs_receiver;
+            assert!(rx.is_empty(), "receiver starts empty");
 
-        // Emit a log using the engine tracing setup (which uses ITS)
-        its.engine_tracing_setup().with_subscriber(|| {
-            crate::otel_info!("test log message");
+            // Emit a log using the engine tracing setup (which uses ITS)
+            its.engine_tracing_setup().with_subscriber(|| {
+                crate::otel_info!("test log message");
+            });
+
+            // Receiver should have the log
+            let recv = rx.recv().expect("receiver should have log after emit");
+            assert!(matches!(recv, ObservedEvent::Log(_)));
+            let text = recv.to_string();
+            assert!(text.contains("test log message"), "log message is {}", text);
         });
-
-        // Receiver should have the log
-        let recv = rx.recv().expect("receiver should have log after emit");
-        assert!(matches!(recv, ObservedEvent::Log(_)));
-        let text = recv.to_string();
-        assert!(text.contains("test log message"), "log message is {}", text);
     }
 
     #[test]

@@ -1096,6 +1096,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 }
                 NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
@@ -1337,7 +1338,10 @@ mod tests {
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{
+        NodeControlMsg, PipelineControlMsg, PipelineReturnMsg, pipeline_ctrl_msg_channel,
+        pipeline_return_msg_channel,
+    };
     use otap_df_engine::message::Message;
     use otap_df_engine::node::Node;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -1654,7 +1658,9 @@ mod tests {
         phase
             .run_test(move |mut ctx| async move {
                 let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                let (pipeline_return_tx, mut pipeline_return_rx) = pipeline_return_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_tx);
+                ctx.set_pipeline_return_sender(pipeline_return_tx);
 
                 // Track outputs by event position
                 let mut event_outputs: Vec<EventOutputs> = vec![
@@ -1770,7 +1776,18 @@ mod tests {
                                     looped += 1;
                                     pending_delay = Some((when, data));
                                 }
-                                Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
+                                Ok(_) => {
+                                    panic!("unexpected case");
+                                }
+                                Err(_) => {
+                                    break;
+                                }
+                            }
+                        }
+
+                        loop {
+                            match pipeline_return_rx.try_recv() {
+                                Ok(PipelineReturnMsg::DeliverAck { ack }) => {
                                     looped += 1;
                                     if let Some((_node_id, ack)) = next_ack(ack) {
                                         let calldata: TestCallData =
@@ -1778,7 +1795,7 @@ mod tests {
                                         received_acks.push(calldata);
                                     }
                                 }
-                                Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
+                                Ok(PipelineReturnMsg::DeliverNack { nack }) => {
                                     looped += 1;
                                     if let Some((_node_id, nack)) = next_nack(nack) {
                                         let calldata: TestCallData = nack
@@ -1789,9 +1806,6 @@ mod tests {
                                             .expect("calldata");
                                         received_nacks.push(calldata);
                                     }
-                                }
-                                Ok(_) => {
-                                    panic!("unexpected case");
                                 }
                                 Err(_) => {
                                     break;

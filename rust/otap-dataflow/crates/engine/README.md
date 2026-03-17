@@ -52,20 +52,46 @@ maintaining stable performance. Finally, limiting external dependencies reduces
 complexity, security risks, and maintenance effort, further streamlining the
 gateway's operation and reliability.
 
-## Control Messages
+## Runtime Channels and Control Messages
 
-The pipeline engine supports two types of control messages:
+The pipeline engine uses bounded channels only.
 
-1. **Node Control Messages**: These messages are emitted by the engine to
-   control the behavior of individual nodes in the pipeline, such as
-   reconfiguration, stopping a specific node, a timer tick, or even an
-   acknowledgment message emitted by a downstream node.
-2. **Pipeline Control Messages**: These messages are emitted by individual
-   nodes to control certain subsystems of the pipeline engine, such as
-   starting or stopping.
+At runtime, compatible pipeline connections are grouped into hyper-edges, and
+each hyper-edge is wired onto one bounded underlying `pdata` channel. With
+ordinary multi-destination `one_of` wiring, multiple consumers on the same
+hyper-edge compete on that shared channel. Generic hyper-edge broadcast fan-out
+is not implemented today.
 
-Note: Each node in a pipeline can receive node control messages, which must be
-handled with priority.
+Each pipeline runtime uses three channel families:
+
+1. **PData Channels**: These carry only `pdata`. Receivers and processors
+   produce onto them; processors and exporters consume them.
+2. **Node Control Channels**: There is one bounded node-control channel per
+   node. Receivers consume this channel in competition with their external
+   ingress sources and are expected to prioritize control. Processors and
+   exporters consume node control together with `pdata` through
+   `MessageChannel`.
+3. **Pipeline Runtime Channels**: Each pipeline runtime owns two bounded shared
+   MPSC channels:
+   - a **pipeline-control channel** for timers, delayed-data requests,
+     receiver-drain notifications, and shutdown requests, consumed by
+     `PipelineCtrlMsgManager`;
+   - a **pipeline-return channel** for `DeliverAck` / `DeliverNack`, consumed
+     by `PipelineReturnMsgDispatcher`.
+
+For processors and exporters, `MessageChannel` prefers control over `pdata`,
+but it no longer gives control absolute priority. After 32 consecutive control
+messages, it forces one `pdata` receive attempt when `accept_pdata()` allows
+it, preventing control storms from starving the data path.
+
+The current message families are:
+
+- **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
+  `CollectTelemetry`, `DelayedData`, `DrainIngress`, `Shutdown`
+- **Pipeline control messages**: `StartTimer`, `CancelTimer`,
+  `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
+  `ReceiverDrained`, `Shutdown`
+- **Pipeline return messages**: `DeliverAck`, `DeliverNack`
 
 ## Effect Handlers
 
@@ -125,6 +151,12 @@ The engine builds-in a mechanism for returning the success or failure
 of each data request in the pipeline. Components can opt-in to receive
 Ack (positive acknowledgement) or Nack (negative acknowledgement) node
 control messages.
+
+Ack/Nack unwinding is intentionally separated from timer and shutdown
+orchestration. Nodes publish return-path events on the pipeline-return channel,
+and `PipelineReturnMsgDispatcher` unwinds the caller subscription stack and
+forwards `Ack` / `Nack` node-control messages to the closest interested
+upstream node.
 
 The data layer above the engine is responsible for the physical
 representation of the request context. The engine effect handler and
@@ -317,29 +349,44 @@ that are not used for lack of interest are automatically skipped
 ## Graceful Shutdown Sequence
 
 The pipeline engine supports graceful shutdown of pipelines and their nodes.
-When a shutdown is initiated, the engine sends a shutdown control message to
-each receiver in the pipeline. Each receiver is then responsible for handling
-its own shutdown process, which may include:
+Shutdown is initiated by sending `PipelineControlMsg::Shutdown` to the
+pipeline-control channel; it is not implemented by broadcasting `Shutdown`
+directly to every node at once.
 
-- Stopping the acceptance of new incoming connections or messages.
-- Waiting for in-flight Ack/Nack messages to be processed by downstream nodes,
-  while observing the shutdown deadline specified in the control message.
-- Cleaning up resources and performing any necessary finalization tasks.
-- Exiting the `start` method with a `TerminalState` optionally containing the
-  latest collected metrics.
+When graceful shutdown starts, the pipeline control manager:
 
-When stopping (i.e. at the end of the `start` method), receivers and their
-effect handlers drop the senders of their channels. This triggers the draining
-of the channels by the downstream nodes that consume them. Once a channel is
-fully drained, it returns a shutdown message, causing the corresponding node to
-stop. This process repeats progressively downstream until it reaches the
-exporters, ensuring that all telemetry data and metrics are properly flushed
-before the pipeline fully terminates.
+1. Enters ingress-draining mode.
+2. Cancels recurring timers.
+3. Flushes any queued delayed data back to the originating nodes as
+   `NodeControlMsg::DelayedData`.
+4. Sends `NodeControlMsg::DrainIngress` to every receiver.
+
+Each receiver is then responsible for stopping admission of new external work
+while keeping its receiver-local drain state alive long enough to finish local
+cleanup. For example, an RPC receiver can keep its wait-for-result registry,
+transport shutdown, and telemetry finalization alive until it has no more
+admitted requests to resolve. Once ingress is closed and receiver-local drain
+work is complete, the receiver reports `PipelineControlMsg::ReceiverDrained`.
+
+After all receivers have reported `ReceiverDrained`, the control manager sends
+`NodeControlMsg::Shutdown` to processors and exporters. Their `MessageChannel`
+continues delivering control messages while draining any remaining `pdata`
+until inputs close or the shutdown deadline is reached.
+
+As receivers exit and drop their `pdata` senders, downstream channels drain and
+close progressively toward exporters. Once a downstream input is fully drained
+or closed, the corresponding consumer receives `Shutdown` and exits its run
+loop.
+
+If the shutdown deadline expires, receivers may force-resolve remaining
+receiver-local waiters and the pipeline control manager forces the remaining
+nodes to exit.
 
 ![Graceful Shutdown Sequence](assets/graceful-shutdown.svg)
 
-This shutdown process ensures that ongoing telemetry data processing is
-completed while avoiding data loss and maintaining observability integrity.
+When no fatal error occurs and nodes honor the shutdown deadline, this sequence
+allows the pipeline to stop gracefully while preserving backpressure and
+bounded memory semantics.
 
 ## Testability
 

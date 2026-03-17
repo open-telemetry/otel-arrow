@@ -122,6 +122,26 @@ impl<PData> TestContext<PData> {
             }
         }
     }
+
+    /// Sets the pipeline return message sender on the effect handler.
+    /// This is needed for processor ACK/NACK handling.
+    pub fn set_pipeline_return_sender(
+        &mut self,
+        pipeline_return_sender: crate::control::PipelineReturnMsgSender<PData>,
+    ) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_return_msg_sender(pipeline_return_sender);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_return_msg_sender(pipeline_return_sender);
+            }
+        }
+    }
 }
 
 impl ValidateContext {

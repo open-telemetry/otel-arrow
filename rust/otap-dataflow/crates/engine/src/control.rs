@@ -26,12 +26,18 @@ thread_local! {
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
 /// Used for duration calculations in pipeline component metrics.
 ///
+/// `0` is reserved as the sentinel for "timestamp not set", so this function
+/// always returns a strictly positive value.
+///
 /// TODO: This should not use a thread_local; it should not store any
 /// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
 #[must_use]
 pub fn nanos_since_birth() -> u64 {
     let birth = BIRTH_KEY.get();
-    Instant::now().duration_since(birth).as_nanos() as u64
+    Instant::now()
+        .duration_since(birth)
+        .as_nanos()
+        .saturating_add(1) as u64
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data
@@ -236,6 +242,15 @@ pub enum NodeControlMsg<PData> {
         data: Box<PData>,
     },
 
+    /// Requests that a receiver stop admitting new external work while keeping
+    /// already-admitted work alive until it can finish receiver-local drain work.
+    DrainIngress {
+        /// Deadline for draining ingress.
+        deadline: Instant,
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
+
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
     /// release resources by the specified deadline.
     ///
@@ -292,17 +307,12 @@ pub enum PipelineControlMsg<PData> {
         /// The data
         data: Box<PData>,
     },
-    /// Deliver an Ack to the preceding subscriber in the pipeline.
-    /// The controller unwinds the context stack to find the recipient.
-    DeliverAck {
-        /// The Ack
-        ack: AckMsg<PData>,
-    },
-    /// Deliver a Nack to the preceding subscriber in the pipeline.
-    /// The controller unwinds the context stack to find the recipient.
-    DeliverNack {
-        /// The Nack
-        nack: NackMsg<PData>,
+    /// Indicates that a receiver has stopped admitting new ingress and
+    /// completed any receiver-local drain work needed before downstream
+    /// shutdown begins.
+    ReceiverDrained {
+        /// Identifier of the receiver that completed ingress drain.
+        node_id: usize,
     },
     /// Requests shutdown of the pipeline.
     Shutdown {
@@ -311,6 +321,22 @@ pub enum PipelineControlMsg<PData> {
 
         /// Human-readable reason for the shutdown.
         reason: String,
+    },
+}
+
+/// Return-path control messages sent by nodes to the pipeline engine for
+/// Ack/Nack unwinding.
+#[derive(Debug, Clone)]
+pub enum PipelineReturnMsg<PData> {
+    /// Deliver an Ack to the preceding subscriber in the pipeline.
+    DeliverAck {
+        /// The Ack.
+        ack: AckMsg<PData>,
+    },
+    /// Deliver a Nack to the preceding subscriber in the pipeline.
+    DeliverNack {
+        /// The Nack.
+        nack: NackMsg<PData>,
     },
 }
 
@@ -332,6 +358,12 @@ impl<PData> NodeControlMsg<PData> {
     pub const fn is_shutdown(&self) -> bool {
         matches!(self, NodeControlMsg::Shutdown { .. })
     }
+
+    /// Returns `true` if this control message is an ingress-drain request.
+    #[must_use]
+    pub const fn is_drain_ingress(&self) -> bool {
+        matches!(self, NodeControlMsg::DrainIngress { .. })
+    }
 }
 
 /// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
@@ -343,6 +375,14 @@ pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
 pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
+
+/// Type alias for the channel sender used by nodes to send Ack/Nack unwind
+/// requests to the pipeline engine.
+pub type PipelineReturnMsgSender<PData> = SharedSender<PipelineReturnMsg<PData>>;
+
+/// Type alias for the channel receiver used by the pipeline engine to receive
+/// Ack/Nack unwind requests from nodes.
+pub type PipelineReturnMsgReceiver<PData> = SharedReceiver<PipelineReturnMsg<PData>>;
 
 /// Trait for sending admin commands without depending on the pipeline data type.
 pub trait PipelineAdminSender: Send + Sync {
@@ -369,7 +409,19 @@ pub fn pipeline_ctrl_msg_channel<PData>(
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
 }
 
+/// Creates the shared return channel used for Ack/Nack unwinding.
+pub fn pipeline_return_msg_channel<PData>(
+    capacity: usize,
+) -> (
+    PipelineReturnMsgSender<PData>,
+    PipelineReturnMsgReceiver<PData>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+    (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
+}
+
 /// Typed control message sender for a specific node type.
+#[derive(Clone)]
 pub struct TypedControlSender<PData> {
     /// Unique identifier of the node.
     pub node_id: NodeId,
@@ -380,6 +432,7 @@ pub struct TypedControlSender<PData> {
 }
 
 /// Holds the control message senders for all nodes in the pipeline.
+#[derive(Clone)]
 pub struct ControlSenders<PData> {
     senders: HashMap<usize, TypedControlSender<PData>>,
 }
@@ -460,6 +513,71 @@ impl<PData> ControlSenders<PData> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.senders.is_empty()
+    }
+
+    /// Returns the number of registered receivers.
+    #[must_use]
+    pub fn receiver_count(&self) -> usize {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type == NodeType::Receiver)
+            .count()
+    }
+
+    /// Returns the registered receiver ids.
+    #[must_use]
+    pub fn receiver_ids(&self) -> Vec<usize> {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type == NodeType::Receiver)
+            .map(|sender| sender.node_id.index)
+            .collect()
+    }
+
+    /// Returns the registered non-receiver ids.
+    #[must_use]
+    pub fn non_receiver_ids(&self) -> Vec<usize> {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type != NodeType::Receiver)
+            .map(|sender| sender.node_id.index)
+            .collect()
+    }
+
+    /// Broadcast an ingress-drain control message to all receivers so they
+    /// stop accepting new external work before downstream shutdown begins.
+    pub async fn drain_receivers(
+        &self,
+        deadline: Instant,
+        reason: String,
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
+
+        for typed_sender in self.senders.values() {
+            if typed_sender.node_type != NodeType::Receiver {
+                continue;
+            }
+
+            if let Err(error) = typed_sender
+                .sender
+                .send(NodeControlMsg::DrainIngress {
+                    deadline,
+                    reason: reason.clone(),
+                })
+                .await
+            {
+                errors.push(TypedError::NodeControlMsgSendError {
+                    node_id: typed_sender.node_id.index,
+                    error,
+                });
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Broadcast a shutdown control message to all receivers in order to drain the pipelines.

@@ -122,6 +122,31 @@ impl<UData> State<UData> {
     pub fn cancel(&mut self, key: Key) {
         _ = self.take(key);
     }
+
+    /// Returns the number of live slots.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Returns true when there are no live slots.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Drains all live slots, invoking `f` for each user datum.
+    pub fn drain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(UData),
+    {
+        let keys: Vec<Key> = self.slots.keys().collect();
+        for key in keys {
+            if let Some(value) = self.slots.remove(key) {
+                f(value);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

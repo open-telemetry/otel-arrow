@@ -12,7 +12,9 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCtrlMsgSender, PipelineReturnMsgSender,
+};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
@@ -270,6 +272,7 @@ impl<PData> ExporterWrapper<PData> {
     pub async fn start(
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        pipeline_return_msg_tx: PipelineReturnMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
@@ -295,6 +298,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_return_msg_sender(pipeline_return_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 let message_channel = message::MessageChannel::new(
                     Receiver::Local(control_receiver),
@@ -325,6 +331,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_return_msg_sender(pipeline_return_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 let message_channel = shared::MessageChannel::new(
                     control_receiver,

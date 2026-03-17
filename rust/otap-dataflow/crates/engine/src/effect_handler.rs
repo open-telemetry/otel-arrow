@@ -4,7 +4,10 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::control::{
+    AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender, PipelineReturnMsg,
+    PipelineReturnMsgSender,
+};
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
@@ -44,6 +47,7 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
+    pub(crate) pipeline_return_msg_sender: Option<PipelineReturnMsgSender<PData>>,
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
@@ -59,6 +63,7 @@ impl<PData> EffectHandlerCore<PData> {
         Self {
             node_id,
             pipeline_ctrl_msg_sender: None,
+            pipeline_return_msg_sender: None,
             metrics_reporter,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
@@ -71,6 +76,14 @@ impl<PData> EffectHandlerCore<PData> {
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Sets the pipeline return message sender for this effect handler.
+    pub fn set_pipeline_return_msg_sender(
+        &mut self,
+        pipeline_return_msg_sender: PipelineReturnMsgSender<PData>,
+    ) {
+        self.pipeline_return_msg_sender = Some(pipeline_return_msg_sender);
     }
 
     /// Sets whether outgoing messages need source node tagging.
@@ -241,6 +254,17 @@ impl<PData> EffectHandlerCore<PData> {
         Ok(pipeline_ctrl_msg_sender)
     }
 
+    /// Re-usable function to send a pipeline return message.
+    async fn send_pipeline_return_msg(
+        &self,
+        msg: PipelineReturnMsg<PData>,
+    ) -> Result<PipelineReturnMsgSender<PData>, SendError<PipelineReturnMsg<PData>>> {
+        let pipeline_return_msg_sender = self.pipeline_return_msg_sender.clone()
+            .expect("[Internal Error] Node return sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_return_msg_sender.send(msg).await?;
+        Ok(pipeline_return_msg_sender)
+    }
+
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
     ///
@@ -294,7 +318,7 @@ impl<PData> EffectHandlerCore<PData> {
         PData: crate::Unwindable,
     {
         if ack.accepted.has_frames() {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
+            self.send_pipeline_return_msg(PipelineReturnMsg::DeliverAck { ack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {
@@ -312,7 +336,7 @@ impl<PData> EffectHandlerCore<PData> {
         PData: crate::Unwindable,
     {
         if nack.refused.has_frames() {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
+            self.send_pipeline_return_msg(PipelineReturnMsg::DeliverNack { nack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {
@@ -337,6 +361,19 @@ impl<PData> EffectHandlerCore<PData> {
                 PipelineControlMsg::DelayData { data, .. } => *data,
                 _ => unreachable!(),
             }
+        })
+    }
+
+    /// Notifies the runtime control manager that this receiver has completed
+    /// ingress drain.
+    pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
+        self.send_pipeline_ctrl_msg(PipelineControlMsg::ReceiverDrained {
+            node_id: self.node_id().index,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::PipelineControlMsgError {
+            error: e.to_string(),
         })
     }
 }

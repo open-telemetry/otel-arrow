@@ -10,11 +10,15 @@ use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetr
 use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    PipelineReturnMsgReceiver, PipelineReturnMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::pipeline_ctrl::{NodeMetricHandles, PipelineCtrlMsgManager};
+use crate::pipeline_ctrl::{
+    NodeMetricHandles, PipelineCtrlMsgManager, PipelineReturnMsgDispatcher,
+    report_node_metrics_with_handles,
+};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -23,7 +27,9 @@ use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::RefCell;
 use std::fmt::Debug;
+use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
@@ -169,6 +175,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        pipeline_return_msg_tx: PipelineReturnMsgSender<PData>,
+        pipeline_return_msg_rx: PipelineReturnMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -214,12 +222,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let pipeline_return_msg_tx = pipeline_return_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
                     .start(
                         pipeline_ctrl_msg_tx,
+                        pipeline_return_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                     )
@@ -260,10 +270,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let pipeline_return_msg_tx = pipeline_return_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests)
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        pipeline_return_msg_tx,
+                        metrics_reporter,
+                        node_interests,
+                    )
                     .await;
                 drop(telemetry_guard);
                 result
@@ -298,12 +314,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
             ));
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let pipeline_return_msg_tx = pipeline_return_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = receiver
                     .start(
                         pipeline_ctrl_msg_tx,
+                        pipeline_return_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                     )
@@ -339,13 +357,19 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         for (id, handles) in node_metric_entries {
             node_metric_handles[id] = Some(handles);
         }
+        let node_metric_handles = Rc::new(RefCell::new(node_metric_handles));
 
         // Drop the original sender so the channel closes when all node tasks complete.
         // Each node holds its own clone and without this drop, the PipelinCtrlMsgManager
         // can only exit via a timeout.
         drop(pipeline_ctrl_msg_tx);
+        drop(pipeline_return_msg_tx);
 
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
+        let return_control_senders = control_senders.clone();
+        let return_node_metric_handles = node_metric_handles.clone();
+        let final_node_metric_handles = node_metric_handles.clone();
+        let final_metrics_reporter = metrics_reporter.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_key,
@@ -359,6 +383,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 node_metric_handles,
             );
             manager.run().await
+        }));
+
+        futures.push(local_tasks.spawn_local(async move {
+            let dispatcher = PipelineReturnMsgDispatcher::new(
+                pipeline_return_msg_rx,
+                return_control_senders,
+                return_node_metric_handles,
+            );
+            dispatcher.run().await
         }));
 
         // Drive all local tasks until completion, returning the first error if any.
@@ -387,6 +420,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                                 });
                             }
                         }
+                    }
+                    let mut final_metrics_reporter = final_metrics_reporter.clone();
+                    if let Err(err) = report_node_metrics_with_handles(
+                        &final_node_metric_handles,
+                        &mut final_metrics_reporter,
+                    ) {
+                        otap_df_telemetry::otel_warn!(
+                            "node.metrics.final.reporting.fail",
+                            error = err.to_string()
+                        );
                     }
                     Ok(task_results)
                 })
