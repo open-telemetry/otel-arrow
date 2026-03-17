@@ -51,6 +51,7 @@ pub struct AuthConfig {
 
 impl AuthConfig {
     /// Returns a human-readable name for the configured authentication method.
+    #[must_use]
     pub fn auth_method_name(&self) -> &'static str {
         match self.method {
             AuthMethod::ManagedIdentity => {
@@ -335,5 +336,156 @@ mod tests {
             result.unwrap_err().to_string(),
             "Configuration error: Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed"
         );
+    }
+
+    // The following tests ensure that cross-level duplicate column detection works
+    // correctly. This is critical for the transformer's pre-serialized prefix
+    // optimization which assumes non-overlapping destination columns across
+    // resource, scope, and log record levels.
+
+    #[test]
+    fn test_resource_scope_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
+                    log_record_mapping: HashMap::new(),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Name".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resource_log_record_field_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("host.name".into(), "TimeGenerated".into())]),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "time_unix_nano".into(),
+                        json!("TimeGenerated"),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"TimeGenerated".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resource_log_record_attribute_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "Source".into())]),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "attributes".into(),
+                        json!({"log.source": "Source"}),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Source".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scope_log_record_attribute_overlap_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::from([("scope.version".into(), "Version".into())]),
+                    log_record_mapping: HashMap::from([(
+                        "attributes".into(),
+                        json!({"app.version": "Version"}),
+                    )]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Version".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_non_overlapping_mappings_accepted() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([
+                        ("service.name".into(), "ServiceName".into()),
+                        ("host.name".into(), "HostName".into()),
+                    ]),
+                    scope_mapping: HashMap::from([
+                        ("scope.name".into(), "ScopeName".into()),
+                        ("scope.version".into(), "ScopeVersion".into()),
+                    ]),
+                    log_record_mapping: HashMap::from([
+                        ("time_unix_nano".into(), json!("TimeGenerated")),
+                        ("severity_text".into(), json!("SeverityText")),
+                        ("body".into(), json!("Body")),
+                        (
+                            "attributes".into(),
+                            json!({"env": "Environment", "request.id": "RequestId"}),
+                        ),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert!(config.validate().is_ok());
     }
 }

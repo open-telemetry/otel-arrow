@@ -21,7 +21,11 @@ pub enum ValidationError {
     Ready(String),
     /// Validation checks did not succeed.
     Validation(String),
+    /// Docker container lifecycle errors (start, stop, port resolution).
+    Container(String),
 }
+
+impl std::error::Error for ValidationError {}
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,6 +36,7 @@ impl fmt::Display for ValidationError {
             ValidationError::Http(e) => write!(f, "http error: {e}"),
             ValidationError::Ready(e) => write!(f, "ready check failed: {e}"),
             ValidationError::Validation(e) => write!(f, "validation failed: {e}"),
+            ValidationError::Container(e) => write!(f, "container error: {e}"),
         }
     }
 }

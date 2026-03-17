@@ -141,13 +141,16 @@ class LoadGenConfig(BaseModel):
         "otlp", description="Load generation type: 'otlp' or 'syslog'"
     )
     syslog_server: str = Field(
-        "localhost", description="Syslog server address"
+        default_factory=lambda: os.getenv("SYSLOG_SERVER", "localhost"),
+        description="Syslog server address",
     )
     syslog_port: int = Field(
-        514, gt=0, le=65535, description="Syslog server port"
+        default_factory=lambda: int(os.getenv("SYSLOG_PORT", "514")),
+        gt=0, le=65535, description="Syslog server port",
     )
     syslog_transport: str = Field(
-        "udp", description="Syslog transport protocol: 'tcp' or 'udp'"
+        default_factory=lambda: os.getenv("SYSLOG_TRANSPORT", "udp"),
+        description="Syslog transport protocol: 'tcp' or 'udp'",
     )
     syslog_format: str = Field(
         "rfc3164",
@@ -355,15 +358,17 @@ class LoadGenerator:
         syslog_port = int(args.get("syslog_port", os.getenv("SYSLOG_PORT", "514")))
         syslog_format = args.get("syslog_format", os.getenv("SYSLOG_FORMAT", "rfc3164"))
 
+        print(f"Thread {thread_id}: Using TCP transport to syslog server {syslog_server}:{syslog_port}")
+
         # Create TCP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
 
         try:
             sock.connect((syslog_server, syslog_port))
-            print(f"Thread {thread_id}: Successfully connected to syslog server {syslog_server}:{syslog_port}")
+            print(f"Thread {thread_id}: TCP connection established to {syslog_server}:{syslog_port}")
         except Exception as e:
-            print(f"Thread {thread_id}: Failed to connect to syslog server {syslog_server}:{syslog_port}: {e}")
+            print(f"Thread {thread_id}: TCP connection failed to {syslog_server}:{syslog_port}: {e}")
             sock.close()
             return
 
@@ -745,7 +750,10 @@ def is_port_in_use(port, host="0.0.0.0"):
 
 def main():
     def get_default_value(field_name: str):
-        return LoadGenConfig.model_fields[field_name].default
+        field = LoadGenConfig.model_fields[field_name]
+        if field.default_factory is not None:
+            return field.default_factory()
+        return field.default
 
     parser = argparse.ArgumentParser(description="Loadgen for OTLP logs")
     parser.add_argument(

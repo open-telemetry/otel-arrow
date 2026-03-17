@@ -28,9 +28,6 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::accessory::slots::{Key as SlotKey, State as SlotState};
-use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -48,6 +45,9 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
     otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
@@ -1333,9 +1333,6 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::OtapPdata;
-    use crate::testing::TestCallData;
-    use crate::testing::{next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
@@ -1345,6 +1342,9 @@ mod tests {
     use otap_df_engine::node::Node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::TestCallData;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::OtlpProtoMessage;
