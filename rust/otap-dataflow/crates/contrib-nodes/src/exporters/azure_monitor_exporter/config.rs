@@ -4,7 +4,10 @@
 use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -95,6 +98,14 @@ pub struct ApiConfig {
     /// Schema mapping configuration
     #[serde(default)]
     pub schema: SchemaConfig,
+
+    /// Arm Resource ID header for the logs exported to Azure Monitor (optional)
+    #[serde(default = "default_arm_resource_id_header")]
+    pub azure_monitor_source_resourceid: Option<String>,
+}
+
+fn default_arm_resource_id_header() -> Option<String> {
+    env::var("AZURE_MONITOR_SOURCE_RESOURCEID").ok()
 }
 
 /// Schema mapping configuration
@@ -210,6 +221,7 @@ mod tests {
                 stream_name: "mystream".to_string(),
                 dcr: "mydcr".to_string(),
                 schema: SchemaConfig::default(),
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig {
                 scope: "https://monitor.azure.com/.default".to_string(),
@@ -229,6 +241,7 @@ mod tests {
                 stream_name: "".to_string(),
                 dcr: "".to_string(),
                 schema: SchemaConfig::default(),
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -257,6 +270,7 @@ mod tests {
                         ("attributes".into(), json!({"user.name": "Name"})),
                     ]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -297,6 +311,7 @@ mod tests {
                         ),
                     ]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -326,6 +341,7 @@ mod tests {
                         json!({"nested": "NotAllowed"}),
                     )]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -355,6 +371,7 @@ mod tests {
                     scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -384,6 +401,7 @@ mod tests {
                         json!("TimeGenerated"),
                     )]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -413,6 +431,7 @@ mod tests {
                         json!({"log.source": "Source"}),
                     )]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -442,6 +461,7 @@ mod tests {
                         json!({"app.version": "Version"}),
                     )]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
@@ -482,10 +502,60 @@ mod tests {
                         ),
                     ]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };
 
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_azure_monitor_source_resourceid_default_is_none() {
+        // Without the env var set, default should be None
+        let value = default_arm_resource_id_header();
+        if env::var("AZURE_MONITOR_SOURCE_RESOURCEID").is_err() {
+            assert_eq!(value, None);
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_azure_monitor_source_resourceid_from_env() {
+        unsafe {
+            env::set_var(
+                "AZURE_MONITOR_SOURCE_RESOURCEID",
+                "/subscriptions/test-sub/resourceGroups/test-rg",
+            );
+        }
+        let value = default_arm_resource_id_header();
+        assert_eq!(
+            value,
+            Some("/subscriptions/test-sub/resourceGroups/test-rg".to_string())
+        );
+        unsafe { env::remove_var("AZURE_MONITOR_SOURCE_RESOURCEID") };
+        assert_eq!(default_arm_resource_id_header(), None);
+    }
+
+    #[test]
+    fn test_azure_monitor_source_resourceid_from_config() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig::default(),
+                azure_monitor_source_resourceid: Some(
+                    "/subscriptions/test-sub/resourceGroups/test-rg".to_string(),
+                ),
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert_eq!(
+            config.api.azure_monitor_source_resourceid,
+            Some("/subscriptions/test-sub/resourceGroups/test-rg".to_string())
+        );
         assert!(config.validate().is_ok());
     }
 }
