@@ -69,13 +69,12 @@ e.g. `receiver`, `exporter`.
 
    ```rust
    use otap_df_validation::scenario::Scenario;
-   use std::time::Duration;
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
        .add_generator("traffic_gen", generator)       // add your configured generator pipeline
        .add_capture("validate", capture)          // add your configured capture pipeline
-       .expect_within(Duration::from_secs(200)) // optional timeout; default 140
+       .expect_within(30) // optional timeout; default 25
        .run()
        .expect("validation scenario failed");
    ```
@@ -86,13 +85,12 @@ e.g. `receiver`, `exporter`.
 
   ```rust
   use otap_df_validation::scenario::Scenario;
-  use std::time::Duration;
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
       .add_generator("traffic_gen", generator)                 // required: Generator config
       .add_capture("validate", capture)                 // required: Capture config
-      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .expect_within(30) // optional; default 25s
       .run()
       .expect("validation scenario failed");
   ```
@@ -110,8 +108,8 @@ e.g. `receiver`, `exporter`.
   - optional; used for test container scenarios
   - the label is referenced by `ContainerConnection` and `PipelineContainerConnection`
   - see [Test Containers](#test-containers) for details
-- `expect_within(Duration)` - set max runtime
-  - optional; default: 140s
+- `expect_within(u64)` - set max runtime in seconds
+  - optional; default: 25s
 - `run()` - renders template, launches pipelines, waits for readiness
   - required to run the validation stage
   - when containers are configured, they are started before the pipeline
@@ -249,7 +247,6 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -279,7 +276,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("TLS validation scenario failed");
 ```
@@ -290,7 +287,6 @@ Scenario::new()
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -323,7 +319,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("mTLS validation scenario failed");
 ```
@@ -654,7 +650,6 @@ use otap_df_validation::ValidationInstructions;
 use otap_df_validation::pipeline::{Pipeline, PipelineContainerConnection};
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, ContainerConnection, Generator};
-use std::time::Duration;
 
 Scenario::new()
     .pipeline(
@@ -686,6 +681,6 @@ Scenario::new()
             .validate(vec![ValidationInstructions::Equivalence])
             .control_streams(["gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()?;
 ```

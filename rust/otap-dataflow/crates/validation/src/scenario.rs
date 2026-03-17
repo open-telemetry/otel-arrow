@@ -23,7 +23,7 @@ const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
-const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(140);
+const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(25);
 
 /// Look up a container by label, validate that `internal_port` is set, and
 /// return the host port mapped to that internal port. If no mapping exists
@@ -127,10 +127,10 @@ impl Scenario {
         self
     }
 
-    /// Set the total runtime budget for the scenario.
+    /// Set the total runtime budget (in seconds) for the scenario.
     #[must_use]
-    pub fn expect_within(mut self, duration: Duration) -> Self {
-        self.runtime = duration;
+    pub fn expect_within(mut self, timeout_secs: u64) -> Self {
+        self.runtime = Duration::from_secs(timeout_secs);
         self
     }
 
@@ -576,7 +576,7 @@ nodes:
 
     #[test]
     fn expect_within_overrides_runtime() {
-        let scenario = Scenario::new().expect_within(Duration::from_secs(42));
+        let scenario = Scenario::new().expect_within(42);
         assert_eq!(scenario.runtime, Duration::from_secs(42));
     }
 
