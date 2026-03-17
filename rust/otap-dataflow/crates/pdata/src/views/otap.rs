@@ -8,6 +8,9 @@
 //! a hierarchical OTLP-like interface (Resource -> Scope -> LogRecord) without exposing
 //! the complexity of the raw Arrow batches or requiring conversion to intermediate formats.
 
-mod logs;
+pub(crate) mod common;
+pub(crate) mod logs;
+pub(crate) mod traces;
 
 pub use logs::OtapLogsView;
+pub use traces::OtapTracesView;
