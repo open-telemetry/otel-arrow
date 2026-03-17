@@ -187,7 +187,7 @@ impl RecordsetKqlProcessor {
     }
 
     fn process_logs(
-        &mut self,
+        &self,
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
