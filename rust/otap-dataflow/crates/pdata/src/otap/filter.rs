@@ -222,6 +222,9 @@ impl IdBitmap {
     }
 
     /// In-place difference: `self &= !other`.
+    ///
+    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
+    /// Pages in `self` beyond `other`'s length are unchanged.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
             if let Some(sp) = self_page {
@@ -232,6 +235,16 @@ impl IdBitmap {
                     }
                 }
             }
+        }
+    }
+
+    /// Returns an iterator over all IDs present in the bitmap.
+    pub fn iter(&self) -> IdBitmapIter<'_> {
+        IdBitmapIter {
+            bitmap: self,
+            page_idx: 0,
+            word_idx: 0,
+            current_word: 0,
         }
     }
 }
@@ -286,6 +299,67 @@ impl PartialEq for IdBitmap {
             }
         }
         true
+    }
+}
+
+/// An iterator over the IDs present in an [`IdBitmap`].
+///
+/// Yields IDs by iterating page-by-page and word-by-word, extracting set bits using
+/// `trailing_zeros()` and clearing them with `word &= word - 1`. This performs work proportional
+/// to the number of set bits, not the total bitmap capacity.
+pub struct IdBitmapIter<'a> {
+    bitmap: &'a IdBitmap,
+    /// Current page index into `bitmap.pages`.
+    page_idx: usize,
+    /// Index of the *next* word to examine in the current page. When `current_word` is non-zero,
+    /// it was loaded from `words[word_idx - 1]`.
+    word_idx: usize,
+    /// Remaining bits from the word at `words[word_idx - 1]`. Set bits are consumed by clearing
+    /// the lowest set bit on each `next()` call.
+    current_word: u64,
+}
+
+impl Iterator for IdBitmapIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        loop {
+            // If the current word has bits remaining, extract the lowest set bit.
+            // word_idx points one past the word we loaded, so the actual word index is
+            // word_idx - 1.
+            if self.current_word != 0 {
+                let bit = self.current_word.trailing_zeros();
+                self.current_word &= self.current_word - 1;
+                let id = (self.page_idx as u32) << 16
+                    | ((self.word_idx as u32) - 1) * 64
+                    | bit;
+                return Some(id);
+            }
+
+            // Find the next non-zero word, advancing through words and pages as needed.
+            loop {
+                // Try the next word in the current page
+                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx) {
+                    if self.word_idx < ID_BITMAP_PAGE_WORDS {
+                        let word = page.words[self.word_idx];
+                        self.word_idx += 1;
+                        if word != 0 {
+                            self.current_word = word;
+                            break; // Break inner loop, outer loop will extract bits
+                        }
+                        continue; // Try next word in this page
+                    }
+                }
+
+                // No more words in this page (or page was None) — advance to the next page
+                self.page_idx += 1;
+                self.word_idx = 0;
+
+                if self.page_idx > self.bitmap.pages.len() {
+                    return None;
+                }
+            }
+        }
     }
 }
 
@@ -1961,5 +2035,66 @@ mod tests {
             bitmap.pages.is_empty() || bitmap.pages.last().unwrap().is_some(),
             "trailing None slots should be trimmed"
         );
+    }
+
+    // --- IdBitmapIter tests ---
+
+    #[test]
+    fn test_id_bitmap_iter_empty() {
+        let bitmap = IdBitmap::new();
+        assert_eq!(bitmap.iter().count(), 0);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_single_id() {
+        let mut bitmap = IdBitmap::new();
+        bitmap.insert(42);
+        let ids: Vec<u32> = bitmap.iter().collect();
+        assert_eq!(ids, vec![42]);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_multiple_ids() {
+        let bitmap = bitmap_from(&[5, 1, 100, 3, 64]);
+        let mut ids: Vec<u32> = bitmap.iter().collect();
+        ids.sort();
+        assert_eq!(ids, vec![1, 3, 5, 64, 100]);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_word_boundaries() {
+        // Test IDs at word boundaries (multiples of 64)
+        let bitmap = bitmap_from(&[0, 63, 64, 127, 128]);
+        let ids: Vec<u32> = bitmap.iter().collect();
+        assert_eq!(ids, vec![0, 63, 64, 127, 128]);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_multiple_pages() {
+        let bitmap = bitmap_from(&[0, 1, 100_000, 100_001]);
+        let ids: Vec<u32> = bitmap.iter().collect();
+        // Page 0 IDs come first, then page 1 IDs
+        assert_eq!(ids, vec![0, 1, 100_000, 100_001]);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_sparse_pages() {
+        // IDs in distant pages
+        let bitmap = bitmap_from(&[0, u32::MAX - 10]);
+        let ids: Vec<u32> = bitmap.iter().collect();
+        assert_eq!(ids, vec![0, u32::MAX - 10]);
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_count_matches_len() {
+        let bitmap = bitmap_from(&[1, 2, 3, 100, 200, 300, 1000]);
+        assert_eq!(bitmap.iter().count() as u64, bitmap.len());
+    }
+
+    #[test]
+    fn test_id_bitmap_iter_cleared_bitmap() {
+        let mut bitmap = bitmap_from(&[1, 2, 3]);
+        bitmap.clear();
+        assert_eq!(bitmap.iter().count(), 0);
     }
 }

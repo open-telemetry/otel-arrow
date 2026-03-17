@@ -36,6 +36,7 @@ use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
+use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -43,7 +44,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attrs::{AttributeUpsert, ParentIdSet, upsert_attributes};
+use crate::pipeline::assign::attrs::{AttributeUpsert, upsert_attributes};
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
@@ -97,6 +98,10 @@ pub(crate) struct AssignPipelineStage {
     /// applying an expression that references the virtual "value" column. This flag will be set if
     /// the expression references this column.
     projection_contains_value_column: bool,
+
+    /// This is used when assigning attributes to keep track of ID/parent ID membership as we
+    /// determine which attributes must be updated or inserted
+    id_bitmap_pool: IdBitmapPool,
 }
 
 impl AssignPipelineStage {
@@ -171,6 +176,7 @@ impl AssignPipelineStage {
             dest_columns: dest_columns,
             sources: source_physical_exprs,
             projection_contains_value_column,
+            id_bitmap_pool: IdBitmapPool::new(),
         })
     }
 
@@ -329,7 +335,7 @@ impl AssignPipelineStage {
     }
 
     fn assign_to_attributes(
-        &self,
+        &mut self,
         mut otap_batch: OtapArrowRecords,
         eval_results: &mut [Option<PhysicalExprEvalResult>],
         dest_attrs_id: AttributesIdentifier,
@@ -375,14 +381,19 @@ impl AssignPipelineStage {
         // TODO fix the arguments to this w/out unwrapping, and actually compute if the thing is mutable
         // and comment on why you think scope/resource ID should not be nullable
 
-        let mut parent_id_set = match id_col {
-            Some(id_col) => ParentIdSet::new(
-                id_col.as_any().downcast_ref::<UInt16Array>().unwrap(),
-                mutable_root_id_column,
-            ),
-            None => ParentIdSet::new_empty(root_record_batch.num_rows(), mutable_root_id_column),
-        };
-
+        let mut parent_id_set = self.id_bitmap_pool.acquire();
+        if let Some(id_col) = id_col {
+            let id_col = id_col
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "invalid ID column. expected u16 type, found {:?}",
+                        id_col.data_type()
+                    ),
+                })?;
+            parent_id_set.populate(id_col.iter().flatten().map(|i| i.into()));
+        }
         // get the rows that will have the value replaced (all others, the value will be inserted)
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
@@ -402,17 +413,10 @@ impl AssignPipelineStage {
 
             // if the evaluation was of the expression turned out to be null, we'll create
             // empty attributes from the Null scalar value.
-            let mut eval_result = eval_result
+            let eval_result = eval_result
                 .take()
                 .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
-
-            // TODO even simpler than what we do correct (and probably more accurate)
-            parent_id_set.ensure_all();
-            if parent_id_set.is_dirty() {
-                // TODO need to check that this is like assigning to the right column for thea attrs ID
-                eval_result.ids = Some(Arc::new(parent_id_set.as_id_col().into_owned()));
-            }
 
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
             let update_parent_ids_u16 = update_parent_ids
@@ -420,38 +424,24 @@ impl AssignPipelineStage {
                 .downcast_ref::<UInt16Array>()
                 .unwrap();
 
-            let mut update_parent_ids_mask = [0u64; 1024];
-            for &pid in update_parent_ids_u16.values() {
-                update_parent_ids_mask[pid as usize / 64] |= 1u64 << (pid as usize % 64);
-            }
+            let mut update_parent_id_set = self.id_bitmap_pool.acquire();
+            update_parent_id_set.populate(update_parent_ids_u16.iter().flatten().map(|i| i.into()));
 
-            let total = parent_id_set
-                .bitmap
-                .iter()
-                .map(|w| w.count_ones() as usize)
-                .sum();
+            let total = parent_id_set.len() as usize;
             let mut parent_ids = vec![0u16; total];
             let mut update_index = 0;
             let mut insert_index = update_parent_ids.len();
 
-            for (i, &word) in parent_id_set.bitmap.iter().enumerate() {
-                let mut w = word;
-                while w != 0 {
-                    let bit = w.trailing_zeros() as usize;
-                    let parent_id = (i * 64 + bit) as u16;
-                    let is_update = update_parent_ids_mask[i] & (1u64 << bit) != 0;
-
-                    if is_update {
-                        parent_ids[update_index] = parent_id;
-                        update_index += 1;
-                    } else {
-                        parent_ids[insert_index] = parent_id;
-                        insert_index += 1;
-                    }
-
-                    w &= w - 1; // clear lowest set bit
+            for id in parent_id_set.iter() {
+                if update_parent_id_set.contains(id) {
+                    parent_ids[update_index] = id as u16;
+                    update_index += 1
+                } else {
+                    parent_ids[insert_index] = id as u16;
+                    insert_index += 1;
                 }
             }
+            self.id_bitmap_pool.release(update_parent_id_set);
 
             let parent_ids = UInt16Array::from(parent_ids);
 
@@ -513,15 +503,9 @@ impl AssignPipelineStage {
             })
         }
 
+        self.id_bitmap_pool.release(parent_id_set);
+
         let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
-
-        // maybe replace the root
-        if parent_id_set.is_dirty() {
-            let new_ids = parent_id_set.as_id_col().into_owned();
-            let new_root = try_upsert_column(consts::ID, Arc::new(new_ids), root_record_batch)?;
-
-            otap_batch.set(otap_batch.root_payload_type(), new_root)
-        }
 
         // replace attributes batch
         otap_batch.set(attrs_payload_type, new_attrs);
@@ -540,60 +524,71 @@ impl AssignPipelineStage {
     /// scope/resource associated with the record, meaning there is nothing for which to assign the
     /// attribute.
     fn fill_root_id_column_nulls(&self, otap_batch: &mut OtapArrowRecords) -> Result<()> {
-        let id_col = match otap_batch
-            .root_record_batch()
-            .and_then(|rb| rb.column_by_name(consts::ID))
-        {
-            Some(id) => id,
+        let root_record_batch = match otap_batch.root_record_batch() {
+            Some(rb) => rb,
             None => {
-                // nothing to do.
+                // nothing to do
                 return Ok(());
             }
         };
 
-        if id_col.null_count() == 0 {
-            // nothing to do - there are no nulls
-            return Ok(());
-        }
+        let new_ids = match root_record_batch.column_by_name(consts::ID) {
+            Some(id_col) => {
+                if id_col.null_count() == 0 {
+                    // nothing to do - there are no nulls
+                    return Ok(());
+                }
+                let id_col = id_col
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!(
+                            "invalid ID column. expected u16 type, found {:?}",
+                            id_col.data_type()
+                        ),
+                    })?;
 
-        let id_col = id_col
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: format!(
-                    "invalid ID column. expected u16 type, found {:?}",
-                    id_col.data_type()
-                ),
-            })?;
+                let mut max_id = max(id_col).unwrap_or(0);
 
-        let mut max_id = max(id_col).unwrap_or(0);
+                let mut new_ids = id_col.values().to_vec();
+                for i in 0..id_col.len() {
+                    if id_col.is_null(i) {
+                        // very unfortunate error, but nothing we can really do here. We're not in a
+                        // position at this point to automatically split the batch to give us more IDs
+                        if max_id == u16::MAX {
+                            return Err(Error::ExecutionError {
+                                cause: "ID space saturated when assigning attributes. \
+                                        Please try a smaller batch size"
+                                    .into(),
+                            });
+                        }
+                        max_id += 1;
+                        new_ids[i] = max_id;
+                    }
+                }
 
-        let mut new_ids = id_col.values().to_vec();
-        for i in 0..id_col.len() {
-            if id_col.is_null(i) {
-                // very unfortunate error, but nothing we can really do here. We're not in a
-                // position at this point to automatically split the batch to give us more IDs
-                if max_id == u16::MAX {
+                Arc::new(UInt16Array::from(new_ids))
+            }
+            None => {
+                // missing ID column - need create a new one
+                if root_record_batch.num_rows() > u16::MAX as usize {
+                    // again unfortunate error, but nothing can be done
                     return Err(Error::ExecutionError {
-                        cause: "ID space saturated when assigning attributes. \
-                            Please try a smaller batch size"
-                            .into(),
+                        cause: "ID space saturated when assigning attributes. Please try a smaller batch size".into(),
                     });
                 }
-                max_id += 1;
-                new_ids[i] = max_id;
+
+                Arc::new(UInt16Array::from_iter_values(
+                    0..root_record_batch.num_rows() as u16,
+                ))
             }
-        }
+        };
 
         // safety: we're OK to expect here because if we're here, it means we were able to access
         // the id column from this record batch, which means the record batch must exist so this
         // call will not return None.
         let root_record_batch = otap_batch.root_record_batch().expect("no root batch");
-        let new_root = try_upsert_column(
-            consts::ID,
-            Arc::new(UInt16Array::from(new_ids)),
-            root_record_batch,
-        )?;
+        let new_root = try_upsert_column(consts::ID, new_ids, root_record_batch)?;
         otap_batch.set(otap_batch.root_payload_type(), new_root);
 
         Ok(())
