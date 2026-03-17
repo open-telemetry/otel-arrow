@@ -26,7 +26,7 @@ jobs:
           echo "id=$ID" >> "$GITHUB_OUTPUT"
           echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Install/prepare Python 3.11 on Oracle Linux 8 (self-hosted only)
+      - name: Install/prepare Python 3.14 on Oracle Linux 8 (self-hosted only)
         if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
         shell: bash
         run: |
@@ -35,9 +35,9 @@ jobs:
           # Run disk cleanup script
           bash ./.github/workflows/scripts/disk-cleanup.sh
 
-          # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
-          if rpm -q python3.11 python3.11-devel &>/dev/null; then
-            echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+          # Check if Python 3.14 is already installed to avoid unnecessary dnf operations
+          if rpm -q python3.14 python3.14-devel &>/dev/null; then
+            echo "Python 3.14 packages already installed, skipping repository setup and package installation"
           else
             # Enable repos and refresh metadata (only runs if Python not installed)
             sudo dnf -y install oracle-epel-release-el8 || true
@@ -45,21 +45,21 @@ jobs:
             sudo dnf -y makecache --timer
 
             # Install core packages (ignore subpackages that don't exist on OL8)
-            sudo dnf -y install python3.11 python3.11-devel || true
+            sudo dnf -y install python3.14 python3.14-devel || true
           fi
 
-          # pip may be packaged as part of python3.11 or available via ensurepip;
+          # pip may be packaged as part of python3.14 or available via ensurepip;
           # fall back to ensurepip if needed.
-          if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
-            /usr/bin/python3.11 -m ensurepip --upgrade || true
+          if ! /usr/bin/python3.14 -m pip --version >/dev/null 2>&1; then
+            /usr/bin/python3.14 -m ensurepip --upgrade || true
           fi
 
           # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
-          /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
+          /usr/bin/python3.14 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
 
           # Add a 'python' shim so subsequent steps can call `python ...`
           mkdir -p "$HOME/.local/bin"
-          ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
+          ln -sf /usr/bin/python3.14 "$HOME/.local/bin/python"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
           # Smoke test
