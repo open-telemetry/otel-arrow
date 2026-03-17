@@ -403,7 +403,11 @@ impl AssignPipelineStage {
                 unreachable!("")
             };
 
-            let mut eval_result = eval_result.take().unwrap(); // TODO no unwrap
+            // if the evaluation was of the expression turned out to be null, we'll create
+            // empty attributes from the Null scalar value.
+            let mut eval_result = eval_result
+                .take()
+                .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
             println!("eval_result = {:#?}", eval_result);
@@ -2053,6 +2057,122 @@ mod test {
         test_upserts_attribute_computed_from_existing_attr::<KqlParser>().await
     }
 
+    async fn test_upserts_attribute_computed_from_self<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(14))])
+                .event_name("event2")
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = attributes[\"x\"] * 2";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("x", AnyValue::new_int(10)),]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("x", AnyValue::new_int(28)),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upserts_attribute_computed_from_self_opl_parser() {
+        test_upserts_attribute_computed_from_self::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upserts_attribute_computed_from_self_kql_parser() {
+        test_upserts_attribute_computed_from_self::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_inserts_attributes_when_eval_result_null() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(14))])
+                .event_name("event2")
+                .finish(),
+        ]);
+
+        // there is no attribute z
+        let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(5)),
+                KeyValue::new("y", AnyValue { value: None }),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(14)),
+                KeyValue::new("y", AnyValue { value: None }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inserts_attributes_when_eval_result_null_and_no_existing_attrs() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        // there is no attribute z
+        let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("y", AnyValue { value: None }),]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![KeyValue::new("y", AnyValue { value: None }),]
+        );
+    }
+
     async fn test_insert_attribute_non_string_types<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -2070,11 +2190,35 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
+
+        // double check the columns that were inserted have the correct types
+        // (here we're concerned mostly about whether they're dict encoded or not)
+        let attrs_rb = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .unwrap()
+                .data_type(),
+            &DataType::Boolean
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .unwrap()
+                .data_type(),
+            &DataType::Float64
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_INT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64))
+        );
+
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
-
-        // TODO - need to validate the types (which are dict encoded, which are not!)
 
         let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
         assert_eq!(
@@ -2118,13 +2262,39 @@ mod test {
             attributes[\"k_double\"] = 4.0,
             attributes[\"k_int2\"] = 5,
             attributes[\"k_bool2\"] = false, 
-            attributes[\"k_double2\"] = 6
+            attributes[\"k_double2\"] = 6.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
+
+        // double check the columns that were inserted have the correct types
+        // (here we're concerned mostly about whether they're dict encoded or not)
+        let attrs_rb = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .unwrap()
+                .data_type(),
+            &DataType::Boolean
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .unwrap()
+                .data_type(),
+            &DataType::Float64
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_INT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64))
+        );
+
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };

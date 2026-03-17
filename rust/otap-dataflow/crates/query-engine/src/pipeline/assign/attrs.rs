@@ -1464,8 +1464,11 @@ fn merge_value_column_batched(
     let active_upserts: SmallVec<[&ResolvedUpsert<'_>; SMALLVEC_SIZE]> =
         active_indices.iter().map(|&i| &resolved[i]).collect();
 
-    // Try unified dict merge across all active upserts.
-    if let Some(unified) = try_build_unified_dict_multi(existing_col, &active_upserts)? {
+    let dict_encoding_supported = values_column_supports_dictionary_encoding(col_name);
+
+    if dict_encoding_supported
+        && let Some(unified) = try_build_unified_dict_multi(existing_col, &active_upserts)?
+    {
         return merge_with_unified_dict_batched(
             field,
             row_owners,
@@ -1576,11 +1579,32 @@ fn merge_value_column_batched(
     let result = make_array(mutable.freeze());
 
     // Re-encode as dict if eligible per the OTAP spec.
-    let field_info = FieldInfo::new_from_array(&result);
-    let cardinality = estimate_cardinality(&field_info);
-    let (result, result_type) = maybe_dict_encode_attr_value(result, cardinality);
-    let new_field = field.as_ref().clone().with_data_type(result_type);
+    let result = if dict_encoding_supported {
+        let field_info = FieldInfo::new_from_array(&result);
+        let cardinality = estimate_cardinality(&field_info);
+        maybe_dict_encode_attr_value(result, cardinality)?
+    } else {
+        result
+    };
+
+    let new_field = field
+        .as_ref()
+        .clone()
+        .with_data_type(result.data_type().clone())
+        .with_nullable(true);
+
     Ok((new_field, result))
+}
+
+/// returns an indication of whether the values column supports dictionary encoding
+///
+/// it is expected that the argument is a valid values column name. If it receives an invalid
+/// column name, is will not return an error but the result is meaningless.
+fn values_column_supports_dictionary_encoding(col_name: &str) -> bool {
+    match col_name {
+        consts::ATTRIBUTE_BOOL | consts::ATTRIBUTE_DOUBLE => false,
+        _ => true,
+    }
 }
 
 /// Create a new value column for a batched upsert (column didn't exist in the existing batch).
@@ -1758,40 +1782,23 @@ fn is_dict_eligible_attr_value(dt: &DataType) -> bool {
     matches!(dt, DataType::Utf8 | DataType::Int64 | DataType::Binary)
 }
 
-/// Optionally dict-encode an attribute value column as `Dict(UInt16, T)` per the OTAP spec.
-///
-/// Only dict-eligible types (`Utf8`, `Int64`, `Binary`) may be dict-encoded, and only when
-/// the estimated cardinality fits within a `u16` key space. The OTAP spec only permits
-/// `Dict(u16)` for attribute value columns — never `Dict(u8)`.
-///
-/// Non-eligible types (`Float64`, `Boolean`) or columns with cardinality exceeding `u16`
-/// are returned as-is in their native type.
-fn maybe_dict_encode_attr_value(arr: ArrayRef, cardinality: Cardinality) -> (ArrayRef, DataType) {
-    if !is_dict_eligible_attr_value(arr.data_type()) {
-        let dt = arr.data_type().clone();
-        return (arr, dt);
-    }
-
-    match cardinality {
+/// Optionally dict-encode an attribute value column as `Dict(UInt16, T)` if it would fit within
+/// a u16 dict. Note - this function does not check the array logical type to ensure it belongs
+/// to a type that is allowed to be dictionary encoded
+fn maybe_dict_encode_attr_value(arr: ArrayRef, cardinality: Cardinality) -> Result<ArrayRef> {
+    let maybe_casted_arr = match cardinality {
         Cardinality::WithinU8 | Cardinality::WithinU16 => {
             // OTAP spec mandates Dict(u16) for attribute value columns — always use UInt16 keys.
             let dict_type = DataType::Dictionary(
                 Box::new(DataType::UInt16),
                 Box::new(arr.data_type().clone()),
             );
-            match arrow::compute::cast(&arr, &dict_type) {
-                Ok(dict_arr) => (dict_arr, dict_type),
-                Err(_) => {
-                    let dt = arr.data_type().clone();
-                    (arr, dt)
-                }
-            }
+            arrow::compute::cast(&arr, &dict_type)?
         }
-        Cardinality::GreaterThanU16 => {
-            let dt = arr.data_type().clone();
-            (arr, dt)
-        }
-    }
+        Cardinality::GreaterThanU16 => arr,
+    };
+
+    Ok(maybe_casted_arr)
 }
 
 #[cfg(test)]
