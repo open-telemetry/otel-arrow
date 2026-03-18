@@ -9,18 +9,18 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::OTAP_RECEIVER_FACTORIES;
-use crate::compression::CompressionMethod;
-use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
-use crate::otap_grpc::otlp::server::{RouteResponse, SharedState};
-use crate::otap_grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
-};
-use crate::pdata::OtapPdata;
-#[cfg(feature = "experimental-tls")]
-use crate::tls_utils::{build_tls_acceptor, create_tls_stream};
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::compression::CompressionMethod;
+use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
+use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
+use otap_df_otap::otap_grpc::{
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
+};
+use otap_df_otap::pdata::OtapPdata;
+#[cfg(feature = "experimental-tls")]
+use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -388,10 +388,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::otap_mock::create_otap_batch;
-    use crate::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{next_ack, next_nack};
+    use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
     use async_stream::stream;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -400,6 +397,9 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::otap_mock::create_otap_batch;
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_config_parsing() {
-        use crate::compression::CompressionMethod;
+        use otap_df_otap::compression::CompressionMethod;
         use serde_json::json;
 
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();

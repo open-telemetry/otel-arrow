@@ -6,9 +6,6 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::metrics::ExporterPDataMetrics;
-use crate::pdata::OtapPdata;
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -25,6 +22,9 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::encode::producer::ProducerOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
@@ -499,15 +499,14 @@ async fn handle_res_stream(
 
 #[cfg(test)]
 mod tests {
-    use crate::otap_exporter::OTAP_EXPORTER_URN;
-    use crate::otap_exporter::OTAPExporter;
-    use crate::otap_exporter::config::ArrowPayloadCompression;
-    use crate::otap_mock::{
+    use crate::exporters::otap_exporter::OTAP_EXPORTER_URN;
+    use crate::exporters::otap_exporter::OTAPExporter;
+    use crate::exporters::otap_exporter::config::ArrowPayloadCompression;
+    use otap_df_otap::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
-    use crate::pdata::OtapPdata;
+    use otap_df_otap::pdata::OtapPdata;
 
-    use crate::compression::CompressionMethod;
     use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
@@ -530,6 +529,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::compression::CompressionMethod;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus,
