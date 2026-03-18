@@ -2,13 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Benchmarks for query engine attribute assignment (upsert) via the Pipeline API.
-//!
-//! These benchmarks exercise the full `Pipeline::execute` path for
-//! `logs | extend attributes["key"] = value` statements, measuring the end-to-end cost of
-//! attribute upserts through the query engine.
-//!
-//! Scenarios mirror those from the pdata-level `transform_attributes` upsert benchmarks
-//! (PR #2024) so that the two approaches can be compared directly.
 
 use std::time::Instant;
 
@@ -16,14 +9,71 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use data_engine_kql_parser::{KqlParser, Parser};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+};
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use otap_df_query_engine::pipeline::Pipeline;
 use tokio::runtime::Runtime;
 
+#[must_use]
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
-    let logs_data = logs_with_varying_attributes_and_properties(batch_size);
-    otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
+    let log_records = (0..batch_size)
+        .map(|i| {
+            // generate some log attributes that somewhat follow semantic conventions
+            let attrs = vec![
+                KeyValue::new(
+                    "code.namespace",
+                    AnyValue::new_string(match i % 3 {
+                        0 => "main",
+                        1 => "otap_dataflow_engine",
+                        _ => "arrow::array",
+                    }),
+                ),
+                KeyValue::new(
+                    "code.function.name",
+                    AnyValue::new_string(match i % 3 {
+                        0 => "main",
+                        1 => "try_recv",
+                        _ => "concat",
+                    }),
+                ),
+                KeyValue::new("code.line.number", AnyValue::new_int((i % 5) as i64)),
+                KeyValue::new("code.column.number", AnyValue::new_int(40i64)),
+            ];
+
+            // cycle through severity numbers
+            // 5 = DEBUG, 9 = INFO, 13 = WARN, 17 = ERROR
+            let severity_number =
+                SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).expect("valid severity_number");
+            let severity_text = severity_number
+                .as_str_name()
+                .split("_") // Note: this splitting something like SEVERITY_NUMBER_INFO
+                .nth(2)
+                .expect("can parse severity_text");
+            let event_name = format!("event {}", i);
+            let time_unix_nano = i as u64;
+
+            LogRecord::build()
+                .attributes(attrs)
+                .event_name(event_name)
+                .severity_number(severity_number)
+                .severity_text(severity_text)
+                .time_unix_nano(time_unix_nano)
+                .finish()
+        })
+        .collect::<Vec<_>>();
+
+    otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }))
 }
 
 fn bench_log_pipeline(
@@ -87,28 +137,9 @@ fn bench_assign_attribute_pipelines(c: &mut Criterion) {
         r#"logs | extend attributes["code.namespace"] = "updated""#,
     );
 
-    // // Upsert a new Int64 key (dict-eligible per OTAP spec, encoded as Dict(u16, Int64)).
-    // bench_log_pipeline(
-    //     c,
-    //     &rt,
-    //     &batch_sizes,
-    //     "upsert_new_int_key",
-    //     r#"logs | extend attributes["new_int"] = 42"#,
-    // );
-
-    // // Upsert a new Float64 key (NOT dict-eligible per OTAP spec, stays plain Float64).
-    // bench_log_pipeline(
-    //     c,
-    //     &rt,
-    //     &batch_sizes,
-    //     "upsert_new_double_key",
-    //     r#"logs | extend attributes["new_double"] = 3.14"#,
-    // );
-
-    // Two new string keys in a single pipeline (sequential stages, not yet fused).
-    // This measures the current cost of two sequential upserts via the pipeline.
-    // Once planner-level fusion is implemented, this will exercise the batched
-    // `upsert_attributes` path and should show a significant improvement.
+    // Execute two attribute assignments at once. The planner should fuse these operations into
+    // a single assignment pipeline stage, which should run faster than two sequential stages.
+    // the time of these benchmark cases should be less than twice the previous two
     bench_log_pipeline(
         c,
         &rt,
@@ -123,6 +154,15 @@ fn bench_assign_attribute_pipelines(c: &mut Criterion) {
         &batch_sizes,
         "upsert_two_existing_str_keys",
         r#"logs | extend attributes["code.namespace"] = "hello", attributes["code.function.name"] = "world""#,
+    );
+
+    // mix of insert and upsert
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "upsert_two_existing_one_new_str_keys",
+        r#"logs | extend attributes["code.namespace"] = "hello", attributes["code.function.name"] = "world", attributes["new_key2"] = "val2""#,
     );
 }
 

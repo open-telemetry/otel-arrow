@@ -222,9 +222,6 @@ impl IdBitmap {
     }
 
     /// In-place difference: `self &= !other`.
-    ///
-    /// After this operation, `self` contains only IDs that were in `self` but not in `other`.
-    /// Pages in `self` beyond `other`'s length are unchanged.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
             if let Some(sp) = self_page {
@@ -238,7 +235,7 @@ impl IdBitmap {
         }
     }
 
-    /// Returns an iterator over all IDs present in the bitmap.
+    /// Returns an iterator over IDs present in the bitmap.
     pub fn iter(&self) -> IdBitmapIter<'_> {
         IdBitmapIter {
             bitmap: self,
@@ -304,9 +301,7 @@ impl PartialEq for IdBitmap {
 
 /// An iterator over the IDs present in an [`IdBitmap`].
 ///
-/// Yields IDs by iterating page-by-page and word-by-word, extracting set bits using
-/// `trailing_zeros()` and clearing them with `word &= word - 1`. This performs work proportional
-/// to the number of set bits, not the total bitmap capacity.
+/// This performs work proportional to the number of set bits, not the total bitmap capacity.
 pub struct IdBitmapIter<'a> {
     bitmap: &'a IdBitmap,
     /// Current page index into `bitmap.pages`.
@@ -330,9 +325,7 @@ impl Iterator for IdBitmapIter<'_> {
             if self.current_word != 0 {
                 let bit = self.current_word.trailing_zeros();
                 self.current_word &= self.current_word - 1;
-                let id = (self.page_idx as u32) << 16
-                    | ((self.word_idx as u32) - 1) * 64
-                    | bit;
+                let id = (self.page_idx as u32) << 16 | ((self.word_idx as u32) - 1) * 64 | bit;
                 return Some(id);
             }
 

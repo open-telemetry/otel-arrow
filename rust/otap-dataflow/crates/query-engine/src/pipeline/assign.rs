@@ -639,8 +639,9 @@ impl PipelineStage for AssignPipelineStage {
             return Ok(result);
         }
 
-        // otherwise, assigning to the root batch. this currently doesn't support bulk assignment
-        // so we just evaluate the expressions and update the columns one at a time:
+        // otherwise, assigning to the root batch, which unlike attribute assignment doesn't
+        // currently support bulk assignment so we just evaluate the expressions and update the
+        // columns one at a time:
         for i in 0..self.sources.len() {
             let dest_col_name = match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(col_name) => col_name,
