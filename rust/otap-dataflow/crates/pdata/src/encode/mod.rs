@@ -2862,6 +2862,433 @@ mod test {
         assert_eq!(log_attrs_batch, &expected_log_attrs_batch);
     }
 
+    /// Generate a `MetricsData` with all metric types for generic view testing.
+    fn _generate_metrics_data_all_fields() -> crate::proto::opentelemetry::metrics::v1::MetricsData
+    {
+        use crate::proto::opentelemetry::metrics::v1::{
+            Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+            HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+            ScopeMetrics, Sum, Summary, SummaryDataPoint,
+            exponential_histogram_data_point::Buckets, summary_data_point::ValueAtQuantile,
+        };
+
+        let a_trace_id: TraceId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let a_span_id: SpanId = [17, 18, 19, 20, 21, 22, 23, 24];
+
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new(
+                    "resource_attr1",
+                    AnyValue::new_string("resource_val"),
+                )])
+                .dropped_attributes_count(99u32)
+                .finish(),
+            vec![{
+                ScopeMetrics::new(
+                    InstrumentationScope::build()
+                        .name("library")
+                        .version("scopev1")
+                        .attributes(vec![KeyValue::new(
+                            "scope_attr1",
+                            AnyValue::new_string("scope_val1"),
+                        )])
+                        .dropped_attributes_count(17u32)
+                        .finish(),
+                    vec![
+                        Metric::build()
+                            .name("gauge name")
+                            .data_gauge(Gauge::new(vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(123u64)
+                                    .value_double(std::f64::consts::PI)
+                                    .attributes(vec![KeyValue::new(
+                                        "gauge_attr1",
+                                        AnyValue::new_string("gauge_val"),
+                                    )])
+                                    .start_time_unix_nano(456u64)
+                                    .exemplars(vec![
+                                        Exemplar::build()
+                                            .time_unix_nano(678u64)
+                                            .value_int(234i64)
+                                            .filtered_attributes(vec![KeyValue::new(
+                                                "exemplar_attr",
+                                                AnyValue::new_string("exemplar_val"),
+                                            )])
+                                            .span_id(a_span_id)
+                                            .trace_id(a_trace_id)
+                                            .finish(),
+                                    ])
+                                    .flags(1u32)
+                                    .finish(),
+                            ]))
+                            .description("here's a description")
+                            .unit("a unit")
+                            .metadata(vec![KeyValue::new(
+                                "metric_attr",
+                                AnyValue::new_string("metric_val"),
+                            )])
+                            .finish(),
+                        Metric::build()
+                            .name("sum name")
+                            .data_sum(Sum::new(
+                                2,
+                                false,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(34u64)
+                                        .value_int(47i64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(11u64)
+                                                .value_double(22.5)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exemplar_attr2",
+                                                    AnyValue::new_string("exemplar_val2"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                        Metric::build()
+                            .name("a summary")
+                            .data_summary(Summary::new(vec![
+                                SummaryDataPoint::build()
+                                    .time_unix_nano(765u64)
+                                    .quantile_values(vec![
+                                        ValueAtQuantile::new(0., 123.),
+                                        ValueAtQuantile::new(0.5, 29.),
+                                    ])
+                                    .attributes(vec![KeyValue::new(
+                                        "summary_attr",
+                                        AnyValue::new_string("summary_val"),
+                                    )])
+                                    .start_time_unix_nano(543u64)
+                                    .count(23u64)
+                                    .sum(34.0)
+                                    .flags(2u32)
+                                    .finish(),
+                            ]))
+                            .finish(),
+                        Metric::build()
+                            .name("a histogram")
+                            .data_histogram(Histogram::new(
+                                1,
+                                vec![
+                                    HistogramDataPoint::build()
+                                        .time_unix_nano(567u64)
+                                        .bucket_counts(vec![3, 4, 5])
+                                        .explicit_bounds(vec![5.0, 6.0, 7.0])
+                                        .attributes(vec![KeyValue::new(
+                                            "hist_attr",
+                                            AnyValue::new_string("hist_val"),
+                                        )])
+                                        .start_time_unix_nano(23u64)
+                                        .count(9u64)
+                                        .sum(8)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_int(235i64)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "hist_exemplar_attr",
+                                                    AnyValue::new_string("hist_exemplar_val"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_double(235.)
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .flags(1u32)
+                                        .min(1.)
+                                        .max(2.)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                        Metric::build()
+                            .name("exp hist")
+                            .data_exponential_histogram(ExponentialHistogram::new(
+                                3,
+                                vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .time_unix_nano(345u64)
+                                        .scale(67)
+                                        .positive(Buckets::new(2, vec![34, 45, 67]))
+                                        .attributes(vec![KeyValue::new(
+                                            "exp_hist_attr",
+                                            AnyValue::new_string("exp_hist_val"),
+                                        )])
+                                        .start_time_unix_nano(234u64)
+                                        .count(9999u64)
+                                        .sum(123.)
+                                        .zero_count(7u64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_int(235i64)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exp_hist_exemplar_attr",
+                                                    AnyValue::new_string("exp_hist_exemplar_val"),
+                                                )])
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                            Exemplar::build()
+                                                .time_unix_nano(678u64)
+                                                .value_double(235.)
+                                                .span_id(a_span_id)
+                                                .trace_id(a_trace_id)
+                                                .finish(),
+                                        ])
+                                        .flags(5u32)
+                                        .min(4.)
+                                        .max(44.)
+                                        .zero_threshold(-1.1)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )
+                .set_schema_url("another url")
+            }],
+        )])
+    }
+
+    /// Validate the view API for a generic `MetricsView` implementation.
+    ///
+    /// This function exercises the view trait hierarchy using the data produced
+    /// by `_generate_metrics_data_all_fields()`. It can be called with any
+    /// `MetricsView` implementation (e.g. `MetricsData` or `OtapMetricsView`).
+    fn _test_metrics_data_all_fields<T>(metrics_view: &T)
+    where
+        T: MetricsView,
+    {
+        use otap_df_pdata_views::views::common::InstrumentationScopeView;
+        use otap_df_pdata_views::views::metrics::*;
+        use otap_df_pdata_views::views::resource::ResourceView;
+
+        let resources: Vec<_> = metrics_view.resources().collect();
+        assert_eq!(resources.len(), 1, "expected 1 resource");
+
+        let resource_metrics = &resources[0];
+
+        // Validate resource
+        let resource = resource_metrics.resource().expect("resource should exist");
+        assert_eq!(resource.dropped_attributes_count(), 99);
+        let resource_attrs: Vec<_> = resource.attributes().collect();
+        assert_eq!(resource_attrs.len(), 1);
+        assert_eq!(resource_attrs[0].key(), b"resource_attr1");
+
+        // Validate schema_url on resource_metrics
+        let schema_url = resource_metrics.schema_url();
+        // Resource-level schema_url is not set in this test data
+        assert!(schema_url.is_none());
+
+        // Validate scopes
+        let scopes: Vec<_> = resource_metrics.scopes().collect();
+        assert_eq!(scopes.len(), 1, "expected 1 scope");
+
+        let scope_metrics = &scopes[0];
+
+        // Validate scope schema_url
+        let scope_schema_url = scope_metrics.schema_url();
+        assert_eq!(scope_schema_url, b"another url");
+
+        // Validate scope
+        let scope = scope_metrics.scope().expect("scope should exist");
+        assert_eq!(scope.name(), Some(b"library".as_slice()));
+        assert_eq!(scope.version(), Some(b"scopev1".as_slice()));
+        assert_eq!(scope.dropped_attributes_count(), 17);
+        let scope_attrs: Vec<_> = scope.attributes().collect();
+        assert_eq!(scope_attrs.len(), 1);
+        assert_eq!(scope_attrs[0].key(), b"scope_attr1");
+
+        // Validate metrics
+        let metrics: Vec<_> = scope_metrics.metrics().collect();
+        assert_eq!(metrics.len(), 5, "expected 5 metrics");
+
+        // ------ Gauge ------
+        assert_eq!(metrics[0].name(), b"gauge name");
+        assert_eq!(metrics[0].description(), b"here's a description");
+        assert_eq!(metrics[0].unit(), b"a unit");
+        let gauge_data = metrics[0].data().expect("gauge data should exist");
+        assert_eq!(gauge_data.value_type(), DataType::Gauge);
+        let gauge = gauge_data.as_gauge().expect("should be gauge");
+        let gauge_dps: Vec<_> = gauge.data_points().collect();
+        assert_eq!(gauge_dps.len(), 1);
+        assert_eq!(gauge_dps[0].time_unix_nano(), 123);
+        assert_eq!(gauge_dps[0].start_time_unix_nano(), 456);
+        assert_eq!(gauge_dps[0].flags().into_inner(), 1);
+        assert_eq!(
+            gauge_dps[0].value(),
+            Some(Value::Double(std::f64::consts::PI))
+        );
+        let gauge_dp_attrs: Vec<_> = gauge_dps[0].attributes().collect();
+        assert_eq!(gauge_dp_attrs.len(), 1);
+        assert_eq!(gauge_dp_attrs[0].key(), b"gauge_attr1");
+
+        // Gauge exemplar
+        let gauge_exemplars: Vec<_> = gauge_dps[0].exemplars().collect();
+        assert_eq!(gauge_exemplars.len(), 1);
+        assert_eq!(gauge_exemplars[0].time_unix_nano(), 678);
+        assert_eq!(gauge_exemplars[0].value(), Some(Value::Integer(234)));
+
+        // Gauge metric metadata
+        let gauge_metadata: Vec<_> = metrics[0].metadata().collect();
+        assert_eq!(gauge_metadata.len(), 1);
+        assert_eq!(gauge_metadata[0].key(), b"metric_attr");
+
+        // ------ Sum ------
+        assert_eq!(metrics[1].name(), b"sum name");
+        let sum_data = metrics[1].data().expect("sum data should exist");
+        assert_eq!(sum_data.value_type(), DataType::Sum);
+        let sum = sum_data.as_sum().expect("should be sum");
+        assert_eq!(
+            sum.aggregation_temporality(),
+            AggregationTemporality::Cumulative
+        );
+        assert!(!sum.is_monotonic());
+        let sum_dps: Vec<_> = sum.data_points().collect();
+        assert_eq!(sum_dps.len(), 1);
+        assert_eq!(sum_dps[0].time_unix_nano(), 34);
+        assert_eq!(sum_dps[0].value(), Some(Value::Integer(47)));
+
+        // ------ Summary ------
+        assert_eq!(metrics[2].name(), b"a summary");
+        let summary_data = metrics[2].data().expect("summary data should exist");
+        assert_eq!(summary_data.value_type(), DataType::Summary);
+        let summary = summary_data.as_summary().expect("should be summary");
+        let summary_dps: Vec<_> = summary.data_points().collect();
+        assert_eq!(summary_dps.len(), 1);
+        assert_eq!(summary_dps[0].time_unix_nano(), 765);
+        assert_eq!(summary_dps[0].start_time_unix_nano(), 543);
+        assert_eq!(summary_dps[0].count(), 23);
+        assert!((summary_dps[0].sum() - 34.0).abs() < f64::EPSILON);
+        assert_eq!(summary_dps[0].flags().into_inner(), 2);
+        let quantiles: Vec<_> = summary_dps[0].quantile_values().collect();
+        assert_eq!(quantiles.len(), 2);
+        assert!((quantiles[0].quantile() - 0.0).abs() < f64::EPSILON);
+        assert!((quantiles[0].value() - 123.0).abs() < f64::EPSILON);
+        assert!((quantiles[1].quantile() - 0.5).abs() < f64::EPSILON);
+        assert!((quantiles[1].value() - 29.0).abs() < f64::EPSILON);
+
+        // ------ Histogram ------
+        assert_eq!(metrics[3].name(), b"a histogram");
+        let hist_data = metrics[3].data().expect("histogram data should exist");
+        assert_eq!(hist_data.value_type(), DataType::Histogram);
+        let histogram = hist_data.as_histogram().expect("should be histogram");
+        assert_eq!(
+            histogram.aggregation_temporality(),
+            AggregationTemporality::Delta
+        );
+        let hist_dps: Vec<_> = histogram.data_points().collect();
+        assert_eq!(hist_dps.len(), 1);
+        assert_eq!(hist_dps[0].time_unix_nano(), 567);
+        assert_eq!(hist_dps[0].start_time_unix_nano(), 23);
+        assert_eq!(hist_dps[0].count(), 9);
+        assert!((hist_dps[0].sum().unwrap() - 8.0).abs() < f64::EPSILON);
+        assert_eq!(hist_dps[0].flags().into_inner(), 1);
+        assert!((hist_dps[0].min().unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!((hist_dps[0].max().unwrap() - 2.0).abs() < f64::EPSILON);
+        let bucket_counts: Vec<_> = hist_dps[0].bucket_counts().collect();
+        assert_eq!(bucket_counts, vec![3, 4, 5]);
+        let explicit_bounds: Vec<_> = hist_dps[0].explicit_bounds().collect();
+        assert_eq!(explicit_bounds, vec![5.0, 6.0, 7.0]);
+
+        // Histogram dp attributes
+        let hist_dp_attrs: Vec<_> = hist_dps[0].attributes().collect();
+        assert_eq!(hist_dp_attrs.len(), 1);
+        assert_eq!(hist_dp_attrs[0].key(), b"hist_attr");
+
+        // Histogram dp exemplars
+        let hist_exemplars: Vec<_> = hist_dps[0].exemplars().collect();
+        assert_eq!(hist_exemplars.len(), 2);
+        assert_eq!(hist_exemplars[0].time_unix_nano(), 678);
+        assert_eq!(hist_exemplars[0].value(), Some(Value::Integer(235)));
+        let hist_exemplar_attrs: Vec<_> = hist_exemplars[0].filtered_attributes().collect();
+        assert_eq!(hist_exemplar_attrs.len(), 1);
+        assert_eq!(hist_exemplar_attrs[0].key(), b"hist_exemplar_attr");
+        assert_eq!(hist_exemplars[1].value(), Some(Value::Double(235.0)));
+
+        // ------ Exponential Histogram ------
+        assert_eq!(metrics[4].name(), b"exp hist");
+        let exp_data = metrics[4].data().expect("exp histogram data should exist");
+        assert_eq!(exp_data.value_type(), DataType::ExponentialHistogram);
+        let exp_hist = exp_data
+            .as_exponential_histogram()
+            .expect("should be exp histogram");
+        assert_eq!(
+            exp_hist.aggregation_temporality(),
+            AggregationTemporality::Unspecified
+        );
+        let exp_dps: Vec<_> = exp_hist.data_points().collect();
+        assert_eq!(exp_dps.len(), 1);
+        assert_eq!(exp_dps[0].time_unix_nano(), 345);
+        assert_eq!(exp_dps[0].start_time_unix_nano(), 234);
+        assert_eq!(exp_dps[0].count(), 9999);
+        assert!((exp_dps[0].sum().unwrap() - 123.0).abs() < f64::EPSILON);
+        assert_eq!(exp_dps[0].zero_count(), 7);
+        assert_eq!(exp_dps[0].scale(), 67);
+        assert_eq!(exp_dps[0].flags().into_inner(), 5);
+        assert!((exp_dps[0].min().unwrap() - 4.0).abs() < f64::EPSILON);
+        assert!((exp_dps[0].max().unwrap() - 44.0).abs() < f64::EPSILON);
+        assert!((exp_dps[0].zero_threshold() - (-1.1)).abs() < f64::EPSILON);
+
+        // Exponential histogram dp attributes
+        let exp_dp_attrs: Vec<_> = exp_dps[0].attributes().collect();
+        assert_eq!(exp_dp_attrs.len(), 1);
+        assert_eq!(exp_dp_attrs[0].key(), b"exp_hist_attr");
+
+        // Exponential histogram dp exemplars
+        let exp_exemplars: Vec<_> = exp_dps[0].exemplars().collect();
+        assert_eq!(exp_exemplars.len(), 2);
+        assert_eq!(exp_exemplars[0].time_unix_nano(), 678);
+        assert_eq!(exp_exemplars[0].value(), Some(Value::Integer(235)));
+        let exp_exemplar_attrs: Vec<_> = exp_exemplars[0].filtered_attributes().collect();
+        assert_eq!(exp_exemplar_attrs.len(), 1);
+        assert_eq!(exp_exemplar_attrs[0].key(), b"exp_hist_exemplar_attr");
+        assert_eq!(exp_exemplars[1].value(), Some(Value::Double(235.0)));
+
+        // Positive/negative buckets
+        let positive = exp_dps[0]
+            .positive()
+            .expect("positive buckets should exist");
+        assert_eq!(positive.offset(), 2);
+        let pos_counts: Vec<_> = positive.bucket_counts().collect();
+        assert_eq!(pos_counts, vec![34, 45, 67]);
+        // No negative buckets were set — the view may return None or Some with empty counts
+        let neg_counts: Vec<_> = exp_dps[0]
+            .negative()
+            .map(|b| b.bucket_counts().collect())
+            .unwrap_or_default();
+        assert!(neg_counts.is_empty(), "expected no negative bucket counts");
+    }
+
+    #[test]
+    fn test_metrics_all_fields_proto_struct() {
+        let metrics_view = _generate_metrics_data_all_fields();
+        _test_metrics_data_all_fields(&metrics_view);
+    }
+
+    #[test]
+    fn test_metrics_all_fields_otap_view() {
+        use crate::views::otap::OtapMetricsView;
+        let metrics_view = _generate_metrics_data_all_fields();
+        let otap_batch = encode_metrics_otap_batch(&metrics_view).unwrap();
+        let otap_metrics_view = OtapMetricsView::try_from(&otap_batch).unwrap();
+        _test_metrics_data_all_fields(&otap_metrics_view);
+    }
+
     #[test]
     fn test_encode_logs_verify_all_columns_proto_struct() {
         let logs_data = _generate_logs_for_verify_all_columns();

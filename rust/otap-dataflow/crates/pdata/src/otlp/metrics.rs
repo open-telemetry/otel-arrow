@@ -58,15 +58,15 @@ pub enum MetricType {
     Summary = 5,
 }
 
-struct MetricsArrays<'a> {
-    id: &'a UInt16Array,
-    metric_type: &'a UInt8Array,
-    schema_url: Option<StringArrayAccessor<'a>>,
-    name: StringArrayAccessor<'a>,
-    description: Option<StringArrayAccessor<'a>>,
-    unit: Option<StringArrayAccessor<'a>>,
-    aggregation_temporality: Option<Int32ArrayAccessor<'a>>,
-    is_monotonic: Option<&'a BooleanArray>,
+pub(crate) struct MetricsArrays<'a> {
+    pub(crate) id: &'a UInt16Array,
+    pub(crate) metric_type: &'a UInt8Array,
+    pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
+    pub(crate) name: StringArrayAccessor<'a>,
+    pub(crate) description: Option<StringArrayAccessor<'a>>,
+    pub(crate) unit: Option<StringArrayAccessor<'a>>,
+    pub(crate) aggregation_temporality: Option<Int32ArrayAccessor<'a>>,
+    pub(crate) is_monotonic: Option<&'a BooleanArray>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
