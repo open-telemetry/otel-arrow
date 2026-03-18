@@ -59,13 +59,13 @@ use reqwest::{Client, Response};
 #[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_warn;
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::metrics::ExporterPDataMetrics;
-use crate::otlp_grpc_exporter::InFlightExports;
-use crate::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
-use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
-use crate::otlp_http_exporter::config::Config;
-use crate::pdata::{Context, OtapPdata};
+use self::config::Config;
+use crate::exporters::otlp_grpc_exporter::InFlightExports;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
+use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
+use otap_df_otap::pdata::{Context, OtapPdata};
 
 mod config;
 
@@ -374,7 +374,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     };
 
-                    let endpoint = Rc::clone(match signal_type {
+                    let endpoint: Rc<String> = Rc::clone(match signal_type {
                         SignalType::Logs => &logs_endpoint,
                         SignalType::Metrics => &metrics_endpoint,
                         SignalType::Traces => &traces_endpoint,
@@ -758,11 +758,11 @@ mod test {
 
     use super::*;
 
-    use crate::otap_grpc::common::AckRegistry;
-    use crate::otlp_http::client_settings::HttpClientSettings;
-    use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
-    use crate::otlp_receiver::OtlpReceiverMetrics;
-    use crate::testing::TestCallData;
+    use otap_df_otap::otap_grpc::common::AckRegistry;
+    use otap_df_otap::otlp_http::client_settings::HttpClientSettings;
+    use otap_df_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
+    use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
+    use otap_df_otap::testing::TestCallData;
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -977,7 +977,7 @@ mod test {
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
     ) -> (PipelineContext, ExporterWrapper<OtapPdata>) {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
         let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -2335,7 +2335,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2383,7 +2383,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2432,7 +2432,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2481,7 +2481,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2532,7 +2532,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2583,7 +2583,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2632,7 +2632,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_pem() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2685,7 +2685,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_file() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2739,7 +2739,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_failure_wrong_client_cert() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2801,7 +2801,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_cert_without_key() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2857,7 +2857,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_key_without_cert() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
