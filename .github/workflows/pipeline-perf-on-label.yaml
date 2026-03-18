@@ -98,12 +98,21 @@ jobs:
           python --version
           python -m pip --version
 
+      - name: Set up Python (non-OL8)
+        if: ${{ steps.detect_os.outputs.id != 'ol' }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
       - name: Build dataflow_engine
         run: |
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Install dependencies
@@ -134,12 +143,15 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
       - name: Build dataflow_engine
         run: |
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Install dependencies
