@@ -417,7 +417,6 @@ Pros:
 Cons:
 
 * limited scoping flexibility
-* less explicit capability contracts
 * not optimized for thread-per-core execution
 
 ### OTel Dataflow Engine Extension Model
