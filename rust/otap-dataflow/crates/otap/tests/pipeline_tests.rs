@@ -16,10 +16,10 @@ use otap_df_config::policy::{ChannelCapacityPolicy, MetricLevel, TelemetryPolicy
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
-use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_core_nodes::receivers::fake_data_generator::config::{
     Config as FakeDataGeneratorConfig, DataSource, TrafficConfig,
 };
+use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
