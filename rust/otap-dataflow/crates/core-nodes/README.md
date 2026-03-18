@@ -77,17 +77,20 @@ Each component lives in its own subfolder within a category:
 #### otap_exporter
 
 - Streams OTAP Arrow payloads over gRPC to OTAP-compatible downstream receivers
-- Reuses shared OTAP transport, compression, and Arrow encoding support from `otap-df-otap`
+- Reuses shared OTAP transport, compression, and Arrow encoding support from
+  `otap-df-otap`
 
 #### otlp_grpc_exporter
 
 - Sends OTLP logs, metrics, and traces over unary gRPC export requests
-- Supports concurrent in-flight exports with ack/nack propagation back into the pipeline
+- Supports concurrent in-flight exports with ack/nack propagation back into the
+  pipeline
 
 #### otlp_http_exporter
 
 - Sends OTLP logs, metrics, and traces over OTLP/HTTP endpoints
-- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP HTTP helpers
+- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
+  HTTP helpers
 
 #### parquet_exporter
 
@@ -206,13 +209,16 @@ Each component lives in its own subfolder within a category:
 
 #### otap_receiver
 
-- Accepts OTAP Arrow streams over gRPC and forwards them into the pipeline as `OtapPdata`
+- Accepts OTAP Arrow streams over gRPC and forwards them into the pipeline as
+  `OtapPdata`
 - Supports downstream wait-for-result ack/nack routing back to OTAP clients
 
 #### otlp_receiver
 
-- Accepts OTLP over gRPC, OTLP/HTTP, or both, and forwards serialized OTLP payloads into the pipeline
-- Shares gRPC, HTTP, concurrency, TLS, and ack-routing support from `otap-df-otap`
+- Accepts OTLP over gRPC, OTLP/HTTP, or both, and forwards serialized OTLP
+  payloads into the pipeline
+- Shares gRPC, HTTP, concurrency, TLS, and ack-routing support from
+  `otap-df-otap`
 
 #### syslog_cef_receiver
 
