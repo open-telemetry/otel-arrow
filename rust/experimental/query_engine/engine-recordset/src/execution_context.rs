@@ -5,7 +5,7 @@ use std::{cell::*, collections::HashMap};
 
 use crate::{
     scalars::{
-        execute_argument_scalar_expression, execute_scalar_expression,
+        SelectionOptions, execute_argument_scalar_expression, execute_scalar_expression,
         execute_source_scalar_expression, execute_variable_scalar_expression,
     },
     value_expressions::{execute_mutable_value_expression, get_borrow_source},
@@ -254,11 +254,21 @@ where
                         a,
                     ),
                     MutableValueExpression::Source(s) => (
-                        execute_source_scalar_expression(self.parent_execution_context, m, s)?,
+                        execute_source_scalar_expression(
+                            self.parent_execution_context,
+                            m,
+                            s,
+                            &SelectionOptions::new(),
+                        )?,
                         s,
                     ),
                     MutableValueExpression::Variable(v) => (
-                        execute_variable_scalar_expression(self.parent_execution_context, m, v)?,
+                        execute_variable_scalar_expression(
+                            self.parent_execution_context,
+                            m,
+                            v,
+                            &SelectionOptions::new(),
+                        )?,
                         m,
                     ),
                 }

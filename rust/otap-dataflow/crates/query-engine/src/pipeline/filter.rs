@@ -1,41 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::{BitAnd, BitOr};
 use std::sync::Arc;
-
-use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
-    RecordBatch, StructArray, UInt16Array,
-};
-use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, filter_record_batch, not, or};
-use arrow::datatypes::{Schema, UInt16Type, UInt32Type};
-use async_trait::async_trait;
-use data_engine_expressions::{
-    ContainsLogicalExpression, Expression, LogicalExpression, MatchesLogicalExpression,
-    ScalarExpression, StaticScalarExpression,
-};
-use datafusion::common::cast::as_boolean_array;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{DFSchema, HashMap, HashSet};
-use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
-use datafusion::execution::TaskContext;
-use datafusion::execution::context::SessionContext;
-use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::core::getfield::GetFieldFunc;
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
-use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
-use datafusion::prelude::binary_expr;
-use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::MaybeDictArrayAccessor;
-use otap_df_pdata::otap::filter::{build_uint16_id_filter, build_uint32_id_filter};
-use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
-use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -44,7 +10,38 @@ use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
+use crate::pipeline::project::Projection;
 use crate::pipeline::state::ExecutionState;
+use arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
+    RecordBatch, StructArray, UInt16Array,
+};
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::{and, filter_record_batch, not, or};
+use arrow::datatypes::{UInt16Type, UInt32Type};
+use async_trait::async_trait;
+use data_engine_expressions::{
+    BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
+    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression,
+};
+use datafusion::common::DFSchema;
+use datafusion::common::cast::as_boolean_array;
+use datafusion::config::ConfigOptions;
+use datafusion::execution::TaskContext;
+use datafusion::execution::context::SessionContext;
+use datafusion::functions::core::expr_ext::FieldAccessor;
+use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
+use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
+use datafusion::prelude::binary_expr;
+use datafusion::scalar::ScalarValue;
+use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::MaybeDictArrayAccessor;
+use otap_df_pdata::otap::filter::{
+    IdBitmap, IdBitmapPool, build_dict_u32_selection_vec, build_native_selection_vec,
+};
+use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::schema::consts;
 
 pub mod optimize;
 
@@ -452,10 +449,15 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
                 Ok(Self::from(FilterPlan::try_from(matches_expr)?))
             }
 
-            // TODO add support for these expressions eventually
-            LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
-                message: format!("Logical expression not yet supported {logical_expr:?}"),
-            }),
+            LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
+                ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
+                    Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
+                }
+                // TODO add support for these expressions eventually
+                _ => Err(Error::NotYetSupportedError {
+                    message: format!("Logical expression not yet supported {logical_expr:?}"),
+                }),
+            },
         }
     }
 }
@@ -717,7 +719,8 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    predicate: Option<AdaptivePhysicalExprExec>,
+    pub(crate) predicate: Option<AdaptivePhysicalExprExec>,
+
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
     /// determines how we treat rows that where there are no attributes. if false, this cause the
@@ -742,6 +745,7 @@ impl FilterExec {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
+        id_bitmap_pool: &mut IdBitmapPool,
     ) -> Result<BooleanArray> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -789,7 +793,7 @@ impl FilterExec {
                     }
                 };
 
-            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
+            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false, id_bitmap_pool)?;
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
 
             // we append to the selection vector in contiguous segments rather than doing it 1-by-1
@@ -821,6 +825,9 @@ impl FilterExec {
                 attrs_selection_vec_builder.append_n(segment_len, segment_validity);
             }
 
+            // release the id_mask bitmap back to the pool for reuse
+            id_mask.release_to(id_bitmap_pool);
+
             let attr_selection_vec = BooleanArray::new(attrs_selection_vec_builder.finish(), None);
             selection_vec = Some(match selection_vec {
                 // update the result selection_vec to be the intersection of what's already filtered
@@ -848,12 +855,17 @@ impl Composite<FilterExec> {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
+        id_bitmap_pool: &mut IdBitmapPool,
     ) -> Result<BooleanArray> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch, session_ctx),
-            Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx, id_bitmap_pool),
+            Self::Not(filter) => Ok(not(&filter.execute(
+                otap_batch,
+                session_ctx,
+                id_bitmap_pool,
+            )?)?),
             Self::And(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx)?;
+                let left_result = left.execute(otap_batch, session_ctx, id_bitmap_pool)?;
 
                 // short circuit if everything on the left was filtered out. No "true" value
                 // in the right selection vector would change the result
@@ -865,11 +877,11 @@ impl Composite<FilterExec> {
                     return Ok(left_result);
                 }
 
-                let right_result = right.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx, id_bitmap_pool)?;
                 Ok(and(&left_result, &right_result)?)
             }
             Self::Or(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx)?;
+                let left_result = left.execute(otap_batch, session_ctx, id_bitmap_pool)?;
 
                 // short circuit if nothing on the left was filtered out. No "false" value
                 // in the right selection vector would change the result
@@ -881,7 +893,7 @@ impl Composite<FilterExec> {
                     return Ok(left_result);
                 }
 
-                let right_result = right.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx, id_bitmap_pool)?;
                 Ok(or(&left_result, &right_result)?)
             }
         }
@@ -892,7 +904,7 @@ impl Composite<FilterExec> {
 ///
 /// For example it can be used as the return type from filtering attributes to represent
 /// values from the parent_id column matched some filter that was applied.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum IdMask {
     // All IDs are selected
     All,
@@ -901,10 +913,10 @@ pub enum IdMask {
     None,
 
     /// Some of the IDs are selected
-    Some(RoaringBitmap),
+    Some(IdBitmap),
 
     /// Some of the IDs are not selected
-    NotSome(RoaringBitmap),
+    NotSome(IdBitmap),
 }
 
 impl IdMask {
@@ -916,65 +928,89 @@ impl IdMask {
             Self::NotSome(bitmap) => !bitmap.contains(id),
         }
     }
-}
 
-impl BitOr for IdMask {
-    type Output = Self;
+    /// Returns the owned bitmap (if any) to the pool for reuse.
+    fn release_to(self, pool: &mut IdBitmapPool) {
+        match self {
+            Self::Some(bm) | Self::NotSome(bm) => pool.release(bm),
+            Self::All | Self::None => {}
+        }
+    }
 
-    fn bitor(self, rhs: Self) -> Self::Output {
+    /// Combines two masks with OR logic, returning spare bitmaps to the pool.
+    fn combine_or(self, rhs: Self, pool: &mut IdBitmapPool) -> Self {
         match (self, rhs) {
-            (Self::All, _) | (_, Self::All) => Self::All,
+            (Self::All, other) | (other, Self::All) => {
+                other.release_to(pool);
+                Self::All
+            }
             (Self::None, other) | (other, Self::None) => other,
 
-            (Self::Some(lhs), Self::Some(rhs)) => Self::Some(lhs | rhs),
+            (Self::Some(mut lhs), Self::Some(rhs)) => {
+                lhs.union_with(&rhs);
+                pool.release(rhs);
+                Self::Some(lhs)
+            }
 
-            (Self::Some(lhs), Self::NotSome(rhs)) | (Self::NotSome(rhs), Self::Some(lhs)) => {
+            (Self::Some(lhs), Self::NotSome(mut rhs))
+            | (Self::NotSome(mut rhs), Self::Some(lhs)) => {
                 // Some(lhs) | NotSome(rhs) = Some(lhs) | !Some(rhs)
                 // = everything except what's in rhs but not in lhs
                 // = NotSome(rhs - lhs)
-                let difference = &rhs - &lhs;
-                if difference.is_empty() {
+                rhs.difference_with(&lhs);
+                pool.release(lhs);
+                if rhs.is_empty() {
+                    pool.release(rhs);
                     Self::All
                 } else {
-                    Self::NotSome(difference)
+                    Self::NotSome(rhs)
                 }
             }
 
-            (Self::NotSome(lhs), Self::NotSome(rhs)) => {
+            (Self::NotSome(mut lhs), Self::NotSome(rhs)) => {
                 // NotSome(lhs) | NotSome(rhs) = !lhs | !rhs = !(lhs & rhs)
-                Self::NotSome(lhs & rhs)
+                lhs.intersect_with(&rhs);
+                pool.release(rhs);
+                Self::NotSome(lhs)
             }
         }
     }
-}
 
-impl BitAnd for IdMask {
-    type Output = Self;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
+    /// Combines two masks with AND logic, returning spare bitmaps to the pool.
+    fn combine_and(self, rhs: Self, pool: &mut IdBitmapPool) -> Self {
         match (self, rhs) {
-            (Self::None, _) | (_, Self::None) => Self::None,
+            (Self::None, other) | (other, Self::None) => {
+                other.release_to(pool);
+                Self::None
+            }
             (Self::All, other) | (other, Self::All) => other,
 
-            (Self::Some(lhs), Self::Some(rhs)) => {
+            (Self::Some(mut lhs), Self::Some(rhs)) => {
                 // Some(lhs) & Some(rhs) = intersection
-                Self::Some(lhs & rhs)
+                lhs.intersect_with(&rhs);
+                pool.release(rhs);
+                Self::Some(lhs)
             }
 
-            (Self::Some(lhs), Self::NotSome(rhs)) | (Self::NotSome(rhs), Self::Some(lhs)) => {
+            (Self::Some(mut lhs), Self::NotSome(rhs))
+            | (Self::NotSome(rhs), Self::Some(mut lhs)) => {
                 // Some(lhs) & NotSome(rhs) = Some(lhs) & !Some(rhs)
                 // = lhs minus rhs
-                let difference = &lhs - &rhs;
-                if difference.is_empty() {
+                lhs.difference_with(&rhs);
+                pool.release(rhs);
+                if lhs.is_empty() {
+                    pool.release(lhs);
                     Self::None
                 } else {
-                    Self::Some(difference)
+                    Self::Some(lhs)
                 }
             }
 
-            (Self::NotSome(lhs), Self::NotSome(rhs)) => {
+            (Self::NotSome(mut lhs), Self::NotSome(rhs)) => {
                 // NotSome(lhs) & NotSome(rhs) = !lhs & !rhs = !(lhs | rhs)
-                Self::NotSome(lhs | rhs)
+                lhs.union_with(&rhs);
+                pool.release(rhs);
+                Self::NotSome(lhs)
             }
         }
     }
@@ -994,6 +1030,7 @@ impl AttributeFilterExec {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         inverted: bool,
+        pool: &mut IdBitmapPool,
     ) -> Result<IdMask> {
         let record_batch = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
@@ -1015,26 +1052,28 @@ impl AttributeFilterExec {
         let parent_id_col = get_parent_id_column(record_batch)?;
 
         // create a bitmap containing the parent_ids that passed the filter predicate
-        let id_mask = parent_id_col
-            .iter()
-            .enumerate()
-            .filter_map(|(index, parent_id)| {
-                selection_vec
-                    .value(index)
-                    .then(|| {
-                        // the parent_id column _should_ be non-nullable, so we could maybe call
-                        // `expect` here, but `map` is probably safer just in case there is a null
-                        // for some unexpected reason
-                        parent_id.map(|i| i as u32)
-                    })
-                    .flatten()
-            })
-            .collect();
+        let mut id_bitmap = pool.acquire();
+        id_bitmap.populate(
+            parent_id_col
+                .iter()
+                .enumerate()
+                .filter_map(|(index, parent_id)| {
+                    selection_vec
+                        .value(index)
+                        .then(|| {
+                            // the parent_id column _should_ be non-nullable, so we could maybe call
+                            // `expect` here, but `map` is probably safer just in case there is a null
+                            // for some unexpected reason
+                            parent_id.map(|i| i as u32)
+                        })
+                        .flatten()
+                }),
+        );
 
         Ok(if inverted {
-            IdMask::NotSome(id_mask)
+            IdMask::NotSome(id_bitmap)
         } else {
-            IdMask::Some(id_mask)
+            IdMask::Some(id_bitmap)
         })
     }
 }
@@ -1049,12 +1088,13 @@ impl Composite<AttributeFilterExec> {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         inverted: bool,
+        pool: &mut IdBitmapPool,
     ) -> Result<IdMask> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
-            Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted, pool),
+            Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted, pool),
             Self::And(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+                let left_result = left.execute(otap_batch, session_ctx, inverted, pool)?;
 
                 // short circuit evaluating the other side if possible. if nothing passed the
                 // filter, we don't need to evaluate it because it won't change the result
@@ -1064,22 +1104,22 @@ impl Composite<AttributeFilterExec> {
                     return Ok(left_result);
                 }
 
-                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted, pool)?;
                 Ok(if inverted {
                     // not (A and B) = (not A) or (not B)
-                    left_result | right_result
+                    left_result.combine_or(right_result, pool)
                 } else {
-                    left_result & right_result
+                    left_result.combine_and(right_result, pool)
                 })
             }
             Self::Or(left, right) => {
-                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
-                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
+                let left_result = left.execute(otap_batch, session_ctx, inverted, pool)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted, pool)?;
                 Ok(if inverted {
                     // not (A or B) = (not A) and (not B)
-                    left_result & right_result
+                    left_result.combine_and(right_result, pool)
                 } else {
-                    left_result | right_result
+                    left_result.combine_or(right_result, pool)
                 })
             }
         }
@@ -1115,7 +1155,7 @@ pub struct AdaptivePhysicalExprExec {
 
     /// Definition for how the input record batch should be projected so that it's schema is
     /// compatible with what is expected by the physical_expr
-    projection: FilterProjection,
+    projection: Projection,
 
     /// Determines the behaviour of the predicate when some columns are missing from the batch.
     ///
@@ -1127,7 +1167,7 @@ pub struct AdaptivePhysicalExprExec {
 
 impl AdaptivePhysicalExprExec {
     fn try_new(logical_expr: Expr) -> Result<Self> {
-        let projection = FilterProjection::try_new(&logical_expr)?;
+        let projection = Projection::try_new(&logical_expr)?;
 
         // TODO eventually we may want more sophisticated logic here to handle when the column
         // is a default value. Cases like `dropped_attribute_count == 0`, in this case should
@@ -1145,12 +1185,12 @@ impl AdaptivePhysicalExprExec {
 
     /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
     /// vector for the rows that pass the predicate.
-    fn evaluate_filter(
+    pub(crate) fn evaluate_filter(
         &mut self,
         record_batch: &RecordBatch,
         session_ctx: &SessionContext,
     ) -> Result<BooleanArray> {
-        let record_batch = match self.projection.project(record_batch) {
+        let record_batch = match self.projection.project(record_batch)? {
             Some(rb) => rb,
             None => {
                 // we weren't able to project the record batch into the schema expected by the
@@ -1216,201 +1256,6 @@ impl AdaptivePhysicalExprExec {
     }
 }
 
-/// This attempts to project the record batch to known schema schema that
-/// [`AdaptivePhysicalExprExec`]'s predicate expression expects.
-///
-/// The [`PhysicalExpr`] basically expects the columns to be in a specific order, so this
-/// projection step is taking the existing columns and rearranging them. It does not do any
-/// transformation/mapping of column data types.
-///
-#[derive(Debug)]
-pub struct FilterProjection {
-    schema: ProjectedSchema,
-}
-
-impl FilterProjection {
-    /// Attempt to create a new instance of [`FilterProjection`]. It will return an error if
-    /// there is some form of [`Expr`] tree which is not recognized
-    fn try_new(logical_expr: &Expr) -> Result<Self> {
-        let mut visitor = ProjectedSchemaExprVisitor::default();
-        _ = logical_expr.visit(&mut visitor)?;
-        Ok(Self {
-            schema: visitor.into(),
-        })
-    }
-
-    /// Project the record batch to the expected schema. If there are some expected columns in
-    /// the passed [`RecordBatch`] which are missing, this will return `None`.
-    fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
-        let original_schema = record_batch.schema_ref();
-
-        // TODO - if the heap allocations here have significant perf overhead, we could try reusing
-        // these arrays between batches.
-        let mut columns = Vec::new();
-        let mut fields = Vec::new();
-
-        for projected_col in &self.schema {
-            match projected_col {
-                ProjectedSchemaColumn::Root(desired_col_name) => {
-                    let index = original_schema.index_of(desired_col_name).ok()?;
-                    let column = record_batch.column(index).clone();
-                    let field = original_schema.fields[index].clone();
-                    columns.push(column);
-                    fields.push(field)
-                }
-                ProjectedSchemaColumn::Struct(desired_struct_name, desired_struct_fields) => {
-                    let struct_index = original_schema.index_of(desired_struct_name).ok()?;
-                    let column = record_batch.column(struct_index);
-                    let col_as_struct = column.as_any().downcast_ref::<StructArray>()?;
-
-                    let mut struct_fields = Vec::new();
-                    let mut struct_field_defs = Vec::new();
-
-                    for field_name in desired_struct_fields {
-                        let (field_index, field) = col_as_struct.fields().find(field_name)?;
-                        struct_fields.push(col_as_struct.column(field_index).clone());
-                        struct_field_defs.push(field.clone());
-                    }
-
-                    // safety: `try_new` will return an error here if the types of arrays we pass
-                    // for the fields do not match the field definitions, or if the arrays have
-                    // different lengths. Based on the way we've constructed inputs, this should
-                    // not happen because we've taken them from the input struct column in order
-                    let projected_struct_arr = StructArray::try_new(
-                        struct_field_defs.into(),
-                        struct_fields,
-                        col_as_struct.nulls().cloned(),
-                    )
-                    .expect("can init StructArray");
-
-                    let projected_field = original_schema.fields[struct_index]
-                        .as_ref()
-                        .clone()
-                        .with_data_type(projected_struct_arr.data_type().clone());
-                    fields.push(Arc::new(projected_field));
-                    columns.push(Arc::new(projected_struct_arr));
-                }
-            }
-        }
-
-        // safety: `try_new` should not return an error here unless the columns do not match the
-        // fields in the schema, or if the columns are different lengths. Based on how we've
-        // constructed the inputs, this should not happen because we've taken them from the input
-        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("can project record batch");
-
-        Some(rb)
-    }
-}
-
-/// Defines that the record batch should be projected as when the filter is applied.
-///
-/// Note that the only thing that matters when applying the filter's `PhysicalExpr` is that the
-/// columns are all present and in the correct order, which is why this is implemented as a lists
-/// of column names without regard to types.
-type ProjectedSchema = Vec<ProjectedSchemaColumn>;
-
-/// Definition of column in the projected schema
-#[derive(Debug, Eq, Hash, PartialEq, PartialOrd)]
-enum ProjectedSchemaColumn {
-    /// Simply column in the [`RecordBatch`] being filtered that should be in the projected schema
-    Root(String),
-
-    /// Columns that should be projected from a nested struct. For example on a Logs record batch
-    /// this could be things like `resource.name`, or `body.str`.
-    Struct(String, Vec<String>),
-}
-
-/// Implementation of [`TreeNodeVisitor`] that will visit the [`Expr`] defining the filter
-/// predicate to determine which columns are referenced in the filter predicate. This information
-/// can then be used to determine how to project the input batches before evaluating the filter's
-/// [`PhysicalExpr`]
-#[derive(Debug, Default)]
-struct ProjectedSchemaExprVisitor {
-    root_columns: HashSet<String>,
-
-    // this is used to keep track of fields in some nested struct which are referenced by the expr.
-    // the map is keyed by struct name, and the set contains the fields within the struct.
-    struct_columns: HashMap<String, HashSet<String>>,
-}
-
-impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
-    type Node = Expr;
-
-    fn f_down(&mut self, node: &'a Self::Node) -> datafusion::error::Result<TreeNodeRecursion> {
-        if let Expr::Column(col) = node {
-            _ = self.root_columns.insert(col.name.clone());
-        }
-
-        // here we're checking if the expression we're visiting references a field within a struct
-        // column. The way we reference these in the plans we build is using an expression like
-        // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
-        // `GetFieldFunc` function with arguments ("scope", "name").
-        if let Expr::ScalarFunction(scalar_udf) = node {
-            if scalar_udf
-                .func
-                .as_ref()
-                .inner()
-                .as_any()
-                .is::<GetFieldFunc>()
-            {
-                let source = scalar_udf.args.first();
-                let field = scalar_udf.args.get(1);
-                match (source, field) {
-                    (
-                        Some(Expr::Column(col)),
-                        Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
-                    ) => {
-                        let struct_fields = self
-                            .struct_columns
-                            .entry(col.name.clone())
-                            .or_insert(HashSet::new());
-                        _ = struct_fields.insert(nested_col.clone());
-
-                        // don't continue as we've found a column. Otherwise this will continue
-                        // down the expression tree and we'll visit the Column expression twice.
-                        return Ok(TreeNodeRecursion::Jump);
-                    }
-                    unexpected_args => {
-                        let err_msg = format!(
-                            "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
-                            unexpected_args
-                        );
-                        return Err(DataFusionError::Plan(err_msg));
-                    }
-                }
-            }
-        }
-
-        Ok(TreeNodeRecursion::Continue)
-    }
-}
-
-impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
-    fn from(visitor: ProjectedSchemaExprVisitor) -> Self {
-        let num_cols = visitor.root_columns.len()
-            + visitor
-                .struct_columns
-                .values()
-                .map(|cols| cols.len())
-                .sum::<usize>();
-        let mut schema = Vec::with_capacity(num_cols);
-
-        for col in visitor.root_columns {
-            schema.push(ProjectedSchemaColumn::Root(col))
-        }
-
-        for (struct_name, cols) in visitor.struct_columns {
-            schema.push(ProjectedSchemaColumn::Struct(
-                struct_name,
-                cols.into_iter().collect(),
-            ));
-        }
-
-        schema
-    }
-}
-
 /// This trait makes some helper functions for filtering child [`RecordBatch`]s generic over the
 /// type of ID (u16/u32) that are used to make the relationship between parent and child
 trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
@@ -1422,8 +1267,8 @@ trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
     ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>>;
 
     /// build a selection vector for the parent ID column based on which IDs are contained within
-    /// the id_mask bitmap
-    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray>;
+    /// the id_bitmap
+    fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray>;
 }
 
 impl ChildBatchFilterIdHelper for UInt16Type {
@@ -1457,10 +1302,17 @@ impl ChildBatchFilterIdHelper for UInt16Type {
         .transpose()
     }
 
-    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
-        build_uint16_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
-            cause: format!("error filtering child batch {:?}", e),
-        })
+    fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray> {
+        let uint16_array = parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "unexpected type for parent_id column. Expected u16 found {}",
+                    parent_ids.data_type()
+                ),
+            })?;
+        Ok(build_native_selection_vec(uint16_array, id_bitmap))
     }
 }
 
@@ -1478,10 +1330,34 @@ impl ChildBatchFilterIdHelper for UInt32Type {
             })
     }
 
-    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
-        build_uint32_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
-            cause: format!("error filtering child batch {:?}", e),
-        })
+    fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray> {
+        match parent_ids.data_type() {
+            arrow::datatypes::DataType::UInt32 => {
+                let uint32_array = parent_ids
+                    .as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!(
+                            "unexpected type for parent_id column. Expected u32 found {}",
+                            parent_ids.data_type()
+                        ),
+                    })?;
+                Ok(build_native_selection_vec(uint32_array, id_bitmap))
+            }
+            arrow::datatypes::DataType::Dictionary(_, _) => {
+                build_dict_u32_selection_vec(parent_ids, id_bitmap).map_err(|e| {
+                    Error::ExecutionError {
+                        cause: format!("error filtering child batch {:?}", e),
+                    }
+                })
+            }
+            _ => Err(Error::ExecutionError {
+                cause: format!(
+                    "unexpected type for parent_id column. Expected u32 or dictionary-encoded u32, found {}",
+                    parent_ids.data_type()
+                ),
+            }),
+        }
     }
 }
 
@@ -1508,17 +1384,22 @@ fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
 
 pub struct FilterPipelineStage {
     filter_exec: Composite<FilterExec>,
+    id_bitmap_pool: IdBitmapPool,
 }
 
 impl FilterPipelineStage {
-    pub const fn new(filter_exec: Composite<FilterExec>) -> Self {
-        Self { filter_exec }
+    pub fn new(filter_exec: Composite<FilterExec>) -> Self {
+        Self {
+            filter_exec,
+            id_bitmap_pool: IdBitmapPool::new(),
+        }
     }
 }
 
 pub(crate) fn filter_otap_batch(
     selection_vec: &BooleanArray,
     mut otap_batch: OtapArrowRecords,
+    pool: &mut IdBitmapPool,
 ) -> Result<OtapArrowRecords> {
     let root_batch = match otap_batch.root_record_batch() {
         Some(rb) => rb,
@@ -1550,76 +1431,167 @@ pub(crate) fn filter_otap_batch(
     // replace the root batch
     otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
 
-    // update the child batches after filtering has been applied to parent
-    match otap_batch.root_payload_type() {
-        ArrowPayloadType::Logs => {
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
-        }
-        ArrowPayloadType::Spans => {
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanEvents)?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SpanEventAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanLinks)?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SpanLinkAttrs)?;
-        }
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::MetricAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SummaryDataPoints)?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SummaryDpAttrs)?;
-            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::NumberDataPoints)?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::NumberDpAttrs)?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::NumberDpExemplars)?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::NumberDpExemplarAttrs,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDataPoints,
-            )?;
-            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::HistogramDpAttrs)?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDpExemplars,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::HistogramDpExemplarAttrs,
-            )?;
-            filter_child_batch::<UInt16Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDataPoints,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpAttrs,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpExemplars,
-            )?;
-            filter_child_batch::<UInt32Type>(
-                &mut otap_batch,
-                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            )?;
-        }
-        signal_type => {
-            return Err(Error::ExecutionError {
-                cause: format!(
-                    "signal type {:?} not yet supported by FilterPipelineStage",
-                    signal_type
-                ),
-            });
-        }
-    };
-
-    Ok(otap_batch)
+    // Acquire a reusable bitmap from the pool for child batch filtering. The closure ensures
+    // the bitmap is always returned to the pool, even if a filter_child_batch call returns an
+    // error (the `?` operator returns from the closure, not the outer function).
+    let mut id_bitmap = pool.acquire();
+    let result = (|| -> Result<OtapArrowRecords> {
+        // update the child batches after filtering has been applied to parent
+        match otap_batch.root_payload_type() {
+            ArrowPayloadType::Logs => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::LogAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            ArrowPayloadType::Spans => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEvents,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEventAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinks,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinkAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::MetricAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                    &mut id_bitmap,
+                )?;
+                filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                    &mut id_bitmap,
+                )?;
+            }
+            signal_type => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "signal type {:?} not yet supported by FilterPipelineStage",
+                        signal_type
+                    ),
+                });
+            }
+        };
+        Ok(otap_batch)
+    })();
+    pool.release(id_bitmap);
+    result
 }
 
 /// After filtering has been applied to the parent record batch, go into the child record batch
@@ -1627,6 +1599,7 @@ pub(crate) fn filter_otap_batch(
 fn filter_child_batch<T: ChildBatchFilterIdHelper>(
     otap_batch: &mut OtapArrowRecords,
     child_payload_type: ArrowPayloadType,
+    id_bitmap: &mut IdBitmap,
 ) -> Result<()>
 where
     <T as ArrowPrimitiveType>::Native: Into<u32>,
@@ -1671,14 +1644,14 @@ where
         // on the root batch which does not exist
         Error::ExecutionError {
             cause: format!(
-                "Invalid batch - ID column not found on root batch {:?}",
+                "Invalid batch - ID column not found  on root batch {:?}",
                 otap_batch.root_payload_type()
             )
         })?;
 
     // build the selection vector for the child record batch. This uses common code shared
     // with the filter processor
-    let id_mask = id_col.iter().flatten().map(|i| i.into()).collect();
+    id_bitmap.populate(id_col.iter().flatten().map(|i| i.into()));
     let child_parent_ids =
         child_rb
             .column_by_name(consts::PARENT_ID)
@@ -1686,7 +1659,7 @@ where
                 cause: "parent_id column not found on child batch".into(),
             })?;
 
-    let child_selection_vec = T::build_selection_vec(child_parent_ids, id_mask)?;
+    let child_selection_vec = T::build_selection_vec(child_parent_ids, id_bitmap)?;
 
     if child_selection_vec.true_count() == 0 {
         // the child record batch has been completely filtered out
@@ -1719,10 +1692,47 @@ impl PipelineStage for FilterPipelineStage {
             return Ok(otap_batch);
         }
 
-        let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
-        let otap_batch = filter_otap_batch(&selection_vec, otap_batch)?;
+        let selection_vec =
+            self.filter_exec
+                .execute(&otap_batch, session_context, &mut self.id_bitmap_pool)?;
+        let otap_batch = filter_otap_batch(&selection_vec, otap_batch, &mut self.id_bitmap_pool)?;
 
         Ok(otap_batch)
+    }
+
+    async fn execute_on_attributes(
+        &mut self,
+        attrs_record_batch: RecordBatch,
+        session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_options: &mut ExecutionState,
+    ) -> Result<RecordBatch> {
+        let planning_error = || {
+            // we shouldn't end up here, unless there was a bug in the planner and it didn't call
+            // the correct optimizers on the FilterPlan to turn it into something that can operate
+            // directly on the attrs record batch
+            Error::InvalidPipelineError {
+                cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
+                query_location: None,
+            }
+        };
+
+        match &mut self.filter_exec {
+            Composite::Base(filter) => {
+                let predicate = filter.predicate.as_mut().ok_or_else(planning_error)?;
+                let selection_vec =
+                    predicate.evaluate_filter(&attrs_record_batch, session_context)?;
+                let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
+
+                Ok(new_batch)
+            }
+            _ => Err(planning_error()),
+        }
+    }
+
+    fn supports_exec_on_attributes(&self) -> bool {
+        true
     }
 }
 
@@ -1738,6 +1748,15 @@ mod test {
     };
     use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
+
+    /// Test helper to build an IdBitmap from a slice of u32 values.
+    fn id_bitmap_from(ids: &[u32]) -> IdBitmap {
+        let mut bm = IdBitmap::new();
+        for &id in ids {
+            bm.insert(id);
+        }
+        bm
+    }
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
     use otap_df_opl::parser::OplParser;
@@ -1765,8 +1784,7 @@ mod test {
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
     };
 
-    #[tokio::test]
-    async fn test_simple_filter() {
+    async fn test_simple_filter<P: Parser>() {
         let ns_per_second: u64 = 1000 * 1000 * 1000;
         let log_records = vec![
             LogRecord::build()
@@ -1789,7 +1807,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_text == \"ERROR\"",
             to_logs_data(log_records.clone()),
         )
@@ -1800,7 +1818,7 @@ mod test {
         );
 
         // test same filter where the literal is on the left and column name on the right
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where \"ERROR\" == severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -1811,7 +1829,7 @@ mod test {
         );
 
         // test filtering by some other field types (u32, int32, timestamp)
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1820,7 +1838,7 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()]
         );
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1830,7 +1848,7 @@ mod test {
             &[log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
             to_logs_data(log_records.clone()),
         )
@@ -1840,7 +1858,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
             to_logs_data(log_records.clone()),
         )
@@ -1849,6 +1867,28 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()]
         );
+
+        let result =
+            exec_logs_pipeline::<P>("logs | where true", to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records
+        );
+
+        // assert everything filtered out:
+        let result =
+            exec_logs_pipeline::<P>("logs | where false", to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_kql_parser() {
+        test_simple_filter::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_op_parser() {
+        test_simple_filter::<OplParser>().await
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
@@ -4263,8 +4303,8 @@ mod test {
     fn test_id_mask_contains() {
         let all = IdMask::All;
         let none = IdMask::None;
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
-        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([1, 2, 3]));
+        let some = IdMask::Some(id_bitmap_from(&[1, 2, 3]));
+        let not_some = IdMask::NotSome(id_bitmap_from(&[1, 2, 3]));
 
         assert!(all.contains(5));
         assert!(!none.contains(5));
@@ -4276,10 +4316,11 @@ mod test {
 
     #[test]
     fn test_id_mask_bitor_basic() {
-        let some1 = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
-        let some2 = IdMask::Some(RoaringBitmap::from_iter([2, 3]));
+        let mut pool = IdBitmapPool::new();
+        let some1 = IdMask::Some(id_bitmap_from(&[1, 2]));
+        let some2 = IdMask::Some(id_bitmap_from(&[2, 3]));
 
-        match some1 | some2 {
+        match some1.combine_or(some2, &mut pool) {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(1));
                 assert!(bitmap.contains(2));
@@ -4291,23 +4332,36 @@ mod test {
 
     #[test]
     fn test_id_mask_bitor_with_all_none() {
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+        let mut pool = IdBitmapPool::new();
 
-        assert!(matches!(IdMask::All | some.clone(), IdMask::All));
-        assert!(matches!(some.clone() | IdMask::All, IdMask::All));
-        assert!(matches!(IdMask::None | some.clone(), IdMask::Some(_)));
-        assert!(matches!(some | IdMask::None, IdMask::Some(_)));
+        assert!(matches!(
+            IdMask::All.combine_or(IdMask::Some(id_bitmap_from(&[1, 2])), &mut pool),
+            IdMask::All
+        ));
+        assert!(matches!(
+            IdMask::Some(id_bitmap_from(&[1, 2])).combine_or(IdMask::All, &mut pool),
+            IdMask::All
+        ));
+        assert!(matches!(
+            IdMask::None.combine_or(IdMask::Some(id_bitmap_from(&[1, 2])), &mut pool),
+            IdMask::Some(_)
+        ));
+        assert!(matches!(
+            IdMask::Some(id_bitmap_from(&[1, 2])).combine_or(IdMask::None, &mut pool),
+            IdMask::Some(_)
+        ));
     }
 
     #[test]
     fn test_id_mask_bitor_some_notsome() {
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
-        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([2, 3, 4]));
+        let mut pool = IdBitmapPool::new();
+        let some = IdMask::Some(id_bitmap_from(&[1, 2, 3]));
+        let not_some = IdMask::NotSome(id_bitmap_from(&[2, 3, 4]));
 
         // Some([1,2,3]) | NotSome([2,3,4]) = NotSome([4])
         // Because we select 1,2,3 plus everything except 2,3,4
         // Result: everything except 4
-        match some | not_some {
+        match some.combine_or(not_some, &mut pool) {
             IdMask::NotSome(bitmap) => {
                 assert!(bitmap.contains(4));
                 assert!(!bitmap.contains(1));
@@ -4319,23 +4373,25 @@ mod test {
 
     #[test]
     fn test_bitor_some_notsome_becomes_all() {
+        let mut pool = IdBitmapPool::new();
         // For this to become All, we need the NotSome set to be a subset of Some
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3, 4, 5]));
-        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+        let some = IdMask::Some(id_bitmap_from(&[1, 2, 3, 4, 5]));
+        let not_some = IdMask::NotSome(id_bitmap_from(&[2, 3]));
 
         // Some([1,2,3,4,5]) | NotSome([2,3])
         // = [1,2,3,4,5] plus everything except [2,3]
         // = everything (because [2,3] - [1,2,3,4,5] = empty)
-        assert!(matches!(some | not_some, IdMask::All));
+        assert!(matches!(some.combine_or(not_some, &mut pool), IdMask::All));
     }
 
     #[test]
     fn test_id_mask_bitor_notsome_notsome() {
-        let not_some1 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2]));
-        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+        let mut pool = IdBitmapPool::new();
+        let not_some1 = IdMask::NotSome(id_bitmap_from(&[1, 2]));
+        let not_some2 = IdMask::NotSome(id_bitmap_from(&[2, 3]));
 
         // NotSome([1,2]) | NotSome([2,3]) = NotSome([2])
-        match not_some1 | not_some2 {
+        match not_some1.combine_or(not_some2, &mut pool) {
             IdMask::NotSome(bitmap) => {
                 assert!(bitmap.contains(2));
                 assert!(!bitmap.contains(1));
@@ -4347,10 +4403,11 @@ mod test {
 
     #[test]
     fn test_id_mask_bitand_basic() {
-        let some1 = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
-        let some2 = IdMask::Some(RoaringBitmap::from_iter([2, 3, 4]));
+        let mut pool = IdBitmapPool::new();
+        let some1 = IdMask::Some(id_bitmap_from(&[1, 2, 3]));
+        let some2 = IdMask::Some(id_bitmap_from(&[2, 3, 4]));
 
-        match some1 & some2 {
+        match some1.combine_and(some2, &mut pool) {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(2));
                 assert!(bitmap.contains(3));
@@ -4363,21 +4420,34 @@ mod test {
 
     #[test]
     fn test_id_mask_bitand_with_all_none() {
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+        let mut pool = IdBitmapPool::new();
 
-        assert!(matches!(IdMask::None & some.clone(), IdMask::None));
-        assert!(matches!(some.clone() & IdMask::None, IdMask::None));
-        assert!(matches!(IdMask::All & some.clone(), IdMask::Some(_)));
-        assert!(matches!(some & IdMask::All, IdMask::Some(_)));
+        assert!(matches!(
+            IdMask::None.combine_and(IdMask::Some(id_bitmap_from(&[1, 2])), &mut pool),
+            IdMask::None
+        ));
+        assert!(matches!(
+            IdMask::Some(id_bitmap_from(&[1, 2])).combine_and(IdMask::None, &mut pool),
+            IdMask::None
+        ));
+        assert!(matches!(
+            IdMask::All.combine_and(IdMask::Some(id_bitmap_from(&[1, 2])), &mut pool),
+            IdMask::Some(_)
+        ));
+        assert!(matches!(
+            IdMask::Some(id_bitmap_from(&[1, 2])).combine_and(IdMask::All, &mut pool),
+            IdMask::Some(_)
+        ));
     }
 
     #[test]
     fn test_id_mask_bitand_some_notsome() {
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3, 4]));
-        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([3, 4, 5]));
+        let mut pool = IdBitmapPool::new();
+        let some = IdMask::Some(id_bitmap_from(&[1, 2, 3, 4]));
+        let not_some = IdMask::NotSome(id_bitmap_from(&[3, 4, 5]));
 
         // Some([1,2,3,4]) & NotSome([3,4,5]) = Some([1,2])
-        match some & not_some {
+        match some.combine_and(not_some, &mut pool) {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(1));
                 assert!(bitmap.contains(2));
@@ -4390,12 +4460,13 @@ mod test {
 
     #[test]
     fn test_id_mask_bitand_some_notsome_becomes_none() {
-        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
-        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([3, 4]));
+        let mut pool = IdBitmapPool::new();
+        let some = IdMask::Some(id_bitmap_from(&[1, 2]));
+        let not_some = IdMask::NotSome(id_bitmap_from(&[3, 4]));
 
         // Some([1,2]) & NotSome([3,4]) = Some([1,2])
         // (since [1,2] are not in [3,4])
-        match some.clone() & not_some {
+        match some.combine_and(not_some, &mut pool) {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(1));
                 assert!(bitmap.contains(2));
@@ -4404,17 +4475,22 @@ mod test {
         }
 
         // But Some([1,2]) & NotSome([1,2,3]) = None
-        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2, 3]));
-        assert!(matches!(some & not_some2, IdMask::None));
+        let some2 = IdMask::Some(id_bitmap_from(&[1, 2]));
+        let not_some2 = IdMask::NotSome(id_bitmap_from(&[1, 2, 3]));
+        assert!(matches!(
+            some2.combine_and(not_some2, &mut pool),
+            IdMask::None
+        ));
     }
 
     #[test]
     fn test_id_mask_bitand_notsome_notsome() {
-        let not_some1 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2]));
-        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+        let mut pool = IdBitmapPool::new();
+        let not_some1 = IdMask::NotSome(id_bitmap_from(&[1, 2]));
+        let not_some2 = IdMask::NotSome(id_bitmap_from(&[2, 3]));
 
         // NotSome([1,2]) & NotSome([2,3]) = NotSome([1,2,3])
-        match not_some1 & not_some2 {
+        match not_some1.combine_and(not_some2, &mut pool) {
             IdMask::NotSome(bitmap) => {
                 assert!(bitmap.contains(1));
                 assert!(bitmap.contains(2));
@@ -4468,6 +4544,8 @@ mod test {
             attrs_identifier: AttributesIdentifier::Root,
         };
 
+        let mut pool = IdBitmapPool::new();
+
         // test simple filter
         let mut filter_exec: Composite<AttributeFilterExec> =
             Composite::<AttributesFilterPlan>::from(filter_x_eq_a.clone())
@@ -4475,9 +4553,9 @@ mod test {
                 .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::Some(RoaringBitmap::from_iter([0]))
+            IdMask::Some(id_bitmap_from(&[0]))
         );
 
         // test simple not filter
@@ -4486,9 +4564,9 @@ mod test {
             .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::NotSome(RoaringBitmap::from_iter([0]))
+            IdMask::NotSome(id_bitmap_from(&[0]))
         );
 
         // test "and" filter
@@ -4500,9 +4578,9 @@ mod test {
         .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::Some(RoaringBitmap::from_iter([0]))
+            IdMask::Some(id_bitmap_from(&[0]))
         );
 
         // test inverted "and" filter
@@ -4514,9 +4592,9 @@ mod test {
         .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::NotSome(RoaringBitmap::from_iter([0]))
+            IdMask::NotSome(id_bitmap_from(&[0]))
         );
 
         // test "or" filter
@@ -4528,9 +4606,9 @@ mod test {
         .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::Some(RoaringBitmap::from_iter([0, 1]))
+            IdMask::Some(id_bitmap_from(&[0, 1]))
         );
 
         // test inverted "or" filter
@@ -4542,9 +4620,9 @@ mod test {
         .unwrap();
         assert_eq!(
             filter_exec
-                .execute(&otap_batch, &session_ctx, false)
+                .execute(&otap_batch, &session_ctx, false, &mut pool)
                 .unwrap(),
-            IdMask::NotSome(RoaringBitmap::from_iter([0, 1]))
+            IdMask::NotSome(id_bitmap_from(&[0, 1]))
         );
     }
 
@@ -4834,9 +4912,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: FilterProjection {
-                    schema: vec![ProjectedSchemaColumn::Root("x".into())],
-                },
+                projection: Projection::from(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4852,7 +4928,10 @@ mod test {
 
         let session_ctx = Pipeline::create_session_context();
 
-        let result = filter_exec.execute(&otap_batch, &session_ctx).unwrap();
+        let mut pool = IdBitmapPool::new();
+        let result = filter_exec
+            .execute(&otap_batch, &session_ctx, &mut pool)
+            .unwrap();
         assert_eq!(result.false_count(), input.num_rows());
     }
 
@@ -4863,9 +4942,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: FilterProjection {
-                    schema: vec![ProjectedSchemaColumn::Root("x".into())],
-                },
+                projection: Projection::from(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4881,7 +4958,10 @@ mod test {
 
         let session_ctx = Pipeline::create_session_context();
 
-        let result = filter_exec.execute(&otap_batch, &session_ctx).unwrap();
+        let mut pool = IdBitmapPool::new();
+        let result = filter_exec
+            .execute(&otap_batch, &session_ctx, &mut pool)
+            .unwrap();
         assert_eq!(result.true_count(), input.num_rows());
     }
 
@@ -4897,9 +4977,7 @@ mod test {
                 filter: AdaptivePhysicalExprExec {
                     logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                     physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                    projection: FilterProjection {
-                        schema: vec![ProjectedSchemaColumn::Root("x".into())],
-                    },
+                    projection: Projection::from(vec!["x".into()]),
                     missing_data_passes: false,
                 },
             },
@@ -4915,11 +4993,16 @@ mod test {
         otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
         let session_ctx = Pipeline::create_session_context();
 
-        let result = attr_exec.execute(&otap_batch, &session_ctx, false).unwrap();
+        let mut pool = IdBitmapPool::new();
+        let result = attr_exec
+            .execute(&otap_batch, &session_ctx, false, &mut pool)
+            .unwrap();
         assert_eq!(result, IdMask::None);
 
         // check we handle the inverted case as well
-        let result = attr_exec.execute(&otap_batch, &session_ctx, true).unwrap();
+        let result = attr_exec
+            .execute(&otap_batch, &session_ctx, true, &mut pool)
+            .unwrap();
         assert_eq!(result, IdMask::All);
     }
 }

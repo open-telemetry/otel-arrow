@@ -36,11 +36,19 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     health_policies: Arc<Mutex<HashMap<PipelineKey, HealthPolicy>>>,
 
+    /// Bounded channel for log (observational) events — lossy under backpressure.
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
 
     #[serde(skip)]
     receiver: flume::Receiver<ObservedEvent>,
+
+    /// Unbounded channel for engine (lifecycle) events — reliable, never drops.
+    #[serde(skip)]
+    engine_sender: flume::Sender<EngineEvent>,
+
+    #[serde(skip)]
+    engine_receiver: flume::Receiver<EngineEvent>,
 
     /// Console is used only for Log events when this component acts
     /// as the ConsoleAsync consumer and logs to the console.
@@ -82,19 +90,40 @@ impl ObservedStateStore {
     #[must_use]
     pub fn new(config: &ObservedStateSettings, registry: TelemetryRegistryHandle) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
+        let (engine_sender, engine_receiver) = flume::unbounded::<EngineEvent>();
 
         Self {
             default_health_policy: HealthPolicy::default(),
             health_policies: Arc::new(Mutex::new(HashMap::new())),
             sender,
             receiver,
+            engine_sender,
+            engine_receiver,
             console: ConsoleWriter::color(),
             registry,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Returns a reporter that can be used to send observed events to this store.
+    /// Returns a reporter for engine lifecycle events.
+    ///
+    /// Engine events sent through this reporter use the dedicated engine channel
+    /// rather than the bounded observed-event channel. Log events still use the
+    /// bounded path.
+    #[must_use]
+    pub fn engine_reporter(&self, log_policy: SendPolicy) -> ObservedEventReporter {
+        ObservedEventReporter::new_with_engine_sender(
+            log_policy,
+            self.sender.clone(),
+            self.engine_sender.clone(),
+        )
+    }
+
+    /// Returns a reporter that sends observed events through the bounded channel
+    /// according to `policy`.
+    ///
+    /// For engine lifecycle events that require the dedicated engine channel, use
+    /// [`engine_reporter`](Self::engine_reporter) instead.
     #[must_use]
     pub fn reporter(&self, policy: SendPolicy) -> ObservedEventReporter {
         ObservedEventReporter::new(policy, self.sender.clone())
@@ -182,11 +211,23 @@ impl ObservedStateStore {
     /// Reports a new observed event in the store.
     fn report_engine(&self, observed_event: EngineEvent) -> Result<ApplyOutcome, Error> {
         match &observed_event.r#type {
-            EventType::Request(_) => {
-                otel_info!("state.observed_event", observed_event = ?observed_event);
+            EventType::Request(req) => {
+                otel_info!("state.observed_event",
+                    pipeline_group_id = %observed_event.key.pipeline_group_id,
+                    pipeline_id = %observed_event.key.pipeline_id,
+                    core_id = observed_event.key.core_id,
+                    event_type = ?req,
+                    message = observed_event.message.as_deref().unwrap_or(""),
+                );
             }
-            EventType::Error(_) => {
-                otel_error!("state.observed_error", observed_event = ?observed_event);
+            EventType::Error(err) => {
+                otel_error!("state.observed_error",
+                    pipeline_group_id = %observed_event.key.pipeline_group_id,
+                    pipeline_id = %observed_event.key.pipeline_id,
+                    core_id = observed_event.key.core_id,
+                    event_type = ?err,
+                    message = observed_event.message.as_deref().unwrap_or(""),
+                );
             }
             EventType::Success(_) => {}
         };
@@ -229,19 +270,48 @@ impl ObservedStateStore {
     /// Runs the collection loop, receiving observed events and updating the observed store.
     /// This function runs indefinitely until the channel is closed or the cancellation token is
     /// triggered.
+    ///
+    /// Engine lifecycle events are received from a dedicated unbounded channel
+    /// and are prioritized over log events so log traffic cannot delay
+    /// lifecycle processing on the shared consumer loop.
     pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
-        tokio::select! {
-            _ = async {
-                // Continuously receive events and report them
-                // Exit the loop if the channel is closed
-                while let Ok(event) = self.receiver.recv_async().await {
-                    if let Err(e) = self.report(event) {
-                        otel_error!("state.report_failed", error = ?e);
+        let mut engine_closed = false;
+        let mut log_closed = false;
+
+        loop {
+            if engine_closed && log_closed {
+                break;
+            }
+
+            tokio::select! {
+                biased;
+
+                _ = cancel.cancelled() => break,
+
+                result = self.engine_receiver.recv_async(), if !engine_closed => {
+                    match result {
+                        Ok(engine_event) => {
+                            if let Err(e) = self.report_engine(engine_event) {
+                                otel_error!("state.report_failed", error = ?e);
+                            }
+                        }
+                        Err(_) => engine_closed = true,
                     }
                 }
-            } => { /* Channel closed, exit gracefully */ }
-            _ = cancel.cancelled() => { /* Cancellation requested, exit gracefully */ }
+
+                result = self.receiver.recv_async(), if !log_closed => {
+                    match result {
+                        Ok(event) => {
+                            if let Err(e) = self.report(event) {
+                                otel_error!("state.report_failed", error = ?e);
+                            }
+                        }
+                        Err(_) => log_closed = true,
+                    }
+                }
+            }
         }
+
         Ok(())
     }
 }
@@ -271,5 +341,242 @@ impl ObservedStateHandle {
             .lock()
             .ok()
             .is_some_and(|pipelines| pipelines.get(pipeline_key).is_some_and(|ps| ps.readiness()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::observed_state::SendPolicy;
+    use otap_df_telemetry::event::{EngineEvent, ObservedEvent};
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::borrow::Cow;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    fn make_key(core_id: usize) -> otap_df_config::DeployedPipelineKey {
+        otap_df_config::DeployedPipelineKey {
+            pipeline_group_id: Cow::Borrowed("group"),
+            pipeline_id: Cow::Borrowed("pipeline"),
+            core_id,
+        }
+    }
+
+    /// Validates that `send_timeout(1ms)` on a full bounded channel drops
+    /// events the same way `try_send` does.  The timeout is too short to
+    /// survive a burst without a consumer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_timeout_1ms_drops_admitted_events() {
+        let config = ObservedStateSettings {
+            reporting_channel_size: 1,
+            engine_events: SendPolicy {
+                blocking_timeout: Some(Duration::from_millis(1)), // real default
+                console_fallback: false,
+            },
+            logging_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+        };
+        let store = ObservedStateStore::new(&config, TelemetryRegistryHandle::new());
+        let reporter = store.reporter(config.engine_events.clone());
+
+        // Blast 64 Admitted events from a blocking thread (send_timeout
+        // blocks the calling OS thread).  No consumer is running, so the
+        // channel stays full after the first event and the rest time out.
+        let reporter_clone = reporter.clone();
+        tokio::task::spawn_blocking(move || {
+            for core in 0..64 {
+                reporter_clone.report(EngineEvent::admitted(make_key(core), None));
+            }
+        })
+        .await
+        .unwrap();
+
+        // Drain the channel — only 1 event should be present.
+        let mut buffered = 0;
+        while store.receiver.try_recv().is_ok() {
+            buffered += 1;
+        }
+        assert_eq!(
+            buffered, 1,
+            "Only 1 event should survive in a size-1 channel with send_timeout(1ms), \
+             got {buffered}"
+        );
+    }
+
+    /// Validates that engine lifecycle events delivered through
+    /// `engine_reporter()` are never dropped, even with a tiny log-channel
+    /// buffer and high concurrency.  All cores must reach `Running`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_reporter_never_drops_lifecycle_events() {
+        let num_cores: usize = 64;
+        let config = ObservedStateSettings {
+            // Intentionally tiny log channel — must NOT affect engine events.
+            reporting_channel_size: 1,
+            engine_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+            logging_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+        };
+
+        let store = ObservedStateStore::new(&config, TelemetryRegistryHandle::new());
+        let handle = store.handle();
+        // Use the reliable engine_reporter — this is what production code uses.
+        let reporter = store.engine_reporter(config.engine_events.clone());
+
+        // Start the consumer first.
+        let store_clone = store.clone();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let consumer = tokio::spawn(async move { store_clone.run(cancel_clone).await });
+
+        // Blast Admitted + Ready for every core from a blocking thread.
+        let reporter_clone = reporter.clone();
+        tokio::task::spawn_blocking(move || {
+            for core in 0..num_cores {
+                reporter_clone.report(EngineEvent::admitted(make_key(core), None));
+            }
+            for core in 0..num_cores {
+                reporter_clone.report(EngineEvent::ready(make_key(core), None));
+            }
+        })
+        .await
+        .unwrap();
+
+        // Wait until all cores appear in the state map.
+        let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
+        for _ in 0..200 {
+            if let Some(status) = handle.pipeline_status(&pipeline_key) {
+                if status.total_cores() == num_cores && status.running_cores() == num_cores {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cancel.cancel();
+        let _ = consumer.await;
+
+        let status = handle
+            .pipeline_status(&pipeline_key)
+            .expect("pipeline should exist");
+
+        assert_eq!(
+            status.total_cores(),
+            num_cores,
+            "All {num_cores} cores should be observed"
+        );
+        assert_eq!(
+            status.running_cores(),
+            num_cores,
+            "All {num_cores} cores should reach Running when engine events are reliable. \
+             Stuck in Pending: {}",
+            status
+                .per_core()
+                .values()
+                .filter(|c| matches!(c.phase, PipelinePhase::Pending))
+                .count(),
+        );
+    }
+
+    /// Validates that saturation of the bounded channel does not interfere
+    /// with engine event delivery through the dedicated engine channel.
+    /// Engine events must all arrive regardless of bounded-channel
+    /// backpressure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_channel_contention_does_not_block_engine_events() {
+        let num_cores: usize = 64;
+        let config = ObservedStateSettings {
+            reporting_channel_size: 1, // tiny log channel
+            engine_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+            logging_events: SendPolicy {
+                blocking_timeout: None, // try_send → instant drop when full
+                console_fallback: false,
+            },
+        };
+
+        let store = ObservedStateStore::new(&config, TelemetryRegistryHandle::new());
+        let handle = store.handle();
+        let engine_reporter = store.engine_reporter(config.engine_events.clone());
+
+        // Start the consumer.
+        let store_clone = store.clone();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let consumer = tokio::spawn(async move { store_clone.run(cancel_clone).await });
+
+        // Flood the bounded (log/fallback) channel directly via try_send.
+        // Most events will be dropped (size-1 + try_send), which is expected.
+        //
+        // We use StartRequested engine events as filler because constructing a
+        // real LogEvent requires tracing callsite infrastructure.  The purpose
+        // of this test is channel-level isolation: proving that saturation of
+        // the bounded channel cannot block or delay the unbounded engine path.
+        // Log-specific processing (console print) is exercised separately by
+        // the report() dispatch in the consumer.
+        let log_sender = store.sender.clone();
+        let log_flood = tokio::task::spawn_blocking(move || {
+            for i in 0..1000 {
+                let _ = log_sender.try_send(ObservedEvent::Engine(EngineEvent::start_requested(
+                    make_key(i % num_cores),
+                    None,
+                )));
+            }
+        });
+
+        // Concurrently send engine lifecycle events via the reliable path.
+        let engine_reporter_clone = engine_reporter.clone();
+        let engine_send = tokio::task::spawn_blocking(move || {
+            for core in 0..num_cores {
+                engine_reporter_clone.report(EngineEvent::admitted(make_key(core), None));
+            }
+            for core in 0..num_cores {
+                engine_reporter_clone.report(EngineEvent::ready(make_key(core), None));
+            }
+        });
+
+        log_flood.await.unwrap();
+        engine_send.await.unwrap();
+
+        // Wait until all cores reach Running.
+        let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
+        for _ in 0..200 {
+            if let Some(status) = handle.pipeline_status(&pipeline_key) {
+                if status.total_cores() == num_cores && status.running_cores() == num_cores {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cancel.cancel();
+        let _ = consumer.await;
+
+        let status = handle
+            .pipeline_status(&pipeline_key)
+            .expect("pipeline should exist");
+
+        assert_eq!(
+            status.total_cores(),
+            num_cores,
+            "All {num_cores} cores should be observed despite log flood"
+        );
+        assert_eq!(
+            status.running_cores(),
+            num_cores,
+            "All {num_cores} cores should reach Running despite log channel contention. \
+             Stuck in Pending: {}",
+            status
+                .per_core()
+                .values()
+                .filter(|c| matches!(c.phase, PipelinePhase::Pending))
+                .count(),
+        );
     }
 }

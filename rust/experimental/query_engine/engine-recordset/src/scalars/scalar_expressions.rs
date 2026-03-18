@@ -7,7 +7,7 @@ use data_engine_expressions::*;
 
 use crate::{
     execution_context::*,
-    logical_expressions::execute_logical_expression,
+    logical_expressions::{execute_logical_expression, execute_logical_expression_with_options},
     scalars::{
         execute_collection_scalar_expression, execute_convert_scalar_expression,
         execute_math_scalar_expression, execute_parse_scalar_expression,
@@ -26,6 +26,27 @@ static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
     items
 });
 
+#[derive(Clone)]
+pub struct SelectionOptions {
+    selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel,
+}
+
+impl SelectionOptions {
+    pub fn new() -> SelectionOptions {
+        Self {
+            selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
+        }
+    }
+
+    pub fn with_selector_not_found_diagnostic_level(
+        mut self,
+        selector_not_found_diagnostic_level: RecordSetEngineDiagnosticLevel,
+    ) -> SelectionOptions {
+        self.selector_not_found_diagnostic_level = selector_not_found_diagnostic_level;
+        self
+    }
+}
+
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     scalar_expression: &'a ScalarExpression,
@@ -34,10 +55,29 @@ where
     'a: 'c,
     'b: 'c,
 {
+    execute_scalar_expression_with_options(
+        execution_context,
+        scalar_expression,
+        SelectionOptions::new(),
+    )
+}
+
+pub fn execute_scalar_expression_with_options<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    scalar_expression: &'a ScalarExpression,
+    selection_options: SelectionOptions,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
     let value = match scalar_expression {
-        ScalarExpression::Source(s) => {
-            execute_source_scalar_expression(execution_context, scalar_expression, s)?
-        }
+        ScalarExpression::Source(s) => execute_source_scalar_expression(
+            execution_context,
+            scalar_expression,
+            s,
+            &selection_options,
+        )?,
         ScalarExpression::Attached(a) => {
             let name = a.get_name().get_value();
 
@@ -58,6 +98,7 @@ where
                     Value::Map(record),
                     scalar_expression,
                     &mut selectors,
+                    &selection_options,
                 )?
             } else {
                 execution_context.add_diagnostic_if_enabled(
@@ -68,9 +109,12 @@ where
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ScalarExpression::Variable(v) => {
-            execute_variable_scalar_expression(execution_context, scalar_expression, v)?
-        }
+        ScalarExpression::Variable(v) => execute_variable_scalar_expression(
+            execution_context,
+            scalar_expression,
+            v,
+            &selection_options,
+        )?,
         ScalarExpression::Static(s) => ResolvedValue::Value(s.to_value()),
         ScalarExpression::Constant(c) => {
             let constant_id = c.get_constant_id();
@@ -104,6 +148,7 @@ where
                         constant.to_value(),
                         scalar_expression,
                         &mut selectors,
+                        &selection_options,
                     )?
                 }
                 false => ResolvedValue::Value(constant.to_value()),
@@ -124,7 +169,13 @@ where
             let mut value = ResolvedValue::Computed(OwnedValue::Null);
 
             for expression in c.get_expressions() {
-                value = execute_scalar_expression(execution_context, expression)?;
+                value = execute_scalar_expression_with_options(
+                    execution_context,
+                    expression,
+                    SelectionOptions::new().with_selector_not_found_diagnostic_level(
+                        RecordSetEngineDiagnosticLevel::Info,
+                    ),
+                )?;
                 if value.get_value_type() != ValueType::Null {
                     break;
                 }
@@ -148,7 +199,13 @@ where
 
             // Evaluate conditions in order and return first matching result
             for (condition, expression) in expressions_with_conditions {
-                if execute_logical_expression(execution_context, condition)? {
+                if execute_logical_expression_with_options(
+                    execution_context,
+                    condition,
+                    SelectionOptions::new().with_selector_not_found_diagnostic_level(
+                        RecordSetEngineDiagnosticLevel::Info,
+                    ),
+                )? {
                     result = Some(execute_scalar_expression(execution_context, expression)?);
                     break;
                 }
@@ -354,6 +411,18 @@ where
 
                     for e in expressions {
                         match e {
+                            PipelineFunctionExpression::Conditional(c) => {
+                                return Err(ExpressionError::NotSupported(
+                                    c.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", c.get_name()),
+                                ));
+                            }
+                            PipelineFunctionExpression::Discard(d) => {
+                                return Err(ExpressionError::NotSupported(
+                                    d.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", d.get_name()),
+                                ));
+                            }
                             PipelineFunctionExpression::Transform(t) => {
                                 execute_transform_expression(&func_execution_context, t)?
                             }
@@ -437,6 +506,7 @@ pub(crate) fn execute_source_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     source_scalar_expression: &'a SourceScalarExpression,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'a: 'c,
@@ -454,6 +524,7 @@ where
             record.borrow(),
             expression,
             &mut selectors,
+            selection_options,
         )?
     } else {
         execution_context.add_diagnostic_if_enabled(
@@ -469,6 +540,7 @@ pub(crate) fn execute_variable_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     variable_scalar_expression: &'a VariableScalarExpression,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'a: 'c,
@@ -503,6 +575,7 @@ where
                 variable,
                 expression,
                 &mut selectors,
+                selection_options,
             )?
         } else {
             execution_context.add_diagnostic_if_enabled(
@@ -556,6 +629,7 @@ fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
     expression: &'a dyn Expression,
     selectors: &mut Iter<'a, ScalarExpression>,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'b: 'c,
@@ -578,7 +652,7 @@ where
                             }
                             Ok(None) => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    selection_options.selector_not_found_diagnostic_level.clone(),
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -627,7 +701,7 @@ where
                                 }
                                 Ok(None) => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        selection_options.selector_not_found_diagnostic_level.clone(),
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );
@@ -669,6 +743,7 @@ where
                     v,
                     expression,
                     selectors,
+                    selection_options,
                 )
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
@@ -683,6 +758,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
     root: Value<'b>,
     expression: &'a ScalarExpression,
     selectors: &mut Iter<'a, ScalarExpression>,
+    selection_options: &SelectionOptions,
 ) -> Result<ResolvedValue<'b>, ExpressionError> {
     match selectors.next() {
         Some(s) => {
@@ -702,7 +778,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                             }
                             None => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    RecordSetEngineDiagnosticLevel::Warn,
+                                    selection_options.selector_not_found_diagnostic_level.clone(),
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -743,7 +819,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 }
                                 None => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
+                                        selection_options.selector_not_found_diagnostic_level.clone(),
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );
@@ -771,7 +847,13 @@ fn select_from_value<'a, 'b, TRecord: Record>(
             };
 
             if let Some(v) = next {
-                select_from_value(execution_context, v, expression, selectors)
+                select_from_value(
+                    execution_context,
+                    v,
+                    expression,
+                    selectors,
+                    selection_options,
+                )
             } else {
                 Ok(ResolvedValue::Computed(OwnedValue::Null))
             }
@@ -2938,6 +3020,92 @@ mod tests {
                 ],
             ),
             "value1",
+        );
+    }
+
+    #[test]
+    fn test_execute_invoke_function_with_discard_expression_returns_error() {
+        // for now, just ensure that we handle the expression type with an error.
+        // if/when we support this type of expression, we'll can modify the test to
+        // assert on the function's return value.
+        let pipeline = PipelineExpressionBuilder::new("")
+            .with_functions(vec![PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                )],
+                Some(ValueType::Boolean),
+                vec![
+                    PipelineFunctionExpression::Discard(
+                        DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Some(ValueType::String),
+                                    0,
+                                    ValueAccessor::new(),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "a"),
+                                )),
+                                true,
+                            )),
+                        ),
+                    ),
+                    PipelineFunctionExpression::Return(ScalarExpression::Static(
+                        StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            true,
+                        )),
+                    )),
+                ],
+            )])
+            .build()
+            .unwrap();
+
+        let mut test = TestExecutionContext::new()
+            .with_record(
+                TestRecord::new()
+                    .with_key_value(
+                        "x".into(),
+                        OwnedValue::String(StringValueStorage::new("a".into())),
+                    )
+                    .with_key_value(
+                        "y".into(),
+                        OwnedValue::String(StringValueStorage::new("b".into())),
+                    ),
+            )
+            .with_pipeline(pipeline.clone());
+
+        let execution_context = test.create_execution_context();
+
+        let invoke_func_expr = InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            Some(ValueType::Boolean),
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "x",
+                        )),
+                    )]),
+                ),
+            ))],
+        );
+
+        let expression = ScalarExpression::InvokeFunction(invoke_func_expr);
+
+        let err = execute_scalar_expression(&execution_context, &expression).unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("DiscardDataExpression not supported in pipeline function"),
+            "unexpected error {}",
+            err_msg
         );
     }
 }

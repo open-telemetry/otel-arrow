@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Slot-based correlation system for correlating in-flight requests
-//! and responses. Provides a CallData to retrieve the data for
+//! and responses. Provides a RouteData to retrieve the data for
 //! Ack/Nack handling. Based on the slotmap crate.
 
 use otap_df_engine::control::CallData;

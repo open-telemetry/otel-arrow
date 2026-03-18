@@ -18,17 +18,28 @@ use std::hash::Hash;
 
 pub mod byte_units;
 pub mod engine;
+/// Environment variable substitution for raw config text.
+pub mod env_substitution;
 pub mod error;
 pub mod health;
 pub mod node;
+/// Node type URN value object.
+pub mod node_urn;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
-/// Pipeline and engine settings.
+pub mod policy;
+/// Engine telemetry settings.
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
-pub mod urn;
+pub mod topic;
+pub use topic::{
+    SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
+    TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,
+};
+/// Validation helpers for node configuration.
+pub mod validation;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,9 +73,12 @@ pub type PipelineId = Cow<'static, str>;
 pub type NodeId = Cow<'static, str>;
 
 /// The URN of a node type.
-pub type NodeUrn = Cow<'static, str>;
+pub use node_urn::NodeUrn;
 
-/// The name of a node out port in the pipeline.
+/// MetricLevel is widely used.
+pub use policy::MetricLevel;
+
+/// The name of a node output port in the pipeline.
 pub type PortName = Cow<'static, str>;
 
 /// The description of a pipeline or a node.

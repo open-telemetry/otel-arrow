@@ -1,215 +1,309 @@
-# Pipeline Engine Config Model
+# `otap-df-config`
 
-This crate defines the configuration model for a multi-pipeline-group,
-multi-pipeline observability engine embeddable within the OpenTelemetry
-ecosystem.
+Configuration model crate for the OTAP Dataflow Engine.
 
-## Overview
+If you are authoring runtime YAML, start with:
 
-The configuration model is structured in several main components, each
-representing a distinct layer of the configuration hierarchy:
+- [`docs/configuration-model.md`](../../docs/configuration-model.md)
 
-- **EngineConfig**: The root configuration, containing global engine settings
-  and all pipeline groups.
-- **PipelineGroupConfig**: Represents an individual pipeline group, including
-  its own settings and pipelines.
-- **PipelineConfig**: Describes a pipeline as a directed-acyclic-hypergraph of
-  interconnected nodes, with pipeline-level settings and service configuration.
-- **NodeConfig**: Defines a node (receiver, processor, exporter, or connector)
-  and its output ports, which represent hyper-edges to downstream nodes.
-- **ServiceConfig**: Pipeline-level service configuration, including telemetry
-  settings for observing the pipeline itself.
+Design rationale and prior-art discussion:
 
-Each of these components is **directly addressable**, making it straightforward
-to manipulate and retrieve configuration fragments.
+- Issue [#1970](https://github.com/open-telemetry/otel-arrow/issues/1970)
 
-The concept of a directed-acyclic-hypergraph (or hyperDAG) is used to extend the
-expressiveness beyond what is currently possible with the existing collector
-configuration. For example, we would like to be able to express that a processor
-can broadcast the same message to multiple destinations, or that a processor can
-load balance a message to one of the destinations connected to the hyper-edge.
+This README focuses on crate-level model and API details.
 
-## Design Philosophy
+## What This Crate Defines
 
-This configuration model is intentionally simple and self-contained:
+Main public model types:
 
-- **No references, inheritance, or overwriting:** The model does not support
-  referencing other config objects, inheritance, or any kind of overwriting.
-- **No templates or placeholders:** There are no templates or placeholder
-  mechanisms-each configuration is self-contained and explicit.
-- **Easy to interpret:** The configuration is designed to be unambiguous and
-  easy for both humans and machines to parse and validate.
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `engine`
+  , `groups`)
+- `engine::EngineConfig`: engine-wide section (`engine: ...`)
+- `pipeline_group::PipelineGroupConfig`
+- `pipeline::PipelineConfig`: nodes, connections, optional policies
+- `policy::Policies`: channel-capacity/health/telemetry/resources
+  policy families
+- `topic::TopicSpec`: named inter-pipeline topic specification
+- `node::NodeUserConfig`: per-node configuration envelope
+- `node_urn::NodeUrn`: parsed/canonicalized node type URN
+- `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
 
-The goal is to make the configuration as **predictable and transparent** as
-possible, reducing cognitive load and the risk of hidden or implicit behaviors.
+The model is strict (`serde(deny_unknown_fields)` on key types) and validated on
+load.
 
-> **Advanced Configuration Layer** Support for advanced concepts such as
-> references, inheritance, and templating is planned for a dedicated
-> configuration layer aimed at human authors. A translator/resolver will
-> assemble these advanced, versionable configuration files into this more
-> self-contained, straightforward model for engine consumption.
+## Runtime Config Format
 
-This configuration model is intended to be easily integrable with systems like
-**Kubernetes** as well as other environments.
+The runtime root config is:
 
-## Service-Level Telemetry
+- `engine::OtelDataflowSpec`
 
-Each pipeline can be configured with its own **telemetry settings** to observe
-the pipeline's internal behavior and performance. This allows for fine-grained
-monitoring and debugging of individual pipelines.
+Required root field:
 
-### Telemetry Configuration
+- `version: otel_dataflow/v1`
 
-The telemetry configuration includes:
+The engine binary loads this root spec via `--config`.
 
-- **Metrics**: OpenTelemetry metrics for pipeline observability
-  - **Readers**: Periodic or pull-based metric readers
-    - **Periodic Readers**: Export metrics at regular intervals
-    - **Pull Readers**: Expose metrics via HTTP endpoint for scraping (e.g., Prometheus)
-  - **Exporters**: Console, OTLP (gRPC/HTTP), or Prometheus
-  - **Views**: Metric aggregation and transformation rules
-  - **Temporality**: Delta or cumulative aggregation
-- **Logs**: Internal logging configuration
-  - **Level**: Off, Debug, Info, Warn, or Error
-  - **Processors**: Batch log processors with configurable exporters
-  - **Exporters**: Console, OTLP (gRPC/HTTP) for logs
-  - Integrates with Rust's `tracing` ecosystem
-  - Supports `RUST_LOG` environment variable for fine-grained control
-- **Resource Attributes**: Key-value pairs describing the service
-  - Supports string, boolean, integer (i64), float (f64), and array types
-  - Common attributes: `service.name`, `service.version`, `process.pid`, etc.
+`pipeline::PipelineConfig` parsing APIs remain available for in-memory parsing
+and tests, but are not a runtime root format for the engine process.
 
-### Example Configuration
+## Parsing and Validation Entry Points
+
+Runtime/root APIs:
+
+- `OtelDataflowSpec::from_file`
+- `OtelDataflowSpec::from_yaml`
+- `OtelDataflowSpec::from_json`
+
+Loading performs:
+
+1. Deserialization (YAML/JSON)
+2. Node URN canonicalization
+3. Structural and policy validation
+
+## Resolution Phase
+
+For runtime consumption, resolve hierarchy once:
+
+- `OtelDataflowSpec::resolve()` -> `engine::ResolvedOtelDataflowSpec`
+
+Resolved model highlights:
+
+- deterministic pipeline ordering for regular pipelines
+  (`group_id`, `pipeline_id`)
+- role-tagged resolved pipelines:
+  - `ResolvedPipelineRole::Regular`
+  - `ResolvedPipelineRole::ObservabilityInternal`
+- helper split API:
+  - `ResolvedOtelDataflowSpec::into_parts()`
+
+## Policy Hierarchy
+
+Policy families:
+
+- `policies.channel_capacity.control.node`
+- `policies.channel_capacity.control.pipeline`
+- `policies.channel_capacity.pdata`
+- `policies.health`
+- `policies.telemetry.pipeline_metrics`
+- `policies.telemetry.tokio_metrics`
+- `policies.telemetry.channel_metrics`
+- `policies.resources.core_allocation`
+
+Defaults:
+
+- `channel_capacity.control.node = 256`
+- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.pdata = 128`
+- telemetry policy booleans default to `true`
+- `resources.core_allocation = all_cores`
+
+Resolution precedence:
+
+- regular pipelines:
+  `pipeline.policies` -> `group.policies` -> top-level `policies`
+- observability pipeline:
+  `engine.observability.pipeline.policies` -> top-level `policies`
+
+Observability note:
+
+- `engine.observability.pipeline.policies.resources` is intentionally
+  unsupported and rejected.
+
+Resolution semantics:
+
+- precedence applies per policy family (`channel_capacity`, `health`,
+  `telemetry`, `resources`)
+- no cross-scope deep merge of nested fields
+- policy objects are default-filled: if a lower-scope `policies` block exists,
+  omitted families are populated with defaults at that scope (they do not
+  inherit from upper scopes)
+
+## Topic Declarations
+
+Topics can be declared in two scopes:
+
+- top-level: `topics.<name>`
+- group-level: `groups.<group>.topics.<name>` (visible only in that group)
+
+General topic capabilities:
+
+- decouple pipelines through named in-memory communication points
+- support balanced worker-pool delivery via subscription groups
+- support broadcast fan-out / tap pipelines
+- support mixed balanced + broadcast consumers on one topic
+
+Topic wiring must remain acyclic across topic hops. During startup, the
+controller rejects feedback loops that involve declared topics, including:
+
+- same-pipeline loops such as `receiver:topic -> ... -> exporter:topic`
+- cross-pipeline loops where one pipeline eventually routes back into an
+  earlier topic
+
+Current topic declaration shape:
 
 ```yaml
-service:
-  telemetry:
-    resource:
-      service.name: "my-pipeline"
-      service.version: "1.0.0"
-      process.pid: 12345
-      deployment.environment: "production"
-    metrics:
-      readers:
-        # Periodic reader - pushes metrics to OTLP endpoint
-        - periodic:
-            exporter:
-              otlp:
-                endpoint: "http://localhost:4318"
-                protocol: "grpc/protobuf"
-            interval: "60s"
-        # Pull reader - exposes metrics for Prometheus scraping
-        - pull:
-            exporter:
-              prometheus:
-                host: "0.0.0.0"
-                port: 9090
-                path: "/metrics"
-      views:
-        - selector:
-            instrument_name: "logs.produced"
-          stream:
-            name: "otlp.logs.produced.count"
-            description: "Count of logs produced"
-    logs:
-      level: "info"
-      processors:
-        - batch:
-            exporter:
-              otlp:
-                endpoint: "http://localhost:4318"
-                protocol: "grpc/protobuf"
+topics:
+  raw_signals:
+    description: "raw ingest stream"
+    backend: in_memory
+    impl_selection: auto
+    policies:
+      balanced:
+        queue_capacity: 1000
+        on_full: drop_newest
+      broadcast:
+        queue_capacity: 4096
+        on_lag: drop_oldest
+      ack_propagation:
+        mode: auto
+        max_in_flight: 1024
+        timeout: 30s
 ```
 
-### Supported Exporters
+- `backend`:
+  - `in_memory` (default, currently implemented)
+  - `quiver` (accepted by config, not implemented by the runtime yet)
+- `impl_selection`:
+  - `auto`
+  - `force_mixed`
 
-#### Metric Exporters
+Unsupported backend or policy combinations are rejected during startup topic
+declaration with explicit errors.
 
-##### Periodic Exporters
+- `policies.balanced.queue_capacity` (default: `128`, must be > 0)
+- `policies.balanced.on_full`:
+  - `block` (default)
+  - `drop_newest`
+- `policies.broadcast.queue_capacity` (default: `128`, must be > 0)
+- `policies.broadcast.on_lag`:
+  - `drop_oldest` (default)
+  - `disconnect`
+- `policies.ack_propagation.mode`:
+  - `disabled` (default)
+  - `auto`
+- `policies.ack_propagation.max_in_flight` (default: `1024`, must be > 0)
+- `policies.ack_propagation.timeout` (default: `30s`)
 
-- **Console**: Prints metrics to stdout (useful for debugging)
-- **OTLP**: OpenTelemetry Protocol exporters
-  - **grpc/protobuf**: Binary protocol over gRPC
-  - **http/protobuf**: Binary protobuf over HTTP
-  - **http/json**: JSON over HTTP
+`policies.balanced.on_full` applies to balanced delivery paths.
+`policies.broadcast.on_lag` applies to broadcast delivery paths.
+`policies.ack_propagation.mode` applies to the topic hop as a whole.
+`policies.ack_propagation.max_in_flight` and
+`policies.ack_propagation.timeout` apply to tracked publish outcomes when
+Ack/Nack propagation is enabled.
 
-##### Pull Exporters
+Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
+aggregate acknowledgements across all subscribers. The first broadcast
+subscriber Ack/Nack resolves the upstream message, so upstream completion does
+not mean all broadcast subscribers processed the message. This matters
+especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
+a message that another subscriber still Acks upstream. Future enhancements are
+tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
 
-- **Prometheus**: Exposes metrics via HTTP endpoint for Prometheus scraping
-  - Configurable host, port, and path
-  - Exposes metrics in Prometheus text format
-  - Example: `http://0.0.0.0:9090/metrics`
-  - Compatible with Prometheus, Grafana, and other scraping systems
+Topic declaration precedence (for a pipeline in a given group):
 
-#### Log Exporters
+- `groups.<group>.topics.<name>` -> `topics.<name>`
 
-- **Console**: Prints logs to stdout with structured formatting
-- **OTLP**: OpenTelemetry Protocol exporters for logs
-  - **grpc/protobuf**: Binary protocol over gRPC
-  - **http/protobuf**: Binary protobuf over HTTP
-  - **http/json**: JSON over HTTP
+`exporter:topic` node config can optionally override `queue_on_full` locally:
 
-### Log Configuration
+- `config.queue_on_full`: `block` | `drop_newest`
+- effective precedence:
+  `topic:exporter.config.queue_on_full` ->
+  `topic.policies.balanced.on_full` -> `block`
+- queue capacities remain topic-scope only
+- broadcast lag handling remains topic-scope only via
+  `policies.broadcast.on_lag`
+- Ack/Nack tracking limits remain topic-scope only via
+  `policies.ack_propagation`
 
-The logging system integrates with Rust's `tracing` ecosystem:
+## Engine Observability Pipeline
 
-- **Log Levels**: Control verbosity (`off`, `debug`, `info`, `warn`, `error`)
-- **Environment Override**: `RUST_LOG` environment variable takes precedence
-  - Example: `RUST_LOG=info,h2=warn,hyper=warn` - info level with silenced HTTP logs
-- **Processors**: Batch log processors buffer and export logs efficiently
-- **Thread-aware**: Includes thread names and IDs in log output for debugging
-- **OpenTelemetry Bridge**: Logs are automatically converted to OpenTelemetry format
+The dedicated engine internal telemetry pipeline is configured at:
 
-### Metric Views
+- `engine.observability.pipeline.nodes`
+- `engine.observability.pipeline.connections`
 
-Views allow you to customize how metrics are aggregated and reported:
+It is represented in resolved output as a role-tagged internal pipeline.
 
-- **Selector**: Match instruments by name
-- **Stream**: Configure the output metric stream
-  - Rename instruments
-  - Add or modify descriptions
+## Node Type (`NodeUrn`)
 
-## Compatibility & Translation
+Accepted forms:
 
-This configuration model is intended to be a **superset of the current OTEL Go
-Collector configuration**. It introduces advanced concepts, such as
-multi-tenancy (based on pipeline group) and configurable dispatch strategies,
-that are not present in the upstream Collector.
+- Full: `urn:<namespace>:<kind>:<id>`
+- OTel shortcut: `<kind>:<id>` (expanded to `urn:otel:<kind>:<id>`)
 
-A translation mechanism will be developed to **automatically convert any OTEL
-Collector YAML configuration file into this new config model**. Some aspects of
-the OTEL Collector, such as the extension mechanism, are still under
-consideration and have not yet been fully mapped in the new model.
+See also:
 
-## Config Validation & Error Reporting
+- [`docs/urns.md`](../../docs/urns.md)
 
-A **strict validation stage** will be developed to ensure the stability and
-robustness of the engine. The validator will perform comprehensive checks on
-configuration files before they are accepted by the engine.
+## `NodeUserConfig` and Custom Node Config Payloads
 
-Instead of stopping at the first error, the parser and validator will attempt to
-**collect all configuration errors in a single run**, providing detailed and
-informative context for each issue. This approach makes debugging and
-troubleshooting significantly easier, allowing users to resolve multiple issues
-at once and increasing overall productivity.
+`NodeUserConfig` includes:
 
-## Roadmap
+- `type: NodeUrn`
+- `outputs: Vec<PortName>` (optional declaration for named output ports)
+- `default_output: Option<PortName>` (optional default output port)
+- `config: serde_json::Value` (node-specific payload)
+- `entity: Option<NodeEntity>` (optional node entity extension, e.g.,
+  identifying attributes).
 
-- An API will be introduced to allow for **dynamic management** of
-  configuration:
+`config` is intentionally untyped in this crate so node implementations can own
+their own schema and compatibility policy.
 
-  - Add, update, get, and delete pipeline groups
-  - Add, update, get, and delete pipelines within pipeline groups
-  - Add, update, get, and delete nodes within pipelines
+Terminology:
 
-- **Transactional updates:** Updates can target multiple nodes as part of a
-  single, consistent transaction. A consistent transaction is an operation
-  where, once applied, the pipeline remains in a valid and operational state.
-  The **unit of operation is the pipeline**: transactional updates are atomic at
-  the pipeline level.
+- In configuration, `outputs` / `default_output` are short names.
+- Conceptually, these are always output ports.
+- Receivers and processors have a default output port and can optionally define
+  additional named output ports.
+- Exporters are sinks and do not emit output ports.
 
-- Every component of the configuration model will be addressable and manageable
-  via this API.
+## Guidance for Node Implementers
 
-- An **authorization framework** will be introduced to manage access and
-  permissions at the level of pipeline groups, pipelines, and potentially nodes.
+When implementing a receiver/processor/exporter:
+
+1. Define a strongly-typed config struct in your node crate.
+2. Deserialize `NodeUserConfig.config` into that struct.
+3. Validate semantic constraints in your factory/constructor.
+4. Return clear `InvalidUserConfig` errors with actionable messages.
+
+Example pattern:
+
+```rust
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MyProcessorConfig {
+    threshold: usize,
+    mode: String,
+}
+
+fn parse_node_config(
+    raw: &serde_json::Value,
+) -> Result<MyProcessorConfig, String> {
+    serde_json::from_value(raw.clone())
+        .map_err(|e| format!("invalid my_processor config: {e}"))
+}
+```
+
+Recommendations:
+
+- Use `#[serde(deny_unknown_fields)]` on node-specific config types.
+- Keep defaults explicit and documented.
+- Validate cross-field constraints early (factory time), not deep in hot path.
+
+## Connections-Oriented Graph Model
+
+Pipeline wiring is defined at `PipelineConfig.connections` (not inside node
+declarations).
+
+Connection defaults:
+
+- source output defaults to `"default"` when `from` has no selector
+- `policies.dispatch` is optional and defaults to `one_of` (will most likely be
+  changed to `broadcast` in the future once its implementation is complete)
+- with multiple destinations, `one_of` means each message is consumed by exactly
+  one destination (competing consumers)
+
+`outputs`/`default_output` are optional in many single-output pipelines and
+mainly useful for explicit multi-output-port declaration and validation.

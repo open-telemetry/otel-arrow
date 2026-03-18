@@ -267,7 +267,9 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
-                use crate::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+                use otap_df_pdata_views::views::logs::{
+                    LogsDataView, ResourceLogsView, ScopeLogsView,
+                };
                 logs_data_view
                     .resources()
                     .map(|rl| {
@@ -279,7 +281,9 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes.as_ref());
-                use crate::views::trace::{ResourceSpansView, ScopeSpansView, TracesView};
+                use otap_df_pdata_views::views::trace::{
+                    ResourceSpansView, ScopeSpansView, TracesView,
+                };
                 traces_data_view
                     .resources()
                     .map(|rs| rs.scopes().map(|ss| ss.spans().count()).sum::<usize>())
@@ -287,7 +291,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportMetricsRequest(bytes) => {
                 let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use crate::views::metrics::{
+                use otap_df_pdata_views::views::metrics::{
                     DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
                     MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
                 };

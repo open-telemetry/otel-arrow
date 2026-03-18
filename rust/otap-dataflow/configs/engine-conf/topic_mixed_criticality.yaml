@@ -1,0 +1,216 @@
+version: otel_dataflow/v1
+
+# Mixed criticality scenario:
+# - traffic generator sends OTLP/gRPC into an ingress pipeline
+# - ingress pipeline terminates OTLP and republishes into a shared topic
+# - primary o11y pipeline consumes that topic in balanced mode and forwards to its backend
+# - security analytics and anomaly detection consume the same topic in broadcast mode
+# Goal: keep the primary path under strict backpressure while best-effort analytics consumers can lag independently.
+
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 1024
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  topic_mixed_criticality:
+    topics:
+      ingress:
+        description: "Shared ingress topic: balanced for the primary path, broadcast for best-effort analytics"
+        policies:
+          balanced:
+            queue_capacity: 8192
+            on_full: block
+          broadcast:
+            queue_capacity: 8192
+            on_lag: drop_oldest
+
+    pipelines:
+      traffic_gen:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 8
+
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 150000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+
+          ingress_otlp_exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4547"
+              max_in_flight: 6
+
+        connections:
+          - from: traffic_gen
+            to: ingress_otlp_exporter
+
+      ingress_otlp:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_otlp_receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4547"
+                  wait_for_result: true
+
+          ingress_exporter:
+            type: exporter:topic
+            config:
+              topic: ingress
+              queue_on_full: block
+
+        connections:
+          - from: ingress_otlp_receiver
+            to: ingress_exporter
+
+      primary_o11y:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: balanced
+                group: primary_o11y
+
+          logs_retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          backend_otlp_exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4548"
+              max_in_flight: 6
+
+        connections:
+          - from: ingress_receiver
+            to: logs_retry
+          - from: logs_retry
+            to: backend_otlp_exporter
+
+      security_analytics:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: broadcast
+
+          security_analytics_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: ingress_receiver
+            to: security_analytics_sink
+
+      anomaly_detection:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          ingress_receiver:
+            type: receiver:topic
+            config:
+              topic: ingress
+              subscription:
+                mode: broadcast
+
+          anomaly_detection_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: ingress_receiver
+            to: anomaly_detection_sink
+
+      primary_backend:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+
+        nodes:
+          backend_otlp_receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4548"
+                  wait_for_result: true
+
+          primary_backend_sink:
+            type: exporter:noop
+            config: null
+
+        connections:
+          - from: backend_otlp_receiver
+            to: primary_backend_sink

@@ -79,6 +79,25 @@ impl OtlpProtoBytes {
         }
     }
 
+    /// Replaces the internal bytes with new bytes and returns the old bytes.
+    pub fn replace_bytes(&mut self, new_bytes: Bytes) -> Bytes {
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => std::mem::replace(bytes, new_bytes),
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => std::mem::replace(bytes, new_bytes),
+            OtlpProtoBytes::ExportTracesRequest(bytes) => std::mem::replace(bytes, new_bytes),
+        }
+    }
+
+    /// Get a cloned reference-counted view of the serialized proto bytes.
+    #[must_use]
+    pub fn clone_bytes(&self) -> Bytes {
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes)
+            | OtlpProtoBytes::ExportMetricsRequest(bytes)
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.clone(),
+        }
+    }
+
     /// Return the byte-size of this message.
     #[must_use]
     pub fn num_bytes(&self) -> usize {

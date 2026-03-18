@@ -132,4 +132,12 @@ impl RecordBundle for TestBundle {
             batch,
         })
     }
+
+    fn item_count(&self) -> u64 {
+        self.payloads
+            .values()
+            .next()
+            .map(|(_, batch)| batch.num_rows() as u64)
+            .unwrap_or(0)
+    }
 }

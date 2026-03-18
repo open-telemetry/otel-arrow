@@ -3,6 +3,7 @@
 
 //! Common foundation of all effect handlers.
 
+use crate::Interests;
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
@@ -13,6 +14,27 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
+
+/// SourceTagging indicates whether the Context will contain empty source frames.
+#[derive(Clone, Copy)]
+pub enum SourceTagging {
+    /// Disabled means no source node-id will be automatically
+    /// inserted for nodes that do not not otherwise subscribe to
+    /// Ack/Nack.
+    Disabled,
+
+    /// Enabled means a source node_id will be automatically entered
+    /// by creating a new frame in as messagees are sent.
+    Enabled,
+}
+
+impl SourceTagging {
+    /// Indicates that source tagging is required.
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
 
 /// Common implementation of all effect handlers.
 ///
@@ -25,6 +47,10 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// The outgoing message source tagging mode.
+    pub(crate) source_tag: SourceTagging,
+    /// Precomputed node interests derived from metric level.
+    node_interests: Interests,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -34,6 +60,8 @@ impl<PData> EffectHandlerCore<PData> {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
+            source_tag: SourceTagging::Disabled,
+            node_interests: Interests::empty(),
         }
     }
 
@@ -43,6 +71,34 @@ impl<PData> EffectHandlerCore<PData> {
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.source_tag = value;
+    }
+
+    /// Returns outgoing messages source tagging mode.
+    #[must_use]
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.source_tag
+    }
+
+    /// Sets the precomputed node interests for this effect handler.
+    pub fn set_node_interests(&mut self, interests: Interests) {
+        self.node_interests = interests;
+    }
+
+    /// Returns the precomputed node interests.
+    ///
+    /// Includes SOURCE_TAGGING when source tagging is enabled.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        if self.source_tag.enabled() {
+            self.node_interests | Interests::SOURCE_TAGGING
+        } else {
+            self.node_interests
+        }
     }
 
     /// Returns the id of the node associated with this effect handler.
@@ -231,21 +287,14 @@ impl<PData> EffectHandlerCore<PData> {
         })
     }
 
-    /// Send a AckMsg using a context-transfer function.  The context
-    /// transfer function applies PData-specific logic to discover the
-    /// next recipient in the chain of Acks, if any.  When there is a
-    /// recipient, this returns its node_id and the AckMsg prepared for
-    /// delivery with the recipient's calldata.
-    pub async fn route_ack<Transfer>(
-        &self,
-        ack_in: AckMsg<PData>,
-        transfer: Transfer,
-    ) -> Result<(), Error>
+    /// Send an AckMsg to the pipeline controller for context unwinding.
+    /// This will skip if there are no frames.
+    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
-        Transfer: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        if let Some((node_id, ack)) = transfer(ack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
+        if ack.accepted.has_frames() {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {
@@ -256,21 +305,14 @@ impl<PData> EffectHandlerCore<PData> {
         }
     }
 
-    /// Send a NackMsg using a context-transfer function.  The context
-    /// transfer function applies PData-specific logic to discover the
-    /// next recipient in the chain of Nacks, if any.  When there is a
-    /// recipient, this returns its node_id and the NackMsg prepared for
-    /// delivery with the recipient's calldata.
-    pub async fn route_nack<Transfer>(
-        &self,
-        nack_in: NackMsg<PData>,
-        transfer: Transfer,
-    ) -> Result<(), Error>
+    /// Send a NackMsg to the pipeline controller for context unwinding.
+    /// Same semantics as `route_ack()`.
+    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
-        Transfer: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+        PData: crate::Unwindable,
     {
-        if let Some((node_id, nack)) = transfer(nack_in) {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
+        if nack.refused.has_frames() {
+            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::PipelineControlMsgError {

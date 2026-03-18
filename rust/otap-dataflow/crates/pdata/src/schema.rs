@@ -11,6 +11,11 @@ use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
 pub mod consts;
+pub mod payloads;
+#[allow(clippy::module_inception)]
+pub mod schema;
+
+pub use schema::{DictKeySize, SimpleType};
 
 /// Trace IDs are 16 binary bytes.
 pub type TraceId = [u8; 16];

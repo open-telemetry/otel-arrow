@@ -11,17 +11,27 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
+use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
-use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
+use crate::control::RouteData;
+use crate::control::UnwindData;
+use crate::control::{
+    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver,
+};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
-use otap_df_config::settings::TelemetrySettings;
+use otap_df_config::MetricLevel;
+use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Maximum time buffer between the end of draining and the shutdown deadline.
@@ -29,6 +39,10 @@ use std::time::{Duration, Instant};
 /// This is a best-effort attempt to ensure that `PipelineCtrlMsgManager` exits before
 /// the caller's timeout fires, avoiding a race where both expire simultaneously.
 const MAX_DRAINING_BUFFER_DURATION: Duration = Duration::from_secs(1);
+
+/// Threshold for the pending sends buffer. When the buffer exceeds this size,
+/// a warning is logged to help operators diagnose sustained backpressure.
+const PENDING_SENDS_WARN_THRESHOLD: usize = 100;
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
@@ -169,6 +183,27 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     }
 }
 
+/// Per-node metrics handles for recording consumed/produced outcomes.
+pub(crate) struct NodeMetricHandles {
+    /// Registry handle for automatic unregistration on drop.
+    pub(crate) registry: TelemetryRegistryHandle,
+    /// Consumed-request metrics for the node's input channel.
+    pub(crate) input: Option<MetricSet<ConsumedMetrics>>,
+    /// Produced-request metrics indexed by output port.
+    pub(crate) outputs: Vec<MetricSet<ProducedMetrics>>,
+}
+
+impl Drop for NodeMetricHandles {
+    fn drop(&mut self) {
+        if let Some(input) = self.input.take() {
+            let _ = self.registry.unregister_metric_set(input.metric_set_key());
+        }
+        for output in self.outputs.drain(..) {
+            let _ = self.registry.unregister_metric_set(output.metric_set_key());
+        }
+    }
+}
+
 /// Manages pipeline control messages and per-node recurring timers (tick and telemetry).
 ///
 /// Internally uses two TimerSet instances: one for generic TimerTick and one for
@@ -196,8 +231,17 @@ pub struct PipelineCtrlMsgManager<PData> {
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
+    /// Per-node metrics handles for recording consumed/produced outcomes.
+    node_metric_handles: Vec<Option<NodeMetricHandles>>,
+
     /// Flags controlling capture of internal engine metrics.
-    telemetry: TelemetrySettings,
+    telemetry: TelemetryPolicy,
+
+    /// Messages that could not be delivered because the target node's control
+    /// channel was full. Buffered here instead of blocking the event loop,
+    /// which would cause a circular-wait stall on the single-threaded
+    /// LocalSet runtime.
+    pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
@@ -210,8 +254,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        internal_telemetry: TelemetrySettings,
+        telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+        node_metric_handles: Vec<Option<NodeMetricHandles>>,
     ) -> Self {
         Self {
             pipeline_key,
@@ -224,7 +269,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             event_reporter,
             metrics_reporter,
             channel_metrics,
-            telemetry: internal_telemetry,
+            node_metric_handles,
+            telemetry: telemetry_policy,
+            pending_sends: VecDeque::new(),
         }
     }
 
@@ -252,7 +299,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// timeout fires, avoiding a race where both expire simultaneously.
     ///
     /// This allows nodes to send cleanup messages during their shutdown sequence.
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error>
+    where
+        PData: Unwindable,
+    {
         let internal_telemetry_enabled =
             self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
         let mut pipeline_metrics_monitor = internal_telemetry_enabled
@@ -264,7 +314,28 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         let mut is_draining = false;
         let mut draining_deadline: Option<Instant> = None;
 
+        // Single reusable timer for retrying buffered sends. Created once,
+        // reset only when `pending_sends` transitions from empty to non-empty.
+        // This avoids allocating a new Sleep future on every loop iteration
+        // (the standard tokio::select! pinned-sleep pattern).
+        let retry_delay = tokio::time::sleep(Duration::from_millis(5));
+        tokio::pin!(retry_delay);
+        let mut retry_armed = false;
+
         loop {
+            // Drain any buffered sends before processing new messages.
+            self.drain_pending_sends();
+
+            // Arm the retry timer when pending sends appear; disarm when drained.
+            if !self.pending_sends.is_empty() && !retry_armed {
+                retry_delay
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_millis(5));
+                retry_armed = true;
+            } else if self.pending_sends.is_empty() {
+                retry_armed = false;
+            }
+
             // Check if we've exceeded the draining deadline
             if let Some(deadline) = draining_deadline {
                 if Instant::now() >= deadline {
@@ -289,7 +360,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
             tokio::select! {
                 biased;
+
                 // Handle incoming control messages from nodes.
+                // Placed first (biased) so incoming messages — especially acks
+                // that could unblock congested nodes — are always prioritized
+                // over retry attempts.
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
@@ -374,11 +449,15 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 self.delayed_data.push(delayed);
                             }
                         }
-                        PipelineControlMsg::DeliverAck { node_id, ack } => {
-                            self.send(node_id, NodeControlMsg::Ack(ack)).await;
+                        PipelineControlMsg::DeliverAck {
+                            ack,
+                        } => {
+                            self.unwind_ack(ack);
                         }
-                        PipelineControlMsg::DeliverNack { node_id, nack } => {
-                            self.send(node_id, NodeControlMsg::Nack(nack)).await;
+                        PipelineControlMsg::DeliverNack {
+                            nack,
+                        } => {
+                            self.unwind_nack(nack);
                         }
                     }
                 }
@@ -446,41 +525,223 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
 
-                    if self.telemetry.channel_metrics {
+                    if self.telemetry.channel_metrics >= MetricLevel::Basic {
                         for metrics in &self.channel_metrics {
                             if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                                 otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                             }
                         }
                     }
+                    if self.telemetry.channel_metrics >= MetricLevel::Normal {
+                        if let Err(err) = self.report_node_metrics() {
+                            otel_warn!("node.metrics.reporting.fail", error = err.to_string());
+                        }
+                    }
 
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
-                        self.send(node_id, msg).await;
+                        self.send(node_id, msg);
                     }
                 }
+
+                // Retry buffered sends after a short delay.
+                // Placed last so incoming messages and timers are always
+                // prioritized — incoming acks may be exactly what unblocks
+                // the congested node.
+                // Uses a pinned/reused sleep to avoid allocating a new timer
+                // future on every loop iteration.
+                _ = &mut retry_delay, if retry_armed => {
+                    retry_armed = false;
+                    // drain_pending_sends() runs at loop top; just wake up.
+                    continue;
+                }
+            }
+        }
+
+        // Final metrics flush on shutdown.
+        if self.telemetry.channel_metrics >= MetricLevel::Normal {
+            let _ = self.report_node_metrics();
+        }
+
+        Ok(())
+    }
+
+    /// Record consumed/produced metrics for a single unwound frame.
+    #[inline]
+    fn record_frame_metrics(
+        &mut self,
+        node_id: usize,
+        interests: Interests,
+        route: &RouteData,
+        outcome: RequestOutcome,
+        now_ns: u64,
+    ) {
+        if let Some(Some(handles)) = self.node_metric_handles.get_mut(node_id) {
+            // Record consumed metrics on the node's input channel.
+            if interests.contains(Interests::CONSUMER_METRICS) {
+                if let Some(input) = &mut handles.input {
+                    match outcome {
+                        RequestOutcome::Success => input.consumed_success.inc(),
+                        RequestOutcome::Failure => input.consumed_failure.inc(),
+                        RequestOutcome::Refused => input.consumed_refused.inc(),
+                    }
+                    if route.entry_time_ns > 0 && now_ns > 0 {
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                        input.consumed_duration_ns.record(duration_ns as f64);
+                    }
+                }
+            }
+            // Record produced metrics on the node's output channel.
+            if interests.contains(Interests::PRODUCER_METRICS) {
+                let port = route.output_port_index as usize;
+                if let Some(output) = handles.outputs.get_mut(port) {
+                    match outcome {
+                        RequestOutcome::Success => output.produced_success.inc(),
+                        RequestOutcome::Failure => output.produced_failure.inc(),
+                        RequestOutcome::Refused => output.produced_refused.inc(),
+                    }
+                    // Record produced duration only when CONSUMER_METRICS is
+                    // NOT set on this frame. Processors skip consumer metrics.
+                    if !interests.contains(Interests::CONSUMER_METRICS)
+                        && route.entry_time_ns > 0
+                        && now_ns > 0
+                    {
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                        output.produced_duration_ns.record(duration_ns as f64);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Report all per-node consumed/produced metric sets.
+    fn report_node_metrics(&mut self) -> Result<(), TelemetryError> {
+        for handles in self.node_metric_handles.iter_mut().flatten() {
+            if let Some(input) = &mut handles.input {
+                self.metrics_reporter.report(input)?;
+            }
+            for output in &mut handles.outputs {
+                self.metrics_reporter.report(output)?;
             }
         }
         Ok(())
     }
 
-    async fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+    /// Non-blocking send: try to deliver immediately, buffer on backpressure.
+    ///
+    /// Previously this method was `async` and fell back to `sender.send(msg).await`
+    /// when the channel was full, which blocked the entire single-threaded event
+    /// loop and caused a circular-wait stall.
+    ///
+    /// Now we never block: on `Full` the message is pushed to `pending_sends` and
+    /// retried on subsequent loop iterations via `drain_pending_sends()`.
+    fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
         if let Some(sender) = self.control_senders.get(node_id) {
-            // Use try_send as a fast path:
-            // - avoids allocating/awaiting a future when the channel has capacity
-            // - keeps the event loop responsive and reduces timer jitter
-            // - isolates backpressure to congested channels (only await on Full)
-            // On Full, fall back to send(msg).await to preserve delivery
             match sender.try_send(msg) {
                 Ok(()) => {}
                 Err(otap_df_channel::error::SendError::Full(msg)) => {
-                    // Channel backpressured: await until space is available
-                    let _ = sender.send(msg).await;
+                    self.pending_sends.push_back((node_id, msg));
+                    if self.pending_sends.len() == PENDING_SENDS_WARN_THRESHOLD {
+                        otel_warn!(
+                            "pipeline.ctrl.pending_sends.high",
+                            count = self.pending_sends.len(),
+                            "Pending sends buffer reached threshold; \
+                             a node's control channel may be persistently full"
+                        );
+                    }
                 }
                 Err(otap_df_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
                 }
             }
+        }
+    }
+
+    /// Best-effort drain of buffered sends.  Messages that still cannot be
+    /// delivered are re-queued at the back of the same deque (no allocation).
+    fn drain_pending_sends(&mut self) {
+        let n = self.pending_sends.len();
+        for _ in 0..n {
+            let Some((node_id, msg)) = self.pending_sends.pop_front() else {
+                break;
+            };
+            if let Some(sender) = self.control_senders.get(node_id) {
+                match sender.try_send(msg) {
+                    Ok(()) => {}
+                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                        self.pending_sends.push_back((node_id, msg));
+                    }
+                    Err(otap_df_channel::error::SendError::Closed(_)) => {
+                        // Drop message for closed channel
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Context-unwinding methods. These require PData: Unwindable.
+impl<PData: Unwindable> PipelineCtrlMsgManager<PData> {
+    /// Shared unwinding loop: pop frames, record metrics at intermediates,
+    /// and stop at the first subscriber matching the interest.
+    fn unwind_frames(
+        &mut self,
+        pdata: &mut PData,
+        now_ns: u64,
+        outcome: RequestOutcome,
+        interest: Interests,
+    ) -> Option<(usize, RouteData)> {
+        loop {
+            match pdata.pop_frame() {
+                None => return None,
+                Some(frame) => {
+                    if frame.interests.intersects(Interests::PIPELINE_METRICS) {
+                        self.record_frame_metrics(
+                            frame.node_id,
+                            frame.interests,
+                            &frame.route,
+                            outcome,
+                            now_ns,
+                        );
+                    }
+                    if frame.interests.contains(interest) {
+                        if !frame.interests.contains(Interests::RETURN_DATA) {
+                            pdata.drop_payload();
+                        }
+                        return Some((frame.node_id, frame.route));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unwind the context stack for an ACK.
+    fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
+        let now_ns = ack.unwind.return_time_ns;
+        if let Some((node_id, route)) = self.unwind_frames(
+            &mut ack.accepted,
+            now_ns,
+            RequestOutcome::Success,
+            Interests::ACKS,
+        ) {
+            ack.unwind = UnwindData::new(route, now_ns);
+            self.send(node_id, NodeControlMsg::Ack(ack));
+        }
+    }
+
+    /// Unwind the context stack for a NACK.
+    fn unwind_nack(&mut self, mut nack: NackMsg<PData>) {
+        let now_ns = nack.unwind.return_time_ns;
+        let outcome = if nack.permanent {
+            RequestOutcome::Refused
+        } else {
+            RequestOutcome::Failure
+        };
+        if let Some((node_id, route)) =
+            self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS)
+        {
+            nack.unwind = UnwindData::new(route, now_ns);
+            self.send(node_id, NodeControlMsg::Nack(nack));
         }
     }
 }
@@ -519,16 +780,20 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
     use crate::context::ControllerContext;
+    use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-    use otap_df_config::pipeline::PipelineConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
+    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
+    use otap_df_telemetry::registry::MetricSetKey;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
@@ -571,9 +836,6 @@ mod tests {
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
-        let pipeline_config =
-            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), "")
-                .expect("valid");
         let core_id = 0;
         let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -603,7 +865,8 @@ mod tests {
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
-            pipeline_config.pipeline_settings().telemetry.clone(),
+            TelemetryPolicy::default(),
+            Vec::new(),
             Vec::new(),
         );
         (
@@ -1047,7 +1310,8 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
-                    TelemetrySettings::default(),
+                    TelemetryPolicy::default(),
+                    Vec::new(),
                     Vec::new(),
                 );
                 let duration = Duration::from_millis(50);
@@ -1553,10 +1817,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -1573,27 +1835,15 @@ mod tests {
                 // Small delay to ensure shutdown is processed and we're in draining mode
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send DeliverAck during draining - should be delivered
+                // Send DeliverAck during draining - should be processed
                 let ack = AckMsg::new("ack_data".to_owned());
                 pipeline_tx
-                    .send(PipelineControlMsg::DeliverAck {
-                        node_id: node.index,
-                        ack,
-                    })
+                    .send(PipelineControlMsg::DeliverAck { ack })
                     .await
                     .unwrap();
 
-                // Verify the ack was delivered to the node
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
-
-                assert!(received.is_ok(), "Should receive message within timeout");
-                match received.unwrap() {
-                    Ok(NodeControlMsg::Ack(ack_msg)) => {
-                        assert_eq!(*ack_msg.accepted, "ack_data");
-                    }
-                    other => panic!("Expected Ack message, got {:?}", other),
-                }
+                // String PData has no context stack, so unwind_ack is a no-op.
+                // Just verify the controller processes it without crashing.
 
                 // Drop the sender to let the manager exit draining mode
                 drop(pipeline_tx);
@@ -1617,10 +1867,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -1637,28 +1885,15 @@ mod tests {
                 // Small delay to ensure shutdown is processed and we're in draining mode
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send DeliverNack during draining - should be delivered
+                // Send DeliverNack during draining - should be processed
                 let nack = NackMsg::new("test failure", "nack_data".to_owned());
                 pipeline_tx
-                    .send(PipelineControlMsg::DeliverNack {
-                        node_id: node.index,
-                        nack,
-                    })
+                    .send(PipelineControlMsg::DeliverNack { nack })
                     .await
                     .unwrap();
 
-                // Verify the nack was delivered to the node
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
-
-                assert!(received.is_ok(), "Should receive message within timeout");
-                match received.unwrap() {
-                    Ok(NodeControlMsg::Nack(nack_msg)) => {
-                        assert_eq!(*nack_msg.refused, "nack_data");
-                        assert_eq!(nack_msg.reason, "test failure");
-                    }
-                    other => panic!("Expected Nack message, got {:?}", other),
-                }
+                // String PData has no context stack, so unwind_nack is a no-op.
+                // Just verify the controller processes it without crashing.
 
                 // Drop the sender to let the manager exit draining mode
                 drop(pipeline_tx);
@@ -1825,6 +2060,960 @@ mod tests {
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// A test PData type that carries a real frame stack, allowing the
+    /// controller's `unwind_ack`/`unwind_nack` to pop frames and record metrics.
+    #[derive(Debug, Clone)]
+    struct TestPData {
+        frames: Vec<Frame>,
+    }
+
+    impl TestPData {
+        fn new() -> Self {
+            Self { frames: Vec::new() }
+        }
+
+        fn push_frame(&mut self, frame: Frame) {
+            self.frames.push(frame);
+        }
+    }
+
+    impl Unwindable for TestPData {
+        fn has_frames(&self) -> bool {
+            !self.frames.is_empty()
+        }
+        fn pop_frame(&mut self) -> Option<Frame> {
+            self.frames.pop()
+        }
+        fn drop_payload(&mut self) {}
+    }
+
+    impl crate::ReceivedAtNode for TestPData {
+        fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
+    }
+
+    /// Labels for identifying metric set snapshots by their MetricSetKey.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum MetricLabel {
+        RecvProduced,
+        ProcConsumed,
+        ProcProduced,
+        ExpConsumed,
+    }
+
+    /// Return value from setup_test_manager_with_metrics.
+    struct MetricsTestHarness {
+        manager: PipelineCtrlMsgManager<TestPData>,
+        pipeline_tx: crate::control::PipelineCtrlMsgSender<TestPData>,
+        nodes: Vec<NodeId>,
+        _guard: crate::entity_context::PipelineEntityScope,
+        snapshot_rx: flume::Receiver<MetricSetSnapshot>,
+        key_labels: HashMap<MetricSetKey, MetricLabel>,
+    }
+
+    /// Helper: create a manager with `NodeMetricHandles` wired up for a 3-node
+    /// pipeline, using a test MetricsReporter whose snapshots can be collected
+    /// after shutdown.
+    ///
+    /// node0 = receiver (no input, 1 output)
+    /// node1 = processor (1 input, 1 output)
+    /// node2 = exporter  (1 input, no outputs)
+    fn setup_test_manager_with_metrics() -> MetricsTestHarness {
+        let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+        let mut control_senders = ControlSenders::new();
+
+        let nodes = test_nodes(vec!["receiver", "processor", "exporter"]);
+        let node_types = [NodeType::Receiver, NodeType::Processor, NodeType::Exporter];
+        for (node, nt) in nodes.iter().zip(node_types.iter()) {
+            let (sender, _receiver) = create_mock_control_sender();
+            control_senders.register(node.clone(), *nt, sender);
+        }
+
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        // Create a reporter with a receiver so tests can collect snapshots.
+        let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
+        let pipeline_group_id: PipelineGroupId = Default::default();
+        let pipeline_id: PipelineId = Default::default();
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            0,
+            1,
+            0,
+        );
+
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
+
+        let registry = pipeline_context.metrics_registry();
+
+        let recv_out_key = pipeline_context.register_channel_entity(
+            "recv:out".into(),
+            "output".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
+        );
+        let proc_in_key = pipeline_context.register_channel_entity(
+            "proc:in".into(),
+            "input".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
+        );
+        let proc_out_key = pipeline_context.register_channel_entity(
+            "proc:out".into(),
+            "output".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
+        );
+        let exp_in_key = pipeline_context.register_channel_entity(
+            "exp:in".into(),
+            "input".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
+        );
+
+        let recv_produced: MetricSet<ProducedMetrics> =
+            registry.register_metric_set_for_entity(recv_out_key);
+        let proc_consumed: MetricSet<ConsumedMetrics> =
+            registry.register_metric_set_for_entity(proc_in_key);
+        let proc_produced: MetricSet<ProducedMetrics> =
+            registry.register_metric_set_for_entity(proc_out_key);
+        let exp_consumed: MetricSet<ConsumedMetrics> =
+            registry.register_metric_set_for_entity(exp_in_key);
+
+        // Save metric set keys for snapshot identification.
+        let mut key_labels = HashMap::new();
+        let _ = key_labels.insert(recv_produced.metric_set_key(), MetricLabel::RecvProduced);
+        let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
+        let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
+        let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
+
+        let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
+        let max_idx = nodes.iter().map(|n| n.index).max().unwrap_or(0);
+        for _ in 0..=max_idx {
+            node_metric_handles.push(None);
+        }
+        node_metric_handles[nodes[0].index] = Some(NodeMetricHandles {
+            registry: registry.clone(),
+            input: None,
+            outputs: vec![recv_produced],
+        });
+        node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
+            registry: registry.clone(),
+            input: Some(proc_consumed),
+            outputs: vec![proc_produced],
+        });
+        node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
+            registry: registry.clone(),
+            input: Some(exp_consumed),
+            outputs: Vec::new(),
+        });
+
+        let telemetry_policy = TelemetryPolicy {
+            channel_metrics: MetricLevel::Detailed,
+            ..Default::default()
+        };
+
+        let manager = PipelineCtrlMsgManager::new(
+            DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id: 0,
+            },
+            pipeline_context,
+            pipeline_rx,
+            control_senders,
+            observed_state_store.reporter(SendPolicy::default()),
+            metrics_reporter,
+            telemetry_policy,
+            Vec::new(),
+            node_metric_handles,
+        );
+
+        MetricsTestHarness {
+            manager,
+            pipeline_tx,
+            nodes,
+            _guard: pipeline_entity_guard,
+            snapshot_rx,
+            key_labels,
+        }
+    }
+
+    /// Collect all snapshots from the receiver into a map keyed by MetricLabel.
+    /// If multiple snapshots share a key, their values are merged (summed).
+    fn collect_snapshots(
+        rx: &flume::Receiver<MetricSetSnapshot>,
+        key_labels: &HashMap<MetricSetKey, MetricLabel>,
+    ) -> HashMap<MetricLabel, Vec<MetricValue>> {
+        let mut result: HashMap<MetricLabel, Vec<MetricValue>> = HashMap::new();
+        while let Ok(snapshot) = rx.try_recv() {
+            let Some(&label) = key_labels.get(&snapshot.key()) else {
+                continue;
+            };
+            let values = snapshot.get_metrics().to_vec();
+            let _ = result
+                .entry(label)
+                .and_modify(|existing| {
+                    for (dst, src) in existing.iter_mut().zip(values.iter()) {
+                        dst.add_in_place(*src);
+                    }
+                })
+                .or_insert(values);
+        }
+        result
+    }
+
+    /// Extract u64 from a MetricValue, panicking with context on mismatch.
+    fn assert_u64(values: &[MetricValue], index: usize, expected: u64, msg: &str) {
+        match values[index] {
+            MetricValue::U64(v) => assert_eq!(v, expected, "{msg}"),
+            other => panic!("{msg}: expected U64, got {other:?}"),
+        }
+    }
+
+    /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
+    fn assert_mmsc(
+        values: &[MetricValue],
+        index: usize,
+        msg: &str,
+    ) -> otap_df_telemetry::instrument::MmscSnapshot {
+        match values[index] {
+            MetricValue::Mmsc(snap) => snap,
+            other => panic!("{msg}: expected Mmsc, got {other:?}"),
+        }
+    }
+
+    // ConsumerMetrics field indices (defined by #[metric_set] field order):
+    const CONSUMER_DURATION: usize = 0;
+    const CONSUMER_SUCCESS: usize = 1;
+    const CONSUMER_FAILURE: usize = 2;
+    const CONSUMER_REFUSED: usize = 3;
+    // ProducedMetrics field indices:
+    const PRODUCER_DURATION: usize = 0;
+    const PRODUCER_SUCCESS: usize = 1;
+    const PRODUCER_FAILURE: usize = 2;
+    const PRODUCER_REFUSED: usize = 3;
+
+    /// Build a TestPData with frames simulating a 3-node pipeline:
+    /// receiver(node0) → processor(node1) → exporter(node2).
+    ///
+    /// Frames are pushed bottom-to-top (receiver first, exporter last on top).
+    fn build_3node_pdata(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
+        let mut pdata = TestPData::new();
+
+        // Node 0 (receiver): producer metrics + acks/nacks (receives the ack back)
+        pdata.push_frame(Frame {
+            node_id: nodes[0].index,
+            interests: Interests::PRODUCER_METRICS | Interests::ACKS | Interests::NACKS,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns: 0,
+                output_port_index: 0,
+            },
+        });
+
+        // Node 1 (processor): consumer + producer metrics + acks/nacks
+        let entry_time_ns = if with_timestamp {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[1].index,
+            interests: Interests::CONSUMER_METRICS
+                | Interests::PRODUCER_METRICS
+                | Interests::ENTRY_TIMESTAMP
+                | Interests::ACKS
+                | Interests::NACKS,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+            },
+        });
+
+        // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
+        let entry_time_ns = if with_timestamp {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[2].index,
+            interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+            },
+        });
+
+        pdata
+    }
+
+    /// Build a TestPData with frames simulating a 3-node pipeline where
+    /// NO node subscribes to acks/nacks (all frames are metrics-only).
+    /// This lets the controller unwind all frames in a single pass,
+    /// including the receiver's producer-only frame.
+    fn build_3node_pdata_no_subscribers(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
+        let mut pdata = TestPData::new();
+
+        // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
+        let entry_time_ns = if with_timestamp {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[0].index,
+            interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+            },
+        });
+
+        // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
+        let entry_time_ns = if with_timestamp {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[1].index,
+            interests: Interests::CONSUMER_METRICS
+                | Interests::PRODUCER_METRICS
+                | Interests::ENTRY_TIMESTAMP,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+            },
+        });
+
+        // Node 2 (exporter): consumer metrics only.
+        let entry_time_ns = if with_timestamp {
+            nanos_since_birth()
+        } else {
+            0
+        };
+        pdata.push_frame(Frame {
+            node_id: nodes[2].index,
+            interests: Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP,
+            route: RouteData {
+                calldata: Default::default(),
+                entry_time_ns,
+                output_port_index: 0,
+            },
+        });
+
+        pdata
+    }
+
+    /// Helper: run the manager, send messages, shut down, collect snapshots.
+    async fn run_and_collect(
+        harness: MetricsTestHarness,
+        send_fn: impl FnOnce(&[NodeId]) -> Vec<PipelineControlMsg<TestPData>>,
+    ) -> HashMap<MetricLabel, Vec<MetricValue>> {
+        let MetricsTestHarness {
+            manager,
+            pipeline_tx,
+            nodes,
+            _guard,
+            snapshot_rx,
+            key_labels,
+        } = harness;
+
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let msgs = send_fn(&nodes);
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                for msg in msgs {
+                    pipeline_tx.send(msg).await.unwrap();
+                }
+
+                // Drop sender to close channel → manager exits run loop → final metrics flush
+                drop(pipeline_tx);
+
+                let result = timeout(Duration::from_millis(500), manager_handle).await;
+                assert!(result.is_ok(), "Manager should shut down cleanly");
+
+                // Keep _guard alive for the scope of this closure
+                drop(_guard);
+                collect_snapshots(&snapshot_rx, &key_labels)
+            })
+            .await
+    }
+
+    /// Verify that ack correctly records consumed_success and produced_success
+    /// via the full manager lifecycle and shutdown metrics flush.
+    #[tokio::test]
+    async fn test_ack_lifecycle_consumed_produced_metrics() {
+        let harness = setup_test_manager_with_metrics();
+        let nodes_clone = harness.nodes.clone();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata(nodes, false);
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        // Exporter consumed: success=1, failure=0, refused=0
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+
+        // Processor consumed: success=1
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+
+        // Processor produced: success=1
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+
+        // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
+        // so receiver frame is never popped → no metrics recorded.
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Receiver produced should have no metrics (ack delivered at processor)"
+        );
+
+        drop(nodes_clone);
+    }
+
+    /// Verify that non-permanent nack records consumed_failure / produced_failure.
+    #[tokio::test]
+    async fn test_nack_lifecycle_failure_metrics() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata(nodes, false);
+            vec![PipelineControlMsg::DeliverNack {
+                nack: NackMsg::new("transient error", pdata),
+            }]
+        })
+        .await;
+
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
+
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
+    }
+
+    /// Verify that permanent nack records consumed_refused / produced_refused.
+    #[tokio::test]
+    async fn test_permanent_nack_lifecycle_refused_metrics() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata(nodes, false);
+            vec![PipelineControlMsg::DeliverNack {
+                nack: NackMsg::new_permanent("permanent refusal", pdata),
+            }]
+        })
+        .await;
+
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+    }
+
+    /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
+    /// when entry_time_ns > 0 and return_time_ns > 0.
+    #[tokio::test]
+    async fn test_ack_lifecycle_duration_histogram() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata(nodes, true);
+            let mut ack = AckMsg::new(pdata);
+            ack.unwind.return_time_ns = nanos_since_birth();
+            vec![PipelineControlMsg::DeliverAck { ack }]
+        })
+        .await;
+
+        // Exporter consumed duration: 1 observation, min > 0
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
+        assert!(snap.min > 0.0, "Duration min should be > 0");
+        assert!(snap.max >= snap.min, "Duration max >= min");
+
+        // Processor consumed duration: 1 observation, min > 0
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        assert_eq!(
+            snap.count, 1,
+            "Processor should have 1 consumed duration observation"
+        );
+        assert!(snap.min > 0.0, "Processor consumed duration should be > 0");
+
+        // Processor produced duration: should be 0 observations because the
+        // processor frame has CONSUMER_METRICS, so produced_duration_ns is
+        // suppressed (one duration histogram per component).
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
+        );
+    }
+
+    /// Verify that produced_duration_ns is recorded for producer-only frames
+    /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
+    /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
+    #[tokio::test]
+    async fn test_ack_lifecycle_produced_duration_histogram() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut ack = AckMsg::new(pdata);
+            ack.unwind.return_time_ns = nanos_since_birth();
+            vec![PipelineControlMsg::DeliverAck { ack }]
+        })
+        .await;
+
+        // Receiver produced duration: 1 observation, min > 0
+        // (producer-only frame, no CONSUMER_METRICS → produced_duration recorded)
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 1,
+            "Receiver should have 1 produced duration observation"
+        );
+        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+        assert!(
+            snap.max >= snap.min,
+            "Receiver produced duration max >= min"
+        );
+
+        // Processor produced duration: 0 observations
+        // (merged frame has CONSUMER_METRICS → produced_duration suppressed)
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "Processor should have 0 produced duration observations"
+        );
+
+        // Processor consumed duration: 1 observation (still works)
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        assert_eq!(
+            snap.count, 1,
+            "Processor should have 1 consumed duration observation"
+        );
+    }
+
+    /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
+    #[tokio::test]
+    async fn test_produced_duration_not_recorded_without_timestamp() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        // Receiver produced duration: 0 observations (no timestamp)
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 0,
+            "No produced duration should be recorded when entry_time_ns == 0"
+        );
+    }
+
+    /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
+    #[tokio::test]
+    async fn test_ack_lifecycle_no_duration_without_timestamp() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata(nodes, false);
+            vec![PipelineControlMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        assert_eq!(
+            snap.count, 0,
+            "No duration should be recorded when entry_time_ns == 0"
+        );
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        assert_eq!(
+            snap.count, 0,
+            "No duration should be recorded when entry_time_ns == 0"
+        );
+    }
+
+    /// Verify multiple acks accumulate counters correctly through the lifecycle.
+    #[tokio::test]
+    async fn test_multiple_acks_lifecycle_accumulate() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            (0..3)
+                .map(|_| {
+                    let pdata = build_3node_pdata(nodes, false);
+                    PipelineControlMsg::DeliverAck {
+                        ack: AckMsg::new(pdata),
+                    }
+                })
+                .collect()
+        })
+        .await;
+
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(
+            exp,
+            CONSUMER_SUCCESS,
+            3,
+            "Exporter 3 consumed_success after 3 acks",
+        );
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_SUCCESS, 3, "Processor 3 consumed_success");
+
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_SUCCESS, 3, "Processor 3 produced_success");
+    }
+
+    /// Verify mixed ack and nack messages accumulate correctly.
+    #[tokio::test]
+    async fn test_mixed_ack_nack_lifecycle() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            vec![
+                PipelineControlMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(nodes, false)),
+                },
+                PipelineControlMsg::DeliverNack {
+                    nack: NackMsg::new("transient", build_3node_pdata(nodes, false)),
+                },
+                PipelineControlMsg::DeliverNack {
+                    nack: NackMsg::new_permanent("refused", build_3node_pdata(nodes, false)),
+                },
+            ]
+        })
+        .await;
+
+        // Exporter consumed: 1 success + 1 failure + 1 refused
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
+
+        // Processor consumed: same pattern
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
+        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+
+        // Processor produced: 1 success + 1 failure + 1 refused
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
+        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+    }
+
+    /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
+    ///
+    /// Pass 1: full stack [recv, proc, exp] — unwinds exp and proc frames,
+    ///         delivers ack to processor (first ACKS subscriber).
+    /// Pass 2: processor re-notifies with just the receiver frame — unwinds recv,
+    ///         recording producer duration on the receiver's output.
+    ///
+    /// This is the scenario where producer.duration must be recorded for the receiver.
+    #[tokio::test]
+    async fn test_two_pass_unwind_receiver_produced_duration() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            // --- Pass 1: full 3-node stack (processor subscribes to ACKS) ---
+            let pdata_full = build_3node_pdata(nodes, true);
+            let mut ack1 = AckMsg::new(pdata_full);
+            ack1.unwind.return_time_ns = nanos_since_birth();
+
+            // --- Pass 2: only the receiver frame remains (processor re-notified) ---
+            let mut pdata_recv_only = TestPData::new();
+            pdata_recv_only.push_frame(Frame {
+                node_id: nodes[0].index,
+                interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
+                route: RouteData {
+                    calldata: Default::default(),
+                    entry_time_ns: nanos_since_birth(),
+                    output_port_index: 0,
+                },
+            });
+            let mut ack2 = AckMsg::new(pdata_recv_only);
+            ack2.unwind.return_time_ns = nanos_since_birth();
+
+            vec![
+                PipelineControlMsg::DeliverAck { ack: ack1 },
+                PipelineControlMsg::DeliverAck { ack: ack2 },
+            ]
+        })
+        .await;
+
+        // From pass 1: exporter and processor consumer metrics are recorded.
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
+        assert!(snap.min > 0.0, "Exporter consumed duration > 0");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
+
+        // From pass 1: processor produced counter recorded.
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+
+        // From pass 2: receiver produced counter AND duration recorded.
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        assert_u64(recv_p, PRODUCER_SUCCESS, 1, "Receiver produced_success");
+        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        assert_eq!(
+            snap.count, 1,
+            "Receiver should have 1 produced duration observation from two-pass unwind"
+        );
+        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+    }
+
+    /// Demonstrates a realistic circular wait between the manager and an active
+    /// node task.
+    ///
+    /// This models what happens in production with an exporter like
+    /// `AzureMonitorExporter`, which, after a successful export, sends multiple
+    /// acks in a tight loop:
+    ///
+    /// ```ignore
+    /// for (_, context, payload) in completed_messages {
+    ///     effect_handler.notify_ack(AckMsg::new(…)).await?;
+    ///     //             ^^^^^^^^^ sends DeliverAck to pipeline ctrl channel
+    /// }
+    /// ```
+    ///
+    /// Setup:
+    ///   - Pipeline ctrl channel (nodes → manager): capacity 3
+    ///   - Node A control channel (manager → A):    capacity 1
+    ///   - Node B control channel (manager → B):    capacity 10
+    ///
+    /// The circular wait forms as follows:
+    ///   1. Pre-load pipeline ctrl with [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}].
+    ///   2. Spawn Node A as an active task that loops sending DeliverAck{A} to
+    ///      the pipeline ctrl channel (simulating batchexport ack loop).
+    ///      Pipeline ctrl is full, so Node A blocks immediately.
+    ///   3. Manager processes the two DeliverAck{A}s (freeing slots that Node A
+    ///      promptly refills), sending Acks to A's control channel.
+    ///      The first Ack succeeds (fills A's cap-1 channel).
+    ///      The second Ack finds A's channel full → manager blocks on `.await`.
+    ///   4. Now both are stuck:
+    ///      - Manager is blocked sending to A's control channel (full)
+    ///      - Node A is blocked sending to pipeline ctrl channel (full, refilled
+    ///        after manager freed the initial two slots)
+    ///      - Neither can make progress.
+    ///   5. DeliverAck{B} sits in the pipeline ctrl queue — never processed.
+    ///
+    /// The test asserts Node B receives its ack within 500 ms.  The non-blocking
+    /// `try_send` + `pending_sends` buffering in `send()` prevents the manager
+    /// from blocking on Node A's full control channel, so Node B's ack is
+    /// delivered promptly.
+    #[tokio::test]
+    async fn test_circular_wait_between_node_and_manager() {
+        use crate::control::AckMsg;
+
+        // Build a TestPData whose single frame routes the ack to `node_id`.
+        fn pdata_for_node(node_id: usize) -> TestPData {
+            let mut pdata = TestPData::new();
+            pdata.push_frame(Frame {
+                node_id,
+                interests: Interests::ACKS,
+                route: RouteData {
+                    calldata: Default::default(),
+                    entry_time_ns: 0,
+                    output_port_index: 0,
+                },
+            });
+            pdata
+        }
+
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                // --- Custom setup with specific channel capacities ---
+                let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(3);
+                let mut control_senders = ControlSenders::new();
+
+                let nodes = test_nodes(vec!["node_a", "node_b"]);
+                let node_a = nodes[0].clone();
+                let node_b = nodes[1].clone();
+
+                // Node A: control channel capacity 1 — fills up after one message
+                let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
+                control_senders.register(
+                    node_a.clone(),
+                    NodeType::Processor,
+                    Sender::Shared(SharedSender::mpsc(tx_a)),
+                );
+
+                // Node B: control channel capacity 10 — plenty of room
+                let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
+                control_senders.register(
+                    node_b.clone(),
+                    NodeType::Processor,
+                    Sender::Shared(SharedSender::mpsc(tx_b)),
+                );
+
+                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+                let metrics_reporter = metrics_system.reporter();
+                let observed_state_store = ObservedStateStore::new(
+                    &ObservedStateSettings::default(),
+                    metrics_system.registry(),
+                );
+                let pipeline_group_id: PipelineGroupId = Default::default();
+                let pipeline_id: PipelineId = Default::default();
+                let controller_context = ControllerContext::new(metrics_system.registry());
+                let pipeline_context = PipelineContext::new(
+                    controller_context,
+                    pipeline_group_id.clone(),
+                    pipeline_id.clone(),
+                    0,
+                    1,
+                    0,
+                );
+                let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                    pipeline_context.metrics_registry(),
+                    pipeline_entity_key,
+                );
+
+                let manager = PipelineCtrlMsgManager::new(
+                    DeployedPipelineKey {
+                        pipeline_group_id,
+                        pipeline_id,
+                        core_id: 0,
+                    },
+                    pipeline_context,
+                    pipeline_rx,
+                    control_senders,
+                    observed_state_store.reporter(SendPolicy::default()),
+                    metrics_reporter,
+                    TelemetryPolicy::default(),
+                    Vec::new(),
+                    Vec::new(),
+                );
+
+                // Pre-load pipeline ctrl: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
+                // This fills the channel (cap=3) before anyone starts consuming.
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        ack: AckMsg::new(pdata_for_node(node_a.index)),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        ack: AckMsg::new(pdata_for_node(node_a.index)),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        ack: AckMsg::new(pdata_for_node(node_b.index)),
+                    })
+                    .await
+                    .unwrap();
+
+                // Spawn Node A: simulates an exporter that's acking a batch of
+                // messages in a tight loop (just like AzureMonitorExporter's
+                // `for msg in completed_messages { notify_ack(..).await; }` loop).
+                //
+                // Node A keeps sending DeliverAck to the pipeline ctrl channel.
+                // When the channel is full, Node A blocks — and since it never
+                // drains its own control channel (rx_a), the manager can't
+                // deliver acks to it either.
+                let node_a_tx = pipeline_tx.clone();
+                let node_a_index = node_a.index;
+                let _node_a_handle = tokio::task::spawn_local(async move {
+                    let _rx_a = rx_a; // keep A's ctrl channel open (not closed)
+                    loop {
+                        if node_a_tx
+                            .send(PipelineControlMsg::DeliverAck {
+                                ack: AckMsg::new(pdata_for_node(node_a_index)),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                // Start the manager
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Assert Node B receives its ack within 500 ms.
+                // With the non-blocking try_send fix, the manager buffers
+                // messages for Node A's full channel and keeps processing,
+                // so Node B's ack arrives promptly.
+                let mut receiver_b = Receiver::Shared(SharedReceiver::mpsc(rx_b));
+                let received = timeout(Duration::from_millis(500), receiver_b.recv()).await;
+
+                assert!(
+                    received.is_ok(),
+                    "Node B should receive its Ack within 500 ms, but the \
+                     manager is stuck in a circular wait with Node A: the \
+                     manager is blocked sending to Node A's full control \
+                     channel, while Node A is blocked sending to the full \
+                     pipeline control channel"
+                );
+
+                // Cleanup
+                drop(pipeline_tx);
+                manager_handle.abort();
             })
             .await;
     }

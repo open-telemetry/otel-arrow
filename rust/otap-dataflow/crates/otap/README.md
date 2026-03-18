@@ -1,46 +1,39 @@
 # OTAP Pipeline
 
-The OTAP (OpenTelemetry Arrow Protocol) crate contains receivers, processors,
-and exporters supporting natively the OTAP Pdata.
+The OTAP (OpenTelemetry Arrow Protocol) crate now primarily contains shared OTAP
+and OTLP transport infrastructure, pdata types, TLS/compression helpers, and
+test support used by node implementations in other crates.
 
-## Receivers
+Core node implementations live in `crates/core-nodes`.
 
-- OTLP Receiver: A receiver accepting OTLP messages over gRPC.
-- OTAP Receiver: A receiver accepting OTAP messages over gRPC.
-- Syslog CEF Receiver: A receiver accepting TCP and UDP Syslog messages
-  formatted in the Common Event Format (CEF), RFC-3164, and RFC-5424.
-- Fake Data Generator: A receiver generating fake data for testing
-  purposes. Fake signals are generated from semantic convention registries.
+Contrib components (for example Geneva and Azure Monitor exporters, and
+optional contrib processors) live in `crates/contrib-nodes`.
 
-## Processors
+## Shared Infrastructure
 
-- Attribute Processor: A processor to rename and delete attributes on
-  spans, metrics, and logs. Other operations such as inserting and updating
-  attributes will be added in the future.
-- Batch Processor: A processor to batch incoming data into batches of a
-  specified size or timeout.
-- Debug Processor: A processor to log incoming data for debugging
-  purposes.
-- Durable Buffer: A processor providing crash-resilient buffering via Quiver's
-  write-ahead log and segment storage. See
-  [durable_buffer_processor](src/durable_buffer_processor/) for details.
-- Retry Processor (WIP): A processor to retry sending data on failure.
-- Signal Type Router: A processor to route data based on signal type
-  (traces, metrics, logs) to different downstream nodes.
+- OTAP/OTLP pdata types and conversions (`src/pdata.rs`, `src/pdata_conversions.rs`)
+- OTAP gRPC transport support (`src/otap_grpc/`, `src/otap_grpc.rs`)
+- OTLP gRPC transport support (`src/otlp_grpc.rs`)
+- OTLP HTTP client/server support (`src/otlp_http/`, `src/otlp_http.rs`)
+- Compression configuration (`src/compression.rs`)
+- TLS and crypto helpers (`src/tls_utils.rs`, `src/crypto.rs`)
+- Shared receiver metrics (`src/otlp_metrics.rs`)
+- Test fixtures and mocks (`src/otap_mock.rs`, `src/otlp_mock.rs`, `src/testing/`)
 
-## Exporters
+## Node Implementations Using This Crate
 
-- OTLP Exporter: An exporter sending OTLP messages over gRPC.
-- OTAP Exporter: An exporter sending OTAP messages over gRPC.
-- Noop Exporter: An exporter that drops all data.
-- Parquet Exporter: An exporter that writes data to Parquet files.
-- Geneva Exporter (Experimental): An exporter for Microsoft Geneva monitoring
-  backend. Supports logs and traces. See [experimental/geneva_exporter](src/experimental/geneva_exporter/)
-  for details. Enable with `--features geneva-exporter`.
+The following core OTAP/OTLP nodes now live in `crates/core-nodes` and reuse
+shared functionality from this crate:
+
+- OTAP Receiver (`crates/core-nodes/src/receivers/otap_receiver/`)
+- OTLP Receiver (`crates/core-nodes/src/receivers/otlp_receiver/`)
+- OTAP Exporter (`crates/core-nodes/src/exporters/otap_exporter/`)
+- OTLP gRPC Exporter (`crates/core-nodes/src/exporters/otlp_grpc_exporter/`)
+- OTLP HTTP Exporter (`crates/core-nodes/src/exporters/otlp_http_exporter/`)
 
 ## Generate Protobuf Stubs
 
-In the root of the repository, run:
+In the repository root, run:
 
 ```bash
 cargo xtask compile-proto

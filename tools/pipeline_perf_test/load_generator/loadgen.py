@@ -1,13 +1,17 @@
 """
-OTLP Logs Load Generator
+OTLP & Syslog Logs Load Generator
 
 This module implements a configurable load generator for OpenTelemetry
-Protocol (OTLP) logs. It supports generating batches of randomized log records
-with customizable sizes and attributes, and sending them concurrently to an
-OTLP collector endpoint over gRPC.
+Protocol (OTLP) logs and syslog messages. It supports generating batches of
+randomized log records or CEF-formatted syslog messages with customizable
+sizes and attributes, and sending them concurrently to an OTLP collector
+endpoint over gRPC or to a syslog server over TCP/UDP.
 
 Features:
 - Generates OTLP log records with random content for testing or benchmarking.
+- Generates syslog messages (RFC 3164/5424) with random or CEF payloads.
+- Configurable syslog server, port, transport (TCP/UDP), and message format.
+- Supports target message size with automatic padding/truncation.
 - Runs multiple worker threads to simulate concurrent load.
 - Supports shared or dedicated TCP connection per-worker thread.
 - Supports optional rate targeting for message throughput (or max achievable).
@@ -27,15 +31,18 @@ Examples:
     python load_generator/loadgen.py --load-type otlp --duration 30 --threads 4 --batch-size 1000
 
   Standalone syslog UDP load generation:
-    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 python load_generator/loadgen.py --load-type syslog --duration 2
+    python load_generator/loadgen.py --load-type syslog --syslog-server 0.0.0.0 --syslog-port 5140 --duration 2
 
   Standalone syslog TCP load generation:
-    SYSLOG_SERVER="0.0.0.0" SYSLOG_PORT=514 SYSLOG_TRANSPORT=tcp python load_generator/loadgen.py --load-type syslog --duration 2
+    python load_generator/loadgen.py --load-type syslog --syslog-server 0.0.0.0 --syslog-port 514 --syslog-transport tcp --duration 2
+
+  Standalone syslog CEF load generation:
+    python load_generator/loadgen.py --load-type syslog --syslog-content-type cef --syslog-server 0.0.0.0 --syslog-port 5140 --duration 2
 
   Server mode for API control:
     python load_generator/loadgen.py --serve
     # Then control via HTTP:
-    # curl -X POST http://localhost:5001/start -H "Content-Type: application/json" -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2}'
+    # curl -X POST http://localhost:5001/start -H "Content-Type: application/json" -d '{"load_type": "syslog", "batch_size": 1000, "threads": 2, "syslog_server": "0.0.0.0", "syslog_port": 5140}'
     # curl -X POST http://localhost:5001/stop
     # curl http://localhost:5001/metrics
 
@@ -47,9 +54,10 @@ Endpoints:
 
 Environment Variables:
 - OTLP_ENDPOINT: Target OTLP gRPC endpoint (default: localhost:4317).
-- SYSLOG_SERVER: Target syslog server hostname/IP (default: localhost).
-- SYSLOG_PORT: Target syslog server port (default: 514).
-- SYSLOG_TRANSPORT: Transport protocol for syslog: 'tcp' or 'udp' (default: udp).
+- SYSLOG_SERVER: Fallback syslog server if --syslog-server not set (default: localhost).
+- SYSLOG_PORT: Fallback syslog port if --syslog-port not set (default: 514).
+- SYSLOG_TRANSPORT: Fallback transport if --syslog-transport not set (default: udp).
+- SYSLOG_FORMAT: Fallback syslog header format if --syslog-format not set (default: rfc3164).
 """
 
 import argparse
@@ -80,6 +88,32 @@ FLASK_PORT = 5001
 LOG_SEVERITY_NUMBER = logs_pb2.SeverityNumber.SEVERITY_NUMBER_INFO
 LOG_SEVERITY_TEXT = "INFO"
 
+# CEF (Common Event Format) template for realistic syslog load generation
+CEF_TEMPLATE = (
+    'CEF:0|PaloAltoNetworks|PAN-OS|9.1.8|SSH2 Login Attempt(31914)'
+    '|SSH2 Login Attempt(31914)|1|act=alert '
+    'actionflags=0x2000000000000000 app=ssh cat=any cn1=67640598 '
+    'cn2=1207111110 cnt=1 cs1=THREAT cs2=vulnerability cs3=Tap_Allow '
+    'cs5= cs6= destinationTranslatedAddress=0.0.0.0 '
+    'destinationTranslatedPort=0 deviceExternalId=0120010106097 '
+    'deviceInboundInterface=ethernet1/3 '
+    'deviceOutboundInterface=ethernet1/3 dntdom=Tap domeid=vsys1 '
+    'dpt=22 dst=172.21.166.15 dstloc=172.16.0.0-172.31.255.255 '
+    'duid= duser= dvchost=PA-820 dvcpid=12337 '
+    'end=Jun 23 2021 20:36:07 GMT fileHash= fileId=0 filePath= '
+    'fileType= flags=0x80002000 fname= '
+    'logset=InfoCIC-LogForwarding msg=informational '
+    'outcome=client-to-server proto=tcp request="" '
+    'requestClientApplication= requestContext= requestMethod= '
+    'rt=Jun 23 2021 20:36:07 GMT sntdom=Tap '
+    'sourceTranslatedAddress=0.0.0.0 sourceTranslatedPort=0 '
+    'spt=44840 src=172.21.76.92 '
+    'srcloc=172.16.0.0-172.31.255.255 suid= suser= '
+    'PanOSThreatCategory=brute-force PanOSParentSessionID=0 '
+    'PanOSParentStartTime= PanOSContentVer=AppThreat-8348-6427 '
+    'PanOSTunnelID=0 PanOSTunnelType=N/A'
+)
+
 
 app = Flask(__name__)
 
@@ -106,6 +140,28 @@ class LoadGenConfig(BaseModel):
     load_type: str = Field(
         "otlp", description="Load generation type: 'otlp' or 'syslog'"
     )
+    syslog_server: str = Field(
+        default_factory=lambda: os.getenv("SYSLOG_SERVER", "localhost"),
+        description="Syslog server address",
+    )
+    syslog_port: int = Field(
+        default_factory=lambda: int(os.getenv("SYSLOG_PORT", "514")),
+        gt=0, le=65535, description="Syslog server port",
+    )
+    syslog_transport: str = Field(
+        default_factory=lambda: os.getenv("SYSLOG_TRANSPORT", "udp"),
+        description="Syslog transport protocol: 'tcp' or 'udp'",
+    )
+    syslog_format: str = Field(
+        "rfc3164",
+        description="Syslog header format: 'rfc3164', 'rfc5424', or 'none'",
+    )
+    syslog_content_type: str = Field(
+        "random", description="Syslog message content type: 'random' or 'cef'"
+    )
+    message_size: Optional[int] = Field(
+        None, gt=0, description="Target total message size in bytes (pads to fit)"
+    )
 
     @field_validator(
         "body_size", "num_attributes", "attribute_value_size", "batch_size", "threads"
@@ -121,6 +177,27 @@ class LoadGenConfig(BaseModel):
         """Ensure load_type is either 'otlp' or 'syslog'."""
         if v.lower() not in ["otlp", "syslog"]:
             raise ValueError("load_type must be 'otlp' or 'syslog'")
+        return v.lower()
+
+    @field_validator("syslog_transport")
+    def validate_syslog_transport(cls, v):
+        """Ensure syslog_transport is either 'tcp' or 'udp'."""
+        if v.lower() not in ["tcp", "udp"]:
+            raise ValueError("syslog_transport must be 'tcp' or 'udp'")
+        return v.lower()
+
+    @field_validator("syslog_format")
+    def validate_syslog_format(cls, v):
+        """Ensure syslog_format is valid."""
+        if v.lower() not in ["rfc3164", "rfc5424", "none"]:
+            raise ValueError("syslog_format must be 'rfc3164', 'rfc5424', or 'none'")
+        return v.lower()
+
+    @field_validator("syslog_content_type")
+    def validate_syslog_content_type(cls, v):
+        """Ensure syslog_content_type is valid."""
+        if v.lower() not in ["random", "cef"]:
+            raise ValueError("syslog_content_type must be 'random' or 'cef'")
         return v.lower()
 
 
@@ -277,9 +354,11 @@ class LoadGenerator:
         """
         Worker thread that sends syslog messages to a syslog server via TCP.
         """
-        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
-        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
-        syslog_format = str(os.getenv("SYSLOG_FORMAT", "rfc3164"))
+        syslog_server = args.get("syslog_server", os.getenv("SYSLOG_SERVER", "localhost"))
+        syslog_port = int(args.get("syslog_port", os.getenv("SYSLOG_PORT", "514")))
+        syslog_format = args.get("syslog_format", os.getenv("SYSLOG_FORMAT", "rfc3164"))
+
+        print(f"Thread {thread_id}: Using TCP transport to syslog server {syslog_server}:{syslog_port}")
 
         # Create TCP socket for syslog
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -287,9 +366,9 @@ class LoadGenerator:
 
         try:
             sock.connect((syslog_server, syslog_port))
-            print(f"Thread {thread_id}: Successfully connected to syslog server {syslog_server}:{syslog_port}")
+            print(f"Thread {thread_id}: TCP connection established to {syslog_server}:{syslog_port}")
         except Exception as e:
-            print(f"Thread {thread_id}: Failed to connect to syslog server {syslog_server}:{syslog_port}: {e}")
+            print(f"Thread {thread_id}: TCP connection failed to {syslog_server}:{syslog_port}: {e}")
             sock.close()
             return
 
@@ -315,9 +394,11 @@ class LoadGenerator:
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
                 hostname=hostname,
-                message_body=args["message_body"],
+                message_body=args.get("message_body"),
                 body_size=args["body_size"],
-                header_type=syslog_format
+                header_type=syslog_format,
+                syslog_content_type=args.get("syslog_content_type", "random"),
+                message_size=args.get("message_size"),
             )
             syslog_batch.append(syslog_message)
 
@@ -382,9 +463,9 @@ class LoadGenerator:
         """
         Worker thread that sends syslog messages to a syslog server via UDP.
         """
-        syslog_server = os.getenv("SYSLOG_SERVER", "localhost")
-        syslog_port = int(os.getenv("SYSLOG_PORT", "514"))
-        syslog_format = str(os.getenv("SYSLOG_FORMAT", "rfc3164"))
+        syslog_server = args.get("syslog_server", os.getenv("SYSLOG_SERVER", "localhost"))
+        syslog_port = int(args.get("syslog_port", os.getenv("SYSLOG_PORT", "514")))
+        syslog_format = args.get("syslog_format", os.getenv("SYSLOG_FORMAT", "rfc3164"))
 
         print(f"Thread {thread_id}: Using UDP transport to syslog server {syslog_server}:{syslog_port}")
 
@@ -419,9 +500,11 @@ class LoadGenerator:
         for _ in range(batch_size):
             syslog_message = self.create_syslog_message(
                 hostname=hostname,
-                message_body=args["message_body"],
+                message_body=args.get("message_body"),
                 body_size=args["body_size"],
-                header_type=syslog_format
+                header_type=syslog_format,
+                syslog_content_type=args.get("syslog_content_type", "random"),
+                message_size=args.get("message_size"),
             )
             syslog_batch.append(syslog_message)
 
@@ -476,16 +559,28 @@ class LoadGenerator:
         hostname: str,
         message_body: Optional[str] = None,
         body_size: int = 25,
-        header_type: str = "rfc3164",  # can be "rfc3164", "rfc5424", or "None"
+        header_type: str = "rfc3164",  # can be "rfc3164", "rfc5424", or "none"
+        syslog_content_type: str = "random",  # can be "random" or "cef"
+        message_size: Optional[int] = None,  # target total message size in bytes
     ) -> bytes:
         """
-        Create a single syslog message with structure similar to OTLP log record.
+        Create a single syslog message.
+
+        Content is determined by priority:
+        1. syslog_content_type="cef" -> uses CEF template
+        2. message_body (if provided) -> uses static body
+        3. Otherwise -> random string of body_size length
+
+        If message_size is set, the message is padded or truncated to that size.
         """
         # Pre-generate static parts of the message
         pri = "<134>"  # local0.info = 16*8+6 = 134
         tag = "loadgen"
 
-        if message_body is not None:
+        # Determine message content
+        if syslog_content_type == "cef":
+            log_message = CEF_TEMPLATE
+        elif message_body is not None:
             log_message = message_body
         else:
             log_message = self.generate_random_string(body_size)
@@ -504,9 +599,28 @@ class LoadGenerator:
         elif header_type.lower() == "none":
             header = ""
         else:
-            raise ValueError("Invalid header_type. Must be 'rfc3164', 'rfc5424', or None.")
+            raise ValueError(
+                "Invalid header_type. Must be 'rfc3164', 'rfc5424', or 'none'."
+            )
 
         syslog_message = f"{header}{log_message}\n"
+
+        # Pad or truncate to target message_size if specified
+        if message_size is not None:
+            current_size = len(syslog_message.encode("utf-8"))
+            if current_size < message_size:
+                # Pad with spaces before the trailing newline
+                padding_needed = message_size - current_size
+                syslog_message = f"{header}{log_message}{' ' * padding_needed}\n"
+            elif current_size > message_size:
+                # Truncate the message body to fit, preserving header + newline
+                header_bytes = len(header.encode("utf-8"))
+                available = message_size - header_bytes - 1  # -1 for newline
+                if available > 0:
+                    syslog_message = f"{header}{log_message[:available]}\n"
+                else:
+                    syslog_message = f"{header}\n"
+
         return syslog_message.encode("utf-8")
 
     def run_loadgen(self, args_dict):
@@ -521,10 +635,12 @@ class LoadGenerator:
         load_type = args_dict.get("load_type", "otlp").lower()
 
         if load_type == "syslog":
-            syslog_transport = os.getenv("SYSLOG_TRANSPORT", "udp").lower()
+            syslog_transport = args_dict.get(
+                "syslog_transport", os.getenv("SYSLOG_TRANSPORT", "udp")
+            ).lower()
 
             if syslog_transport not in ["tcp", "udp"]:
-                print(f"Invalid SYSLOG_TRANSPORT '{syslog_transport}', using 'udp'")
+                print(f"Invalid syslog_transport '{syslog_transport}', using 'udp'")
                 syslog_transport = "udp"
 
             if syslog_transport == "udp":
@@ -634,7 +750,10 @@ def is_port_in_use(port, host="0.0.0.0"):
 
 def main():
     def get_default_value(field_name: str):
-        return LoadGenConfig.model_fields[field_name].default
+        field = LoadGenConfig.model_fields[field_name]
+        if field.default_factory is not None:
+            return field.default_factory()
+        return field.default
 
     parser = argparse.ArgumentParser(description="Loadgen for OTLP logs")
     parser.add_argument(
@@ -660,7 +779,7 @@ def main():
     )
     parser.add_argument(
         "--body-message",
-        type=int,
+        type=str,
         default=get_default_value("message_body"),
         help=(
             "Optional static message body to send "
@@ -712,7 +831,7 @@ def main():
         default=get_default_value("tcp_connection_per_thread"),
         help=(
             "Use a dedicated TCP connection per-thread (default "
-            f"{get_default_value("tcp_connection_per_thread")})"
+            f"{get_default_value('tcp_connection_per_thread')})"
         ),
     )
     parser.add_argument(
@@ -722,6 +841,63 @@ def main():
         help=(
             "Load generation type: 'otlp' or 'syslog' (default "
             f"{get_default_value('load_type')})"
+        ),
+    )
+    parser.add_argument(
+        "--syslog-server",
+        type=str,
+        default=os.getenv("SYSLOG_SERVER", get_default_value("syslog_server")),
+        help=(
+            "Syslog server address "
+            f"(default {get_default_value('syslog_server')}, env: SYSLOG_SERVER)"
+        ),
+    )
+    parser.add_argument(
+        "--syslog-port",
+        type=int,
+        default=int(os.getenv("SYSLOG_PORT", str(get_default_value("syslog_port")))),
+        help=(
+            "Syslog server port "
+            f"(default {get_default_value('syslog_port')}, env: SYSLOG_PORT)"
+        ),
+    )
+    parser.add_argument(
+        "--syslog-transport",
+        type=str,
+        default=os.getenv("SYSLOG_TRANSPORT", get_default_value("syslog_transport")),
+        choices=["tcp", "udp"],
+        help=(
+            "Syslog transport protocol "
+            f"(default {get_default_value('syslog_transport')}, env: SYSLOG_TRANSPORT)"
+        ),
+    )
+    parser.add_argument(
+        "--syslog-format",
+        type=str,
+        default=os.getenv("SYSLOG_FORMAT", get_default_value("syslog_format")),
+        choices=["rfc3164", "rfc5424", "none"],
+        help=(
+            "Syslog header format "
+            f"(default {get_default_value('syslog_format')}, env: SYSLOG_FORMAT)"
+        ),
+    )
+    parser.add_argument(
+        "--syslog-content-type",
+        type=str,
+        default=get_default_value("syslog_content_type"),
+        choices=["random", "cef"],
+        help=(
+            "Syslog message content type "
+            f"(default {get_default_value('syslog_content_type')})"
+        ),
+    )
+    parser.add_argument(
+        "--message-size",
+        type=int,
+        default=get_default_value("message_size"),
+        help=(
+            "Target total message size in bytes "
+            f"(default {get_default_value('message_size')})"
         ),
     )
     args = parser.parse_args()
@@ -739,21 +915,35 @@ def main():
     print(f"- Threads: {args.threads}")
     print(f"- Target Rate: {args.target_rate}")
     print(f"- Log body size: {args.body_size} characters")
-    print(f"- Log body message: {args.message_body}")
+    print(f"- Log body message: {args.body_message}")
     print(f"- Attributes per log: {args.num_attributes}")
     print(f"- Attribute value size: {args.attribute_value_size} characters")
+    if args.load_type == "syslog":
+        print(f"- Syslog server: {args.syslog_server}:{args.syslog_port}")
+        print(f"- Syslog transport: {args.syslog_transport}")
+        print(f"- Syslog format: {args.syslog_format}")
+        print(f"- Syslog content type: {args.syslog_content_type}")
+    if args.message_size:
+        print(f"- Target message size: {args.message_size} bytes")
 
     config = LoadGenConfig(
         body_size=args.body_size,
         num_attributes=args.num_attributes,
         attribute_value_size=args.attribute_value_size,
-        message_body=args.message_body,
+        message_body=args.body_message,
         batch_size=args.batch_size,
         threads=args.threads,
         target_rate=args.target_rate,
         load_type=args.load_type,
+        syslog_server=args.syslog_server,
+        syslog_port=args.syslog_port,
+        syslog_transport=args.syslog_transport,
+        syslog_format=args.syslog_format,
+        syslog_content_type=args.syslog_content_type,
+        message_size=args.message_size,
     )
 
+    start_time = time.time()
     loadgen.start(config=config)
 
     try:
@@ -762,10 +952,14 @@ def main():
         print("Interrupted by user, stopping early...")
 
     loadgen.stop()
+    elapsed = time.time() - start_time
 
-    print(f'LOADGEN_LOGS_SENT: {loadgen.metrics.get("logs_produced", 0)}')
+    logs_sent = loadgen.metrics.get("logs_produced", 0)
+    logs_per_sec = logs_sent / elapsed if elapsed > 0 else 0
+    print(f'LOADGEN_LOGS_SENT: {logs_sent}')
     print(f'LOADGEN_LOGS_FAILED: {loadgen.metrics.get("failed", 0)}')
     print(f'LOADGEN_BYTES_SENT: {loadgen.metrics.get("bytes_sent", 0)} bytes')
+    print(f'LOADGEN_LOGS_SENT/SEC: {logs_per_sec:.2f}')
 
 
 if __name__ == "__main__":

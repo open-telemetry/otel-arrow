@@ -7,11 +7,14 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
+use crate::Interests;
+use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -49,7 +52,7 @@ pub enum ProcessorWrapper<PData> {
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
-        /// Senders for PData messages per out port.
+        /// Senders for PData messages per output port.
         /// Uses the generic `Sender` so local processors can still target shared channels when
         /// mixed local/shared wiring requires it.
         pdata_senders: HashMap<PortName, Sender<PData>>,
@@ -57,6 +60,8 @@ pub enum ProcessorWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -72,13 +77,15 @@ pub enum ProcessorWrapper<PData> {
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
         control_receiver: SharedReceiver<NodeControlMsg<PData>>,
-        /// Senders for PData messages per out port.
+        /// Senders for PData messages per output port.
         /// Uses `SharedSender` to keep the shared processor `Send` for multi-threaded execution.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
 }
 
@@ -133,6 +140,7 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -160,6 +168,7 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -174,6 +183,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                source_tag,
                 ..
             } => ProcessorWrapper::Local {
                 node_id,
@@ -185,6 +195,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                source_tag,
             },
             ProcessorWrapper::Shared {
                 node_id,
@@ -195,6 +206,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                source_tag,
                 ..
             } => ProcessorWrapper::Shared {
                 node_id,
@@ -206,6 +218,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                source_tag,
             },
         }
     }
@@ -234,7 +247,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                source_tag,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -257,6 +270,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    source_tag,
                 }
             }
             ProcessorWrapper::Shared {
@@ -269,7 +283,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                source_tag,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -292,6 +306,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    source_tag,
                 }
             }
         }
@@ -302,6 +317,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
+        node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
@@ -311,6 +327,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -321,14 +338,17 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
+                    node_id.index,
+                    node_interests,
                 );
-                let default_port = user_config.default_out_port.clone();
-                let effect_handler = local::EffectHandler::new(
+                let default_port = user_config.default_output.clone();
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -342,6 +362,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -352,14 +373,17 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
+                    node_id.index,
+                    node_interests,
                 );
-                let default_port = user_config.default_out_port.clone();
-                let effect_handler = shared::EffectHandler::new(
+                let default_port = user_config.default_output.clone();
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -374,8 +398,14 @@ impl<PData> ProcessorWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-    ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
+        node_interests: Interests,
+    ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
+    {
+        let runtime = self
+            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -386,13 +416,14 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -413,13 +444,14 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -525,6 +557,13 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
                 error: "Expected a shared sender for PData".to_owned(),
                 source_detail: String::new(),
             }),
+        }
+    }
+
+    fn set_source_tagging(&mut self, value: SourceTagging) {
+        match self {
+            ProcessorWrapper::Local { source_tag, .. } => *source_tag = value,
+            ProcessorWrapper::Shared { source_tag, .. } => *source_tag = value,
         }
     }
 }

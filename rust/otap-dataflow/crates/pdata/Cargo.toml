@@ -9,6 +9,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+otap-df-pdata-views = { workspace = true }
 ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-ipc = { workspace = true }
@@ -46,7 +47,14 @@ workspace = true
 
 [features]
 bench = []
+testing = []
 
 [[bench]]
 name = "concatenate"
 harness = false
+required-features = ["testing"]
+
+[[bench]]
+name = "sort_by_parent_then_id"
+harness = false
+required-features = ["testing"]

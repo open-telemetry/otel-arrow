@@ -7,90 +7,37 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Implementation of OTAP Exporter that implements the exporter trait
-pub mod otap_exporter;
 /// gRPC service implementation
 pub mod otap_grpc;
-/// Implementation of OTAP Receiver that implements the receiver trait
-pub mod otap_receiver;
-
-/// This receiver receives OTLP bytes from the grpc service request and
-/// produce for the pipeline OTAP PData
-pub mod otlp_receiver;
-
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
-
-/// Batch processor
-pub mod batch_processor;
-
-// Retry processor that is aware of the OTAP PData/context.
-pub mod retry_processor;
-
-/// Receiver that reads in syslog data
-pub mod syslog_cef_receiver;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
 
 pub mod pdata;
 
-pub mod parquet_exporter;
+mod pdata_conversions;
 
-pub mod perf_exporter;
+pub mod metrics;
 
-pub mod fake_data_generator;
-
-/// Implementation of debug processor that outputs received signals in a string format for user view
-pub mod debug_processor;
-
-pub mod filter_processor;
-
-/// Implementation of a noop exporter that acts as a exporter placeholder
-pub mod noop_exporter;
-
-/// Fan-out processor to clone data to multiple downstream outputs.
-pub mod fanout_processor;
-
-/// An error-exporter returns a static error.
-pub mod error_exporter;
-
-/// Experimental exporters and processors
-#[cfg(any(
-    feature = "experimental-exporters",
-    feature = "experimental-processors"
-))]
-pub mod experimental;
+/// Shared OTLP receiver metric definitions used by OTLP protocol support.
+pub mod otlp_metrics;
 
 /// testing utilities
-#[cfg(test)]
-mod otap_mock;
-#[cfg(test)]
-mod otlp_mock;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otap_mock;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otlp_mock;
 
-#[cfg(test)]
-mod fixtures;
-
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
-
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
-
-/// Attributes processor (OTAP-based)
-pub mod attributes_processor;
-
-pub mod transform_processor;
 
 /// compression formats
 pub mod compression;
 
-pub mod metrics;
-
 pub(crate) mod socket_options;
 
 /// Shared concurrency limiting across protocol servers
-pub(crate) mod shared_concurrency;
+pub mod shared_concurrency;
 
 /// gRPC service implementation
 pub mod otlp_grpc;
@@ -101,21 +48,16 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
-/// Internal telemetry receiver
-pub mod internal_telemetry_receiver;
-
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
+
+/// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
+pub mod crypto;
+
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
-
-/// Console exporter similar using built-in OTLP-bytes formatting.
-pub mod console_exporter;
-
-/// Durable buffer processor for crash-resilient buffering via Quiver
-pub mod durable_buffer_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

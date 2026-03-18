@@ -8,18 +8,19 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use otap_df_channel::mpsc;
+use otap_df_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
+use otap_df_core_nodes::exporters::perf_exporter::{
+    OTAP_PERF_EXPORTER_URN, PerfExporter, config::Config,
+};
 use otap_df_engine::{
+    Interests,
     config::ExporterConfig,
     exporter::ExporterWrapper,
     message::{Receiver, Sender},
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
-use otap_df_otap::{
-    otap_exporter::OTAPExporter,
-    pdata::{Context, OtapPdata},
-    perf_exporter::{config::Config, exporter::PerfExporter},
-};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
@@ -60,9 +61,7 @@ use tonic::{Request, Response, Status};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
-use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::otlp_grpc::OTLPData;
-use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::pin::Pin;
@@ -454,7 +453,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -520,7 +519,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -591,7 +590,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter)
+                            .start(node_req_tx, metrics_reporter, Interests::empty())
                             .await
                             .expect("Exporter event loop failed")
                     });

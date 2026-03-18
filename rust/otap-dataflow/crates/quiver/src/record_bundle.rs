@@ -222,6 +222,22 @@ pub trait RecordBundle {
     fn ingestion_time(&self) -> SystemTime;
     /// Returns the payload for the requested slot if it is populated.
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>>;
+    /// Returns the number of logical data items in this bundle.
+    ///
+    /// For Arrow-based bundles this is typically `num_rows()` per batch.
+    /// For OTLP pass-through bundles this is the count of log records,
+    /// metric data points, or spans obtained by scanning the protobuf
+    /// wire format.
+    ///
+    /// Returns `0` if the item count is unknown (e.g. WAL replay bundles
+    /// whose format pre-dates this field).
+    ///
+    /// **Implementors:** override this to return a meaningful value;
+    /// the default `0` will cause item-level metrics to under-count.
+    #[must_use]
+    fn item_count(&self) -> u64 {
+        0
+    }
 }
 
 #[cfg(test)]

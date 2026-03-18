@@ -246,12 +246,12 @@ impl GrpcClientSettings {
     ///
     /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
     /// which is a common source of connection failures with some proxy servers.
-    pub(crate) fn log_proxy_info(&self) {
+    pub fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();
             otap_df_telemetry::otel_info!(
-                "proxy.configured",
+                "otap_grpc_exporter.proxy.configured",
                 endpoint = self.grpc_endpoint.as_str(),
                 proxy = proxy_str.as_str(),
                 message = "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. If your proxy does not support CONNECT for HTTP targets, consider using a transparent proxy or SOCKS proxy instead."
@@ -264,7 +264,7 @@ impl GrpcClientSettings {
         proxy: Arc<ProxyConfig>,
     ) -> impl tower::Service<
         http::Uri,
-        Response = TokioIo<tokio::net::TcpStream>,
+        Response = TokioIo<crate::otap_grpc::proxy::ProxyTcpStream>,
         Error = io::Error,
         Future = impl Send + 'static,
     > + Send
@@ -368,19 +368,19 @@ impl Default for GrpcClientSettings {
     }
 }
 
-const fn default_concurrency_limit() -> usize {
+pub(crate) const fn default_concurrency_limit() -> usize {
     256
 }
 
-const fn default_connect_timeout() -> Duration {
+pub(crate) const fn default_connect_timeout() -> Duration {
     Duration::from_secs(3)
 }
 
-const fn default_tcp_nodelay() -> bool {
+pub(crate) const fn default_tcp_nodelay() -> bool {
     true
 }
 
-const fn default_tcp_keepalive() -> Option<Duration> {
+pub(crate) const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 

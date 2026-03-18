@@ -277,7 +277,7 @@ fn segment_write(c: &mut Criterion) {
     for num_bundles in [10, 50, 100] {
         let bundle = BenchBundle::single_slot(1_000, [0u8; 32]);
 
-        group.throughput(Throughput::Elements(num_bundles as u64));
+        group.throughput(Throughput::Elements(num_bundles));
         group.bench_with_input(
             BenchmarkId::new("single_slot", num_bundles),
             &num_bundles,
@@ -293,7 +293,7 @@ fn segment_write(c: &mut Criterion) {
                     },
                     |(temp_dir, segment)| {
                         let segment_path = temp_dir.path().join("bench_segment.qseg");
-                        let writer = SegmentWriter::new(SegmentSeq::new(1));
+                        let writer = SegmentWriter::new(SegmentSeq::new(1), false);
                         rt.block_on(async {
                             writer
                                 .write_segment(&segment_path, segment)
@@ -328,7 +328,7 @@ fn segment_write(c: &mut Criterion) {
                 },
                 |(temp_dir, segment)| {
                     let segment_path = temp_dir.path().join("bench_segment.qseg");
-                    let writer = SegmentWriter::new(SegmentSeq::new(1));
+                    let writer = SegmentWriter::new(SegmentSeq::new(1), false);
                     rt.block_on(async {
                         writer
                             .write_segment(&segment_path, segment)
@@ -360,7 +360,7 @@ fn segment_write(c: &mut Criterion) {
                 },
                 |(temp_dir, segment)| {
                     let segment_path = temp_dir.path().join("bench_segment.qseg");
-                    let writer = SegmentWriter::new(SegmentSeq::new(1));
+                    let writer = SegmentWriter::new(SegmentSeq::new(1), false);
                     rt.block_on(async {
                         writer
                             .write_segment(&segment_path, segment)
@@ -394,7 +394,7 @@ fn create_test_segment(num_bundles: usize, num_rows: usize) -> (tempfile::TempDi
     }
 
     // Write to file using tokio runtime
-    let writer = SegmentWriter::new(SegmentSeq::new(1));
+    let writer = SegmentWriter::new(SegmentSeq::new(1), false);
     let rt = Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         writer

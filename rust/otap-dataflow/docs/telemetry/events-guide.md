@@ -57,10 +57,10 @@ All events MUST be emitted using the `otel_*` macros from the
 ### Available macros
 
 | Macro | Severity |
-|---|---|
+| --- | --- |
 | `otel_debug!` | DEBUG |
-| `otel_info!`  | INFO  |
-| `otel_warn!`  | WARN  |
+| `otel_info!` | INFO |
+| `otel_warn!` | WARN |
 | `otel_error!` | ERROR |
 
 ### Basic usage
@@ -112,11 +112,83 @@ The macros support `tracing`-style formatting hints:
 - `?value` -- Debug formatting (`fmt::Debug`)
 - `value` -- passed directly (integers, booleans, etc.)
 
+Avoid Debug-formatting (`?`) large or deeply nested structs at info/warn/error
+severity -- break them into individual meaningful fields instead. For **error
+values**, prefer `%` (Display) when the type has a well-crafted `Display` impl
+(especially first-party `thiserror` types); `?` (Debug) is acceptable when
+`Display` is too terse or unavailable. For **simple types** (enums, paths,
+durations), either sigil is fine at any level.
+
 ```rust
 otel_info!("node.connect",
     endpoint = %addr,
-    config   = ?node_config,
     count    = 42,
+);
+
+// BAD -- Debug-dumping a large nested struct at info level:
+otel_info!("state.observed_event", observed_event = ?observed_event);
+
+// GOOD -- break the struct into individual fields:
+otel_info!("state.observed_event",
+    pipeline_group_id = %observed_event.key.pipeline_group_id,
+    pipeline_id = %observed_event.key.pipeline_id,
+    core_id = observed_event.key.core_id,
+    event_type = ?req,
+    message = observed_event.message.as_deref().unwrap_or(""),
+);
+
+// Debug on simple enums or types without Display is fine at any level:
+otel_info!("durable_buffer.shutdown.start", deadline = ?deadline);
+
+// Full Debug formatting for complex types is best at debug level:
+otel_debug!("node.connect",
+    config = ?node_config,
+);
+```
+
+## Consolidating events
+
+Every `otel_*!` callsite adds to the binary's static metadata. Avoid
+proliferating near-identical events that differ only by one attribute -- use a
+single event with a distinguishing **attribute** instead.
+
+### Use attributes for variation, not separate event names
+
+When several code paths represent the same *kind* of occurrence and differ only
+in a categorical dimension (status code, credential type, error class, etc.),
+emit **one event** with that dimension as an attribute rather than creating a
+separate event for each value.
+
+```rust
+// BAD -- four callsites for the same conceptual event:
+otel_warn!("receiver.grpc.unauthenticated", status_code = 16, message = %msg);
+otel_warn!("receiver.grpc.permission_denied", status_code = 7, message = %msg);
+otel_warn!("receiver.grpc.unavailable", status_code = 14, message = %msg);
+otel_warn!("receiver.grpc.resource_exhausted", status_code = 8, message = %msg);
+
+// GOOD -- one callsite, status_code as an attribute:
+otel_warn!("receiver.grpc.error",
+    status_code = code,
+    message = %msg,
+);
+```
+
+### Consolidate one-time startup information
+
+Informational events emitted once during initialization (e.g. credential type,
+listening address, feature flags) SHOULD be folded into a single startup event
+rather than emitted as dedicated events per field.
+
+```rust
+// BAD -- separate events for each piece of startup info:
+otel_info!("exporter.start");
+otel_info!("exporter.endpoint", endpoint = %endpoint);
+otel_info!("exporter.auth_type", auth_type = %auth_type);
+
+// GOOD -- single startup event with all relevant attributes:
+otel_info!("exporter.start",
+    endpoint = %endpoint,
+    auth_type = %auth_type,
 );
 ```
 
@@ -132,6 +204,9 @@ guide for naming:
   attributes.
 - Avoid synonyms that fragment cardinality across names (`finish` vs `complete`,
   `error` vs `fail`). Pick one verb set and stick to it.
+- Use **distinct event names** for different outcomes of the same operation
+  (e.g. `otlp.exporter.start.complete` and `otlp.exporter.start.fail`). Do not rely
+  solely on severity to distinguish success from failure.
 
 More precisely, in this project, event names SHOULD follow this pattern:
 `otelcol.<entity>[.<thing>].<verb>`
@@ -172,11 +247,10 @@ Optionally, add occurrence-specific attributes (dynamic context):
 
 When events are exported as logs, set an appropriate severity.
 
-Regarding severity, some events may be logged at different levels depending on
-their severity or impact. For example, a `node.shutdown` event may be logged at
-INFO level during a graceful shutdown, but at ERROR level if the shutdown is due
-to a critical failure. When exporting events as logs, choose the log level that
-best reflects the significance of the event.
+Regarding severity, choose the log level that best reflects the significance of
+the event. For example, `node.shutdown.complete` at INFO for a graceful
+shutdown and `node.shutdown.fail` at ERROR for a critical failure -- these are
+distinct events, not the same event at different severity levels.
 
 ## Stages
 
@@ -244,3 +318,8 @@ termination verb `cancel`, and one internal safety verb `abort`.
 - Error events use standard exception attributes; stacktraces only at debug or
   lower.
 - Severity is appropriate and consistent with the event meaning.
+- No `format!` calls in attribute values; use `%`/`?` formatting or raw values.
+- Near-identical events have been consolidated into a single event with a
+  distinguishing attribute (see [Consolidating events](#consolidating-events)).
+- The number of new callsites is minimized; each callsite adds static memory
+  overhead.
