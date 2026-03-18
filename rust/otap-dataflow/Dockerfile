@@ -6,7 +6,7 @@
 # In order to include these in the build context, and to avoid conflicting
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
-# docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+# docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 FROM --platform=$BUILDPLATFORM docker.io/rust:1.94@sha256:0e6da0c8f06f25e9591f21c0f741cd4ff1086e271c3330f29f6e4e95869c7843 AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y protobuf-compiler
 
 # The build process relies on these libraries outside of the current context.
 # Build command from the otap-dataflow directory:
-# docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+# docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 COPY --from=otel-arrow /proto/opentelemetry/proto /build/proto/opentelemetry/proto
 COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-proto
 COPY --from=otel-arrow /rust/experimental /build/rust/experimental
