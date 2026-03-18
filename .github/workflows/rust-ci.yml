@@ -607,6 +607,7 @@ jobs:
       - docs_required
       - structure_check
       - pest-fmt
+      - no_default_features_check
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -636,6 +637,10 @@ jobs:
           fi
           if [[ "${{ needs.pest-fmt.result }}" != "success" ]]; then
             echo "pest-fmt failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.no_default_features_check.result }}" != "success" ]]; then
+            echo "no_default_features_check failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"
