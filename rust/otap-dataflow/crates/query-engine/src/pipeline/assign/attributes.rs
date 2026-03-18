@@ -1583,10 +1583,6 @@ fn create_new_value_column_batched(
 mod tests {
     use super::*;
 
-    // TODO: Add tests for dictionary cardinality overflow cases (>65535 distinct values)
-    //       to verify try_build_unified_dict_multi returns None and the fallback to
-    //       the primitive merge path works correctly.
-
     /// Helper to build a Dict(u16, Utf8) array from a slice of strings.
     fn dict_utf8_u16(values: &[&str]) -> ArrayRef {
         let plain = Arc::new(StringArray::from_iter_values(values.iter().copied())) as ArrayRef;
