@@ -3,7 +3,7 @@ policies:
   channel_capacity:
       control:
         node: 256
-        pipeline: 256
+        runtime: 256
       pdata: 128
   telemetry:
     channel_metrics: detailed
@@ -33,7 +33,7 @@ engine:
         channel_capacity:
             control:
               node: 64
-              pipeline: 64
+              runtime: 64
             pdata: 64
         telemetry:
           pipeline_metrics: false

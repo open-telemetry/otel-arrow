@@ -362,7 +362,7 @@ groups:
     }
 
     #[test]
-    fn from_yaml_accepts_legacy_control_capacity_aliases() {
+    fn from_yaml_rejects_unknown_legacy_control_capacity_keys() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
@@ -389,54 +389,10 @@ groups:
             to: exporter
 "#;
 
-        let config = OtelDataflowSpec::from_yaml(yaml).expect("legacy aliases should parse");
-        assert_eq!(config.policies.channel_capacity.control.node, 200);
-        assert_eq!(config.policies.channel_capacity.control.runtime, 201);
-        assert_eq!(config.policies.channel_capacity.control.results, 203);
-        assert_eq!(config.policies.channel_capacity.pdata, 202);
-
-        let rendered =
-            serde_json::to_value(&config).expect("serialized config should use canonical names");
-        let control = &rendered["policies"]["channel_capacity"]["control"];
-        assert_eq!(control["node"], 200);
-        assert_eq!(control["runtime"], 201);
-        assert_eq!(control["results"], 203);
-        assert!(control.get("pipeline").is_none());
-        assert!(control.get("return").is_none());
-    }
-
-    #[test]
-    fn from_yaml_rejects_mixed_legacy_and_canonical_control_keys() {
-        let yaml = r#"
-version: otel_dataflow/v1
-policies:
-  channel_capacity:
-      control:
-        node: 200
-        runtime: 201
-        pipeline: 202
-      pdata: 203
-engine: {}
-groups:
-  default:
-    pipelines:
-      main:
-        nodes:
-          receiver:
-            type: "urn:test:receiver:example"
-            config: null
-          exporter:
-            type: "urn:test:exporter:example"
-            config: null
-        connections:
-          - from: receiver
-            to: exporter
-"#;
-
-        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("mixed alias names should fail");
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("legacy keys should be rejected");
         match err {
             Error::DeserializationError { details, .. } => {
-                assert!(details.contains("duplicate field"));
+                assert!(details.contains("unknown field `pipeline`"));
             }
             other => panic!("expected deserialization error, got: {other:?}"),
         }

@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     /// Creates a debug processor test setup for ACK/NACK forwarding tests.
-    /// Returns (test_runtime, processor, pipeline_ctrl_tx, pipeline_ctrl_rx, output_file).
+    /// Returns (test_runtime, processor, runtime_ctrl_tx, pipeline_result_tx, pipeline_result_rx, output_file).
     fn create_ack_nack_test_setup(
         output_file: &str,
     ) -> (
@@ -1403,17 +1403,17 @@ mod tests {
             test_runtime.config(),
         );
 
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(10);
-        let (pipeline_return_tx, pipeline_return_rx) = pipeline_result_msg_channel::<OtapPdata>(10);
+        let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(10);
+        let (pipeline_result_tx, pipeline_result_rx) = pipeline_result_msg_channel::<OtapPdata>(10);
 
-        drop(pipeline_ctrl_rx);
+        drop(runtime_ctrl_rx);
 
         (
             test_runtime,
             processor,
-            pipeline_ctrl_tx,
-            pipeline_return_tx,
-            pipeline_return_rx,
+            runtime_ctrl_tx,
+            pipeline_result_tx,
+            pipeline_result_rx,
             output_file.to_string(),
         )
     }
@@ -1433,9 +1433,9 @@ mod tests {
         let (
             test_runtime,
             processor,
-            pipeline_ctrl_tx,
-            pipeline_return_tx,
-            mut pipeline_return_rx,
+            runtime_ctrl_tx,
+            pipeline_result_tx,
+            mut pipeline_result_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_ack_test.txt");
 
@@ -1443,8 +1443,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 42usize;
@@ -1458,7 +1458,7 @@ mod tests {
                         .await
                         .expect("Processor failed on ACK");
 
-                    match pipeline_return_rx.try_recv() {
+                    match pipeline_result_rx.try_recv() {
                         Ok(PipelineResultMsg::DeliverAck { ack }) => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
@@ -1492,9 +1492,9 @@ mod tests {
         let (
             test_runtime,
             processor,
-            pipeline_ctrl_tx,
-            pipeline_return_tx,
-            mut pipeline_return_rx,
+            runtime_ctrl_tx,
+            pipeline_result_tx,
+            mut pipeline_result_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_nack_test.txt");
 
@@ -1502,8 +1502,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 99usize;
@@ -1518,7 +1518,7 @@ mod tests {
                         .await
                         .expect("Processor failed on NACK");
 
-                    match pipeline_return_rx.try_recv() {
+                    match pipeline_result_rx.try_recv() {
                         Ok(PipelineResultMsg::DeliverNack { nack }) => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
@@ -1552,9 +1552,9 @@ mod tests {
         let (
             test_runtime,
             processor,
-            pipeline_ctrl_tx,
-            pipeline_return_tx,
-            mut pipeline_return_rx,
+            runtime_ctrl_tx,
+            pipeline_result_tx,
+            mut pipeline_result_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_no_subscriber_test.txt");
 
@@ -1562,8 +1562,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                     let pdata_no_sub = create_empty_test_pdata();
 
@@ -1580,7 +1580,7 @@ mod tests {
 
                     // Verify no messages were forwarded (channel should be empty)
                     assert!(
-                        pipeline_return_rx.try_recv().is_err(),
+                        pipeline_result_rx.try_recv().is_err(),
                         "Expected no forwarded messages when there are no subscribers"
                     );
                 })

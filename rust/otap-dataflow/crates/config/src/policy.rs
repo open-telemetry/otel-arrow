@@ -225,13 +225,10 @@ pub struct ControlChannelCapacityPolicy {
     #[serde(default = "default_node_control_channel_capacity")]
     pub node: usize,
     /// Capacity used for the shared runtime orchestration control channel.
-    #[serde(
-        default = "default_runtime_control_channel_capacity",
-        alias = "pipeline"
-    )]
+    #[serde(default = "default_runtime_control_channel_capacity")]
     pub runtime: usize,
     /// Capacity used for the shared Ack/Nack completion control channel.
-    #[serde(default = "default_results_control_channel_capacity", alias = "return")]
+    #[serde(default = "default_results_control_channel_capacity")]
     pub results: usize,
 }
 

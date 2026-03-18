@@ -105,9 +105,6 @@ Control channel keys:
 - `runtime`: capacity of the shared runtime orchestration channel
 - `results`: capacity of the shared Ack/Nack completion channel
 
-Legacy aliases `control.pipeline` and `control.return` are still accepted for
-backward compatibility, but `runtime` and `results` are the documented names.
-
 Resolution precedence:
 
 - regular pipelines:

@@ -580,15 +580,15 @@ mod tests {
                 .expect("receiver output channel should be wired");
 
             let receiver_ctrl = receiver.control_sender();
-            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-            let (pipeline_return_tx, _pipeline_return_rx) =
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_result_tx, _pipeline_result_rx) =
                 pipeline_result_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
-                        pipeline_ctrl_tx,
-                        pipeline_return_tx,
+                        runtime_ctrl_tx,
+                        pipeline_result_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )
@@ -678,15 +678,15 @@ mod tests {
                 )
                 .expect("receiver output channel should be wired");
 
-            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-            let (pipeline_return_tx, _pipeline_return_rx) =
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_result_tx, _pipeline_result_rx) =
                 pipeline_result_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
-                        pipeline_ctrl_tx,
-                        pipeline_return_tx,
+                        runtime_ctrl_tx,
+                        pipeline_result_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )

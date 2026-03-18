@@ -19,7 +19,7 @@ policies:
   channel_capacity:
     control:
       node: 256
-      pipeline: 256
+      runtime: 256
     pdata: 4096
   health: {}
   telemetry:
@@ -56,7 +56,7 @@ groups:
       channel_capacity:
         control:
           node: 256
-          pipeline: 256
+          runtime: 256
         pdata: 4096
 
     # Topic declarations shared by all pipelines in this benchmark group.

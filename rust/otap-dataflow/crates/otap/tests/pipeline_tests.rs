@@ -76,7 +76,7 @@ fn test_telemetry_registries_cleanup() {
 
     let (runtime_ctrl_tx, runtime_ctrl_rx) =
         runtime_ctrl_msg_channel(channel_capacity_policy.control.runtime);
-    let (pipeline_return_tx, pipeline_return_rx) =
+    let (pipeline_result_tx, pipeline_result_rx) =
         pipeline_result_msg_channel(channel_capacity_policy.control.results);
     let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
@@ -111,8 +111,8 @@ fn test_telemetry_registries_cleanup() {
             metrics_reporter,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
-            pipeline_return_tx,
-            pipeline_return_rx,
+            pipeline_result_tx,
+            pipeline_result_rx,
         )
     };
     let _ = shutdown_handle.join();

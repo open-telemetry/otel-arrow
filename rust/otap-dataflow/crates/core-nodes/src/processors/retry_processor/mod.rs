@@ -865,10 +865,10 @@ mod test {
         phase
             .run_test(move |mut ctx| async move {
                 // Set up test runtime control channel
-                let (pipeline_tx, mut pipeline_rx) = runtime_ctrl_msg_channel(10);
-                let (pipeline_return_tx, mut pipeline_return_rx) = pipeline_result_msg_channel(10);
-                ctx.set_runtime_ctrl_sender(pipeline_tx);
-                ctx.set_pipeline_result_sender(pipeline_return_tx);
+                let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_result_tx, mut pipeline_result_rx) = pipeline_result_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                 let mut retry_count: usize = 0;
                 let pdata_in = create_test_pdata().test_subscribe_to(
@@ -909,7 +909,7 @@ mod test {
 
                     // The processor should schedule a delayed retry via DelayData
                     let resp = tokio::select! {
-                        recv = pipeline_rx.recv() => match recv {
+                        recv = runtime_ctrl_rx.recv() => match recv {
                             Ok(RuntimeControlMsg::DelayData { when, data, .. }) => {
                                 retry_count += 1;
 
@@ -936,7 +936,7 @@ mod test {
                                 panic!("unexpected runtime-control receive error: {:?}", err);
                             }
                         },
-                        recv = pipeline_return_rx.recv() => Some(
+                        recv = pipeline_result_rx.recv() => Some(
                             recv.expect("pipeline-result channel closed unexpectedly")
                         ),
                     };
@@ -957,7 +957,7 @@ mod test {
 
                     // Verify the processor sent the ACK or NACK upstream
                     have_pmsg = Some(
-                        tokio::time::timeout(Duration::from_secs(1), pipeline_return_rx.recv())
+                        tokio::time::timeout(Duration::from_secs(1), pipeline_result_rx.recv())
                             .await
                             .expect("timeout waiting for final DeliverAck")
                             .expect("channel closed"),

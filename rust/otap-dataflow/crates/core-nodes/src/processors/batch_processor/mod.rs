@@ -1657,10 +1657,10 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (pipeline_tx, mut pipeline_rx) = runtime_ctrl_msg_channel(10);
-                let (pipeline_return_tx, mut pipeline_return_rx) = pipeline_result_msg_channel(10);
-                ctx.set_runtime_ctrl_sender(pipeline_tx);
-                ctx.set_pipeline_result_sender(pipeline_return_tx);
+                let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_result_tx, mut pipeline_result_rx) = pipeline_result_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                 // Track outputs by event position
                 let mut event_outputs: Vec<EventOutputs> = vec![
@@ -1771,7 +1771,7 @@ mod tests {
 
                         // Drain control channel for DelayData requests and acks/nacks
                         loop {
-                            match pipeline_rx.try_recv() {
+                            match runtime_ctrl_rx.try_recv() {
                                 Ok(RuntimeControlMsg::DelayData { when, data, .. }) => {
                                     looped += 1;
                                     pending_delay = Some((when, data));
@@ -1786,7 +1786,7 @@ mod tests {
                         }
 
                         loop {
-                            match pipeline_return_rx.try_recv() {
+                            match pipeline_result_rx.try_recv() {
                                 Ok(PipelineResultMsg::DeliverAck { ack }) => {
                                     looped += 1;
                                     if let Some((_node_id, ack)) = next_ack(ack) {

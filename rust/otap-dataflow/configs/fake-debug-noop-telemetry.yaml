@@ -27,7 +27,7 @@ groups:
           channel_capacity:
               control:
                 node: 100
-                pipeline: 100
+                runtime: 100
               pdata: 128
 
         nodes:
