@@ -53,6 +53,7 @@ pub struct AckSlot(
 
 impl AckSlot {
     /// Build a new per-signal slot map sized for the configured concurrency.
+    #[must_use]
     pub fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
