@@ -12,7 +12,7 @@ policies:
   channel_capacity:
     control:
       node: 100
-      runtime: 100
+      pipeline: 100
     pdata: 128
 
 engine:

@@ -8,7 +8,7 @@
 //! deterministic time and deterministic interleavings. Rather than
 //! reimplementing shutdown, timers, or Ack/Nack unwinding in a separate
 //! simulator, the harness runs the real [`MessageChannel`],
-//! [`RuntimeCtrlMsgManager`], and [`PipelineResultMsgDispatcher`] on the same
+//! [`RuntimeCtrlMsgManager`], and [`PipelineCompletionMsgDispatcher`] on the same
 //! kind of single-threaded runtime used by local engine components.
 //!
 //! The harness combines three ingredients:

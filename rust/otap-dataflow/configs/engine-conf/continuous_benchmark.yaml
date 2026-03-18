@@ -20,7 +20,7 @@ policies:
   channel_capacity:
     control:
       node: 256
-      runtime: 256
+      pipeline: 256
     pdata: 128
   health: {}
   telemetry:
@@ -65,7 +65,7 @@ groups:
       channel_capacity:
         control:
           node: 256
-          runtime: 256
+          pipeline: 256
         pdata: 128
 
     pipelines:

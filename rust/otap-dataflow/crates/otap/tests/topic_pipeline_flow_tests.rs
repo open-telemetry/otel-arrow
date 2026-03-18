@@ -11,7 +11,7 @@ use otap_df_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIV
 use otap_df_engine::Interests;
 use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
 use otap_df_engine::control::{
-    Controllable, NodeControlMsg, pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+    Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::effect_handler::SourceTagging;
 use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -115,21 +115,21 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let exporter_ctrl = exporter.control_sender();
         let receiver_ctrl = receiver.control_sender();
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-        let (pipeline_result_tx, _pipeline_result_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(32);
+        let (pipeline_completion_tx, _pipeline_completion_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(32);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let exporter_metrics = metrics_reporter.clone();
         let receiver_metrics = metrics_reporter.clone();
         let exporter_ctrl_tx = runtime_ctrl_tx.clone();
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
-        let exporter_result_tx = pipeline_result_tx.clone();
-        let receiver_result_tx = pipeline_result_tx.clone();
+        let exporter_completion_tx = pipeline_completion_tx.clone();
+        let receiver_completion_tx = pipeline_completion_tx.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
                 .start(
                     exporter_ctrl_tx,
-                    exporter_result_tx,
+                    exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
                 )
@@ -139,7 +139,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
             receiver
                 .start(
                     receiver_ctrl_tx,
-                    receiver_result_tx,
+                    receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
                 )
@@ -265,21 +265,21 @@ fn topic_receiver_applies_source_tag_when_enabled() {
         let exporter_ctrl = exporter.control_sender();
         let receiver_ctrl = receiver.control_sender();
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-        let (pipeline_result_tx, _pipeline_result_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(32);
+        let (pipeline_completion_tx, _pipeline_completion_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(32);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let exporter_metrics = metrics_reporter.clone();
         let receiver_metrics = metrics_reporter.clone();
         let exporter_ctrl_tx = runtime_ctrl_tx.clone();
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
-        let exporter_result_tx = pipeline_result_tx.clone();
-        let receiver_result_tx = pipeline_result_tx.clone();
+        let exporter_completion_tx = pipeline_completion_tx.clone();
+        let receiver_completion_tx = pipeline_completion_tx.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
                 .start(
                     exporter_ctrl_tx,
-                    exporter_result_tx,
+                    exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
                 )
@@ -289,7 +289,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
             receiver
                 .start(
                     receiver_ctrl_tx,
-                    receiver_result_tx,
+                    receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
                 )

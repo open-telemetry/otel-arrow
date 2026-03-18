@@ -4,12 +4,12 @@
 use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::control::{
-    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineResultMsg, RuntimeControlMsg,
-    pipeline_result_msg_channel,
+    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg,
+    pipeline_completion_msg_channel,
 };
 use crate::message::Receiver;
 use crate::node::NodeType;
-use crate::pipeline_ctrl::PipelineResultMsgDispatcher;
+use crate::pipeline_ctrl::PipelineCompletionMsgDispatcher;
 use crate::testing::dst::common::{
     DstPData, build_manager, create_mock_control_sender, empty_node_metric_handles, frame,
     recv_controls, recv_until, setup_dst_runtime, yield_cycles,
@@ -46,9 +46,9 @@ async fn run_control_plane_seed(seed: u64) {
 
         let (manager, runtime_tx, _scope, _pipeline_context) =
             build_manager::<DstPData>(256, control_senders.clone());
-        let (result_tx, result_rx) = pipeline_result_msg_channel(256);
-        let dispatcher = PipelineResultMsgDispatcher::new(
-            result_rx,
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(256);
+        let dispatcher = PipelineCompletionMsgDispatcher::new(
+            completion_rx,
             control_senders.clone(),
             empty_node_metric_handles(),
         );
@@ -101,8 +101,8 @@ async fn run_control_plane_seed(seed: u64) {
                 frame(exporter_id.index, Interests::CONSUMER_METRICS, 3),
             ],
         ));
-        result_tx
-            .send(PipelineResultMsg::DeliverAck { ack })
+        completion_tx
+            .send(PipelineCompletionMsg::DeliverAck { ack })
             .await
             .unwrap();
 
@@ -132,12 +132,12 @@ async fn run_control_plane_seed(seed: u64) {
                 ),
             )
         };
-        result_tx
-            .send(PipelineResultMsg::DeliverNack { nack })
+        completion_tx
+            .send(PipelineCompletionMsg::DeliverNack { nack })
             .await
             .unwrap();
-        result_tx
-            .send(PipelineResultMsg::DeliverAck {
+        completion_tx
+            .send(PipelineCompletionMsg::DeliverAck {
                 ack: AckMsg::new(DstPData::new(102)),
             })
             .await
@@ -278,7 +278,7 @@ async fn run_control_plane_seed(seed: u64) {
             "seed={seed}: downstream shutdown did not wait for ReceiverDrained"
         );
 
-        drop(result_tx);
+        drop(completion_tx);
         drop(runtime_tx);
 
         timeout(Duration::from_secs(1), manager_handle)

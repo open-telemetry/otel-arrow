@@ -56,14 +56,14 @@ impl Policies {
                 "{path_prefix}.channel_capacity.control.node must be greater than 0"
             ));
         }
-        if channel_capacity.control.runtime == 0 {
+        if channel_capacity.control.pipeline == 0 {
             errors.push(format!(
-                "{path_prefix}.channel_capacity.control.runtime must be greater than 0"
+                "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
             ));
         }
-        if channel_capacity.control.results == 0 {
+        if channel_capacity.control.completion == 0 {
             errors.push(format!(
-                "{path_prefix}.channel_capacity.control.results must be greater than 0"
+                "{path_prefix}.channel_capacity.control.completion must be greater than 0"
             ));
         }
         if channel_capacity.pdata == 0 {
@@ -224,20 +224,20 @@ pub struct ControlChannelCapacityPolicy {
     /// Capacity used for node control channels.
     #[serde(default = "default_node_control_channel_capacity")]
     pub node: usize,
-    /// Capacity used for the shared runtime orchestration control channel.
-    #[serde(default = "default_runtime_control_channel_capacity")]
-    pub runtime: usize,
+    /// Capacity used for the shared pipeline-runtime orchestration control channel.
+    #[serde(default = "default_pipeline_control_channel_capacity")]
+    pub pipeline: usize,
     /// Capacity used for the shared Ack/Nack completion control channel.
-    #[serde(default = "default_results_control_channel_capacity")]
-    pub results: usize,
+    #[serde(default = "default_completion_control_channel_capacity")]
+    pub completion: usize,
 }
 
 impl Default for ControlChannelCapacityPolicy {
     fn default() -> Self {
         Self {
             node: default_node_control_channel_capacity(),
-            runtime: default_runtime_control_channel_capacity(),
-            results: default_results_control_channel_capacity(),
+            pipeline: default_pipeline_control_channel_capacity(),
+            completion: default_completion_control_channel_capacity(),
         }
     }
 }
@@ -246,11 +246,11 @@ const fn default_node_control_channel_capacity() -> usize {
     256
 }
 
-const fn default_runtime_control_channel_capacity() -> usize {
+const fn default_pipeline_control_channel_capacity() -> usize {
     256
 }
 
-const fn default_results_control_channel_capacity() -> usize {
+const fn default_completion_control_channel_capacity() -> usize {
     512
 }
 
@@ -266,8 +266,8 @@ mod tests {
     fn defaults_match_expected_values() {
         let policies = Policies::default();
         assert_eq!(policies.channel_capacity.control.node, 256);
-        assert_eq!(policies.channel_capacity.control.runtime, 256);
-        assert_eq!(policies.channel_capacity.control.results, 512);
+        assert_eq!(policies.channel_capacity.control.pipeline, 256);
+        assert_eq!(policies.channel_capacity.control.completion, 512);
         assert_eq!(policies.channel_capacity.pdata, 128);
         assert!(policies.telemetry.pipeline_metrics);
         assert!(policies.telemetry.tokio_metrics);
@@ -285,15 +285,15 @@ mod tests {
     fn validates_non_zero_capacities() {
         let mut policies = Policies::default();
         policies.channel_capacity.control.node = 0;
-        policies.channel_capacity.control.runtime = 0;
-        policies.channel_capacity.control.results = 0;
+        policies.channel_capacity.control.pipeline = 0;
+        policies.channel_capacity.control.completion = 0;
         policies.channel_capacity.pdata = 0;
 
         let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 4);
         assert!(errors.iter().any(|e| e.contains("control.node")));
-        assert!(errors.iter().any(|e| e.contains("control.runtime")));
-        assert!(errors.iter().any(|e| e.contains("control.results")));
+        assert!(errors.iter().any(|e| e.contains("control.pipeline")));
+        assert!(errors.iter().any(|e| e.contains("control.completion")));
         assert!(errors.iter().any(|e| e.contains(".pdata")));
     }
 

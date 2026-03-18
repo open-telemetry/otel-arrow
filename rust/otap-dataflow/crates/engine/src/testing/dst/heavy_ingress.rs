@@ -5,12 +5,12 @@ use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::clock;
 use crate::control::{
-    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineResultMsg, RuntimeControlMsg,
-    pipeline_result_msg_channel,
+    AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg,
+    pipeline_completion_msg_channel,
 };
 use crate::message::{Message, MessageChannel, Receiver};
 use crate::node::NodeType;
-use crate::pipeline_ctrl::PipelineResultMsgDispatcher;
+use crate::pipeline_ctrl::PipelineCompletionMsgDispatcher;
 use crate::testing::dst::common::{
     DstPData, build_manager, create_mock_control_sender, empty_node_metric_handles, frame,
     setup_dst_runtime, yield_cycles,
@@ -74,9 +74,9 @@ async fn run_backpressure_interblock_seed(seed: u64) {
 
         let (manager, runtime_tx, _scope, _pipeline_context) =
             build_manager::<DstPData>(32, control_senders.clone());
-        let (result_tx, result_rx) = pipeline_result_msg_channel(16);
-        let dispatcher = PipelineResultMsgDispatcher::new(
-            result_rx,
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
+        let dispatcher = PipelineCompletionMsgDispatcher::new(
+            completion_rx,
             control_senders.clone(),
             empty_node_metric_handles(),
         );
@@ -253,7 +253,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
         });
 
         let exporter_state = state.clone();
-        let exporter_result_tx = result_tx.clone();
+        let exporter_completion_tx = completion_tx.clone();
         let exporter_handle = tokio::task::spawn_local(async move {
             struct ScheduledCompletion {
                 when: std::time::Instant,
@@ -302,13 +302,13 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                                 } else {
                                     NackMsg::new("dst-temporary", item.pdata)
                                 };
-                                exporter_result_tx
-                                    .send(PipelineResultMsg::DeliverNack { nack })
+                                exporter_completion_tx
+                                    .send(PipelineCompletionMsg::DeliverNack { nack })
                                     .await
                                     .expect("exporter should deliver nack");
                             } else {
-                                exporter_result_tx
-                                    .send(PipelineResultMsg::DeliverAck {
+                                exporter_completion_tx
+                                    .send(PipelineCompletionMsg::DeliverAck {
                                         ack: AckMsg::new(item.pdata),
                                     })
                                     .await
@@ -447,7 +447,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
             .expect("exporter should exit")
             .unwrap();
 
-        drop(result_tx);
+        drop(completion_tx);
         drop(runtime_tx);
 
         timeout(Duration::from_secs(1), manager_handle)

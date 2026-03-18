@@ -316,7 +316,7 @@ pub enum RuntimeControlMsg<PData> {
 /// Pipeline-result messages sent by nodes to the pipeline runtime for
 /// Ack/Nack unwinding.
 #[derive(Debug, Clone)]
-pub enum PipelineResultMsg<PData> {
+pub enum PipelineCompletionMsg<PData> {
     /// Deliver an Ack to the preceding subscriber in the pipeline.
     DeliverAck {
         /// The Ack.
@@ -367,11 +367,11 @@ pub type RuntimeCtrlMsgReceiver<PData> = SharedReceiver<RuntimeControlMsg<PData>
 
 /// Type alias for the channel sender used by nodes to send Ack/Nack unwind
 /// requests to the pipeline runtime.
-pub type PipelineResultMsgSender<PData> = SharedSender<PipelineResultMsg<PData>>;
+pub type PipelineCompletionMsgSender<PData> = SharedSender<PipelineCompletionMsg<PData>>;
 
 /// Type alias for the channel receiver used by the pipeline runtime to receive
 /// Ack/Nack unwind requests from nodes.
-pub type PipelineResultMsgReceiver<PData> = SharedReceiver<PipelineResultMsg<PData>>;
+pub type PipelineCompletionMsgReceiver<PData> = SharedReceiver<PipelineCompletionMsg<PData>>;
 
 /// Trait for sending admin commands without depending on the pipeline data type.
 pub trait PipelineAdminSender: Send + Sync {
@@ -398,12 +398,12 @@ pub fn runtime_ctrl_msg_channel<PData>(
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
 }
 
-/// Creates the shared pipeline-result channel used for Ack/Nack unwinding.
-pub fn pipeline_result_msg_channel<PData>(
+/// Creates the shared pipeline-completion channel used for Ack/Nack unwinding.
+pub fn pipeline_completion_msg_channel<PData>(
     capacity: usize,
 ) -> (
-    PipelineResultMsgSender<PData>,
-    PipelineResultMsgReceiver<PData>,
+    PipelineCompletionMsgSender<PData>,
+    PipelineCompletionMsgReceiver<PData>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))

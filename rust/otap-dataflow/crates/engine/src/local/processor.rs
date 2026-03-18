@@ -303,12 +303,12 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
     /// the engine wiring sets this automatically in `prepare_runtime`.
-    pub fn set_pipeline_result_msg_sender(
+    pub fn set_pipeline_completion_msg_sender(
         &mut self,
-        pipeline_result_msg_sender: crate::control::PipelineResultMsgSender<PData>,
+        pipeline_completion_msg_sender: crate::control::PipelineCompletionMsgSender<PData>,
     ) {
         self.core
-            .set_pipeline_result_msg_sender(pipeline_result_msg_sender);
+            .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
     }
 
     // More methods will be added in the future as needed.

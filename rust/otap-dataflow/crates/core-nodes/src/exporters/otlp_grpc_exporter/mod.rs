@@ -784,8 +784,8 @@ mod tests {
     #[cfg(not(windows))]
     use {
         otap_df_engine::control::{
-            Controllable, PipelineResultMsg, PipelineResultMsgSender, RuntimeCtrlMsgSender,
-            pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+            Controllable, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         otap_df_engine::local::message::{LocalReceiver, LocalSender},
         otap_df_engine::message::{Receiver, Sender},
@@ -797,14 +797,16 @@ mod tests {
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
-        pipeline_result_rx: &mut otap_df_engine::control::PipelineResultMsgReceiver<OtapPdata>,
+        pipeline_completion_rx: &mut otap_df_engine::control::PipelineCompletionMsgReceiver<
+            OtapPdata,
+        >,
         expect_ack: bool,
         expected_node_id: usize,
         context: &str,
     ) -> Result<(), String> {
         let result = timeout(Duration::from_secs(1), async {
-            match pipeline_result_rx.recv().await {
-                Ok(PipelineResultMsg::DeliverAck { ack }) => {
+            match pipeline_completion_rx.recv().await {
+                Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
                     if !expect_ack {
                         return Err(format!("Got Ack but expected Nack {}", context));
                     }
@@ -818,7 +820,7 @@ mod tests {
                     }
                     Ok(())
                 }
-                Ok(PipelineResultMsg::DeliverNack { nack }) => {
+                Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
                     if expect_ack {
                         return Err(format!("Got Nack but expected Ack {}", context));
                     }
@@ -1009,12 +1011,13 @@ mod tests {
                 Box::pin(async move {
                     // Validate that we received 3 Acks
                     let mut ack_count = 0;
-                    let mut pipeline_result_rx = ctx.take_pipeline_result_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
 
                     // Validate that we received 3 Acks with correct node_id
                     for i in 0..3 {
                         wait_for_ack_or_nack(
-                            &mut pipeline_result_rx,
+                            &mut pipeline_completion_rx,
                             true,
                             123,
                             &format!("for export #{}", i + 1),
@@ -1076,7 +1079,8 @@ mod tests {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(2);
-        let (pipeline_result_msg_tx, pipeline_result_msg_rx) = pipeline_result_msg_channel(2);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1093,13 +1097,13 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -1115,7 +1119,7 @@ mod tests {
             server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
-            mut pipeline_result_msg_rx: otap_df_engine::control::PipelineResultMsgReceiver<
+            mut pipeline_completion_msg_rx: otap_df_engine::control::PipelineCompletionMsgReceiver<
                 OtapPdata,
             >,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
@@ -1139,7 +1143,7 @@ mod tests {
             pdata_tx.send(pdata).await.unwrap();
             // Wait for NACK since server is down
             wait_for_ack_or_nack(
-                &mut pipeline_result_msg_rx,
+                &mut pipeline_completion_msg_rx,
                 false,
                 123,
                 "when server is down",
@@ -1166,9 +1170,14 @@ mod tests {
             // ensure server got request
             _ = req_receiver.recv().await.unwrap();
             // Wait for ACK since server is up
-            wait_for_ack_or_nack(&mut pipeline_result_msg_rx, true, 123, "when server is up")
-                .await
-                .expect("Expected Ack when server up");
+            wait_for_ack_or_nack(
+                &mut pipeline_completion_msg_rx,
+                true,
+                123,
+                "when server is up",
+            )
+            .await
+            .expect("Expected Ack when server up");
 
             // stop the server
             server_shutdown_signal1.send(true).unwrap();
@@ -1186,7 +1195,7 @@ mod tests {
             pdata_tx.send(pdata).await.unwrap();
             // Wait for NACK since server is down again
             wait_for_ack_or_nack(
-                &mut pipeline_result_msg_rx,
+                &mut pipeline_completion_msg_rx,
                 false,
                 123,
                 "when server is down again",
@@ -1210,9 +1219,14 @@ mod tests {
             pdata_tx.send(pdata).await.unwrap();
             _ = req_receiver.recv().await.unwrap();
             // Wait for ACK after reconnect
-            wait_for_ack_or_nack(&mut pipeline_result_msg_rx, true, 123, "after reconnect")
-                .await
-                .expect("Expected Ack after reconnect");
+            wait_for_ack_or_nack(
+                &mut pipeline_completion_msg_rx,
+                true,
+                123,
+                "after reconnect",
+            )
+            .await
+            .expect("Expected Ack after reconnect");
 
             // check the metrics:
             control_sender
@@ -1295,7 +1309,7 @@ mod tests {
                 start_exporter(
                     exporter,
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter.clone(),
                 ),
                 drive_test(
@@ -1306,7 +1320,7 @@ mod tests {
                     shutdown_sender2,
                     pdata_tx,
                     control_sender,
-                    pipeline_result_msg_rx,
+                    pipeline_completion_msg_rx,
                     req_receiver,
                     metrics_rx,
                     metrics_reporter

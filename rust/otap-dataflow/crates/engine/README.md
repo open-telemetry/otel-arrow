@@ -13,7 +13,7 @@ controller and the in-core engine have distinct responsibilities:
 | Component | Role |
 |-----------|------|
 | Controller | Resolves configuration, allocates cores, creates topic bindings, spawns per-core pipeline runtimes, and drives pipeline lifecycle from admin or process-level events. |
-| Engine | Runs receivers, processors, exporters, channels, timers, result unwinding, and graceful drain/shutdown inside one pipeline runtime on one core. |
+| Engine | Runs receivers, processors, exporters, channels, timers, completion unwinding, and graceful drain/shutdown inside one pipeline runtime on one core. |
 
 This README documents the current `OtapPdata`-based engine used by OTAP
 Dataflow. It focuses on the runtime model that contributors and advanced users
@@ -31,7 +31,7 @@ behavior.
 | Processor | A node that consumes `pdata`, transforms it, and may emit zero, one, or many downstream `pdata` messages. |
 | Exporter / egress | A node that consumes `pdata` and terminates the in-process DAG path. |
 | `pdata` | The data unit flowing on the forward path. In this project, `pdata` means `OtapPdata`. |
-| Ack/Nack / result | The completion state of an in-flight `pdata` request. Results travel on the return path and are surfaced as `Ack` or `Nack` control messages, also referred to as pipeline results elsewhere in this document. |
+| Ack/Nack / completion | The completion state of an in-flight `pdata` request. Completion traffic travels on the return path and is surfaced as `Ack` or `Nack` control messages. |
 | Hyper-edge | A runtime wiring unit that groups compatible logical connections onto one bounded underlying `pdata` channel. |
 | Topic | A named in-process transport used to connect pipelines without a direct DAG edge. Topic receiver/exporter nodes bridge between a pipeline runtime and the topic runtime. |
 
@@ -56,7 +56,7 @@ is running on a core.
 
 One configured pipeline can therefore produce several independent pipeline
 runtimes. Each runtime owns its own nodes, bounded channels, timers, runtime
-control state, and result unwinding state. Immutable resources can be shared,
+control state, and completion unwinding state. Immutable resources can be shared,
 but hot mutable data-path state stays local to the runtime.
 
 The controller can also assign multiple pipeline runtimes to the same core in
@@ -138,8 +138,8 @@ Each pipeline runtime uses three channel families:
    - a **runtime-control channel** for timers, delayed-data requests,
      receiver-drain notifications, and shutdown requests, consumed by
      `RuntimeCtrlMsgManager`
-   - a **pipeline-result channel** for `DeliverAck` / `DeliverNack`, consumed by
-     `PipelineResultMsgDispatcher`
+   - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`, consumed by
+     `PipelineCompletionMsgDispatcher`
 
 For processors and exporters, `MessageChannel` prefers control over `pdata`,
 but it does not give control absolute priority. After a bounded burst of
@@ -168,7 +168,7 @@ The current message families are:
 - **Runtime control messages**: `StartTimer`, `CancelTimer`,
   `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
   `ReceiverDrained`, `Shutdown`
-- **Pipeline result messages**: `DeliverAck`, `DeliverNack`
+- **Pipeline completion messages**: `DeliverAck`, `DeliverNack`
 
 ## Runtime Message Dynamics
 
@@ -191,9 +191,9 @@ behavior:
    consumed by `RuntimeCtrlMsgManager`, which handles orchestration and turns
    due work back into node-control messages.
 
-4. **Ack/Nack result flow**
+4. **Ack/Nack completion flow**
    Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on the
-   pipeline-result channel. `PipelineResultMsgDispatcher` consumes that channel,
+   pipeline-completion channel. `PipelineCompletionMsgDispatcher` consumes that channel,
    unwinds the caller subscription stack stored in `pdata`, and delivers
    `Ack`/`Nack` node-control messages to the closest interested upstream node.
 
@@ -243,7 +243,7 @@ In practice, effect handlers are how nodes:
 
 - send `pdata` to downstream ports
 - subscribe to Ack/Nack interests on the forward path
-- emit Ack/Nack outcomes onto the pipeline-result channel
+- emit Ack/Nack outcomes onto the pipeline-completion channel
 - schedule or cancel timers on the runtime-control channel
 - return delayed data
 - report `ReceiverDrained`
@@ -271,8 +271,8 @@ data requests through the pipeline. Components can opt in to Ack (positive
 acknowledgement) or Nack (negative acknowledgement) control messages.
 
 Ack/Nack unwinding is intentionally separated from timer and shutdown
-orchestration. Nodes publish return-path events on the pipeline-result channel,
-and `PipelineResultMsgDispatcher` unwinds the caller subscription stack and
+orchestration. Nodes publish return-path events on the pipeline-completion channel,
+and `PipelineCompletionMsgDispatcher` unwinds the caller subscription stack and
 forwards `Ack` / `Nack` node-control messages to the closest interested
 upstream node.
 
@@ -479,7 +479,7 @@ The DST approach combines:
 This is important for the control plane because many of the interesting failure
 classes are about ordering and bounded progress, not only about local business
 logic. The DST harness therefore runs real `MessageChannel`,
-`RuntimeCtrlMsgManager`, and `PipelineResultMsgDispatcher` logic inside the
+`RuntimeCtrlMsgManager`, and `PipelineCompletionMsgDispatcher` logic inside the
 engine's single-threaded runtime model.
 
 The current DST scenarios cover five main families:
@@ -487,7 +487,7 @@ The current DST scenarios cover five main families:
 - `MessageChannel` fairness and drain behavior: bounded-fair control vs
   `pdata`, shutdown draining after admission reopens, and deadline-forced
   shutdown when admission stays closed
-- runtime-control vs pipeline-result progress under load: timer and delayed
+- runtime-control vs pipeline-completion progress under load: timer and delayed
   data delivery, Ack/Nack unwinding, `RETURN_DATA`, and receiver-first shutdown
   ordering under mixed runtime noise
 - heavy ingress / backpressure / interblock scenarios: sustained receiver

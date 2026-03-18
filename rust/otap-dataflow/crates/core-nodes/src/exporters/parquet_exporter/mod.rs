@@ -432,8 +432,8 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::{
-        Controllable, PipelineResultMsgSender, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
-        RuntimeCtrlMsgSender, pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+        Controllable, PipelineCompletionMsgSender, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
+        RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -910,8 +910,8 @@ mod test {
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, _pipeline_result_msg_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
 
         exporter
@@ -921,14 +921,14 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -1018,7 +1018,7 @@ mod test {
         // let the exporter's message handling loop and the message sending run concurrently
         let (exporter_result, _) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_result_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 send_messages(base_dir.as_str(), pdata_tx, control_sender)
             )
         });
@@ -1070,8 +1070,8 @@ mod test {
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, _pipeline_result_msg_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1079,14 +1079,14 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -1180,7 +1180,7 @@ mod test {
 
         let (exporter_result, test_run_result) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_result_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 run_test(
                     base_dir.as_str(),
                     pdata_tx,
@@ -1225,8 +1225,8 @@ mod test {
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (runtime_ctrl_msg_tx, mut runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, _pipeline_result_msg_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         exporter
             .set_pdata_receiver(test_node("exp"), pdata_rx)
@@ -1235,14 +1235,14 @@ mod test {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -1252,7 +1252,7 @@ mod test {
 
         let (_exporter_result, _ignored) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_result_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 async move {
                     // Expect StartTelemetryTimer quickly after startup
                     let msg = tokio::time::timeout(Duration::from_millis(1500), async {
@@ -1484,19 +1484,19 @@ mod test {
 
         // Keep pipeline ctrl receiver alive
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, _pipeline_result_msg_rx) =
-            pipeline_result_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -1559,7 +1559,7 @@ mod test {
                 start_exporter(
                     exporter,
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     reporter.clone(),
                 ),
                 drive_test(control_sender, pdata_tx, reporter.clone()),

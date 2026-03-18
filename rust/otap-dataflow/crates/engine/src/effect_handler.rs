@@ -5,7 +5,7 @@
 
 use crate::Interests;
 use crate::control::{
-    AckMsg, NackMsg, PipelineResultMsg, PipelineResultMsgSender, RuntimeControlMsg,
+    AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
     RuntimeCtrlMsgSender,
 };
 use crate::error::Error;
@@ -47,7 +47,7 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
     pub(crate) runtime_ctrl_msg_sender: Option<RuntimeCtrlMsgSender<PData>>,
-    pub(crate) pipeline_result_msg_sender: Option<PipelineResultMsgSender<PData>>,
+    pub(crate) pipeline_completion_msg_sender: Option<PipelineCompletionMsgSender<PData>>,
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
@@ -63,7 +63,7 @@ impl<PData> EffectHandlerCore<PData> {
         Self {
             node_id,
             runtime_ctrl_msg_sender: None,
-            pipeline_result_msg_sender: None,
+            pipeline_completion_msg_sender: None,
             metrics_reporter,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
@@ -79,11 +79,11 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Sets the pipeline result message sender for this effect handler.
-    pub fn set_pipeline_result_msg_sender(
+    pub fn set_pipeline_completion_msg_sender(
         &mut self,
-        pipeline_result_msg_sender: PipelineResultMsgSender<PData>,
+        pipeline_completion_msg_sender: PipelineCompletionMsgSender<PData>,
     ) {
-        self.pipeline_result_msg_sender = Some(pipeline_result_msg_sender);
+        self.pipeline_completion_msg_sender = Some(pipeline_completion_msg_sender);
     }
 
     /// Sets whether outgoing messages need source node tagging.
@@ -255,14 +255,14 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Re-usable function to send a pipeline result message.
-    async fn send_pipeline_result_msg(
+    async fn send_pipeline_completion_msg(
         &self,
-        msg: PipelineResultMsg<PData>,
-    ) -> Result<PipelineResultMsgSender<PData>, SendError<PipelineResultMsg<PData>>> {
-        let pipeline_result_msg_sender = self.pipeline_result_msg_sender.clone()
+        msg: PipelineCompletionMsg<PData>,
+    ) -> Result<PipelineCompletionMsgSender<PData>, SendError<PipelineCompletionMsg<PData>>> {
+        let pipeline_completion_msg_sender = self.pipeline_completion_msg_sender.clone()
             .expect("[Internal Error] Node return sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_result_msg_sender.send(msg).await?;
-        Ok(pipeline_result_msg_sender)
+        pipeline_completion_msg_sender.send(msg).await?;
+        Ok(pipeline_completion_msg_sender)
     }
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
@@ -318,7 +318,7 @@ impl<PData> EffectHandlerCore<PData> {
         PData: crate::Unwindable,
     {
         if ack.accepted.has_frames() {
-            self.send_pipeline_result_msg(PipelineResultMsg::DeliverAck { ack })
+            self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverAck { ack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::RuntimeMsgError {
@@ -336,7 +336,7 @@ impl<PData> EffectHandlerCore<PData> {
         PData: crate::Unwindable,
     {
         if nack.refused.has_frames() {
-            self.send_pipeline_result_msg(PipelineResultMsg::DeliverNack { nack })
+            self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverNack { nack })
                 .await
                 .map(|_| ())
                 .map_err(|e| Error::RuntimeMsgError {

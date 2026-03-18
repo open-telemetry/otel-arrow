@@ -513,11 +513,11 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::control::PipelineResultMsg;
-    use otap_df_engine::control::PipelineResultMsgReceiver;
-    use otap_df_engine::control::PipelineResultMsgSender;
+    use otap_df_engine::control::PipelineCompletionMsg;
+    use otap_df_engine::control::PipelineCompletionMsgReceiver;
+    use otap_df_engine::control::PipelineCompletionMsgSender;
     use otap_df_engine::control::RuntimeCtrlMsgSender;
-    use otap_df_engine::control::{pipeline_result_msg_channel, runtime_ctrl_msg_channel};
+    use otap_df_engine::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::LocalReceiver;
@@ -879,7 +879,8 @@ mod tests {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
-        let (pipeline_result_msg_tx, pipeline_result_msg_rx) = pipeline_result_msg_channel(16);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -892,13 +893,13 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             _ = exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -915,7 +916,7 @@ mod tests {
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
             metrics_reporter: MetricsReporter,
-            mut pipeline_result_msg_rx: PipelineResultMsgReceiver<OtapPdata>,
+            mut pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<OtapPdata>,
         ) {
             // send a request while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -929,12 +930,12 @@ mod tests {
                 .await
                 .expect("Failed to send log message");
 
-            // Wait for a NACK from the pipeline-result channel (server is down)
+            // Wait for a NACK from the pipeline-completion channel (server is down)
             timeout(Duration::from_secs(5), async {
                 loop {
-                    match pipeline_result_msg_rx.recv().await {
-                        Ok(PipelineResultMsg::DeliverNack { .. }) => break,
-                        Ok(PipelineResultMsg::DeliverAck { .. }) => continue,
+                    match pipeline_completion_msg_rx.recv().await {
+                        Ok(PipelineCompletionMsg::DeliverNack { .. }) => break,
+                        Ok(PipelineCompletionMsg::DeliverAck { .. }) => continue,
                         Err(_) => panic!("pipeline result channel closed"),
                     }
                 }
@@ -959,12 +960,12 @@ mod tests {
                 .expect("Failed to send log message");
             _ = req_receiver.recv().await.unwrap(); // ensure we got response
 
-            // Wait for an ACK from the pipeline-result channel (server is up)
+            // Wait for an ACK from the pipeline-completion channel (server is up)
             timeout(Duration::from_secs(5), async {
                 loop {
-                    match pipeline_result_msg_rx.recv().await {
-                        Ok(PipelineResultMsg::DeliverAck { .. }) => break,
-                        Ok(PipelineResultMsg::DeliverNack { .. }) => continue,
+                    match pipeline_completion_msg_rx.recv().await {
+                        Ok(PipelineCompletionMsg::DeliverAck { .. }) => break,
+                        Ok(PipelineCompletionMsg::DeliverNack { .. }) => continue,
                         Err(_) => panic!("pipeline result channel closed"),
                     }
                 }
@@ -1040,7 +1041,7 @@ mod tests {
                 start_exporter(
                     exporter,
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter_start_exporter,
                 )
                 .await
@@ -1056,7 +1057,7 @@ mod tests {
                     req_receiver,
                     metrics_rx,
                     metrics_reporter,
-                    pipeline_result_msg_rx,
+                    pipeline_completion_msg_rx,
                 )
             )
         });
@@ -1205,7 +1206,8 @@ mod tests {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
-        let (pipeline_result_msg_tx, mut pipeline_result_msg_rx) = pipeline_result_msg_channel(16);
+        let (pipeline_completion_msg_tx, mut pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1240,7 +1242,7 @@ mod tests {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
-                        pipeline_result_msg_tx,
+                        pipeline_completion_msg_tx,
                         mr,
                         Interests::empty(),
                     )
@@ -1265,9 +1267,9 @@ mod tests {
                 // Wait for NACK (server returned gRPC error)
                 timeout(Duration::from_secs(5), async {
                     loop {
-                        match pipeline_result_msg_rx.recv().await {
-                            Ok(PipelineResultMsg::DeliverNack { .. }) => break,
-                            Ok(PipelineResultMsg::DeliverAck { .. }) => continue,
+                        match pipeline_completion_msg_rx.recv().await {
+                            Ok(PipelineCompletionMsg::DeliverNack { .. }) => break,
+                            Ok(PipelineCompletionMsg::DeliverAck { .. }) => continue,
                             Err(_) => panic!("pipeline result channel closed"),
                         }
                     }

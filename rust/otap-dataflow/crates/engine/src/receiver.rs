@@ -12,7 +12,9 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineResultMsgSender, RuntimeCtrlMsgSender};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
@@ -302,7 +304,7 @@ impl<PData> ReceiverWrapper<PData> {
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_result_msg_tx: PipelineResultMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
@@ -341,7 +343,7 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -379,7 +381,7 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }

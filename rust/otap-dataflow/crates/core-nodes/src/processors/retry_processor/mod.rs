@@ -683,8 +683,8 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
-        AckMsg, NackMsg, NodeControlMsg, PipelineResultMsg, RuntimeControlMsg,
-        pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+        AckMsg, NackMsg, NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg,
+        pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -866,9 +866,10 @@ mod test {
             .run_test(move |mut ctx| async move {
                 // Set up test runtime control channel
                 let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                let (pipeline_result_tx, mut pipeline_result_rx) = pipeline_result_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
                 ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
-                ctx.set_pipeline_result_sender(pipeline_result_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut retry_count: usize = 0;
                 let pdata_in = create_test_pdata().test_subscribe_to(
@@ -893,7 +894,7 @@ mod test {
                 // received in the loop, this will happen when
                 // number_of_nacks is 4, i.e., the nack before the
                 // final retry attempt.
-                let mut have_pmsg: Option<PipelineResultMsg<OtapPdata>> = None;
+                let mut have_pmsg: Option<PipelineCompletionMsg<OtapPdata>> = None;
                 let mut nacks_delivered = 0;
                 while nacks_delivered < number_of_nacks {
                     let nack = if permanent_error {
@@ -936,8 +937,8 @@ mod test {
                                 panic!("unexpected runtime-control receive error: {:?}", err);
                             }
                         },
-                        recv = pipeline_result_rx.recv() => Some(
-                            recv.expect("pipeline-result channel closed unexpectedly")
+                        recv = pipeline_completion_rx.recv() => Some(
+                            recv.expect("pipeline-completion channel closed unexpectedly")
                         ),
                     };
                     have_pmsg = have_pmsg.or(resp);
@@ -957,7 +958,7 @@ mod test {
 
                     // Verify the processor sent the ACK or NACK upstream
                     have_pmsg = Some(
-                        tokio::time::timeout(Duration::from_secs(1), pipeline_result_rx.recv())
+                        tokio::time::timeout(Duration::from_secs(1), pipeline_completion_rx.recv())
                             .await
                             .expect("timeout waiting for final DeliverAck")
                             .expect("channel closed"),
@@ -965,7 +966,7 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineResultMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
                         let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
@@ -980,7 +981,7 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineResultMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason

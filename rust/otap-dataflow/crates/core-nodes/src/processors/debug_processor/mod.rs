@@ -1380,18 +1380,18 @@ mod tests {
     }
 
     /// Creates a debug processor test setup for ACK/NACK forwarding tests.
-    /// Returns (test_runtime, processor, runtime_ctrl_tx, pipeline_result_tx, pipeline_result_rx, output_file).
+    /// Returns (test_runtime, processor, runtime_ctrl_tx, pipeline_completion_tx, pipeline_completion_rx, output_file).
     fn create_ack_nack_test_setup(
         output_file: &str,
     ) -> (
         TestRuntime<OtapPdata>,
         ProcessorWrapper<OtapPdata>,
         otap_df_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineResultMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineResultMsgReceiver<OtapPdata>,
+        otap_df_engine::control::PipelineCompletionMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
         String,
     ) {
-        use otap_df_engine::control::{pipeline_result_msg_channel, runtime_ctrl_msg_channel};
+        use otap_df_engine::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
 
         let test_runtime = TestRuntime::new();
         let signals = HashSet::from([SignalActive::Logs]);
@@ -1418,7 +1418,8 @@ mod tests {
         );
 
         let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(10);
-        let (pipeline_result_tx, pipeline_result_rx) = pipeline_result_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_tx, pipeline_completion_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         drop(runtime_ctrl_rx);
 
@@ -1426,8 +1427,8 @@ mod tests {
             test_runtime,
             processor,
             runtime_ctrl_tx,
-            pipeline_result_tx,
-            pipeline_result_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
             output_file.to_string(),
         )
     }
@@ -1441,15 +1442,15 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{AckMsg, PipelineResultMsg};
+        use otap_df_engine::control::{AckMsg, PipelineCompletionMsg};
         use otap_df_otap::testing::TestCallData;
 
         let (
             test_runtime,
             processor,
             runtime_ctrl_tx,
-            pipeline_result_tx,
-            mut pipeline_result_rx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_ack_test.txt");
 
@@ -1458,7 +1459,7 @@ mod tests {
             .run_test(move |mut ctx| {
                 Box::pin(async move {
                     ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_result_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 42usize;
@@ -1472,8 +1473,8 @@ mod tests {
                         .await
                         .expect("Processor failed on ACK");
 
-                    match pipeline_result_rx.try_recv() {
-                        Ok(PipelineResultMsg::DeliverAck { ack }) => {
+                    match pipeline_completion_rx.try_recv() {
+                        Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
@@ -1500,15 +1501,15 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{NackMsg, PipelineResultMsg};
+        use otap_df_engine::control::{NackMsg, PipelineCompletionMsg};
         use otap_df_otap::testing::TestCallData;
 
         let (
             test_runtime,
             processor,
             runtime_ctrl_tx,
-            pipeline_result_tx,
-            mut pipeline_result_rx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_nack_test.txt");
 
@@ -1517,7 +1518,7 @@ mod tests {
             .run_test(move |mut ctx| {
                 Box::pin(async move {
                     ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_result_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 99usize;
@@ -1532,8 +1533,8 @@ mod tests {
                         .await
                         .expect("Processor failed on NACK");
 
-                    match pipeline_result_rx.try_recv() {
-                        Ok(PipelineResultMsg::DeliverNack { nack }) => {
+                    match pipeline_completion_rx.try_recv() {
+                        Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
@@ -1567,8 +1568,8 @@ mod tests {
             test_runtime,
             processor,
             runtime_ctrl_tx,
-            pipeline_result_tx,
-            mut pipeline_result_rx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
             output_file,
         ) = create_ack_nack_test_setup("debug_output_no_subscriber_test.txt");
 
@@ -1577,7 +1578,7 @@ mod tests {
             .run_test(move |mut ctx| {
                 Box::pin(async move {
                     ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
-                    ctx.set_pipeline_result_sender(pipeline_result_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let pdata_no_sub = create_empty_test_pdata();
 
@@ -1594,7 +1595,7 @@ mod tests {
 
                     // Verify no messages were forwarded (channel should be empty)
                     assert!(
-                        pipeline_result_rx.try_recv().is_err(),
+                        pipeline_completion_rx.try_recv().is_err(),
                         "Expected no forwarded messages when there are no subscribers"
                     );
                 })

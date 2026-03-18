@@ -9,14 +9,14 @@ use crate::Unwindable;
 use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, Controllable, NodeControlMsg, PipelineResultMsgReceiver,
-    PipelineResultMsgSender, RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender,
+    ControlSenders, Controllable, NodeControlMsg, PipelineCompletionMsgReceiver,
+    PipelineCompletionMsgSender, RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{
-    NodeMetricHandles, PipelineResultMsgDispatcher, RuntimeCtrlMsgManager,
+    NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
     report_node_metrics_with_handles,
 };
 use crate::terminal_state::TerminalState;
@@ -175,8 +175,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         metrics_reporter: MetricsReporter,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
-        pipeline_result_msg_tx: PipelineResultMsgSender<PData>,
-        pipeline_result_msg_rx: PipelineResultMsgReceiver<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -222,14 +222,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
-            let pipeline_result_msg_tx = pipeline_result_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
                     .start(
                         runtime_ctrl_msg_tx,
-                        pipeline_result_msg_tx,
+                        pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                     )
@@ -270,13 +270,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
-            let pipeline_result_msg_tx = pipeline_result_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
                     .start(
                         runtime_ctrl_msg_tx,
-                        pipeline_result_msg_tx,
+                        pipeline_completion_msg_tx,
                         metrics_reporter,
                         node_interests,
                     )
@@ -314,14 +314,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
-            let pipeline_result_msg_tx = pipeline_result_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = receiver
                     .start(
                         runtime_ctrl_msg_tx,
-                        pipeline_result_msg_tx,
+                        pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                     )
@@ -363,7 +363,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         // Each node holds its own clone and without this drop, the PipelinCtrlMsgManager
         // can only exit via a timeout.
         drop(runtime_ctrl_msg_tx);
-        drop(pipeline_result_msg_tx);
+        drop(pipeline_completion_msg_tx);
 
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
         let return_control_senders = control_senders.clone();
@@ -386,8 +386,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         }));
 
         futures.push(local_tasks.spawn_local(async move {
-            let dispatcher = PipelineResultMsgDispatcher::new(
-                pipeline_result_msg_rx,
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                pipeline_completion_msg_rx,
                 return_control_senders,
                 return_node_metric_handles,
             );

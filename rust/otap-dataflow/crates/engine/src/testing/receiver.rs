@@ -9,7 +9,7 @@
 use crate::Interests;
 use crate::config::ReceiverConfig;
 use crate::control::{
-    Controllable, NodeControlMsg, RuntimeCtrlMsgReceiver, pipeline_result_msg_channel,
+    Controllable, NodeControlMsg, RuntimeCtrlMsgReceiver, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
 };
 use crate::error::Error;
@@ -270,7 +270,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             }
         };
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, _pipeline_result_msg_rx) = pipeline_result_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(10);
 
         self.receiver
             .set_pdata_sender(node_id, "".into(), pdata_sender)
@@ -286,7 +287,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 .receiver
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )

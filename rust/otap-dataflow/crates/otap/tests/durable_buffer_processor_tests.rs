@@ -26,7 +26,7 @@ use otap_df_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN
 use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
-    RuntimeControlMsg, pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+    RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
@@ -472,9 +472,9 @@ where
         .expect("failed to build runtime pipeline");
 
     let (runtime_ctrl_tx, runtime_ctrl_rx) =
-        runtime_ctrl_msg_channel(channel_capacity_policy.control.runtime);
-    let (pipeline_result_tx, pipeline_result_rx) =
-        pipeline_result_msg_channel(channel_capacity_policy.control.results);
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
     let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -537,8 +537,8 @@ where
             metrics_reporter,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
-            pipeline_result_tx,
-            pipeline_result_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
         )
     };
 
@@ -757,9 +757,9 @@ where
         .expect("failed to build runtime pipeline");
 
     let (runtime_ctrl_tx, runtime_ctrl_rx) =
-        runtime_ctrl_msg_channel(channel_capacity_policy.control.runtime);
-    let (pipeline_result_tx, pipeline_result_rx) =
-        pipeline_result_msg_channel(channel_capacity_policy.control.results);
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
     let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -829,8 +829,8 @@ where
             metrics_reporter,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
-            pipeline_result_tx,
-            pipeline_result_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
         )
     };
 

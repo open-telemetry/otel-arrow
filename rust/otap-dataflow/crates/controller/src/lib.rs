@@ -64,8 +64,8 @@ use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    PipelineResultMsgReceiver, PipelineResultMsgSender, RuntimeCtrlMsgReceiver,
-    RuntimeCtrlMsgSender, pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+    PipelineCompletionMsgReceiver, PipelineCompletionMsgSender, RuntimeCtrlMsgReceiver,
+    RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
@@ -1191,9 +1191,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     core_id: core_id.id,
                 };
                 let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
-                    runtime_ctrl_msg_channel(channel_capacity_policy.control.runtime);
-                let (pipeline_result_msg_tx, pipeline_result_msg_rx) =
-                    pipeline_result_msg_channel(channel_capacity_policy.control.results);
+                    runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+                let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+                    pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
                 ctrl_msg_senders.push(runtime_ctrl_msg_tx.clone());
 
                 let pipeline_config = pipeline.clone();
@@ -1244,8 +1244,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             metrics_reporter,
                             runtime_ctrl_msg_tx,
                             runtime_ctrl_msg_rx,
-                            pipeline_result_msg_tx,
-                            pipeline_result_msg_rx,
+                            pipeline_completion_msg_tx,
+                            pipeline_completion_msg_rx,
                             engine_tracing_setup,
                             None,
                         )
@@ -1553,9 +1553,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         // Create control message channel for internal pipeline
         let (internal_ctrl_tx, internal_ctrl_rx) =
-            runtime_ctrl_msg_channel(channel_capacity_policy.control.runtime);
+            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (internal_return_tx, internal_return_rx) =
-            pipeline_result_msg_channel(channel_capacity_policy.control.results);
+            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
@@ -1630,8 +1630,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         metrics_reporter: MetricsReporter,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
-        pipeline_result_msg_tx: PipelineResultMsgSender<PData>,
-        pipeline_result_msg_rx: PipelineResultMsgReceiver<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
@@ -1715,8 +1715,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     metrics_reporter,
                     runtime_ctrl_msg_tx,
                     runtime_ctrl_msg_rx,
-                    pipeline_result_msg_tx,
-                    pipeline_result_msg_rx,
+                    pipeline_completion_msg_tx,
+                    pipeline_completion_msg_rx,
                 )
                 .map_err(|e| {
                     otel_error!(

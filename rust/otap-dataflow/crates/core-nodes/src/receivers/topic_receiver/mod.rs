@@ -461,7 +461,8 @@ mod tests {
     use otap_df_config::topic::TopicAckPropagationMode;
     use otap_df_engine::config::ReceiverConfig;
     use otap_df_engine::control::{
-        AckMsg, Controllable, NodeControlMsg, pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+        AckMsg, Controllable, NodeControlMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::message::Sender as PDataSender;
@@ -581,14 +582,14 @@ mod tests {
 
             let receiver_ctrl = receiver.control_sender();
             let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-            let (pipeline_result_tx, _pipeline_result_rx) =
-                pipeline_result_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
                         runtime_ctrl_tx,
-                        pipeline_result_tx,
+                        pipeline_completion_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )
@@ -679,14 +680,14 @@ mod tests {
                 .expect("receiver output channel should be wired");
 
             let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-            let (pipeline_result_tx, _pipeline_result_rx) =
-                pipeline_result_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
                         runtime_ctrl_tx,
-                        pipeline_result_tx,
+                        pipeline_completion_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )

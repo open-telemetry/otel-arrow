@@ -11,8 +11,8 @@ use crate::Interests;
 use crate::config::ExporterConfig;
 use crate::context::{ControllerContext, PipelineContext};
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineResultMsgReceiver, RuntimeCtrlMsgReceiver,
-    pipeline_result_msg_channel, runtime_ctrl_msg_channel,
+    Controllable, NodeControlMsg, PipelineCompletionMsgReceiver, RuntimeCtrlMsgReceiver,
+    pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
@@ -45,8 +45,8 @@ pub struct TestContext<PData> {
     counters: CtrlMsgCounters,
     /// Receiver for runtime control messages
     runtime_ctrl_msg_receiver: Option<RuntimeCtrlMsgReceiver<PData>>,
-    /// Receiver for pipeline-result messages
-    pipeline_result_msg_receiver: Option<PipelineResultMsgReceiver<PData>>,
+    /// Receiver for pipeline-completion messages
+    pipeline_completion_msg_receiver: Option<PipelineCompletionMsgReceiver<PData>>,
 }
 
 impl<PData> Clone for TestContext<PData> {
@@ -56,7 +56,7 @@ impl<PData> Clone for TestContext<PData> {
             pdata_tx: self.pdata_tx.clone(),
             counters: self.counters.clone(),
             runtime_ctrl_msg_receiver: None,
-            pipeline_result_msg_receiver: None,
+            pipeline_completion_msg_receiver: None,
         }
     }
 }
@@ -74,7 +74,7 @@ impl<PData> TestContext<PData> {
             pdata_tx,
             counters,
             runtime_ctrl_msg_receiver: None,
-            pipeline_result_msg_receiver: None,
+            pipeline_completion_msg_receiver: None,
         }
     }
 
@@ -90,12 +90,12 @@ impl<PData> TestContext<PData> {
         self.runtime_ctrl_msg_receiver.take()
     }
 
-    /// Takes the pipeline-result message receiver from the context.
+    /// Takes the pipeline-completion message receiver from the context.
     /// Returns None if already taken.
-    pub const fn take_pipeline_result_receiver(
+    pub const fn take_pipeline_completion_receiver(
         &mut self,
-    ) -> Option<PipelineResultMsgReceiver<PData>> {
-        self.pipeline_result_msg_receiver.take()
+    ) -> Option<PipelineCompletionMsgReceiver<PData>> {
+        self.pipeline_completion_msg_receiver.take()
     }
 
     /// Sends a timer tick control message.
@@ -188,7 +188,7 @@ pub struct TestPhase<PData> {
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
 
     runtime_ctrl_msg_receiver: RuntimeCtrlMsgReceiver<PData>,
-    pipeline_result_msg_receiver: PipelineResultMsgReceiver<PData>,
+    pipeline_completion_msg_receiver: PipelineCompletionMsgReceiver<PData>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -265,7 +265,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             }
         };
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_result_msg_tx, pipeline_result_msg_rx) = pipeline_result_msg_channel(10);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(10);
 
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
@@ -277,7 +278,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
-                    pipeline_result_msg_tx,
+                    pipeline_completion_msg_tx,
                     metrics_reporter_start,
                     Interests::empty(),
                 )
@@ -297,7 +298,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             pdata_sender: pdata_tx,
             run_exporter_handle,
             runtime_ctrl_msg_receiver: runtime_ctrl_msg_rx,
-            pipeline_result_msg_receiver: pipeline_result_msg_rx,
+            pipeline_completion_msg_receiver: pipeline_completion_msg_rx,
         }
     }
 }
@@ -320,7 +321,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         _ = self.local_tasks.spawn_local(f(ctx_test));
 
         context.runtime_ctrl_msg_receiver = Some(self.runtime_ctrl_msg_receiver);
-        context.pipeline_result_msg_receiver = Some(self.pipeline_result_msg_receiver);
+        context.pipeline_completion_msg_receiver = Some(self.pipeline_completion_msg_receiver);
 
         ValidationPhase {
             rt: self.rt,

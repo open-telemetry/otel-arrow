@@ -123,22 +123,22 @@ impl<PData> TestContext<PData> {
         }
     }
 
-    /// Sets the pipeline-result message sender on the effect handler.
+    /// Sets the pipeline-completion message sender on the effect handler.
     /// This is needed for processor ACK/NACK handling.
-    pub fn set_pipeline_result_sender(
+    pub fn set_pipeline_completion_sender(
         &mut self,
-        pipeline_result_sender: crate::control::PipelineResultMsgSender<PData>,
+        pipeline_completion_sender: crate::control::PipelineCompletionMsgSender<PData>,
     ) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_sender);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_sender);
             }
             ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_sender);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_sender);
             }
         }
     }

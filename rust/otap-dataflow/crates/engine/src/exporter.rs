@@ -12,7 +12,9 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineResultMsgSender, RuntimeCtrlMsgSender};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
@@ -270,7 +272,7 @@ impl<PData> ExporterWrapper<PData> {
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_result_msg_tx: PipelineResultMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
@@ -298,7 +300,7 @@ impl<PData> ExporterWrapper<PData> {
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 let message_channel = message::MessageChannel::new(
                     Receiver::Local(control_receiver),
@@ -331,7 +333,7 @@ impl<PData> ExporterWrapper<PData> {
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 effect_handler
                     .core
-                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
                 let message_channel = shared::MessageChannel::new(
                     control_receiver,

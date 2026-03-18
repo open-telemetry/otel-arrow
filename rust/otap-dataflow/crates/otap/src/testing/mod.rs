@@ -9,7 +9,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
-    control::{CallData, PipelineResultMsg},
+    control::{CallData, PipelineCompletionMsg},
 };
 use otap_df_pdata::OtlpProtoBytes;
 use prost::Message;
@@ -130,7 +130,7 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
             result.expect("success");
 
             let mut pipeline_rx = ctx
-                .take_pipeline_result_receiver()
+                .take_pipeline_completion_receiver()
                 .expect("pipeline result receiver should be present in no-subscription test");
 
             match pipeline_rx.recv().await {
@@ -170,21 +170,21 @@ pub fn test_exporter_with_subscription(
             result.expect("success");
 
             let mut pipeline_rx = ctx
-                .take_pipeline_result_receiver()
+                .take_pipeline_completion_receiver()
                 .expect("pipeline result receiver should be present in subscription test");
             // Loop to skip acks/nacks that have no matching subscriber
             // (e.g., exporter sends ack but subscription is NACKS-only).
             // In the real controller, unwind_ack would consume these silently.
             let (trigger, calldata, reqdata, reason) = loop {
                 match pipeline_rx.recv().await {
-                    Ok(PipelineResultMsg::DeliverAck { ack }) => {
+                    Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
                         if let Some((node_id, ack)) = next_ack(ack) {
                             assert_eq!(node_id, 654321);
                             break (Interests::ACKS, ack.unwind.route.calldata, Some(ack.accepted), "success".into());
                         }
                         // No ACKS subscriber — skip, like the controller would.
                     }
-                    Ok(PipelineResultMsg::DeliverNack { nack }) => {
+                    Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
                         if let Some((node_id, nack)) = next_nack(nack) {
                             assert_eq!(node_id, 654321);
                             break (Interests::NACKS, nack.unwind.route.calldata, Some(nack.refused), nack.reason);
