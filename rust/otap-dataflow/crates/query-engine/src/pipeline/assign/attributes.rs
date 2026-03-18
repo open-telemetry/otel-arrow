@@ -1,11 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Attribute upsert logic for the assign pipeline stage.
-//!
-//! This module implements [`upsert_attributes`], which merges new attribute values into an existing
-//! attributes record batch. It handles both updating existing attribute rows and inserting new ones,
-//! while preserving dictionary encoding semantics and choosing optimal dictionary key sizes.
+//! This module contains an optimized function for upserting attribute values
+//! [`upsert_attributes`], which merges new attribute values into an existing attributes
+//! [`RecordBatch`].
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -15,11 +13,11 @@ use arrow::util::bit_iterator::BitSliceIterator;
 use smallvec::{SmallVec, smallvec};
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray, RecordBatch, StringArray,
-    UInt8Array, UInt16Array, make_array,
+    Array, ArrayData, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray,
+    MutableArrayData, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
 };
 use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::SlicesIterator;
+use arrow::compute::{SlicesIterator, cast};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -29,19 +27,29 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 
-// TODO comment on what this is about.
+/// Size of [`SmallVec`] instances.
+///
+/// There are several places within this code that we allocate vectors of some where the length is
+/// capped at the number of unique keys being inserted. Ideally, we'd like to avoid the allocation
+/// of all these small heap allocated vectors, which is why we use small vec. This number seems
+/// like probably a reasonable number of insertions to accommodate before the underlying
+/// implementation spills to something heap allocated.
 const SMALLVEC_SIZE: usize = 16;
 
 /// A single attribute upsert specification for use with [`upsert_attributes`].
 ///
-/// Each upsert targets a single attribute key and provides the mask identifying which existing
-/// rows have that key, the new values to assign, and the ordered parent IDs (updates first,
-/// then inserts).
+/// Each upsert targets a single attribute key and provides
+/// - the mask identifying which existing rows have that key (e.g. a mask of which rows to update
+///   values for this instance)
+/// - the new values to assign
+/// - and the ordered parent IDs (updates first, then inserts).
+///
+/// TODO confirm comments about order of parent IDs ...
 ///
 /// When multiple `AttributeUpsert`s are passed to [`upsert_attributes`], their keys **must be
 /// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
-/// for enforcing it (typically at the planner level). Passing duplicate keys results in
-/// undefined behavior.
+/// for enforcing it (typically at the planner level). Passing duplicate keys results in undefined
+/// behavior and may result in duplicate attributes.
 pub(crate) struct AttributeUpsert<'a> {
     /// The attribute key being upserted (e.g., "http.method").
     pub attrs_key: &'a str,
@@ -57,13 +65,15 @@ pub(crate) struct AttributeUpsert<'a> {
 struct ResolvedUpsert<'a> {
     attrs_key: &'a str,
     mask: &'a BooleanArray,
-    attr_value_type: AttributeValueType,
     target_col_name: Option<&'static str>,
     new_values_array: Option<ArrayRef>,
     new_values_scalar: Option<&'a ScalarValue>,
     upsert_parent_ids: &'a UInt16Array,
     num_updates: usize,
     num_inserts: usize,
+
+    /// the value that should be in the "type" column for non-null rows
+    attr_value_type: AttributeValueType,
 }
 
 /// Upsert one or more attributes in an existing attributes record batch.
@@ -85,21 +95,21 @@ struct ResolvedUpsert<'a> {
 /// # Returns
 ///
 /// A new `RecordBatch` with the same schema as `existing_attrs` (potentially with new value
-/// columns added), containing all passthrough rows, updated rows, and newly inserted rows.
-/// Insert rows are appended in upsert order: all inserts for `upserts[0]` first, then
-/// `upserts[1]`, etc.
+/// columns added), containing all non-updated (passthrough) rows, updated rows, and newly
+/// inserted rows. Insert rows are appended in upsert order at the tail of the [`RecordBatch`]
 pub(crate) fn upsert_attributes(
     existing_attrs: &RecordBatch,
     upserts: &[AttributeUpsert<'_>],
 ) -> Result<RecordBatch> {
     let num_existing = existing_attrs.num_rows();
 
-    // Resolve each upsert: determine type, target column, extract values, compute counts.
+    // Resolve each upsert: determine type, target column, extract values, compute counts, and
+    // other properties used to create the final result.
     let resolved: SmallVec<[ResolvedUpsert<'_>; SMALLVEC_SIZE]> = upserts
         .iter()
         .map(|u| {
             let data_type = u.new_values.data_type();
-            let (attr_value_type, target_col_name) = resolve_attr_type(&data_type)?;
+            let (attr_value_type, target_col_name) = resolve_attr_type_and_col_name(&data_type)?;
             let num_updates = u.existing_key_mask.true_count();
             let num_inserts = u.upsert_parent_ids.len() - num_updates;
             let new_values_array = match &u.new_values {
@@ -122,14 +132,13 @@ pub(crate) fn upsert_attributes(
                 num_inserts,
             })
         })
-        .collect::<Result<SmallVec<[_; SMALLVEC_SIZE]>>>()?;
+        .collect::<Result<_>>()?;
 
     let total_num_inserts: usize = resolved.iter().map(|r| r.num_inserts).sum();
     let total_output_rows = num_existing + total_num_inserts;
 
-    // Build the row ownership index: for each existing row, which upsert (if any) owns it.
-    // `None` = passthrough, `Some(i)` = upsert `i`'s mask is true for this row.
-    // Masks are mutually exclusive (each row has one key), so at most one upsert owns any row.
+    // Build the row ownership index which indicates, for each existing range of existing values,
+    // which upsert (if any) should write to it.
     let row_owners = build_row_owners(num_existing, &resolved);
 
     let existing_schema = existing_attrs.schema();
@@ -139,23 +148,22 @@ pub(crate) fn upsert_attributes(
     let mut output_columns: Vec<ArrayRef> =
         Vec::with_capacity(existing_schema.fields().len() + resolved.len());
 
-    // Track which target column names were found in the existing schema so we know which
-    // new columns to create after the loop.
+    // Track which upserts were written to columns that already existed. This information will be
+    // used to indicate whether we need to create new values columns for some attribute type that
+    // may not have been present in the original schema.
     let mut written_target_cols: SmallVec<[bool; SMALLVEC_SIZE]> = smallvec![false; resolved.len()];
 
-    // Build each output column by merging existing values with new values.
+    // Build each output column by merging existing rows with new rows.
     for (col_idx, field) in existing_schema.fields().iter().enumerate() {
         let col_name = field.name().as_str();
         let existing_col = existing_attrs.column(col_idx);
 
         let (merged_field, merged_col) = match col_name {
-            // parent_id: append insert parent IDs from each upsert in order.
-            c if c == consts::PARENT_ID => {
+            consts::PARENT_ID => {
                 merge_parent_id_column(field, existing_col, &resolved, total_num_inserts)?
             }
 
-            // type: use row_owners to write per-upsert type discriminants + insert blocks.
-            c if c == consts::ATTRIBUTE_TYPE => merge_type_column_batched(
+            consts::ATTRIBUTE_TYPE => merge_type_column(
                 field,
                 existing_col,
                 &resolved,
@@ -163,22 +171,18 @@ pub(crate) fn upsert_attributes(
                 total_output_rows,
             )?,
 
-            // key: existing rows unchanged, append multi-key insert blocks.
-            c if c == consts::ATTRIBUTE_KEY => {
-                merge_key_column_batched(field, existing_col, &resolved, total_output_rows)?
+            consts::ATTRIBUTE_KEY => {
+                merge_key_column(field, existing_col, &resolved, total_output_rows)?
             }
 
-            // All other columns (value columns): merge_value_column_batched handles both
-            // target columns (at least one upsert is active) and non-target columns (all
-            // upserts are inactive → passthrough with nulls for updates/inserts).
             _ => {
-                // Mark any upserts that target this column as written.
+                // Mark any upserts that target this column as "written".
                 for (i, r) in resolved.iter().enumerate() {
                     if !written_target_cols[i] && r.target_col_name == Some(col_name) {
                         written_target_cols[i] = true;
                     }
                 }
-                merge_value_column_batched(
+                merge_value_column(
                     field,
                     existing_col,
                     &resolved,
@@ -194,7 +198,9 @@ pub(crate) fn upsert_attributes(
     }
 
     // Create new value columns for any upsert targets not found in the existing schema.
-    // Deduplicate by column name (multiple upserts may target the same new column).
+    //
+    // TODO - not sure the logic here is correct -- this will  create new columns from
+    // only a single source?
     let mut created_cols: SmallVec<[&str; SMALLVEC_SIZE]> = SmallVec::new();
     for (i, r) in resolved.iter().enumerate() {
         if written_target_cols[i] {
@@ -220,22 +226,47 @@ pub(crate) fn upsert_attributes(
     Ok(RecordBatch::try_new(output_schema, output_columns)?)
 }
 
-/// Build the row ownership index.
+/// Resolve the OTAP attribute value type and target value column name from a data type.
 ///
-/// A contiguous run of rows with the same ownership.
-///
-/// `owner` is `None` for passthrough rows and `Some(upsert_index)` for rows owned by an upsert.
+/// Unwraps dictionary encoding to get the logical type, then maps to the appropriate
+/// [`AttributeValueType`] and column name.
+fn resolve_attr_type_and_col_name(
+    data_type: &DataType,
+) -> Result<(AttributeValueType, Option<&'static str>)> {
+    // unwrap dictionary encoding to get the logical value type
+    let logical_type = match data_type {
+        DataType::Dictionary(_, v) => v.as_ref(),
+        other => other,
+    };
+
+    match logical_type {
+        DataType::Null => Ok((AttributeValueType::Empty, None)),
+        DataType::Utf8 => Ok((AttributeValueType::Str, Some(consts::ATTRIBUTE_STR))),
+        DataType::Boolean => Ok((AttributeValueType::Bool, Some(consts::ATTRIBUTE_BOOL))),
+        DataType::Int64 => Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT))),
+        DataType::Float64 => Ok((AttributeValueType::Double, Some(consts::ATTRIBUTE_DOUBLE))),
+        DataType::Binary => Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES))),
+        other => Err(Error::ExecutionError {
+            cause: format!("unsupported attribute value type: {other:?}"),
+        }),
+    }
+}
+
+/// A contiguous run of rows with the same ownership."Ownership" meaning the source of the rows
+/// for each column in the final result.
 struct OwnershipRun {
     start: usize,
     end: usize,
-    owner: Option<u8>,
+
+    /// `None` for passthrough rows, meaning the rows were not updated and we should take the
+    /// values for these rows from the original record batch.
+    ///
+    /// `Some(upsert_index)` for rows owned by an upsert, meaning we will calculate new row for
+    /// each column using the resolved upsert at this index.
+    owner: Option<usize>,
 }
 
 /// Build the row ownership index as a sorted list of contiguous runs.
-///
-/// Each run represents a range `[start, end)` of existing rows that are either passthrough
-/// (`owner=None`) or owned by a specific upsert (`owner=Some(idx)`). Runs are non-overlapping,
-/// sorted by start position, and cover all `num_existing` rows.
 ///
 /// Since upsert masks are mutually exclusive (each row has one key), at most one upsert can
 /// own any given row.
@@ -293,12 +324,12 @@ fn build_row_owners(num_existing: usize, resolved: &[ResolvedUpsert<'_>]) -> Vec
         runs.push(OwnershipRun {
             start,
             end,
-            owner: Some(iter_idx as u8),
+            owner: Some(iter_idx),
         });
         pos = end;
     }
 
-    // Trailing passthrough.
+    // Trailing passthrough existing rows
     if pos < num_existing {
         runs.push(OwnershipRun {
             start: pos,
@@ -344,13 +375,12 @@ fn merge_parent_id_column(
         .map(|r| r.upsert_parent_ids.to_data())
         .collect();
 
-    let mut sources: Vec<&arrow::array::ArrayData> = Vec::with_capacity(1 + resolved.len());
+    let mut sources = Vec::with_capacity(1 + resolved.len());
     sources.push(&existing_data);
     for d in &upsert_data {
         sources.push(d);
     }
-
-    let mut mutable = arrow::array::MutableArrayData::new(sources, false, total_output_rows);
+    let mut mutable = MutableArrayData::new(sources, false, total_output_rows);
 
     // Bulk copy existing rows.
     mutable.extend(0, 0, num_existing);
@@ -366,36 +396,13 @@ fn merge_parent_id_column(
     Ok((field.as_ref().clone(), result))
 }
 
-/// Resolve the OTAP attribute value type and target value column name from a data type.
-///
-/// Unwraps dictionary encoding to get the logical type, then maps to the appropriate
-/// [`AttributeValueType`] and column name.
-fn resolve_attr_type(data_type: &DataType) -> Result<(AttributeValueType, Option<&'static str>)> {
-    // unwrap dictionary encoding to get the logical value type
-    let logical_type = match data_type {
-        DataType::Dictionary(_, v) => v.as_ref(),
-        other => other,
-    };
-
-    match logical_type {
-        DataType::Null => Ok((AttributeValueType::Empty, None)),
-        DataType::Utf8 => Ok((AttributeValueType::Str, Some(consts::ATTRIBUTE_STR))),
-        DataType::Boolean => Ok((AttributeValueType::Bool, Some(consts::ATTRIBUTE_BOOL))),
-        DataType::Int64 => Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT))),
-        DataType::Float64 => Ok((AttributeValueType::Double, Some(consts::ATTRIBUTE_DOUBLE))),
-        DataType::Binary => Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES))),
-        other => Err(Error::ExecutionError {
-            cause: format!("unsupported attribute value type: {other:?}"),
-        }),
-    }
-}
-
 /// Merge the `type` column for a batched upsert.
 ///
 /// For passthrough runs: copy from existing in bulk.
 /// For owned runs: fill with the owning upsert's type discriminant.
-/// For insert rows: append each upsert's type discriminant × its insert count.
-fn merge_type_column_batched(
+/// For insert rows: append each upsert's type discriminant
+/// For any null values in the type data being updated/inserted, we set the type to Empty.
+fn merge_type_column(
     field: &Field,
     existing_col: &ArrayRef,
     resolved: &[ResolvedUpsert<'_>],
@@ -417,7 +424,7 @@ fn merge_type_column_batched(
                 output.extend_from_slice(&existing_types.values()[run.start..run.end]);
             }
             Some(idx) => {
-                let resolved_upsert = &resolved[idx as usize];
+                let resolved_upsert = &resolved[idx];
                 if let Some(arr) = &resolved_upsert.new_values_array {
                     if let Some(nulls) = arr.nulls() {
                         let validity_slice_iter = BitSliceIterator::new(
@@ -433,15 +440,15 @@ fn merge_type_column_batched(
                     }
                 }
                 // Owned: fill with this upsert's type discriminant.
-                let discriminant = resolved_upsert.attr_value_type as u8;
-                output.extend(std::iter::repeat_n(discriminant, run.end - run.start));
+                let attr_type = resolved_upsert.attr_value_type as u8;
+                output.extend(std::iter::repeat_n(attr_type, run.end - run.start));
             }
         }
     }
 
-    // Insert rows: each upsert's type discriminant × its insert count.
+    // Insert rows: each upsert's type discriminant
     for resolved_upsert in resolved {
-        let discriminant = resolved_upsert.attr_value_type as u8;
+        let attr_type = resolved_upsert.attr_value_type as u8;
         if let Some(arr) = &resolved_upsert.new_values_array {
             if let Some(nulls) = arr.nulls() {
                 let validity_slice_iter = BitSliceIterator::new(
@@ -458,7 +465,7 @@ fn merge_type_column_batched(
                             start - last_valid_range_end,
                         ));
                     }
-                    output.extend(std::iter::repeat_n(discriminant, end - start));
+                    output.extend(std::iter::repeat_n(attr_type, end - start));
 
                     last_valid_range_end = end;
                 }
@@ -475,21 +482,19 @@ fn merge_type_column_batched(
             }
         }
 
-        output.extend(std::iter::repeat_n(
-            discriminant,
-            resolved_upsert.num_inserts,
-        ));
+        output.extend(std::iter::repeat_n(attr_type, resolved_upsert.num_inserts));
     }
 
     let result: ArrayRef = Arc::new(UInt8Array::from(output));
     Ok((field.as_ref().clone(), result))
 }
 
-/// Merge the `key` column for a batched upsert.
+/// Merge inserted rows into the `key` column
 ///
-/// Existing rows are unchanged (updates already have the correct key). Insert rows append
-/// each upsert's key × its insert count, in upsert order.
-fn merge_key_column_batched(
+/// Existing rows are unchanged (updates already have the correct key). Insert rows append each
+/// upsert's key. This handles converting the key to correctly sized dictionary/native array if
+/// any new keys would cause overflow.
+fn merge_key_column(
     field: &Field,
     existing_col: &ArrayRef,
     resolved: &[ResolvedUpsert<'_>],
@@ -508,7 +513,7 @@ fn merge_key_column_batched(
         .collect();
 
     match existing_col.data_type() {
-        DataType::Dictionary(key_type, _) => merge_key_column_dict_batched(
+        DataType::Dictionary(key_type, _) => merge_key_column_dict(
             field,
             existing_col,
             &insert_keys,
@@ -520,12 +525,7 @@ fn merge_key_column_batched(
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .expect("key column is StringArray");
-            build_plain_utf8_key_column_batched(
-                field,
-                existing_str,
-                &insert_keys,
-                total_output_rows,
-            )
+            merge_key_column_plain(field, existing_str, &insert_keys, total_output_rows)
         }
         other => Err(Error::ExecutionError {
             cause: format!("unexpected key column type: {other:?}"),
@@ -533,11 +533,7 @@ fn merge_key_column_batched(
     }
 }
 
-/// Merge a dictionary-encoded key column for a batched upsert.
-///
-/// Works directly with the underlying key buffers — no heap allocation of existing keys.
-/// For each insert key, finds or assigns a dict index, then appends to the raw keys buffer.
-fn merge_key_column_dict_batched(
+fn merge_key_column_dict(
     field: &Field,
     existing_col: &ArrayRef,
     insert_keys: &[(&str, usize)],
@@ -545,26 +541,31 @@ fn merge_key_column_dict_batched(
     key_type: &DataType,
 ) -> Result<(Field, ArrayRef)> {
     // Extract a reference to the dict values (StringArray).
-    // We don't extract the keys into a Vec — we'll copy the raw buffer directly.
     let dict_values: &StringArray = match key_type {
         DataType::UInt8 => {
             let dict = existing_col
                 .as_any()
+                // safety: save to expect at this point because we've already checked the type of
+                // both the array and dictionary key type
                 .downcast_ref::<DictionaryArray<UInt8Type>>()
                 .expect("key column is DictionaryArray<UInt8Type>");
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
+                // TODO we actually can't expect here
                 .expect("dict values are StringArray")
         }
         DataType::UInt16 => {
             let dict = existing_col
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt16Type>>()
+                // safety: save to expect at this point because we've already checked the type of
+                // both the array and dictionary key type
                 .expect("key column is DictionaryArray<UInt16Type>");
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
+                // TODO we actually can't expect here
                 .expect("dict values are StringArray")
         }
         other => {
@@ -582,35 +583,26 @@ fn merge_key_column_dict_batched(
         SmallVec::with_capacity(insert_keys.len());
 
     for &(key_str, _count) in insert_keys {
-        match find_string_in_dict(dict_values, key_str) {
+        match index_of(dict_values, key_str) {
             Some(idx) => key_indices.push(idx as u16),
             None => {
-                // Check if we already added this novel key in a previous iteration.
-                let already_added = novel_keys.iter().position(|&k| k == key_str);
-                match already_added {
-                    Some(pos) => {
-                        key_indices.push((existing_cardinality + pos) as u16);
-                    }
-                    None => {
-                        let new_idx = existing_cardinality + novel_keys.len();
-                        if new_idx >= 65535 {
-                            // Overflow u16: fall back to plain Utf8.
-                            let decoded = arrow::compute::cast(existing_col, &DataType::Utf8)?;
-                            let decoded_str = decoded
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .expect("cast to Utf8 yields StringArray");
-                            return build_plain_utf8_key_column_batched(
-                                field,
-                                decoded_str,
-                                insert_keys,
-                                total_output_rows,
-                            );
-                        }
-                        novel_keys.push(key_str);
-                        key_indices.push(new_idx as u16);
-                    }
+                let new_idx = existing_cardinality + novel_keys.len();
+                if new_idx >= 65535 {
+                    // Overflow u16: fall back to plain Utf8.
+                    let decoded = cast(existing_col, &DataType::Utf8)?;
+                    let decoded_str = decoded
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("cast to Utf8 yields StringArray");
+                    return merge_key_column_plain(
+                        field,
+                        decoded_str,
+                        insert_keys,
+                        total_output_rows,
+                    );
                 }
+                novel_keys.push(key_str);
+                key_indices.push(new_idx as u16);
             }
         }
     }
@@ -621,31 +613,22 @@ fn merge_key_column_dict_batched(
     let final_values: ArrayRef = if novel_keys.is_empty() {
         Arc::new(dict_values.clone()) as ArrayRef
     } else {
-        // Build up the values by appending novel keys. Since there are typically 1-4
-        // novel keys, this loop is tiny.
-        let mut result = append_string_to_dict_values(dict_values, novel_keys[0]);
-        for &novel in &novel_keys[1..] {
-            let prev = result
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("StringArray");
-            result = append_string_to_dict_values(prev, novel);
-        }
-        result
+        append_strings(dict_values, &novel_keys)
     };
 
-    // Phase 3: Build output keys buffer. Copy existing raw buffer, append insert indices.
-    // Choose key type based on whether final cardinality fits in u8.
-
+    // Phase 3: build dictionary from new keys:
     match key_type {
         DataType::UInt8 if final_cardinality <= 255 => {
             // Stay u8. Copy existing keys buffer, append new u8 indices.
             let dict = existing_col
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt8Type>>()
-                .unwrap();
-            let existing_keys_buf = dict.keys().values().inner();
+                // safety: save to expect at this point because we've already checked the type of
+                // both the array and dictionary key type
+                .expect("can downcast to Dict<u8>");
 
+            // copy existing keys and append new ones
+            let existing_keys_buf = dict.keys().values().inner();
             let mut keys_buf = MutableBuffer::with_capacity(total_output_rows);
             keys_buf.extend_from_slice(existing_keys_buf.as_slice());
             for (i, &(_key_str, count)) in insert_keys.iter().enumerate() {
@@ -654,11 +637,11 @@ fn merge_key_column_dict_batched(
                     keys_buf.push(idx);
                 }
             }
-
             let keys = UInt8Array::new(
                 ScalarBuffer::new(keys_buf.into(), 0, total_output_rows),
                 None,
             );
+
             let result: ArrayRef = Arc::new(DictionaryArray::new(keys, final_values));
             let new_field = field
                 .as_ref()
@@ -671,9 +654,13 @@ fn merge_key_column_dict_batched(
             let dict = existing_col
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt8Type>>()
-                .unwrap();
-            let existing_u8_keys = dict.keys().values();
+                // safety: save to expect at this point because we've already checked the type of
+                // both the array and dictionary key type
+                .expect("can downcast to Dict<u8>");
 
+            // copy existing keys and append new ones while converting everything to u16
+            // because we've added new keys and overflowed the u8 dict
+            let existing_u8_keys = dict.keys().values();
             let mut keys_buf = MutableBuffer::with_capacity(total_output_rows * size_of::<u16>());
             for &k in existing_u8_keys.as_ref() {
                 keys_buf.push(k as u16);
@@ -684,11 +671,11 @@ fn merge_key_column_dict_batched(
                     keys_buf.push(idx);
                 }
             }
-
             let keys = UInt16Array::new(
                 ScalarBuffer::new(keys_buf.into(), 0, total_output_rows),
                 None,
             );
+
             let result: ArrayRef = Arc::new(DictionaryArray::new(keys, final_values));
             let new_field = field
                 .as_ref()
@@ -701,9 +688,12 @@ fn merge_key_column_dict_batched(
             let dict = existing_col
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt16Type>>()
-                .unwrap();
-            let existing_keys_buf = dict.keys().values().inner();
+                // safety: save to expect at this point because we've already checked the type of
+                // both the array and dictionary key type
+                .expect("can downcast to Dict<16>");
 
+            // copy existing keys and append new ones
+            let existing_keys_buf = dict.keys().values().inner();
             let mut keys_buf = MutableBuffer::with_capacity(total_output_rows * size_of::<u16>());
             keys_buf.extend_from_slice(existing_keys_buf.as_slice());
             for (i, &(_key_str, count)) in insert_keys.iter().enumerate() {
@@ -712,11 +702,11 @@ fn merge_key_column_dict_batched(
                     keys_buf.push(idx);
                 }
             }
-
             let keys = UInt16Array::new(
                 ScalarBuffer::new(keys_buf.into(), 0, total_output_rows),
                 None,
             );
+
             let result: ArrayRef = Arc::new(DictionaryArray::new(keys, final_values));
             let new_field = field
                 .as_ref()
@@ -728,10 +718,8 @@ fn merge_key_column_dict_batched(
     }
 }
 
-/// Build a plain Utf8 key column for a batched upsert.
-///
-/// Appends each insert key × its count to the existing `StringArray` using raw buffer ops.
-fn build_plain_utf8_key_column_batched(
+/// Build a plain Utf8 key column with newly insert keys
+fn merge_key_column_plain(
     field: &Field,
     existing_str: &StringArray,
     insert_keys: &[(&str, usize)],
@@ -773,35 +761,40 @@ fn build_plain_utf8_key_column_batched(
     Ok((new_field, result_arr))
 }
 
-/// Search for a string value in a dictionary's values array. Returns the index if found.
-fn find_string_in_dict(dict_values: &StringArray, value: &str) -> Option<usize> {
-    for i in 0..dict_values.len() {
-        if dict_values.value(i) == value {
+/// Search for a value in the string array. Returns the index if found.
+fn index_of(string_arr: &StringArray, value: &str) -> Option<usize> {
+    for i in 0..string_arr.len() {
+        if string_arr.value(i) == value {
             return Some(i);
         }
     }
     None
 }
 
-/// Append a single string to a StringArray's underlying buffers, returning a new ArrayRef.
-/// Avoids intermediate allocations by working directly with the offset and values buffers.
-fn append_string_to_dict_values(existing: &StringArray, new_value: &str) -> ArrayRef {
+/// Append a strings to a StringArray's underlying buffers, returning a new ArrayRef.
+fn append_strings(existing: &StringArray, new_values: &[&str]) -> ArrayRef {
     let existing_offsets = existing.offsets();
     let existing_values_buf = existing.values();
-    let new_bytes = new_value.as_bytes();
 
     // values buffer: existing bytes + new string bytes
-    let new_values_len = existing_values_buf.len() + new_bytes.len();
+    let new_bytes_total: usize = new_values.iter().map(|new_val| new_val.len()).sum();
+    let new_values_len = existing_values_buf.len() + new_bytes_total;
     let mut values_buf = MutableBuffer::with_capacity(new_values_len);
     values_buf.extend_from_slice(existing_values_buf);
-    values_buf.extend_from_slice(new_bytes);
+    for new_value in new_values {
+        values_buf.extend_from_slice(new_value.as_bytes());
+    }
 
     // offsets buffer: existing offsets + one new offset
-    let new_num_values = existing.len() + 1;
+    let new_num_values = existing.len() + new_values.len();
     let mut offsets_buf = MutableBuffer::with_capacity((new_num_values + 1) * size_of::<i32>());
     offsets_buf.extend_from_slice(existing_offsets.inner().as_ref());
-    let last_offset = *existing_offsets.last().unwrap();
-    offsets_buf.push(last_offset + new_bytes.len() as i32);
+    let mut prev_offset = *existing_offsets.last().unwrap();
+    for new_value in new_values {
+        let next_offset = prev_offset + new_value.as_bytes().len() as i32;
+        offsets_buf.push(next_offset);
+        prev_offset = next_offset;
+    }
 
     let offsets = OffsetBuffer::new(ScalarBuffer::<i32>::new(
         offsets_buf.into(),
@@ -811,6 +804,190 @@ fn append_string_to_dict_values(existing: &StringArray, new_value: &str) -> Arra
     Arc::new(StringArray::new(offsets, values_buf.into(), None))
 }
 
+/// Merge an existing value column.
+fn merge_value_column(
+    field: &Field,
+    existing_col: &ArrayRef,
+    resolved: &[ResolvedUpsert<'_>],
+    row_owners: &[OwnershipRun],
+    col_name: &str,
+    total_output_rows: usize,
+) -> Result<(Field, ArrayRef)> {
+    // Determine which upserts are making modifications to this column.
+    let active_indices: SmallVec<[usize; SMALLVEC_SIZE]> = resolved
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.target_col_name == Some(col_name))
+        .map(|(i, _)| i)
+        .collect();
+
+    // If no upserts are active, this is purely a "passthrough column", where we're placing nulls
+    // in the rows where there were updated/inserted values in some other column.
+    if active_indices.is_empty() {
+        // TODO - this gets built for each column, but it could be built only once?
+        let combined_mask = build_combined_mask(resolved)?;
+        let total_num_inserts: usize = resolved.iter().map(|r| r.num_inserts).sum();
+        return merge_passthrough_column(
+            field,
+            existing_col,
+            &combined_mask,
+            total_num_inserts,
+            total_output_rows,
+        );
+    }
+
+    // Batched path: one or more active upserts.
+    //
+    // Strategy: if dictionary encoding supported for the column, try to merge everything via
+    // a unified dictionary first (merging u16 keys without decoding to plain). If dict encoding
+    // not supported or the dict would overflow fall back to the primitive path using
+    // MutableArrayData with decoded-to-plain sources.
+
+    // Build upsert_idx → active_position map as a direct-indexed Vec.
+    // active_index_map[upsert_idx] = Some(position) for active upserts, None for inactive.
+    // This will get used as we begin merging the values column by taking from the existing rows
+    // where this lookup is `None`, or the new array values where this lookup is `Some`.
+    let mut active_index_map: SmallVec<[Option<usize>; SMALLVEC_SIZE]> =
+        smallvec![None; resolved.len()];
+    for (pos, &idx) in active_indices.iter().enumerate() {
+        active_index_map[idx] = Some(pos);
+    }
+
+    let active_upserts: SmallVec<[&ResolvedUpsert<'_>; SMALLVEC_SIZE]> =
+        active_indices.iter().map(|&i| &resolved[i]).collect();
+
+    // try to merge into a dict column if supported and new values will fit
+    let dict_encoding_supported = values_column_supports_dictionary_encoding(col_name);
+    if dict_encoding_supported
+        && let Some(unified) = try_build_unified_dict_multi(existing_col, &active_upserts)?
+    {
+        return merge_with_unified_dict_batched(
+            field,
+            row_owners,
+            &unified,
+            resolved,
+            &active_index_map,
+            total_output_rows,
+        );
+    }
+
+    // Fallback: primitive merge with MutableArrayData.
+    //
+    // Source 0 = existing column (decoded to plain if dict).
+    // Sources 1..N = per-active-upsert value arrays (1-element for scalars, decoded if dict).
+    #[derive(Clone, Copy)]
+    struct ActiveSource {
+        source_idx: usize,
+        is_scalar: bool,
+        num_updates: usize,
+        num_inserts: usize,
+    }
+
+    let existing_plain = decode_to_plain(existing_col)?;
+    let mut source_arrays: SmallVec<[ArrayRef; SMALLVEC_SIZE]> =
+        SmallVec::with_capacity(1 + resolved.len());
+    source_arrays.push(existing_plain);
+
+    // Direct-indexed by upsert_idx: None for inactive upserts.
+    let mut active_sources: SmallVec<[Option<ActiveSource>; SMALLVEC_SIZE]> =
+        smallvec![None; resolved.len()];
+
+    for &active_idx in &active_indices {
+        let resolved_upsert = &resolved[active_idx];
+        let arr = match &resolved_upsert.new_values_array {
+            Some(arr) => Arc::clone(arr),
+            None => resolved_upsert.new_values_scalar.unwrap().to_array()?,
+        };
+        let is_scalar = resolved_upsert.new_values_array.is_none();
+        let arr = decode_to_plain(&arr)?;
+
+        let source_idx = source_arrays.len();
+        source_arrays.push(arr);
+        active_sources[active_idx] = Some(ActiveSource {
+            source_idx,
+            is_scalar,
+            num_updates: resolved_upsert.num_updates,
+            num_inserts: resolved_upsert.num_inserts,
+        });
+    }
+
+    let source_data: Vec<_> = source_arrays.iter().map(|a| a.to_data()).collect();
+    let source_refs: Vec<_> = source_data.iter().collect();
+    let mut mutable = MutableArrayData::new(source_refs, true, total_output_rows);
+
+    // Per-active-upsert update counters, indexed by active position.
+    let mut update_counters: SmallVec<[usize; SMALLVEC_SIZE]> = smallvec![0; active_indices.len()];
+
+    // Existing rows: iterate ownership runs.
+    for run in row_owners {
+        let count = run.end - run.start;
+        match run.owner {
+            None => {
+                mutable.extend(0, run.start, run.end);
+            }
+            Some(owner_idx) => {
+                if let Some(active) = &active_sources[owner_idx] {
+                    if active.is_scalar {
+                        for _ in 0..count {
+                            mutable.extend(active.source_idx, 0, 1);
+                        }
+                    } else {
+                        let active_pos = active_index_map[owner_idx].unwrap();
+                        let counter = &mut update_counters[active_pos];
+                        mutable.extend(active.source_idx, *counter, *counter + count);
+                        *counter += count;
+                    }
+                } else {
+                    mutable.extend_nulls(count);
+                }
+            }
+        }
+    }
+
+    // Insert rows.
+    for (upsert_idx, r) in resolved.iter().enumerate() {
+        if r.num_inserts == 0 {
+            continue;
+        }
+        if let Some(active) = &active_sources[upsert_idx] {
+            if active.is_scalar {
+                for _ in 0..r.num_inserts {
+                    mutable.extend(active.source_idx, 0, 1);
+                }
+            } else {
+                mutable.extend(
+                    active.source_idx,
+                    active.num_updates,
+                    active.num_updates + active.num_inserts,
+                );
+            }
+        } else {
+            mutable.extend_nulls(r.num_inserts);
+        }
+    }
+
+    let result = make_array(mutable.freeze());
+
+    // Re-encode as dict if eligible per the OTAP spec.
+    // TODO - I don't think we're supposed to do this since in this position we already have
+    // determined either dict not supported or the dict would overflow
+    let result = if dict_encoding_supported {
+        let field_info = FieldInfo::new_from_array(&result);
+        let cardinality = estimate_cardinality(&field_info);
+        maybe_dict_encode_attr_value(result, cardinality)?
+    } else {
+        result
+    };
+
+    let new_field = field
+        .as_ref()
+        .clone()
+        .with_data_type(result.data_type().clone())
+        .with_nullable(true);
+
+    Ok((new_field, result))
+}
+
 /// Iterate over all values in `values_arr`, deduplicating via `value_to_idx` and appending
 /// novel values to `unified_builder`. Returns a remap vector mapping each value index to its
 /// unified dict index, or `None` if cardinality would exceed `max_cardinality`.
@@ -818,7 +995,7 @@ fn build_values_remap<'a>(
     values_arr: &'a ArrayRef,
     source_idx: usize,
     value_to_idx: &mut HashMap<Option<&'a [u8]>, u16>,
-    unified_builder: &mut arrow::array::MutableArrayData<'_>,
+    unified_builder: &mut MutableArrayData<'_>,
     num_distinct: &mut usize,
     max_cardinality: usize,
 ) -> Option<Vec<u16>> {
@@ -1010,11 +1187,8 @@ fn try_build_unified_dict_multi<'a>(
             .iter()
             .map(|s| s.values_arr.len())
             .sum::<usize>();
-    let mut unified_builder = arrow::array::MutableArrayData::new(
-        all_sources,
-        false,
-        MAX_DICT_CARDINALITY.min(total_capacity),
-    );
+    let mut unified_builder =
+        MutableArrayData::new(all_sources, false, MAX_DICT_CARDINALITY.min(total_capacity));
 
     // Step 1: Seed HashMap from existing column's values.
     let existing_keys: Vec<u16> = if existing_dict_keys.is_some() {
@@ -1156,8 +1330,7 @@ fn merge_with_unified_dict_batched(
                 mark_valid(&mut nulls, count);
             }
             Some(owner_idx) => {
-                let oi = owner_idx as usize;
-                if let Some(active_pos) = active_index_map[oi] {
+                if let Some(active_pos) = active_index_map[owner_idx] {
                     // Active: write new keys.
                     let counter = &mut update_counters[active_pos];
                     match &unified.new_keys[active_pos] {
@@ -1237,7 +1410,7 @@ fn merge_with_unified_dict_batched(
 /// If the column is already plain, returns a clone of the Arc.
 fn decode_to_plain(col: &ArrayRef) -> Result<ArrayRef> {
     match col.data_type() {
-        DataType::Dictionary(_, value_type) => Ok(arrow::compute::cast(col, value_type.as_ref())?),
+        DataType::Dictionary(_, value_type) => Ok(cast(col, value_type.as_ref())?),
         _ => Ok(Arc::clone(col)),
     }
 }
@@ -1267,8 +1440,7 @@ fn merge_passthrough_column(
     }
 
     let existing_data = existing_col.to_data();
-    let mut mutable =
-        arrow::array::MutableArrayData::new(vec![&existing_data], true, total_output_rows);
+    let mut mutable = MutableArrayData::new(vec![&existing_data], true, total_output_rows);
 
     merge_with_mask(
         &mut mutable,
@@ -1296,200 +1468,6 @@ fn merge_passthrough_column(
     } else {
         field.as_ref().clone()
     };
-    Ok((new_field, result))
-}
-
-/// Merge an existing value column for a batched upsert.
-///
-/// Each upsert is classified as "active" (targets this column) or "inactive" (targets a
-/// different column). The merge applies the following logic:
-///
-/// **Existing rows:**
-/// - Passthrough (row_owner=None): keep existing value
-/// - Active upsert's row (row_owner=Some(i) where upsert i targets this column): replace
-///   with that upsert's new value
-/// - Inactive upsert's row (row_owner=Some(i) where upsert i does NOT target this column):
-///   null out (attribute type changed away from this column)
-///
-/// **Insert rows (appended in upsert order):**
-/// - Active upsert: append its insert values
-/// - Inactive upsert: append nulls for its insert count
-fn merge_value_column_batched(
-    field: &Field,
-    existing_col: &ArrayRef,
-    resolved: &[ResolvedUpsert<'_>],
-    row_owners: &[OwnershipRun],
-    col_name: &str,
-    total_output_rows: usize,
-) -> Result<(Field, ArrayRef)> {
-    // Classify upserts as active or inactive for this column.
-    let active_indices: SmallVec<[usize; SMALLVEC_SIZE]> = resolved
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.target_col_name == Some(col_name))
-        .map(|(i, _)| i)
-        .collect();
-
-    // If no upserts are active, this is purely a passthrough column (null for all updates/inserts).
-    if active_indices.is_empty() {
-        let combined_mask = build_combined_mask(resolved)?;
-        let total_num_inserts: usize = resolved.iter().map(|r| r.num_inserts).sum();
-        return merge_passthrough_column(
-            field,
-            existing_col,
-            &combined_mask,
-            total_num_inserts,
-            total_output_rows,
-        );
-    }
-
-    // Batched path: one or more active upserts.
-    //
-    // Strategy: try to merge everything via a unified dictionary first (merging u16 keys
-    // without decoding to plain). If cardinality overflows, fall back to the primitive path
-    // using MutableArrayData with decoded-to-plain sources. Scalars are never expanded to
-    // full size — dict path uses ActiveKeys::Scalar, primitive path uses 1-element sources.
-
-    // Build upsert_idx → active_position map as a direct-indexed Vec.
-    // active_index_map[upsert_idx] = Some(position) for active upserts, None for inactive.
-    let mut active_index_map: SmallVec<[Option<usize>; SMALLVEC_SIZE]> =
-        smallvec![None; resolved.len()];
-    for (pos, &idx) in active_indices.iter().enumerate() {
-        active_index_map[idx] = Some(pos);
-    }
-
-    let active_upserts: SmallVec<[&ResolvedUpsert<'_>; SMALLVEC_SIZE]> =
-        active_indices.iter().map(|&i| &resolved[i]).collect();
-
-    let dict_encoding_supported = values_column_supports_dictionary_encoding(col_name);
-
-    if dict_encoding_supported
-        && let Some(unified) = try_build_unified_dict_multi(existing_col, &active_upserts)?
-    {
-        return merge_with_unified_dict_batched(
-            field,
-            row_owners,
-            &unified,
-            resolved,
-            &active_index_map,
-            total_output_rows,
-        );
-    }
-
-    // Fallback: primitive merge with MutableArrayData.
-    // Scalars stay as 1-element sources — never expanded.
-    //
-    // Source 0 = existing column (decoded to plain if dict).
-    // Sources 1..N = per-active-upsert value arrays (1-element for scalars, decoded if dict).
-    #[derive(Clone, Copy)]
-    struct ActiveSource {
-        source_idx: usize,
-        is_scalar: bool,
-        num_updates: usize,
-        num_inserts: usize,
-    }
-
-    let existing_plain = decode_to_plain(existing_col)?;
-    let mut source_arrays: SmallVec<[ArrayRef; SMALLVEC_SIZE]> =
-        SmallVec::with_capacity(1 + resolved.len());
-    source_arrays.push(existing_plain);
-
-    // Direct-indexed by upsert_idx: None for inactive upserts.
-    let mut active_sources: SmallVec<[Option<ActiveSource>; SMALLVEC_SIZE]> =
-        smallvec![None; resolved.len()];
-
-    for &ai in &active_indices {
-        let r = &resolved[ai];
-        let arr = match &r.new_values_array {
-            Some(arr) => Arc::clone(arr),
-            None => r.new_values_scalar.unwrap().to_array()?, // 1-element, NOT expanded
-        };
-        let is_scalar = r.new_values_array.is_none();
-        let arr = decode_to_plain(&arr)?;
-
-        let source_idx = source_arrays.len();
-        source_arrays.push(arr);
-        active_sources[ai] = Some(ActiveSource {
-            source_idx,
-            is_scalar,
-            num_updates: r.num_updates,
-            num_inserts: r.num_inserts,
-        });
-    }
-
-    let source_data: Vec<_> = source_arrays.iter().map(|a| a.to_data()).collect();
-    let source_refs: Vec<_> = source_data.iter().collect();
-    let mut mutable = arrow::array::MutableArrayData::new(source_refs, true, total_output_rows);
-
-    // Per-active-upsert update counters, indexed by active position.
-    let mut update_counters: SmallVec<[usize; SMALLVEC_SIZE]> = smallvec![0; active_indices.len()];
-
-    // Existing rows: iterate ownership runs.
-    for run in row_owners {
-        let count = run.end - run.start;
-        match run.owner {
-            None => {
-                mutable.extend(0, run.start, run.end);
-            }
-            Some(owner_idx) => {
-                let oi = owner_idx as usize;
-                if let Some(active) = &active_sources[oi] {
-                    if active.is_scalar {
-                        for _ in 0..count {
-                            mutable.extend(active.source_idx, 0, 1);
-                        }
-                    } else {
-                        let active_pos = active_index_map[oi].unwrap();
-                        let counter = &mut update_counters[active_pos];
-                        mutable.extend(active.source_idx, *counter, *counter + count);
-                        *counter += count;
-                    }
-                } else {
-                    mutable.extend_nulls(count);
-                }
-            }
-        }
-    }
-
-    // Insert rows.
-    for (upsert_idx, r) in resolved.iter().enumerate() {
-        if r.num_inserts == 0 {
-            continue;
-        }
-        if let Some(active) = &active_sources[upsert_idx] {
-            if active.is_scalar {
-                for _ in 0..r.num_inserts {
-                    mutable.extend(active.source_idx, 0, 1);
-                }
-            } else {
-                mutable.extend(
-                    active.source_idx,
-                    active.num_updates,
-                    active.num_updates + active.num_inserts,
-                );
-            }
-        } else {
-            mutable.extend_nulls(r.num_inserts);
-        }
-    }
-
-    let result = make_array(mutable.freeze());
-
-    // Re-encode as dict if eligible per the OTAP spec.
-    let result = if dict_encoding_supported {
-        let field_info = FieldInfo::new_from_array(&result);
-        let cardinality = estimate_cardinality(&field_info);
-        maybe_dict_encode_attr_value(result, cardinality)?
-    } else {
-        result
-    };
-
-    let new_field = field
-        .as_ref()
-        .clone()
-        .with_data_type(result.data_type().clone())
-        .with_nullable(true);
-
     Ok((new_field, result))
 }
 
@@ -1560,7 +1538,7 @@ fn create_new_value_column_batched(
                         Box::new(DataType::UInt16),
                         Box::new(arr.data_type().clone()),
                     );
-                    arrow::compute::cast(&arr, &dict_type)?
+                    cast(&arr, &dict_type)?
                 }
                 Cardinality::GreaterThanU16 => arr,
             }
@@ -1581,7 +1559,7 @@ fn create_new_value_column_batched(
 
     let source_data: Vec<_> = source_arrays.iter().map(|a| a.to_data()).collect();
     let source_refs: Vec<_> = source_data.iter().collect();
-    let mut mutable = arrow::array::MutableArrayData::new(source_refs, true, total_output_rows);
+    let mut mutable = MutableArrayData::new(source_refs, true, total_output_rows);
 
     // Per-active-upsert update counters, indexed by active position.
     let mut update_counters: Vec<usize> = vec![0; active_indices.len()];
@@ -1595,14 +1573,13 @@ fn create_new_value_column_batched(
                 mutable.extend_nulls(count);
             }
             Some(owner_idx) => {
-                let oi = owner_idx as usize;
-                if let Some(active) = &active_sources[oi] {
+                if let Some(active) = &active_sources[owner_idx] {
                     if active.is_scalar {
                         for _ in 0..count {
                             mutable.extend(active.source_idx, 0, 1);
                         }
                     } else {
-                        let active_pos = active_index_map[oi].unwrap();
+                        let active_pos = active_index_map[owner_idx].unwrap();
                         let counter = &mut update_counters[active_pos];
                         mutable.extend(active.source_idx, *counter, *counter + count);
                         *counter += count;
@@ -1648,11 +1625,11 @@ fn create_new_value_column_batched(
 /// Uses [`SlicesIterator`] which yields `(start, end)` ranges of true values, and we fill
 /// in the gaps (false ranges) between them.
 fn merge_with_mask(
-    mutable: &mut arrow::array::MutableArrayData<'_>,
+    mutable: &mut MutableArrayData<'_>,
     mask: &BooleanArray,
     total_len: usize,
-    mut on_false: impl FnMut(&mut arrow::array::MutableArrayData<'_>, usize, usize),
-    mut on_true: impl FnMut(&mut arrow::array::MutableArrayData<'_>, usize, usize),
+    mut on_false: impl FnMut(&mut MutableArrayData<'_>, usize, usize),
+    mut on_true: impl FnMut(&mut MutableArrayData<'_>, usize, usize),
 ) {
     let mut pos = 0;
     for (start, end) in SlicesIterator::new(mask) {
@@ -1690,7 +1667,7 @@ fn maybe_dict_encode_attr_value(arr: ArrayRef, cardinality: Cardinality) -> Resu
                 Box::new(DataType::UInt16),
                 Box::new(arr.data_type().clone()),
             );
-            arrow::compute::cast(&arr, &dict_type)?
+            cast(&arr, &dict_type)?
         }
         Cardinality::GreaterThanU16 => arr,
     };
@@ -1710,14 +1687,14 @@ mod tests {
     fn dict_utf8_u16(values: &[&str]) -> ArrayRef {
         let plain = Arc::new(StringArray::from_iter_values(values.iter().copied())) as ArrayRef;
         let dict_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
-        arrow::compute::cast(&plain, &dict_type).unwrap()
+        cast(&plain, &dict_type).unwrap()
     }
 
     /// Helper to build a Dict(u8, Utf8) array from a slice of strings.
     fn dict_utf8_u8(values: &[&str]) -> ArrayRef {
         let plain = Arc::new(StringArray::from_iter_values(values.iter().copied())) as ArrayRef;
         let dict_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
-        arrow::compute::cast(&plain, &dict_type).unwrap()
+        cast(&plain, &dict_type).unwrap()
     }
 
     /// Helper to build a Dict(u16, Int64) array from a slice of i64.
@@ -1726,7 +1703,7 @@ mod tests {
             values.iter().copied(),
         )) as ArrayRef;
         let dict_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64));
-        arrow::compute::cast(&plain, &dict_type).unwrap()
+        cast(&plain, &dict_type).unwrap()
     }
 
     /// Helper to call merge_value_column_batched with a single upsert for unit testing.
@@ -1760,7 +1737,7 @@ mod tests {
             num_inserts,
         }];
         let row_owners = build_row_owners(existing_col.len(), &resolved);
-        merge_value_column_batched(
+        merge_value_column(
             field,
             existing_col,
             &resolved,
@@ -1802,7 +1779,7 @@ mod tests {
         );
 
         // Decode to check logical values.
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let strs = plain.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(strs.len(), 4);
         assert_eq!(strs.value(0), "a"); // passthrough
@@ -1841,7 +1818,7 @@ mod tests {
             result_field.data_type()
         );
 
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let strs = plain.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(strs.len(), 4);
         assert_eq!(strs.value(0), "x"); // passthrough
@@ -1881,7 +1858,7 @@ mod tests {
             result_field.data_type()
         );
 
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let strs = plain.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(strs.len(), 4);
         assert_eq!(strs.value(0), "d"); // update
@@ -1920,7 +1897,7 @@ mod tests {
             result_field.data_type()
         );
 
-        let plain = arrow::compute::cast(&result_col, &DataType::Int64).unwrap();
+        let plain = cast(&result_col, &DataType::Int64).unwrap();
         let ints = plain
             .as_any()
             .downcast_ref::<arrow::array::Int64Array>()
@@ -1966,15 +1943,14 @@ mod tests {
         let parent_ids = UInt16Array::from(vec![0u16, 1]);
         let resolved = vec![key_test_resolved("x", &mask, &parent_ids, 0, 2)];
 
-        let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 5).unwrap();
+        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 5).unwrap();
 
         assert!(matches!(
             result_field.data_type(),
             DataType::Dictionary(_, _)
         ));
         // Decode to check per-row values regardless of key type.
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -1998,14 +1974,13 @@ mod tests {
         let parent_ids = UInt16Array::from(vec![0u16]);
         let resolved = vec![key_test_resolved("z", &mask, &parent_ids, 0, 1)];
 
-        let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 4).unwrap();
+        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 4).unwrap();
 
         assert!(matches!(
             result_field.data_type(),
             DataType::Dictionary(_, _)
         ));
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2027,8 +2002,7 @@ mod tests {
         let parent_ids = UInt16Array::from(Vec::<u16>::new());
         let resolved = vec![key_test_resolved("z", &mask, &parent_ids, 0, 0)];
 
-        let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 3).unwrap();
+        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 3).unwrap();
 
         assert_eq!(result_field.data_type(), existing.data_type());
         assert_eq!(result_col.len(), 3);
@@ -2045,9 +2019,9 @@ mod tests {
         let parent_ids = UInt16Array::from(vec![0u16, 1]);
         let resolved = vec![key_test_resolved("z", &mask, &parent_ids, 0, 2)];
 
-        let (_, result_col) = merge_key_column_batched(&field, &existing, &resolved, 5).unwrap();
+        let (_, result_col) = merge_key_column(&field, &existing, &resolved, 5).unwrap();
 
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2078,8 +2052,7 @@ mod tests {
         let parent_ids = UInt16Array::from(vec![0u16]);
         let resolved = vec![key_test_resolved("z", &mask, &parent_ids, 0, 1)];
 
-        let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 4).unwrap();
+        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 4).unwrap();
 
         // Should stay as Dict(u8, Utf8) since cardinality (3) fits in u8.
         assert!(
@@ -2089,7 +2062,7 @@ mod tests {
         );
 
         // Verify logical values.
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2126,7 +2099,7 @@ mod tests {
         let resolved = vec![key_test_resolved("overflow", &mask, &parent_ids, 0, 1)];
 
         let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 256).unwrap();
+            merge_key_column(&field, &existing, &resolved, 256).unwrap();
 
         // Should widen to Dict(u16, Utf8) since cardinality (256) exceeds u8 max (255).
         assert!(
@@ -2139,7 +2112,7 @@ mod tests {
         assert_eq!(result_col.len(), 256);
 
         // Verify first and last values.
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2174,8 +2147,7 @@ mod tests {
         let parent_ids = UInt16Array::from(vec![0u16]);
         let resolved = vec![key_test_resolved("d", &mask, &parent_ids, 0, 1)];
 
-        let (result_field, result_col) =
-            merge_key_column_batched(&field, &existing, &resolved, 4).unwrap();
+        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 4).unwrap();
 
         // In normal cases (cardinality < 65535), stays as Dict(u16).
         assert!(
@@ -2185,7 +2157,7 @@ mod tests {
         );
 
         // Verify values are correct.
-        let plain = arrow::compute::cast(&result_col, &DataType::Utf8).unwrap();
+        let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let str_arr = plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2230,7 +2202,7 @@ mod tests {
         }];
         let row_owners = build_row_owners(3, &resolved);
 
-        let (_, result_col) = merge_type_column_batched(
+        let (_, result_col) = merge_type_column(
             &field,
             &existing,
             &resolved,
@@ -2276,7 +2248,7 @@ mod tests {
         }];
         let row_owners = build_row_owners(2, &resolved);
 
-        let (_, result_col) = merge_type_column_batched(
+        let (_, result_col) = merge_type_column(
             &field,
             &existing,
             &resolved,
@@ -2322,7 +2294,7 @@ mod tests {
         }];
         let row_owners = build_row_owners(3, &resolved);
 
-        let (_, result_col) = merge_type_column_batched(
+        let (_, result_col) = merge_type_column(
             &field,
             &existing,
             &resolved,
@@ -2361,7 +2333,7 @@ mod tests {
         assert_eq!(result_col.null_count(), 2);
 
         // Decode to plain Int64 to check values including nulls.
-        let plain = arrow::compute::cast(&result_col, &DataType::Int64).unwrap();
+        let plain = cast(&result_col, &DataType::Int64).unwrap();
         let arr = plain
             .as_any()
             .downcast_ref::<arrow::array::Int64Array>()
@@ -2461,7 +2433,7 @@ mod tests {
 
     /// Helper to decode a column to plain Utf8, handling both dict-encoded and plain.
     fn decode_to_utf8(col: &ArrayRef) -> StringArray {
-        let plain = arrow::compute::cast(col, &DataType::Utf8).unwrap();
+        let plain = cast(col, &DataType::Utf8).unwrap();
         plain
             .as_any()
             .downcast_ref::<StringArray>()
@@ -2614,7 +2586,7 @@ mod tests {
         );
 
         // Decode to plain to check values including nulls.
-        let ints = arrow::compute::cast(int_col, &DataType::Int64).unwrap();
+        let ints = cast(int_col, &DataType::Int64).unwrap();
         let ints = ints
             .as_any()
             .downcast_ref::<arrow::array::Int64Array>()
@@ -3057,7 +3029,7 @@ mod tests {
         assert!(int_col.is_null(2)); // insert y (str type, not int)
         assert!(int_col.is_null(3)); // insert y
         // Decode int column to check insert z values.
-        let int_plain = arrow::compute::cast(int_col, &DataType::Int64).unwrap();
+        let int_plain = cast(int_col, &DataType::Int64).unwrap();
         let ints = int_plain
             .as_any()
             .downcast_ref::<arrow::array::Int64Array>()

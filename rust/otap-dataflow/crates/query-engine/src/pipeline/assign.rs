@@ -51,9 +51,8 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource,
-    PhysicalExprEvalResult, SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr,
-    VALUE_COLUMN_NAME,
+    DataScope, ExprPhysicalPlanner, LogicalExprDataSource, PhysicalExprEvalResult,
+    SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
@@ -61,7 +60,7 @@ use crate::pipeline::state::ExecutionState;
 
 mod attributes;
 
-/// empty placeholder record batch used when assigning attributes in cases where there is not a
+/// Empty placeholder record batch used when assigning attributes in cases where there is not a
 /// pre-existing attributes record batch
 static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     RecordBatch::new_empty(Arc::new(Schema::new(vec![
@@ -75,20 +74,23 @@ static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     ])))
 });
 
-/// representation of assignment source and destination
+/// Representation of assignment source and destination
 pub struct Assignment<'a> {
+    /// The column destination
     pub dest_column: ColumnAccessor,
 
-    pub dest_query_location: Option<&'a QueryLocation>,
-
+    /// The expression that will be evaluated and have its result assigned ot the destination
     pub source: ScopedLogicalExpr,
+
+    /// Query location of the destination - used when reporting errors
+    pub dest_query_location: Option<&'a QueryLocation>,
 }
 
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
-/// This can do more than one assignment to a given record batch at a time, to attempt to minimize
-/// the churn of materializing intermediate results multiple times when there are multiple
-/// assignments to be made during some pipeline.
+/// This can do more than one assignment to a given record batch at a time. This minimizes the
+/// overhead of of materializing intermediate results multiple times when there are multiple
+/// assignments to be made.
 pub(crate) struct AssignPipelineStage {
     /// Identifier of the destination column
     dest_columns: Vec<ColumnAccessor>,
@@ -116,7 +118,6 @@ pub(crate) struct AssignPipelineStage {
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
     pub fn try_new(assignments: &mut Vec<Assignment<'_>>) -> Result<Self> {
-        // validate the inputs:
         if assignments.is_empty() {
             return Err(Error::InvalidPipelineError {
                 cause: "assignments cannot be empty".into(),
@@ -127,11 +128,6 @@ impl AssignPipelineStage {
         let mut dest_columns = Vec::with_capacity(assignments.len());
         let mut source_physical_exprs = Vec::with_capacity(assignments.len());
         for assignment in assignments.drain(..) {
-            // let logical_planner = ExprLogicalPlanner::default();
-            // let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
-
-            // let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
-
             // validate that all the assignments are for the same record batch:
             if let Some(last_dest_col) = dest_columns.last() {
                 let same_dest = match (&assignment.dest_column, last_dest_col) {
@@ -171,7 +167,7 @@ impl AssignPipelineStage {
         // determine, in the case that we're doing assignment on a nested pipeline for attributes,
         // whether we need to project the virtual "value" column. We only look at the first expr
         // because for these nested pipelines, the planner shouldn't be combining multiple
-        // set expressions together.
+        // set expressions together due to them all having the same destination.
         let projection_contains_value_column = source_physical_exprs[0]
             .projection
             .schema
@@ -424,8 +420,6 @@ impl AssignPipelineStage {
                 cause: "attribute record batch missing parent_id column".into(),
             })?;
 
-        // iterate the list of expression evaluations and build arguments that will be used to
-        // insert attributes
         let mut attrs_upserts = Vec::with_capacity(eval_results.len());
         for (i, eval_result) in eval_results.iter_mut().enumerate() {
             // select the key for the attribute for which this expression evaluation result should
@@ -637,7 +631,7 @@ impl PipelineStage for AssignPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        // if we're assigning to attributes, do it as a bulk attribute upsert for best performance:
+        // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
             if *attrs_id == AttributesIdentifier::Root {
                 self.fill_root_id_column_nulls(&mut otap_batch)?;
@@ -653,9 +647,9 @@ impl PipelineStage for AssignPipelineStage {
             return Ok(result);
         }
 
-        // otherwise, assigning to the root batch, which unlike attribute assignment doesn't
-        // currently support bulk assignment so we just evaluate the expressions and update the
-        // columns one at a time:
+        // Assigning to the root batch.. Unlike attribute assignment this does not currently
+        // support bulk assignment so we just evaluate the expressions and update the columns
+        // one at a time
         for i in 0..self.sources.len() {
             let dest_col_name = match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(col_name) => col_name,
@@ -1077,7 +1071,7 @@ fn validate_assign(
     Ok(())
 }
 
-/// validates that the assignment of an attribute does not involve an expression where the
+/// Validates that the assignment of an attribute does not involve an expression where the
 /// relationship between the destination and source is one-to-many.
 ///
 /// For example, if we had an expression like `resource.attributes["x"] = event_name`, because

@@ -144,7 +144,6 @@ impl PipelinePlanner {
         }
     }
 
-    // Helper function (place outside the loop or in an impl block)
     fn collect_consecutive_sets<'a>(
         data_exprs: &'a [DataExpression],
         first_set: &'a SetTransformExpression,
@@ -228,7 +227,6 @@ impl PipelinePlanner {
                     Self::plan_reduce_map(reduce_map_exr)
                 }
                 TransformExpression::Set(set_expr) => {
-                    // TODO - not sure we ever reach this under normal conditions anymore ...
                     self.plan_sets(&[set_expr], functions, session_ctx, otap_batch)
                 }
                 other => Err(Error::NotYetSupportedError {
