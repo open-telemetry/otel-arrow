@@ -57,14 +57,15 @@ http.workspace = true
 async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
-weaver_common.workspace = true
-weaver_forge.workspace = true
-weaver_resolved_schema.workspace = true
-weaver_resolver.workspace = true
-weaver_semconv.workspace = true
+weaver_common = { workspace = true, optional = true }
+weaver_forge = { workspace = true, optional = true }
+weaver_resolved_schema = { workspace = true, optional = true }
+weaver_resolver = { workspace = true, optional = true }
+weaver_semconv = { workspace = true, optional = true }
 
 [features]
 experimental-tls = ["otap-df-otap/experimental-tls"]
+dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
 
 [dev-dependencies]
 arrow-ipc.workspace = true

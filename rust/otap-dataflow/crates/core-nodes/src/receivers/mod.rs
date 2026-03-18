@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Fake data generator receiver.
+#[cfg(feature = "dev-tools")]
 pub mod fake_data_generator;
 
 /// Topic receiver.
