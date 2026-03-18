@@ -52,10 +52,21 @@ impl SimpleType {
         }
     }
 
-    /// Returns true if `arrow_dt` is an exact match for this simple type.
+    /// Returns true if `arrow_dt` is a match for this simple type.
     #[must_use]
     fn matches(&self, arrow_dt: &arrow::datatypes::DataType) -> bool {
-        self.to_arrow() == *arrow_dt
+        use arrow::datatypes::{DataType as ArrowDT, TimeUnit};
+        match self {
+            // OTAP timestamps are nanoseconds since the Unix epoch (UTC), though
+            // arrow semantically allows us to express nanosecond since UTC in
+            // any timezone. No timezone is ambiguous, but currently we don't
+            // have the behavior in this case defined per the spec and our
+            // encoder seems to omit the timezone. TODO: Follow up on this.
+            Self::TimestampNanosecond => {
+                matches!(arrow_dt, ArrowDT::Timestamp(TimeUnit::Nanosecond, _))
+            }
+            _ => self.to_arrow() == *arrow_dt,
+        }
     }
 }
 
