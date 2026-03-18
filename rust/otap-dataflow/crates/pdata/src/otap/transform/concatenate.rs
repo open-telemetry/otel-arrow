@@ -21,7 +21,8 @@ use crate::otap::{Logs, Metrics, OtapBatchStore, Result, Traces};
 use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
 use crate::schema::consts::{ID, PARENT_ID};
-use crate::schema::payload_definitions::{self, ColumnDef, DictKeySize, PayloadDefinition};
+use crate::schema::payloads;
+use crate::schema::schema::{DictKeySize, Field as SchemaField, Schema as PayloadSchema};
 
 /// These are one less than the maximum cardinality of the key type. We should be
 /// able to go up to 256/65536 without overflow, but there is a bug in arrow-rs
@@ -100,7 +101,7 @@ pub fn concatenate<const N: usize>(
 fn concatenate_without_spec<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_with_def(items, |_| &PayloadDefinition::EMPTY)
+    concatenate_with_def(items, |_| &PayloadSchema::EMPTY)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
@@ -108,13 +109,13 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
 ) -> Result<[Option<RecordBatch>; N]> {
     concatenate_with_def(items, |i| {
         let payload_type = S::payload_type_at_idx(i);
-        payload_definitions::get(payload_type)
+        payloads::get(payload_type)
     })
 }
 
 fn concatenate_with_def<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
-    get_def: impl Fn(usize) -> &'static PayloadDefinition,
+    get_def: impl Fn(usize) -> &'static PayloadSchema,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
@@ -243,18 +244,15 @@ fn convert(
 
 /// Select a unified schema that will satisfy all fields in the
 /// RecordIndex.
-fn select_schema<'a>(
-    index: &'a RecordIndex<'a>,
-    payload_def: &PayloadDefinition,
-) -> Result<Schema> {
+fn select_schema<'a>(index: &'a RecordIndex<'a>, payload_def: &PayloadSchema) -> Result<Schema> {
     let mut builder = SchemaBuilder::with_capacity(index.fields.len());
     for (field_name, field_info) in index.fields.iter() {
         // Presence of smallest key type indicates dictionary
         let mut typ = field_info.value_type.clone();
         if field_info.smallest_key_type.is_some() {
             assert!(field_info.struct_index.is_none());
-            let col_def = payload_def.get(field_name);
-            typ = select_dictionary_type(field_info, col_def)?
+            let field_def = payload_def.get(field_name);
+            typ = select_dictionary_type(field_info, field_def)?
         } else if let Some(ref struct_index) = field_info.struct_index {
             typ = select_struct_type(struct_index, payload_def, field_name)?;
         }
@@ -270,16 +268,21 @@ fn select_schema<'a>(
 /// Select the final data type for a struct field.
 fn select_struct_type<'a>(
     struct_index: &'a FieldIndex<'a>,
-    payload_def: &PayloadDefinition,
+    payload_def: &PayloadSchema,
     parent_name: &str,
 ) -> Result<DataType> {
+    // Navigate into the sub-schema for this struct field.
+    let sub_schema = payload_def
+        .get(parent_name)
+        .and_then(|f| f.data_type.as_struct_schema());
+
     let mut fields = Vec::with_capacity(struct_index.len());
     for (field_name, field_info) in struct_index.iter() {
         // Presence of smallest key type indicates dictionary
         let mut typ = field_info.value_type.clone();
         if field_info.smallest_key_type.is_some() {
-            let col_def = payload_def.get_nested(parent_name, field_name);
-            typ = select_dictionary_type(field_info, col_def)?
+            let field_def = sub_schema.and_then(|s| s.get(field_name));
+            typ = select_dictionary_type(field_info, field_def)?
         }
 
         // This should have been detected by the indexing logic
@@ -578,15 +581,15 @@ fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
 
 fn select_dictionary_type<'a>(
     info: &FieldInfo<'a>,
-    col_def: Option<&ColumnDef>,
+    field_def: Option<&SchemaField>,
 ) -> Result<DataType> {
     assert!(info.smallest_key_type.is_some());
 
     // If the column is in the definition but doesn't support dictionary
     // encoding, use the native type. If not in the definition at all (None),
     // fall through to cardinality-based selection.
-    let min_key_size = match col_def {
-        Some(def) => match def.min_dict_key_size {
+    let min_key_size = match field_def {
+        Some(def) => match def.data_type.min_dict_key_size() {
             Some(min) => Some(min),
             // Column is explicitly defined as not dictionary-encodable
             None => return Ok(info.value_type.clone()),
@@ -873,37 +876,40 @@ mod schema_tests {
     use super::*;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::{LogAttrs, Logs};
     use crate::record_batch;
-    use crate::schema::payload_definitions::{ColumnDef, DictKeySize, NativeType};
+    use crate::schema::schema::{
+        DataType as SchemaDataType, DictKeySize, Field as SchemaField, Schema as PayloadSchema,
+        SimpleType,
+    };
     use arrow::array::{
         Array, DictionaryArray, Int64Array, PrimitiveArray, StringArray, UInt8Array, UInt16Array,
     };
+    use arrow::datatypes::DataType;
     use rand::RngExt;
     use std::sync::Arc;
 
-    /// A test-only payload definition that has a single "data" column allowing
+    /// A test-only schema definition that has a single "data" column allowing
     /// Dict(u8). Used by the generic cardinality tests which don't test spec
     /// enforcement behavior.
-    fn test_data_get(name: &str) -> Option<&'static ColumnDef> {
-        static DATA: ColumnDef = ColumnDef {
-            native_type: NativeType::Utf8,
-            min_dict_key_size: Some(DictKeySize::U8),
-        };
-        match name {
-            "data" => Some(&DATA),
+    static TEST_DATA_DEF: PayloadSchema = PayloadSchema {
+        fields: &[SchemaField {
+            name: "data",
+            data_type: SchemaDataType::Dictionary {
+                min_key_size: DictKeySize::U8,
+                value_type: SimpleType::Utf8,
+            },
+            required: false,
+        }],
+        idx: |name| match name {
+            "data" => Some(0),
             _ => None,
-        }
-    }
-
-    static TEST_DATA_DEF: PayloadDefinition = PayloadDefinition {
-        get_fn: test_data_get,
-        get_nested_fn: |_, _| None,
+        },
     };
 
     #[test]
     fn test_empty_iterator() {
         let records: Vec<Option<&RecordBatch>> = vec![];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_eq!(schema.fields().len(), 0);
     }
@@ -912,7 +918,7 @@ mod schema_tests {
     fn test_none_batches() {
         let records: Vec<Option<&RecordBatch>> = vec![None, None, None];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_eq!(schema.fields().len(), 0);
     }
@@ -924,7 +930,7 @@ mod schema_tests {
 
         let records = vec![Some(&batch)];
         let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         validate_schema(&actual, &expected);
     }
@@ -936,7 +942,7 @@ mod schema_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let expected = batch1.schema();
 
@@ -951,7 +957,7 @@ mod schema_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let expected = Schema::new(vec![
             Field::new("age", DataType::Int32, true),
@@ -970,7 +976,7 @@ mod schema_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let expected = Schema::new(vec![
             Field::new("a", DataType::Utf8, true),        // in 1/3
@@ -991,7 +997,7 @@ mod schema_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let actual = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let expected = Schema::new(vec![Field::new(
             "data",
@@ -1160,7 +1166,7 @@ mod schema_tests {
 
     #[test]
     fn test_u16_attrs_str_column_enforces_u16_key() {
-        let def = payload_definitions::get(LogAttrs);
+        let def = payloads::get(LogAttrs);
 
         // Create two batches with low cardinality Dict(u8, Utf8) for the "str" column
         let batch1 = create_low_cardinality_u8_utf8_batch("str", 10);
@@ -1183,9 +1189,8 @@ mod schema_tests {
 
     #[test]
     fn test_u16_attrs_int_column_enforces_u16_key() {
-        let def = payload_definitions::get(
-            crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::ResourceAttrs,
-        );
+        let def =
+            payloads::get(crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::ResourceAttrs);
 
         let batch1 = create_low_cardinality_u8_int64_batch("int", 10);
         let batch2 = create_low_cardinality_u8_int64_batch("int", 5);
@@ -1205,9 +1210,8 @@ mod schema_tests {
 
     #[test]
     fn test_u32_attrs_str_column_enforces_u16_key() {
-        let def = payload_definitions::get(
-            crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::SpanEventAttrs,
-        );
+        let def =
+            payloads::get(crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::SpanEventAttrs);
 
         let batch1 = create_low_cardinality_u8_utf8_batch("str", 10);
         let batch2 = create_low_cardinality_u8_utf8_batch("str", 5);
@@ -1227,7 +1231,7 @@ mod schema_tests {
 
     #[test]
     fn test_logs_body_str_enforces_u16_key() {
-        let def = payload_definitions::get(Logs);
+        let def = payloads::get(Logs);
 
         let batch1 = create_struct_with_u8_dict_batch("body", "str", 10);
         let batch2 = create_struct_with_u8_dict_batch("body", "str", 5);
@@ -1258,7 +1262,7 @@ mod schema_tests {
 
     #[test]
     fn test_logs_body_ser_enforces_u16_key() {
-        let def = payload_definitions::get(Logs);
+        let def = payloads::get(Logs);
 
         let batch1 = create_struct_with_u8_dict_batch("body", "ser", 10);
         let batch2 = create_struct_with_u8_dict_batch("body", "ser", 5);
@@ -1289,7 +1293,7 @@ mod schema_tests {
 
     #[test]
     fn test_attrs_key_column_allows_u8() {
-        let def = payload_definitions::get(LogAttrs);
+        let def = payloads::get(LogAttrs);
 
         let batch1 = create_low_cardinality_u8_utf8_batch("key", 10);
         let batch2 = create_low_cardinality_u8_utf8_batch("key", 5);
@@ -1309,7 +1313,7 @@ mod schema_tests {
 
     #[test]
     fn test_logs_severity_text_allows_u8() {
-        let def = payload_definitions::get(Logs);
+        let def = payloads::get(Logs);
 
         let batch1 = create_low_cardinality_u8_utf8_batch("severity_text", 10);
         let batch2 = create_low_cardinality_u8_utf8_batch("severity_text", 5);
@@ -1329,7 +1333,7 @@ mod schema_tests {
 
     #[test]
     fn test_non_dict_column_strips_dictionary() {
-        let def = payload_definitions::get(LogAttrs);
+        let def = payloads::get(LogAttrs);
 
         // "type" column is UInt8 with no dictionary support in the spec.
         // If input has it as Dict(u8, UInt8), select_schema should strip the
@@ -1846,7 +1850,7 @@ mod index_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let field = schema.field_with_name("data").unwrap();
         assert!(
@@ -2059,7 +2063,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_nullable(&schema, "name", true);
         assert_field_nullable(&schema, "id", false);
@@ -2072,7 +2076,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_nullable(&schema, "value", true);
     }
@@ -2090,7 +2094,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_nullable(&schema, "a", false);
         assert_field_nullable(&schema, "b", true);
@@ -2105,7 +2109,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Struct "data" is missing from batch2, so it should be nullable
         assert_field_nullable(&schema, "data", true);
@@ -2153,7 +2157,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Verify struct fields are present
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2229,7 +2233,7 @@ mod nullability_tests {
             }
         }
 
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Both fields should be present and not nullable (present in all instances)
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2298,7 +2302,7 @@ mod nullability_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // All three fields (a, b, c) from both batches should be present
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2379,7 +2383,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
     }
@@ -2391,7 +2395,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
     }
@@ -2403,7 +2407,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_metadata(&schema, "value", COLUMN_ENCODING, None);
         assert_field_metadata(&schema, "name", COLUMN_ENCODING, None);
@@ -2416,7 +2420,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // ID field should get PLAIN metadata even when dictionary-encoded
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
@@ -2451,7 +2455,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Struct subfields named "id" should get PLAIN metadata
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2488,7 +2492,7 @@ mod metadata_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
         assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
@@ -2540,7 +2544,7 @@ mod struct_field_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Check struct field type
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2588,7 +2592,7 @@ mod struct_field_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         let struct_field = schema.field_with_name("data").unwrap();
         if let DataType::Struct(fields) = struct_field.data_type() {
@@ -2626,7 +2630,7 @@ mod struct_field_tests {
 
         let records = vec![Some(&batch1), Some(&batch2)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         // Struct field should be nullable when missing from batch
         let struct_field = schema.field_with_name("data").unwrap();
@@ -2671,7 +2675,7 @@ mod struct_field_tests {
 
         let records = vec![Some(&batch)];
         let index = index_records(records.into_iter()).unwrap();
-        let schema = select_schema(&index, &PayloadDefinition::EMPTY).unwrap();
+        let schema = select_schema(&index, &PayloadSchema::EMPTY).unwrap();
 
         assert!(schema.field_with_name("struct1").is_ok());
         assert!(schema.field_with_name("struct2").is_ok());

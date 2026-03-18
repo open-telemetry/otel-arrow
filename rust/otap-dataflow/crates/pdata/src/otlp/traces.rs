@@ -31,10 +31,10 @@ use crate::proto_encode_len_delimited_unknown_size;
 /// Common methods for delta-encoding ID and PARENT_ID columns.
 pub mod delta_decoder;
 
-mod span_event;
-mod span_link;
-mod spans_arrays;
-mod spans_status_arrays;
+pub(crate) mod span_event;
+pub(crate) mod span_link;
+pub(crate) mod spans_arrays;
+pub(crate) mod spans_status_arrays;
 
 struct TracesDataArrays<'a> {
     span_arrays: SpansArrays<'a>,

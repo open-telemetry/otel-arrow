@@ -24,6 +24,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
@@ -57,6 +58,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 pub struct DebugProcessor {
     config: Config,
     metrics: MetricSet<DebugPdataMetrics>,
+    compute_duration: ComputeDuration,
     sampler: Sampler,
 }
 
@@ -99,10 +101,12 @@ impl DebugProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let sampler = Sampler::new(config.sampling());
         DebugProcessor {
             config,
             metrics,
+            compute_duration,
             sampler,
         }
     }
@@ -110,6 +114,7 @@ impl DebugProcessor {
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -118,6 +123,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             metrics,
+            compute_duration,
             sampler,
         })
     }
@@ -300,6 +306,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         mut metrics_reporter,
                     } => {
                         _ = metrics_reporter.report(&mut self.metrics);
+                        self.compute_duration.report(&mut metrics_reporter);
                     }
                     _ => {}
                 }
@@ -330,13 +337,16 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 
                 let (_context, payload) = pdata.into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Logs) {
-                            let req = LogsData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                LogsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_log(req, debug_output.as_mut()).await?;
                         }
@@ -344,10 +354,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
-                            let req = MetricsData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                MetricsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_metric(req, debug_output.as_mut()).await?;
                         }
@@ -355,10 +367,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
-                            let req = TracesData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                TracesData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_trace(req, debug_output.as_mut()).await?;
                         }

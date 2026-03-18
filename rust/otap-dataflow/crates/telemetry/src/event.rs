@@ -11,22 +11,69 @@ use std::fmt;
 use std::time::SystemTime;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
+///
+/// Engine lifecycle events (Admitted, Ready, …) can optionally be routed through
+/// a dedicated unbounded channel so they are never silently dropped under
+/// backpressure.  Log events always use the bounded/lossy path controlled by
+/// [`SendPolicy`].
 #[derive(Clone)]
 pub struct ObservedEventReporter {
     policy: SendPolicy,
     sender: flume::Sender<ObservedEvent>,
+    /// Dedicated reliable sender for engine lifecycle events.
+    /// When `Some`, [`report`](Self::report) bypasses the lossy path and uses
+    /// a blocking send on the unbounded engine channel.
+    engine_sender: Option<flume::Sender<EngineEvent>>,
 }
 
 impl ObservedEventReporter {
     /// Creates a new `ObservedEventReporter` with the given sender channel.
+    ///
+    /// Engine events sent via [`report`](Self::report) will follow the lossy
+    /// path governed by `policy`.  Use [`new_with_engine_sender`](Self::new_with_engine_sender)
+    /// to guarantee reliable delivery for engine events.
     #[must_use]
     pub const fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
-        Self { policy, sender }
+        Self {
+            policy,
+            sender,
+            engine_sender: None,
+        }
+    }
+
+    /// Creates a reporter that delivers engine events reliably through a
+    /// dedicated unbounded channel while log events still use the bounded/lossy
+    /// path.
+    #[must_use]
+    pub const fn new_with_engine_sender(
+        policy: SendPolicy,
+        sender: flume::Sender<ObservedEvent>,
+        engine_sender: flume::Sender<EngineEvent>,
+    ) -> Self {
+        Self {
+            policy,
+            sender,
+            engine_sender: Some(engine_sender),
+        }
     }
 
     /// Report an engine event.
+    ///
+    /// When a dedicated engine sender is configured, the event is delivered
+    /// reliably (blocking send on an unbounded channel).  Otherwise it falls
+    /// back to the shared lossy path.
     pub fn report(&self, event: EngineEvent) {
-        self.observe(ObservedEvent::Engine(event))
+        if let Some(engine_sender) = &self.engine_sender {
+            if let Err(e) = engine_sender.send(event) {
+                crate::raw_error!(
+                    "Engine channel disconnected, dropping engine event",
+                    event = ?e.into_inner()
+                );
+            }
+        } else {
+            // Fallback: lossy path (used in tests and backward-compat scenarios).
+            self.observe(ObservedEvent::Engine(event))
+        }
     }
 
     /// Report a log event.
