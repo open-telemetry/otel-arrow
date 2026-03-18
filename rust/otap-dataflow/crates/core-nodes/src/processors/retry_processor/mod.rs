@@ -683,8 +683,8 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
-        AckMsg, NackMsg, NodeControlMsg, PipelineControlMsg, PipelineReturnMsg,
-        pipeline_ctrl_msg_channel, pipeline_return_msg_channel,
+        AckMsg, NackMsg, NodeControlMsg, PipelineResultMsg, RuntimeControlMsg,
+        pipeline_result_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -864,11 +864,11 @@ mod test {
 
         phase
             .run_test(move |mut ctx| async move {
-                // Set up test pipeline control channel
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                let (pipeline_return_tx, mut pipeline_return_rx) = pipeline_return_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
-                ctx.set_pipeline_return_sender(pipeline_return_tx);
+                // Set up test runtime control channel
+                let (pipeline_tx, mut pipeline_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_return_tx, mut pipeline_return_rx) = pipeline_result_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(pipeline_tx);
+                ctx.set_pipeline_result_sender(pipeline_return_tx);
 
                 let mut retry_count: usize = 0;
                 let pdata_in = create_test_pdata().test_subscribe_to(
@@ -893,7 +893,7 @@ mod test {
                 // received in the loop, this will happen when
                 // number_of_nacks is 4, i.e., the nack before the
                 // final retry attempt.
-                let mut have_pmsg: Option<PipelineReturnMsg<OtapPdata>> = None;
+                let mut have_pmsg: Option<PipelineResultMsg<OtapPdata>> = None;
                 let mut nacks_delivered = 0;
                 while nacks_delivered < number_of_nacks {
                     let nack = if permanent_error {
@@ -910,7 +910,7 @@ mod test {
                     // The processor should schedule a delayed retry via DelayData
                     let resp = tokio::select! {
                         recv = pipeline_rx.recv() => match recv {
-                            Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
+                            Ok(RuntimeControlMsg::DelayData { when, data, .. }) => {
                                 retry_count += 1;
 
                                 if working_clock {
@@ -930,14 +930,14 @@ mod test {
                                 None
                             }
                             Ok(msg) => {
-                                panic!("unexpected pipeline control message: {:?}", msg);
+                                panic!("unexpected runtime control message: {:?}", msg);
                             }
                             Err(err) => {
-                                panic!("unexpected pipeline control receive error: {:?}", err);
+                                panic!("unexpected runtime-control receive error: {:?}", err);
                             }
                         },
                         recv = pipeline_return_rx.recv() => Some(
-                            recv.expect("pipeline return channel closed unexpectedly")
+                            recv.expect("pipeline-result channel closed unexpectedly")
                         ),
                     };
                     have_pmsg = have_pmsg.or(resp);
@@ -965,7 +965,7 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineReturnMsg::DeliverAck { ack } => {
+                    PipelineResultMsg::DeliverAck { ack } => {
                         let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
@@ -980,7 +980,7 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineReturnMsg::DeliverNack { nack } => {
+                    PipelineResultMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason

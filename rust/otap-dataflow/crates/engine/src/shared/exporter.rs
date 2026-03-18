@@ -376,7 +376,7 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the pipeline controller for context unwinding.
+    /// Send an Ack to the runtime control manager for context unwinding.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
@@ -384,7 +384,7 @@ impl<PData> EffectHandler<PData> {
         self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to the pipeline controller for context unwinding.
+    /// Send a Nack to the runtime control manager for context unwinding.
     pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,

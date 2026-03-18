@@ -668,8 +668,8 @@ mod condense_tests {
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::control::PipelineControlMsg;
-    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::control::PipelineResultMsg;
+    use otap_df_engine::control::pipeline_result_msg_channel;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
@@ -1185,8 +1185,8 @@ mod condense_tests {
 
         rt.set_processor(proc)
             .run_test(|mut ctx| async move {
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (pipeline_result_tx, mut pipeline_result_rx) = pipeline_result_msg_channel(10);
+                ctx.set_pipeline_result_sender(pipeline_result_tx);
 
                 let mut bytes = BytesMut::new();
                 ExportMetricsServiceRequest::default()
@@ -1205,8 +1205,12 @@ mod condense_tests {
                 let result = ctx.process(Message::PData(pdata_in)).await;
                 assert!(result.is_err(), "unsupported signal should return error");
 
-                match pipeline_ctrl_rx.recv().await.expect("pipeline msg") {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                match pipeline_result_rx
+                    .recv()
+                    .await
+                    .expect("pipeline result msg")
+                {
+                    PipelineResultMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         assert_eq!(nack.refused.signal_type(), SignalType::Metrics);

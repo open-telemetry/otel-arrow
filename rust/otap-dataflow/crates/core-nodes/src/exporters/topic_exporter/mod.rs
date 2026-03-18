@@ -368,8 +368,8 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::config::ExporterConfig;
     use otap_df_engine::control::{
-        Controllable, NodeControlMsg, PipelineReturnMsg, pipeline_ctrl_msg_channel,
-        pipeline_return_msg_channel,
+        Controllable, NodeControlMsg, PipelineResultMsg, pipeline_result_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::local::message::LocalReceiver;
     use otap_df_engine::message::Receiver as PDataReceiver;
@@ -472,9 +472,9 @@ mod tests {
                 .expect("exporter input channel should be wired");
 
             let exporter_ctrl = exporter.control_sender();
-            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
             let (pipeline_return_tx, mut pipeline_return_rx) =
-                pipeline_return_msg_channel::<OtapPdata>(32);
+                pipeline_result_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let exporter_task = tokio::task::spawn_local(async move {
                 exporter
@@ -522,8 +522,8 @@ mod tests {
                     let msg = pipeline_return_rx
                         .recv()
                         .await
-                        .expect("pipeline return channel closed unexpectedly");
-                    if matches!(msg, PipelineReturnMsg::DeliverAck { .. }) {
+                        .expect("pipeline-result channel closed unexpectedly");
+                    if matches!(msg, PipelineResultMsg::DeliverAck { .. }) {
                         break msg;
                     }
                 }
@@ -531,7 +531,7 @@ mod tests {
             .await
             .expect("timed out waiting for upstream ack control");
             match delivered {
-                PipelineReturnMsg::DeliverAck { ack } => {
+                PipelineResultMsg::DeliverAck { ack } => {
                     let (node_id, ack) =
                         next_ack(ack).expect("ack should route to exporter subscriber");
                     assert_eq!(node_id, 4242);

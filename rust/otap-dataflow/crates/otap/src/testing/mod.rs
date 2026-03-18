@@ -9,7 +9,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, UnwindData, nanos_since_birth};
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
-    control::{CallData, PipelineReturnMsg},
+    control::{CallData, PipelineResultMsg},
 };
 use otap_df_pdata::OtlpProtoBytes;
 use prost::Message;
@@ -18,7 +18,7 @@ use std::ops::Add;
 use std::time::Instant;
 
 /// Consume frames to locate the most recent subscriber with ACKS
-/// interest in test scenarios, simulating the pipeline controller.
+/// interest in test scenarios, simulating the runtime control manager.
 #[must_use]
 pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)> {
     let frame = ack
@@ -35,7 +35,7 @@ pub fn next_ack(mut ack: AckMsg<OtapPdata>) -> Option<(usize, AckMsg<OtapPdata>)
 }
 
 /// Consume frames to locate the most recent subscriber with NACKS
-/// interest in test scenarios, simulating the pipeline controller.
+/// interest in test scenarios, simulating the runtime control manager.
 #[must_use]
 pub fn next_nack(mut nack: NackMsg<OtapPdata>) -> Option<(usize, NackMsg<OtapPdata>)> {
     let frame = nack
@@ -130,12 +130,12 @@ pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, confi
             result.expect("success");
 
             let mut pipeline_rx = ctx
-                .take_pipeline_return_receiver()
-                .expect("pipeline return receiver should be present in no-subscription test");
+                .take_pipeline_result_receiver()
+                .expect("pipeline result receiver should be present in no-subscription test");
 
             match pipeline_rx.recv().await {
                 Ok(received_msg) => {
-                    panic!("expected no pipeline control messages, received: {received_msg:?}");
+                    panic!("expected no runtime control messages, received: {received_msg:?}");
                 }
                 Err(err) => {
                     assert!(err.to_string().contains("channel is closed"));
@@ -170,21 +170,21 @@ pub fn test_exporter_with_subscription(
             result.expect("success");
 
             let mut pipeline_rx = ctx
-                .take_pipeline_return_receiver()
-                .expect("pipeline return receiver should be present in subscription test");
+                .take_pipeline_result_receiver()
+                .expect("pipeline result receiver should be present in subscription test");
             // Loop to skip acks/nacks that have no matching subscriber
             // (e.g., exporter sends ack but subscription is NACKS-only).
             // In the real controller, unwind_ack would consume these silently.
             let (trigger, calldata, reqdata, reason) = loop {
                 match pipeline_rx.recv().await {
-                    Ok(PipelineReturnMsg::DeliverAck { ack }) => {
+                    Ok(PipelineResultMsg::DeliverAck { ack }) => {
                         if let Some((node_id, ack)) = next_ack(ack) {
                             assert_eq!(node_id, 654321);
                             break (Interests::ACKS, ack.unwind.route.calldata, Some(ack.accepted), "success".into());
                         }
                         // No ACKS subscriber — skip, like the controller would.
                     }
-                    Ok(PipelineReturnMsg::DeliverNack { nack }) => {
+                    Ok(PipelineResultMsg::DeliverNack { nack }) => {
                         if let Some((node_id, nack)) = next_nack(nack) {
                             assert_eq!(node_id, 654321);
                             break (Interests::NACKS, nack.unwind.route.calldata, Some(nack.refused), nack.reason);

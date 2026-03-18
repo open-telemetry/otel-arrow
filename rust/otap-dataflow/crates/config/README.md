@@ -81,7 +81,8 @@ Resolved model highlights:
 Policy families:
 
 - `policies.channel_capacity.control.node`
-- `policies.channel_capacity.control.pipeline`
+- `policies.channel_capacity.control.runtime`
+- `policies.channel_capacity.control.results`
 - `policies.channel_capacity.pdata`
 - `policies.health`
 - `policies.telemetry.pipeline_metrics`
@@ -92,10 +93,20 @@ Policy families:
 Defaults:
 
 - `channel_capacity.control.node = 256`
-- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.control.runtime = 256`
+- `channel_capacity.control.results = 512`
 - `channel_capacity.pdata = 128`
 - telemetry policy booleans default to `true`
 - `resources.core_allocation = all_cores`
+
+Control channel keys:
+
+- `node`: capacity of per-node control inboxes
+- `runtime`: capacity of the shared runtime orchestration channel
+- `results`: capacity of the shared Ack/Nack completion channel
+
+Legacy aliases `control.pipeline` and `control.return` are still accepted for
+backward compatibility, but `runtime` and `results` are the documented names.
 
 Resolution precedence:
 

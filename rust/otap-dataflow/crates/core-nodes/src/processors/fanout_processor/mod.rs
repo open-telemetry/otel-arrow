@@ -1200,8 +1200,8 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{
-        NodeControlMsg, PipelineControlMsg, PipelineReturnMsg, pipeline_ctrl_msg_channel,
-        pipeline_return_msg_channel,
+        NodeControlMsg, PipelineResultMsg, RuntimeControlMsg, pipeline_result_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::local::processor::EffectHandler;
@@ -1239,9 +1239,9 @@ mod tests {
         effect: EffectHandler<OtapPdata>,
         outputs: HashMap<String, LocalReceiver<OtapPdata>>,
         _pipeline_ctrl_rx:
-            otap_df_engine::shared::message::SharedReceiver<PipelineControlMsg<OtapPdata>>,
+            otap_df_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
         pipeline_return_rx:
-            otap_df_engine::shared::message::SharedReceiver<PipelineReturnMsg<OtapPdata>>,
+            otap_df_engine::shared::message::SharedReceiver<PipelineResultMsg<OtapPdata>>,
     }
 
     fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
@@ -1287,10 +1287,10 @@ mod tests {
             node_cfg.default_output.clone(),
             metrics_system.reporter(),
         );
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-        let (pipeline_return_tx, pipeline_return_rx) = pipeline_return_msg_channel(10);
-        effect.set_pipeline_ctrl_msg_sender(pipeline_ctrl_tx);
-        effect.set_pipeline_return_msg_sender(pipeline_return_tx);
+        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_return_tx, pipeline_return_rx) = pipeline_result_msg_channel(10);
+        effect.set_runtime_ctrl_msg_sender(pipeline_ctrl_tx);
+        effect.set_pipeline_result_msg_sender(pipeline_return_tx);
 
         FanoutHarness {
             fanout,
@@ -1712,7 +1712,7 @@ mod tests {
         // Only one upstream ack is emitted.
         let mut delivered = 0;
         while let Ok(msg) = h.pipeline_return_rx.try_recv() {
-            if matches!(msg, PipelineReturnMsg::DeliverAck { .. }) {
+            if matches!(msg, PipelineResultMsg::DeliverAck { .. }) {
                 delivered += 1;
             }
         }
@@ -1761,8 +1761,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 0, "should not ack upstream");
@@ -1854,8 +1854,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 1);
@@ -1901,8 +1901,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 1);
@@ -1963,8 +1963,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 1);
@@ -1997,7 +1997,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if matches!(msg, PipelineReturnMsg::DeliverNack { .. }) {
+            if matches!(msg, PipelineResultMsg::DeliverNack { .. }) {
                 delivered_nacks += 1;
             }
         }
@@ -2049,8 +2049,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 0);
@@ -2081,7 +2081,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if matches!(msg, PipelineReturnMsg::DeliverAck { .. }) {
+            if matches!(msg, PipelineResultMsg::DeliverAck { .. }) {
                 delivered += 1;
             }
         }
@@ -2131,7 +2131,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if matches!(msg, PipelineReturnMsg::DeliverAck { .. }) {
+            if matches!(msg, PipelineResultMsg::DeliverAck { .. }) {
                 delivered_ack += 1;
             }
         }
@@ -2211,8 +2211,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 1);
@@ -2249,7 +2249,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(10), h.pipeline_return_rx.recv()).await
         {
-            if matches!(msg, PipelineReturnMsg::DeliverNack { .. }) {
+            if matches!(msg, PipelineResultMsg::DeliverNack { .. }) {
                 panic!("unexpected nack upstream");
             }
         }
@@ -2268,8 +2268,8 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             match msg {
-                PipelineReturnMsg::DeliverAck { .. } => delivered_ack += 1,
-                PipelineReturnMsg::DeliverNack { .. } => delivered_nack += 1,
+                PipelineResultMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineResultMsg::DeliverNack { .. } => delivered_nack += 1,
             }
         }
         assert_eq!(delivered_ack, 1);
@@ -2391,7 +2391,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if let PipelineReturnMsg::DeliverAck { ack } = msg {
+            if let PipelineResultMsg::DeliverAck { ack } = msg {
                 let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     // Also verify calldata matches the upstream receiver's calldata
@@ -2461,7 +2461,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if let PipelineReturnMsg::DeliverNack { nack } = msg {
+            if let PipelineResultMsg::DeliverNack { nack } = msg {
                 let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                 if node_id == UPSTREAM_RECEIVER_NODE_ID {
                     let received_calldata: Result<TestCallData, _> =
@@ -2542,10 +2542,10 @@ mod tests {
             node_cfg.default_output.clone(),
             metrics_system.reporter(),
         );
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-        let (pipeline_return_tx, pipeline_return_rx) = pipeline_return_msg_channel(10);
-        effect.set_pipeline_ctrl_msg_sender(pipeline_ctrl_tx);
-        effect.set_pipeline_return_msg_sender(pipeline_return_tx);
+        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_return_tx, pipeline_return_rx) = pipeline_result_msg_channel(10);
+        effect.set_runtime_ctrl_msg_sender(pipeline_ctrl_tx);
+        effect.set_pipeline_result_msg_sender(pipeline_return_tx);
 
         FanoutHarness {
             fanout,
@@ -2589,7 +2589,7 @@ mod tests {
         let nack_received =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv())
                 .await
-                .map(|r| matches!(r, Ok(PipelineReturnMsg::DeliverNack { .. })))
+                .map(|r| matches!(r, Ok(PipelineResultMsg::DeliverNack { .. })))
                 .unwrap_or(false);
         assert!(
             !nack_received,
@@ -2639,7 +2639,7 @@ mod tests {
         let nack_received =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv())
                 .await
-                .map(|r| matches!(r, Ok(PipelineReturnMsg::DeliverNack { .. })))
+                .map(|r| matches!(r, Ok(PipelineResultMsg::DeliverNack { .. })))
                 .unwrap_or(false);
         assert!(
             !nack_received,
@@ -2766,7 +2766,7 @@ mod tests {
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
-            if let PipelineReturnMsg::DeliverAck { .. } = msg {
+            if let PipelineResultMsg::DeliverAck { .. } = msg {
                 ack_count += 1;
             }
         }
@@ -2881,7 +2881,7 @@ mod tests {
 
         // Verify no nacks were produced.
         let mut nacked = 0usize;
-        while let Ok(Ok(PipelineReturnMsg::DeliverNack { .. })) =
+        while let Ok(Ok(PipelineResultMsg::DeliverNack { .. })) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_return_rx.recv()).await
         {
             nacked += 1;

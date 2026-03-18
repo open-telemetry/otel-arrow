@@ -705,7 +705,7 @@ mod tests {
 
     use bytes::Bytes;
     use otap_df_engine::Interests;
-    use otap_df_engine::control::PipelineControlMsg;
+    use otap_df_engine::control::PipelineResultMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use std::time::{Duration, Instant};
@@ -857,10 +857,10 @@ mod tests {
             .run_validation(|mut ctx, result| async move {
                 result.expect("success");
 
-                let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                let mut pipeline_rx = ctx.take_pipeline_result_receiver().unwrap();
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
-                        PipelineControlMsg::DeliverAck { ack } => {
+                        PipelineResultMsg::DeliverAck { ack } => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
@@ -898,10 +898,10 @@ mod tests {
             .run_validation(|mut ctx, result| async move {
                 result.expect("success");
 
-                let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                let mut pipeline_rx = ctx.take_pipeline_result_receiver().unwrap();
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
-                        PipelineControlMsg::DeliverNack { nack } => {
+                        PipelineResultMsg::DeliverNack { nack } => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);

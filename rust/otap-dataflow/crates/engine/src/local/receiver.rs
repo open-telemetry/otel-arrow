@@ -33,7 +33,7 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
-use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -144,11 +144,11 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, Sender<PData>>,
         default_port: Option<PortName>,
-        node_request_sender: PipelineCtrlMsgSender<PData>,
+        node_request_sender: RuntimeCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
-        core.set_pipeline_ctrl_msg_sender(node_request_sender);
+        core.set_runtime_ctrl_msg_sender(node_request_sender);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler { core, router }
     }
@@ -314,7 +314,7 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::control::pipeline_ctrl_msg_channel;
+    use crate::control::runtime_ctrl_msg_channel;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
@@ -336,7 +336,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -357,7 +357,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -374,7 +374,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("recv"),
@@ -403,7 +403,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -432,7 +432,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -447,7 +447,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("recv"),
@@ -468,7 +468,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("recv"),
@@ -497,7 +497,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -515,7 +515,7 @@ mod tests {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -532,7 +532,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -552,7 +552,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 

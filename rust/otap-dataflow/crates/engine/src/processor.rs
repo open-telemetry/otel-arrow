@@ -13,9 +13,7 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
-use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgSender, PipelineReturnMsgSender,
-};
+use crate::control::{Controllable, NodeControlMsg, PipelineResultMsgSender, RuntimeCtrlMsgSender};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
@@ -398,8 +396,8 @@ impl<PData> ProcessorWrapper<PData> {
     /// Start the processor and run the message processing loop.
     pub async fn start(
         self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-        pipeline_return_msg_tx: PipelineReturnMsgSender<PData>,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_result_msg_tx: PipelineResultMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<(), Error>
@@ -418,10 +416,10 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 effect_handler
                     .core
-                    .set_pipeline_return_msg_sender(pipeline_return_msg_tx);
+                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection
@@ -449,10 +447,10 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 effect_handler
                     .core
-                    .set_pipeline_return_msg_sender(pipeline_return_msg_tx);
+                    .set_pipeline_result_msg_sender(pipeline_result_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
 
                 // Start periodic telemetry collection

@@ -2319,6 +2319,169 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_grpc_wait_for_result_shutdown_returns_unavailable() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: test_config(grpc_listen),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+                global_max_concurrent_requests: None,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let request_started = Arc::new(tokio::sync::Notify::new());
+        let scenario_started = request_started.clone();
+        let validation_started = request_started.clone();
+        let shutdown_reason = "shutdown while request is waiting";
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            let request_started = scenario_started.clone();
+            Box::pin(async move {
+                let endpoint = grpc_endpoint.clone();
+                let request_handle = tokio::spawn(async move {
+                    let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+                    client.export(create_logs_service_request()).await
+                });
+
+                timeout(Duration::from_secs(3), request_started.notified())
+                    .await
+                    .expect("Timed out waiting for the request to reach the pipeline");
+
+                ctx.send_shutdown(Instant::now(), shutdown_reason)
+                    .await
+                    .expect("Failed to send shutdown");
+
+                let result = timeout(Duration::from_secs(3), request_handle)
+                    .await
+                    .expect("gRPC request should complete on shutdown")
+                    .unwrap();
+                let status = result.expect_err("request should fail with shutdown result");
+                assert_eq!(status.code(), tonic::Code::Unavailable);
+                assert!(status.message().contains("Pipeline processing failed"));
+                assert!(status.message().contains(shutdown_reason));
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            let request_started = validation_started.clone();
+            Box::pin(async move {
+                let _pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for gRPC message")
+                    .expect("No gRPC message received");
+                request_started.notify_one();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_otlp_http_wait_for_result_shutdown_returns_503() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: test_config_http_only(http_listen),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+                global_max_concurrent_requests: None,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let request_started = Arc::new(tokio::sync::Notify::new());
+        let scenario_started = request_started.clone();
+        let validation_started = request_started.clone();
+        let shutdown_reason = "http shutdown while waiting";
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            let request_started = scenario_started.clone();
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let request_handle = tokio::spawn(async move {
+                    post_otlp_http(http_listen, "/v1/logs", request_bytes).await
+                });
+
+                timeout(Duration::from_secs(3), request_started.notified())
+                    .await
+                    .expect("Timed out waiting for the HTTP request to reach the pipeline");
+
+                ctx.send_shutdown(Instant::now(), shutdown_reason)
+                    .await
+                    .expect("Failed to send shutdown");
+
+                let (status, body) = timeout(Duration::from_secs(3), request_handle)
+                    .await
+                    .expect("HTTP request should complete on shutdown")
+                    .unwrap()
+                    .expect("HTTP request should return a response");
+                assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+
+                let rpc_status = crate::otlp_http::RpcStatus::decode(body.as_ref())
+                    .expect("Should decode RpcStatus");
+                assert_eq!(rpc_status.code, 14);
+                assert!(rpc_status.message.contains("Pipeline processing failed"));
+                assert!(rpc_status.message.contains(shutdown_reason));
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            let request_started = validation_started.clone();
+            Box::pin(async move {
+                let _pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for HTTP message")
+                    .expect("No HTTP message received");
+                request_started.notify_one();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
     fn test_otlp_http_accepts_zstd_body() {
         let test_runtime = TestRuntime::new();
 

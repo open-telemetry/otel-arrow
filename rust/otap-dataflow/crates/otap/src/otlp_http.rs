@@ -941,7 +941,7 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -958,7 +958,7 @@ mod tests {
         let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler =
             EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);

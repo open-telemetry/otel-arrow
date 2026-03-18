@@ -1725,7 +1725,7 @@ mod telemetry_tests {
                 Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
             );
 
-            let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
+            let (pipe_tx, _pipe_rx) = otap_df_engine::control::runtime_ctrl_msg_channel(10);
             // Telemetry reporter for effect handler
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
             let eh = otap_df_engine::local::receiver::EffectHandler::new(
@@ -1831,7 +1831,7 @@ mod telemetry_tests {
                 Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(tx)),
             );
 
-            let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
+            let (pipe_tx, _pipe_rx) = otap_df_engine::control::runtime_ctrl_msg_channel(10);
             // Telemetry reporter for effect handler
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
             let eh = otap_df_engine::local::receiver::EffectHandler::new(

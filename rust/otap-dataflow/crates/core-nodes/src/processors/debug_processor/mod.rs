@@ -1372,12 +1372,12 @@ mod tests {
     ) -> (
         TestRuntime<OtapPdata>,
         ProcessorWrapper<OtapPdata>,
-        otap_df_engine::control::PipelineCtrlMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineReturnMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineReturnMsgReceiver<OtapPdata>,
+        otap_df_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineResultMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineResultMsgReceiver<OtapPdata>,
         String,
     ) {
-        use otap_df_engine::control::{pipeline_ctrl_msg_channel, pipeline_return_msg_channel};
+        use otap_df_engine::control::{pipeline_result_msg_channel, runtime_ctrl_msg_channel};
 
         let test_runtime = TestRuntime::new();
         let signals = HashSet::from([SignalActive::Logs]);
@@ -1403,8 +1403,8 @@ mod tests {
             test_runtime.config(),
         );
 
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(10);
-        let (pipeline_return_tx, pipeline_return_rx) = pipeline_return_msg_channel::<OtapPdata>(10);
+        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(10);
+        let (pipeline_return_tx, pipeline_return_rx) = pipeline_result_msg_channel::<OtapPdata>(10);
 
         drop(pipeline_ctrl_rx);
 
@@ -1427,7 +1427,7 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{AckMsg, PipelineReturnMsg};
+        use otap_df_engine::control::{AckMsg, PipelineResultMsg};
         use otap_df_otap::testing::TestCallData;
 
         let (
@@ -1443,8 +1443,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_return_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_return_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 42usize;
@@ -1459,7 +1459,7 @@ mod tests {
                         .expect("Processor failed on ACK");
 
                     match pipeline_return_rx.try_recv() {
-                        Ok(PipelineReturnMsg::DeliverAck { ack }) => {
+                        Ok(PipelineResultMsg::DeliverAck { ack }) => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
@@ -1486,7 +1486,7 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{NackMsg, PipelineReturnMsg};
+        use otap_df_engine::control::{NackMsg, PipelineResultMsg};
         use otap_df_otap::testing::TestCallData;
 
         let (
@@ -1502,8 +1502,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_return_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_return_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 99usize;
@@ -1519,7 +1519,7 @@ mod tests {
                         .expect("Processor failed on NACK");
 
                     match pipeline_return_rx.try_recv() {
-                        Ok(PipelineReturnMsg::DeliverNack { nack }) => {
+                        Ok(PipelineResultMsg::DeliverNack { nack }) => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
@@ -1562,8 +1562,8 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
-                    ctx.set_pipeline_return_sender(pipeline_return_tx);
+                    ctx.set_runtime_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_pipeline_result_sender(pipeline_return_tx);
 
                     let pdata_no_sub = create_empty_test_pdata();
 

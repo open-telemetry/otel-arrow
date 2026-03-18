@@ -345,7 +345,8 @@ groups:
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
         assert_eq!(config.policies.channel_capacity.control.node, 256);
-        assert_eq!(config.policies.channel_capacity.control.pipeline, 256);
+        assert_eq!(config.policies.channel_capacity.control.runtime, 256);
+        assert_eq!(config.policies.channel_capacity.control.results, 512);
         assert_eq!(config.policies.channel_capacity.pdata, 128);
         assert_eq!(config.policies.health, HealthPolicy::default());
         assert!(config.policies.telemetry.pipeline_metrics);
@@ -361,7 +362,7 @@ groups:
     }
 
     #[test]
-    fn resolve_channel_capacity_policy_respects_scope_precedence() {
+    fn from_yaml_accepts_legacy_control_capacity_aliases() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
@@ -369,6 +370,88 @@ policies:
       control:
         node: 200
         pipeline: 201
+        return: 203
+      pdata: 202
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("legacy aliases should parse");
+        assert_eq!(config.policies.channel_capacity.control.node, 200);
+        assert_eq!(config.policies.channel_capacity.control.runtime, 201);
+        assert_eq!(config.policies.channel_capacity.control.results, 203);
+        assert_eq!(config.policies.channel_capacity.pdata, 202);
+
+        let rendered =
+            serde_json::to_value(&config).expect("serialized config should use canonical names");
+        let control = &rendered["policies"]["channel_capacity"]["control"];
+        assert_eq!(control["node"], 200);
+        assert_eq!(control["runtime"], 201);
+        assert_eq!(control["results"], 203);
+        assert!(control.get("pipeline").is_none());
+        assert!(control.get("return").is_none());
+    }
+
+    #[test]
+    fn from_yaml_rejects_mixed_legacy_and_canonical_control_keys() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+      control:
+        node: 200
+        runtime: 201
+        pipeline: 202
+      pdata: 203
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("mixed alias names should fail");
+        match err {
+            Error::DeserializationError { details, .. } => {
+                assert!(details.contains("duplicate field"));
+            }
+            other => panic!("expected deserialization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_channel_capacity_policy_respects_scope_precedence() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+      control:
+        node: 200
+        runtime: 201
+        results: 203
       pdata: 202
   health:
     ready_if: [Running]
@@ -385,7 +468,8 @@ groups:
       channel_capacity:
           control:
             node: 150
-            pipeline: 151
+            runtime: 151
+            results: 153
           pdata: 152
       health:
         ready_if: [Running, Updating]
@@ -401,7 +485,8 @@ groups:
           channel_capacity:
               control:
                 node: 50
-                pipeline: 51
+                runtime: 51
+                results: 53
               pdata: 52
           health:
             ready_if: [Failed]
@@ -477,7 +562,8 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p1")
             .expect("g1/p1 should be resolved");
         assert_eq!(p1_resolved.policies.channel_capacity.control.node, 50);
-        assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
+        assert_eq!(p1_resolved.policies.channel_capacity.control.runtime, 51);
+        assert_eq!(p1_resolved.policies.channel_capacity.control.results, 53);
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.effective_resources().core_allocation,
@@ -498,7 +584,8 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p2")
             .expect("g1/p2 should be resolved");
         assert_eq!(p2_resolved.policies.channel_capacity.control.node, 150);
-        assert_eq!(p2_resolved.policies.channel_capacity.control.pipeline, 151);
+        assert_eq!(p2_resolved.policies.channel_capacity.control.runtime, 151);
+        assert_eq!(p2_resolved.policies.channel_capacity.control.results, 153);
         assert_eq!(p2_resolved.policies.channel_capacity.pdata, 152);
         assert_eq!(
             p2_resolved.policies.health.ready_if,
@@ -522,7 +609,8 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "g2" && p.pipeline_id.as_ref() == "p3")
             .expect("g2/p3 should be resolved");
         assert_eq!(p3_resolved.policies.channel_capacity.control.node, 200);
-        assert_eq!(p3_resolved.policies.channel_capacity.control.pipeline, 201);
+        assert_eq!(p3_resolved.policies.channel_capacity.control.runtime, 201);
+        assert_eq!(p3_resolved.policies.channel_capacity.control.results, 203);
         assert_eq!(p3_resolved.policies.channel_capacity.pdata, 202);
         assert_eq!(
             p3_resolved.policies.health.ready_if,
@@ -835,7 +923,8 @@ policies:
   channel_capacity:
       control:
         node: 200
-        pipeline: 201
+        runtime: 201
+        results: 203
       pdata: 202
   health:
     ready_if: [Running]
@@ -848,7 +937,8 @@ engine:
         channel_capacity:
             control:
               node: 10
-              pipeline: 11
+              runtime: 11
+              results: 13
             pdata: 12
         health:
           ready_if: [Failed]
@@ -890,7 +980,8 @@ groups:
         assert_eq!(obs.pipeline_group_id.as_ref(), "system");
         assert_eq!(obs.pipeline_id.as_ref(), "observability");
         assert_eq!(obs.policies.channel_capacity.control.node, 10);
-        assert_eq!(obs.policies.channel_capacity.control.pipeline, 11);
+        assert_eq!(obs.policies.channel_capacity.control.runtime, 11);
+        assert_eq!(obs.policies.channel_capacity.control.results, 13);
         assert_eq!(obs.policies.channel_capacity.pdata, 12);
         assert_eq!(
             obs.policies.health.ready_if,
@@ -976,7 +1067,8 @@ policies:
   channel_capacity:
       control:
         node: 0
-        pipeline: 0
+        runtime: 0
+        results: 0
       pdata: 0
 engine: {}
 groups:
@@ -998,7 +1090,8 @@ groups:
         let err = OtelDataflowSpec::from_yaml(yaml).expect_err("zero capacities should fail");
         let rendered = err.to_string();
         assert!(rendered.contains("channel_capacity.control.node"));
-        assert!(rendered.contains("channel_capacity.control.pipeline"));
+        assert!(rendered.contains("channel_capacity.control.runtime"));
+        assert!(rendered.contains("channel_capacity.control.results"));
         assert!(rendered.contains("channel_capacity.pdata"));
     }
 

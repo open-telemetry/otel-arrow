@@ -8,7 +8,7 @@
 
 use crate::Interests;
 use crate::config::ProcessorConfig;
-use crate::control::pipeline_ctrl_msg_channel;
+use crate::control::runtime_ctrl_msg_channel;
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -103,42 +103,42 @@ impl<PData> TestContext<PData> {
         }
     }
 
-    /// Sets the pipeline control message sender on the effect handler.
+    /// Sets the runtime control message sender on the effect handler.
     /// This is needed for processor ACK/NACK handling.
-    pub fn set_pipeline_ctrl_sender(
+    pub fn set_runtime_ctrl_sender(
         &mut self,
-        pipeline_ctrl_sender: crate::control::PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_sender: crate::control::RuntimeCtrlMsgSender<PData>,
     ) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_sender);
             }
             ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_sender);
             }
         }
     }
 
-    /// Sets the pipeline return message sender on the effect handler.
+    /// Sets the pipeline-result message sender on the effect handler.
     /// This is needed for processor ACK/NACK handling.
-    pub fn set_pipeline_return_sender(
+    pub fn set_pipeline_result_sender(
         &mut self,
-        pipeline_return_sender: crate::control::PipelineReturnMsgSender<PData>,
+        pipeline_result_sender: crate::control::PipelineResultMsgSender<PData>,
     ) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_return_msg_sender(pipeline_return_sender);
+                    .set_pipeline_result_msg_sender(pipeline_result_sender);
             }
             ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_return_msg_sender(pipeline_return_sender);
+                    .set_pipeline_result_msg_sender(pipeline_result_sender);
             }
         }
     }
@@ -311,7 +311,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 .await
                 .expect("Failed to prepare runtime");
 
-            let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+            let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
             match runtime {
                 ProcessorWrapperRuntime::Local {
                     ref mut effect_handler,
@@ -319,7 +319,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 } => {
                     effect_handler
                         .core
-                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 }
                 ProcessorWrapperRuntime::Shared {
                     ref mut effect_handler,
@@ -327,7 +327,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 } => {
                     effect_handler
                         .core
-                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 }
             }
             let mut context = TestContext::new(runtime);

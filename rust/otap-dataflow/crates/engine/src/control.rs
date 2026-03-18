@@ -263,10 +263,10 @@ pub enum NodeControlMsg<PData> {
     },
 }
 
-/// Control messages sent by nodes to the pipeline engine to manage node-specific operations
-/// and control pipeline behavior.
+/// Runtime-control messages sent by nodes to the pipeline runtime for
+/// orchestration, delayed-data handling, and shutdown.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg<PData> {
+pub enum RuntimeControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -324,10 +324,10 @@ pub enum PipelineControlMsg<PData> {
     },
 }
 
-/// Return-path control messages sent by nodes to the pipeline engine for
+/// Pipeline-result messages sent by nodes to the pipeline runtime for
 /// Ack/Nack unwinding.
 #[derive(Debug, Clone)]
-pub enum PipelineReturnMsg<PData> {
+pub enum PipelineResultMsg<PData> {
     /// Deliver an Ack to the preceding subscriber in the pipeline.
     DeliverAck {
         /// The Ack.
@@ -366,23 +366,23 @@ impl<PData> NodeControlMsg<PData> {
     }
 }
 
-/// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
+/// Type alias for the channel sender used by nodes to send requests to the pipeline runtime.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
+pub type RuntimeCtrlMsgSender<PData> = SharedSender<RuntimeControlMsg<PData>>;
 
-/// Type alias for the channel receiver used by the pipeline engine to receive node requests.
+/// Type alias for the channel receiver used by the pipeline runtime to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
+pub type RuntimeCtrlMsgReceiver<PData> = SharedReceiver<RuntimeControlMsg<PData>>;
 
 /// Type alias for the channel sender used by nodes to send Ack/Nack unwind
-/// requests to the pipeline engine.
-pub type PipelineReturnMsgSender<PData> = SharedSender<PipelineReturnMsg<PData>>;
+/// requests to the pipeline runtime.
+pub type PipelineResultMsgSender<PData> = SharedSender<PipelineResultMsg<PData>>;
 
-/// Type alias for the channel receiver used by the pipeline engine to receive
+/// Type alias for the channel receiver used by the pipeline runtime to receive
 /// Ack/Nack unwind requests from nodes.
-pub type PipelineReturnMsgReceiver<PData> = SharedReceiver<PipelineReturnMsg<PData>>;
+pub type PipelineResultMsgReceiver<PData> = SharedReceiver<PipelineResultMsg<PData>>;
 
 /// Trait for sending admin commands without depending on the pipeline data type.
 pub trait PipelineAdminSender: Send + Sync {
@@ -390,10 +390,10 @@ pub trait PipelineAdminSender: Send + Sync {
     fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error>;
 }
 
-/// Creates a shared node request channel for communication from nodes to the pipeline engine.
+/// Creates a shared runtime-control channel for communication from nodes to the pipeline runtime.
 ///
 /// The channel is multi-producer, single-consumer (MPSC), allowing multiple nodes to send requests
-/// to a single pipeline engine instance.
+/// to a single pipeline runtime instance.
 ///
 /// # Arguments
 ///
@@ -402,19 +402,19 @@ pub trait PipelineAdminSender: Send + Sync {
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel<PData>(
+pub fn runtime_ctrl_msg_channel<PData>(
     capacity: usize,
-) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
+) -> (RuntimeCtrlMsgSender<PData>, RuntimeCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
 }
 
-/// Creates the shared return channel used for Ack/Nack unwinding.
-pub fn pipeline_return_msg_channel<PData>(
+/// Creates the shared pipeline-result channel used for Ack/Nack unwinding.
+pub fn pipeline_result_msg_channel<PData>(
     capacity: usize,
 ) -> (
-    PipelineReturnMsgSender<PData>,
-    PipelineReturnMsgReceiver<PData>,
+    PipelineResultMsgSender<PData>,
+    PipelineResultMsgReceiver<PData>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
@@ -655,15 +655,15 @@ impl<PData> ControlSenders<PData> {
     }
 }
 
-impl<PData> PipelineAdminSender for SharedSender<PipelineControlMsg<PData>>
+impl<PData> PipelineAdminSender for SharedSender<RuntimeControlMsg<PData>>
 where
     PData: Send + Sync + 'static,
 {
     fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error> {
-        let shutdown_msg = PipelineControlMsg::Shutdown { deadline, reason };
+        let shutdown_msg = RuntimeControlMsg::Shutdown { deadline, reason };
 
         self.try_send(shutdown_msg)
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: format!("Failed to send shutdown message: {}", e),
             })
     }

@@ -73,11 +73,12 @@ Each pipeline runtime uses three channel families:
    `MessageChannel`.
 3. **Pipeline Runtime Channels**: Each pipeline runtime owns two bounded shared
    MPSC channels:
-   - a **pipeline-control channel** for timers, delayed-data requests,
+   - a **runtime-control channel** for timers, delayed-data requests,
      receiver-drain notifications, and shutdown requests, consumed by
-     `PipelineCtrlMsgManager`;
-   - a **pipeline-return channel** for `DeliverAck` / `DeliverNack`, consumed
-     by `PipelineReturnMsgDispatcher`.
+     `RuntimeCtrlMsgManager`;
+   - a **pipeline-result channel** for `DeliverAck` / `DeliverNack`, consumed
+     by `PipelineResultMsgDispatcher`. Its capacity is controlled by
+     `policies.channel_capacity.control.results`.
 
 For processors and exporters, `MessageChannel` prefers control over `pdata`,
 but it no longer gives control absolute priority. After 32 consecutive control
@@ -88,10 +89,75 @@ The current message families are:
 
 - **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
   `CollectTelemetry`, `DelayedData`, `DrainIngress`, `Shutdown`
-- **Pipeline control messages**: `StartTimer`, `CancelTimer`,
+- **Runtime control messages**: `StartTimer`, `CancelTimer`,
   `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
   `ReceiverDrained`, `Shutdown`
-- **Pipeline return messages**: `DeliverAck`, `DeliverNack`
+- **Pipeline result messages**: `DeliverAck`, `DeliverNack`
+
+## Runtime Message Dynamics
+
+The diagram below overlays the main runtime interactions: forward `pdata`
+delivery, runtime coordination, Ack/Nack unwinding, and graceful drain
+signaling.
+
+```mermaid
+flowchart TD
+    Admin["Controller / admin"]
+    Ext["External upstream / ingress source"]
+
+    subgraph Runtime["Pipeline runtime"]
+        RuntimeCtrl["RuntimeCtrlMsgManager"]
+        ResultDisp["PipelineResultMsgDispatcher"]
+    end
+
+    subgraph Channels["Bounded channels"]
+        RuntimeCtrlCh["runtime-control channel"]
+        ResultCh["pipeline-result channel"]
+        ReceiverCtrlCh["receiver node-control channel"]
+        ProcCtrlCh["processor/exporter node-control channel"]
+        PDataCh["pdata channel"]
+    end
+
+    subgraph Nodes["Pipeline nodes"]
+        Receiver["Receiver"]
+        MsgCh["MessageChannel"]
+        Downstream["Processor / exporter"]
+    end
+
+    Ext -->|"external data"| Receiver
+    Receiver -->|"pdata"| PDataCh
+    PDataCh -->|"pdata"| MsgCh
+    ProcCtrlCh -->|"node control"| MsgCh
+    MsgCh -->|"delivered message"| Downstream
+
+    Admin -->|"RuntimeControlMsg::Shutdown"| RuntimeCtrlCh
+    Receiver -->|"RuntimeControlMsg::{StartTimer, DelayData, ReceiverDrained}"| RuntimeCtrlCh
+    Downstream -->|"RuntimeControlMsg::{StartTimer, CancelTimer, DelayData}"| RuntimeCtrlCh
+    RuntimeCtrlCh -->|"consumed by"| RuntimeCtrl
+
+    RuntimeCtrl -->|"NodeControlMsg::{TimerTick, CollectTelemetry, DelayedData}"| ProcCtrlCh
+    RuntimeCtrl -->|"NodeControlMsg::DrainIngress"| ReceiverCtrlCh
+    RuntimeCtrl -->|"after all ReceiverDrained: NodeControlMsg::Shutdown"| ProcCtrlCh
+    ReceiverCtrlCh -->|"control, competing with ingress"| Receiver
+
+    Downstream -->|"PipelineResultMsg::{DeliverAck, DeliverNack}"| ResultCh
+    ResultCh -->|"consumed by"| ResultDisp
+    ResultDisp -->|"NodeControlMsg::{Ack, Nack} to closest interested upstream node"| ReceiverCtrlCh
+    ResultDisp -->|"NodeControlMsg::{Ack, Nack} to closest interested upstream node"| ProcCtrlCh
+```
+
+Read this diagram as four concurrent mechanisms:
+
+- Receivers create `pdata` from external ingress and send it downstream on the
+  `pdata` channel.
+- Processors and exporters consume `pdata` and node control together through
+  `MessageChannel`.
+- Nodes publish runtime work such as timers, delayed data, and
+  `ReceiverDrained` on the runtime-control channel, while
+  `PipelineResultMsgDispatcher` handles only `DeliverAck` / `DeliverNack`.
+- Graceful shutdown enters through `RuntimeControlMsg::Shutdown`, triggers
+  `DrainIngress` at receivers first, and sends downstream `Shutdown` only after
+  all receivers have reported `ReceiverDrained`.
 
 ## Runtime Properties
 
@@ -102,7 +168,7 @@ The runtime is designed around a small set of explicit guarantees:
   dedicated runtime components. This keeps completion traffic, scheduling, and
   node control independent at the runtime level.
 - **Bounded progress under load:** processor/exporter delivery loops and
-  `PipelineCtrlMsgManager` use bounded-fair scheduling. Control remains
+  `RuntimeCtrlMsgManager` use bounded-fair scheduling. Control remains
   responsive, while `pdata`, timer expiry, telemetry collection, and delayed
   data resumption continue to make progress under sustained control traffic.
 - **Explicit node-level admission control:** processors can temporarily pause
@@ -187,8 +253,8 @@ Ack (positive acknowledgement) or Nack (negative acknowledgement) node
 control messages.
 
 Ack/Nack unwinding is intentionally separated from timer and shutdown
-orchestration. Nodes publish return-path events on the pipeline-return channel,
-and `PipelineReturnMsgDispatcher` unwinds the caller subscription stack and
+orchestration. Nodes publish return-path events on the pipeline-result channel,
+and `PipelineResultMsgDispatcher` unwinds the caller subscription stack and
 forwards `Ack` / `Nack` node-control messages to the closest interested
 upstream node.
 
@@ -383,11 +449,11 @@ that are not used for lack of interest are automatically skipped
 ## Graceful Shutdown Sequence
 
 The pipeline engine supports graceful shutdown of pipelines and their nodes.
-Shutdown is initiated by sending `PipelineControlMsg::Shutdown` to the
-pipeline-control channel; it is not implemented by broadcasting `Shutdown`
+Shutdown is initiated by sending `RuntimeControlMsg::Shutdown` to the
+runtime-control channel; it is not implemented by broadcasting `Shutdown`
 directly to every node at once.
 
-When graceful shutdown starts, the pipeline control manager:
+When graceful shutdown starts, the runtime control manager:
 
 1. Enters ingress-draining mode.
 2. Cancels recurring timers.
@@ -400,7 +466,7 @@ while keeping its receiver-local drain state alive long enough to finish local
 cleanup. For example, an RPC receiver can keep its wait-for-result registry,
 transport shutdown, and telemetry finalization alive until it has no more
 admitted requests to resolve. Once ingress is closed and receiver-local drain
-work is complete, the receiver reports `PipelineControlMsg::ReceiverDrained`.
+work is complete, the receiver reports `RuntimeControlMsg::ReceiverDrained`.
 
 After all receivers have reported `ReceiverDrained`, the control manager sends
 `NodeControlMsg::Shutdown` to processors and exporters. Their `MessageChannel`
@@ -413,7 +479,7 @@ or closed, the corresponding consumer receives `Shutdown` and exits its run
 loop.
 
 If the shutdown deadline expires, receivers may force-resolve remaining
-receiver-local waiters and the pipeline control manager forces the remaining
+receiver-local waiters and the runtime control manager forces the remaining
 nodes to exit.
 
 ![Graceful Shutdown Sequence](assets/graceful-shutdown.svg)

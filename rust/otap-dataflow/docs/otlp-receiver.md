@@ -544,7 +544,7 @@ different certificates for each protocol.
 ## Wait-for-Result Mode
 
 When `wait_for_result: true`, the receiver waits for a downstream-derived
-ACK/NACK routed back through the pipeline return path before responding to the
+ACK/NACK routed back through the pipeline result path before responding to the
 client:
 
 ```text

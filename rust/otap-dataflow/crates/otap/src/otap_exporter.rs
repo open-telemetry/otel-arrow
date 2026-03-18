@@ -514,11 +514,11 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::control::PipelineCtrlMsgSender;
-    use otap_df_engine::control::PipelineReturnMsg;
-    use otap_df_engine::control::PipelineReturnMsgReceiver;
-    use otap_df_engine::control::PipelineReturnMsgSender;
-    use otap_df_engine::control::{pipeline_ctrl_msg_channel, pipeline_return_msg_channel};
+    use otap_df_engine::control::PipelineResultMsg;
+    use otap_df_engine::control::PipelineResultMsgReceiver;
+    use otap_df_engine::control::PipelineResultMsgSender;
+    use otap_df_engine::control::RuntimeCtrlMsgSender;
+    use otap_df_engine::control::{pipeline_result_msg_channel, runtime_ctrl_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::LocalReceiver;
@@ -878,8 +878,8 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
-        let (pipeline_return_msg_tx, pipeline_return_msg_rx) = pipeline_return_msg_channel(16);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_result_msg_tx, pipeline_result_msg_rx) = pipeline_result_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -891,14 +891,14 @@ mod tests {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
-            pipeline_return_msg_tx: PipelineReturnMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_result_msg_tx: PipelineResultMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             _ = exporter
                 .start(
-                    pipeline_ctrl_msg_tx,
-                    pipeline_return_msg_tx,
+                    runtime_ctrl_msg_tx,
+                    pipeline_result_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                 )
@@ -915,7 +915,7 @@ mod tests {
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
             metrics_reporter: MetricsReporter,
-            mut pipeline_ctrl_msg_rx: PipelineReturnMsgReceiver<OtapPdata>,
+            mut pipeline_result_msg_rx: PipelineResultMsgReceiver<OtapPdata>,
         ) {
             // send a request while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -929,13 +929,13 @@ mod tests {
                 .await
                 .expect("Failed to send log message");
 
-            // Wait for a NACK from the pipeline control channel (server is down)
+            // Wait for a NACK from the pipeline-result channel (server is down)
             timeout(Duration::from_secs(5), async {
                 loop {
-                    match pipeline_ctrl_msg_rx.recv().await {
-                        Ok(PipelineReturnMsg::DeliverNack { .. }) => break,
-                        Ok(PipelineReturnMsg::DeliverAck { .. }) => continue,
-                        Err(_) => panic!("pipeline ctrl channel closed"),
+                    match pipeline_result_msg_rx.recv().await {
+                        Ok(PipelineResultMsg::DeliverNack { .. }) => break,
+                        Ok(PipelineResultMsg::DeliverAck { .. }) => continue,
+                        Err(_) => panic!("pipeline result channel closed"),
                     }
                 }
             })
@@ -959,13 +959,13 @@ mod tests {
                 .expect("Failed to send log message");
             _ = req_receiver.recv().await.unwrap(); // ensure we got response
 
-            // Wait for an ACK from the pipeline control channel (server is up)
+            // Wait for an ACK from the pipeline-result channel (server is up)
             timeout(Duration::from_secs(5), async {
                 loop {
-                    match pipeline_ctrl_msg_rx.recv().await {
-                        Ok(PipelineReturnMsg::DeliverAck { .. }) => break,
-                        Ok(PipelineReturnMsg::DeliverNack { .. }) => continue,
-                        Err(_) => panic!("pipeline ctrl channel closed"),
+                    match pipeline_result_msg_rx.recv().await {
+                        Ok(PipelineResultMsg::DeliverAck { .. }) => break,
+                        Ok(PipelineResultMsg::DeliverNack { .. }) => continue,
+                        Err(_) => panic!("pipeline result channel closed"),
                     }
                 }
             })
@@ -1039,8 +1039,8 @@ mod tests {
             let _fut = local_set.spawn_local(async move {
                 start_exporter(
                     exporter,
-                    pipeline_ctrl_msg_tx,
-                    pipeline_return_msg_tx,
+                    runtime_ctrl_msg_tx,
+                    pipeline_result_msg_tx,
                     metrics_reporter_start_exporter,
                 )
                 .await
@@ -1056,7 +1056,7 @@ mod tests {
                     req_receiver,
                     metrics_rx,
                     metrics_reporter,
-                    pipeline_return_msg_rx,
+                    pipeline_result_msg_rx,
                 )
             )
         });
@@ -1204,8 +1204,8 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
-        let (pipeline_return_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_return_msg_channel(16);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_result_msg_tx, mut pipeline_result_msg_rx) = pipeline_result_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1239,8 +1239,8 @@ mod tests {
             let _exporter_fut = local_set.spawn_local(async move {
                 let _ = exporter
                     .start(
-                        pipeline_ctrl_msg_tx,
-                        pipeline_return_msg_tx,
+                        runtime_ctrl_msg_tx,
+                        pipeline_result_msg_tx,
                         mr,
                         Interests::empty(),
                     )
@@ -1265,10 +1265,10 @@ mod tests {
                 // Wait for NACK (server returned gRPC error)
                 timeout(Duration::from_secs(5), async {
                     loop {
-                        match pipeline_ctrl_msg_rx.recv().await {
-                            Ok(PipelineReturnMsg::DeliverNack { .. }) => break,
-                            Ok(PipelineReturnMsg::DeliverAck { .. }) => continue,
-                            Err(_) => panic!("pipeline ctrl channel closed"),
+                        match pipeline_result_msg_rx.recv().await {
+                            Ok(PipelineResultMsg::DeliverNack { .. }) => break,
+                            Ok(PipelineResultMsg::DeliverAck { .. }) => continue,
+                            Err(_) => panic!("pipeline result channel closed"),
                         }
                     }
                 })

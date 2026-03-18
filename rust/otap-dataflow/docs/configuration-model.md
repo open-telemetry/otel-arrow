@@ -87,7 +87,7 @@ groups:
       channel_capacity:
           control:
             node: 256
-            pipeline: 256
+            runtime: 256
           pdata: 128
     pipelines:
       traces:
@@ -206,7 +206,8 @@ policies:
   channel_capacity:
       control:
         node: 256
-        pipeline: 256
+        runtime: 256
+        results: 512
       pdata: 128
   health:
     # optional overrides; defaults are applied when omitted
@@ -230,12 +231,22 @@ Resolution order:
 Defaults at top-level:
 
 - `channel_capacity.control.node = 256`
-- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.control.runtime = 256`
+- `channel_capacity.control.results = 512`
 - `channel_capacity.pdata = 128`
 - `telemetry.pipeline_metrics = true`
 - `telemetry.tokio_metrics = true`
 - `telemetry.channel_metrics = true`
 - `resources.core_allocation = all_cores`
+
+Control channel keys:
+
+- `node`: per-node control inboxes
+- `runtime`: shared runtime orchestration channel
+- `results`: shared Ack/Nack completion channel
+
+Legacy aliases `control.pipeline` and `control.return` are still accepted for
+backward compatibility, but `runtime` and `results` are the documented names.
 
 Resolution semantics:
 
@@ -469,7 +480,8 @@ Config loading validates:
 - Missing source/destination nodes in connections.
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
-- Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Non-zero channel capacities (`control.node`, `control.runtime`,
+  `control.results`, `pdata`).
 - Non-zero topic queue capacities
   (`topics.*.policies.balanced.queue_capacity`,
   `topics.*.policies.broadcast.queue_capacity`).
