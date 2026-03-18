@@ -47,8 +47,8 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 [dev-dependencies]
 tempfile = "3"
 otap-test-tls-certs = { workspace = true }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_common = { workspace = true }
+weaver_forge = { workspace = true }
+weaver_resolved_schema = { workspace = true }
+weaver_resolver = { workspace = true }
+weaver_semconv = { workspace = true }
