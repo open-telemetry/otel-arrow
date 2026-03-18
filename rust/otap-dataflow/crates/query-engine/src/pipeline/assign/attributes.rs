@@ -12,15 +12,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::util::bit_iterator::BitSliceIterator;
-use arrow::util::bit_util;
 use smallvec::{SmallVec, smallvec};
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, DictionaryArray,
-    PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
+    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray, RecordBatch, StringArray,
+    UInt8Array, UInt16Array, make_array,
 };
-use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::compute::{SlicesIterator, max};
+use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::compute::SlicesIterator;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;

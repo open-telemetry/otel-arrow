@@ -36,7 +36,7 @@ use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
-use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool};
+use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -44,7 +44,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attrs::{AttributeUpsert, upsert_attributes};
+use crate::pipeline::assign::attributes::{AttributeUpsert, upsert_attributes};
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
@@ -61,7 +61,7 @@ use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
-mod attrs;
+mod attributes;
 
 static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     RecordBatch::new_empty(Arc::new(Schema::new(vec![
@@ -1300,7 +1300,7 @@ fn try_upsert_column(
 }
 #[cfg(test)]
 mod test {
-    use arrow::{compute::kernels::cast, datatypes::DataType, util::pretty::print_batches};
+    use arrow::{compute::kernels::cast, datatypes::DataType};
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
@@ -2867,14 +2867,6 @@ mod test {
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
-        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
-            .unwrap();
-        arrow::util::pretty::print_batches(&[result
-            .get(ArrowPayloadType::LogAttrs)
-            .unwrap()
-            .clone()])
-        .unwrap();
-
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
@@ -2922,14 +2914,6 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
-
-        arrow::util::pretty::print_batches(&[result.get(ArrowPayloadType::Logs).unwrap().clone()])
-            .unwrap();
-        arrow::util::pretty::print_batches(&[result
-            .get(ArrowPayloadType::LogAttrs)
-            .unwrap()
-            .clone()])
-        .unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
