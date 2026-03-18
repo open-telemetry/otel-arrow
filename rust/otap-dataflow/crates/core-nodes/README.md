@@ -85,10 +85,14 @@ Each component lives in its own subfolder within a category:
 - Sends OTLP logs, metrics, and traces over unary gRPC export requests
 - Supports concurrent in-flight exports with ack/nack propagation back into the
   pipeline
+- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
+  HTTP helpers
 
 #### otlp_http_exporter
 
 - Sends OTLP logs, metrics, and traces over OTLP/HTTP endpoints
+- Supports concurrent in-flight exports with ack/nack propagation back into the
+  pipeline
 - Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
   HTTP helpers
 
