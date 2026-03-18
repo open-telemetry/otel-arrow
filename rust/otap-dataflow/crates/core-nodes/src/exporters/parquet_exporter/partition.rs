@@ -30,6 +30,7 @@ pub struct Partition {
     pub attributes: Option<Vec<PartitionAttribute>>,
 }
 
+#[must_use]
 pub fn partition(
     otap_batch: &OtapArrowRecords,
     strategies: &[PartitioningStrategy],
@@ -95,7 +96,7 @@ pub mod test {
     };
     use std::sync::Arc;
 
-    use crate::parquet_exporter::partition::PartitioningStrategy;
+    use crate::exporters::parquet_exporter::config::PartitioningStrategy;
 
     // Helper to create a dummy OtapBatch with schema metadata
     fn make_otap_batch_with_metadata(key: &str, value: &str) -> OtapArrowRecords {

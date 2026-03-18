@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::pdata::OtapPdata;
 use arrow::array::{
     ArrowPrimitiveType, FixedSizeBinaryArray, PrimitiveArray, RecordBatch, StringArray,
     TimestampNanosecondArray, UInt8Array,
@@ -10,6 +9,7 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type
 use arrow_ipc::writer::StreamWriter;
 use bytes::BytesMut;
 use fluke_hpack::Encoder;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;

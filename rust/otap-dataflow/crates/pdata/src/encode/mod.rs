@@ -4494,6 +4494,15 @@ mod test {
     }
 
     #[test]
+    fn test_traces_all_fields_otap_view() {
+        use crate::views::otap::OtapTracesView;
+        let traces_view = _generate_traces_data_all_fields();
+        let otap_batch = encode_spans_otap_batch(&traces_view).unwrap();
+        let otap_traces_view = OtapTracesView::try_from(&otap_batch).unwrap();
+        _test_traces_data_all_fields(&otap_traces_view);
+    }
+
+    #[test]
     fn test_traces_all_fields_proto_bytes() {
         let traces_data = _generate_traces_data_all_fields();
         let mut traces_data_bytes = vec![];

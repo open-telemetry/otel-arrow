@@ -256,12 +256,14 @@ ongoing refactor.
 
 Current status:
 
-- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`
+- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`,
+  `parquet_exporter`, `perf_exporter`, `topic_exporter`
 - Processors: `attributes_processor`, `batch_processor`,
   `content_router`, `debug_processor`, `delay_processor`,
   `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
   `retry_processor`, `signal_type_router`, `transform_processor`
-- Receivers: `fake_data_generator`
+- Receivers: `fake_data_generator`, `internal_telemetry_receiver`,
+  `syslog_cef_receiver`, `topic_receiver`
 
 ### Contrib Nodes
 

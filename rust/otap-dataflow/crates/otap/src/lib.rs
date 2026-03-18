@@ -23,9 +23,6 @@ pub mod otlp_grpc_exporter;
 
 pub mod otlp_http_exporter;
 
-/// Receiver that reads in syslog data
-pub mod syslog_cef_receiver;
-
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
 
@@ -33,9 +30,7 @@ pub mod pdata;
 
 mod pdata_conversions;
 
-pub mod parquet_exporter;
-
-pub mod perf_exporter;
+pub mod metrics;
 
 /// testing utilities
 #[cfg(test)]
@@ -43,16 +38,11 @@ mod otap_mock;
 #[cfg(test)]
 mod otlp_mock;
 
-#[cfg(test)]
-mod fixtures;
-
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 
 /// compression formats
 pub mod compression;
-
-pub mod metrics;
 
 pub(crate) mod socket_options;
 
@@ -67,13 +57,6 @@ pub mod otlp_http;
 
 /// Cloud specific auth utilities
 pub mod cloud_auth;
-
-/// Internal telemetry receiver
-pub mod internal_telemetry_receiver;
-
-pub mod topic_receiver;
-
-pub mod topic_exporter;
 
 /// Object storage utilities including integrations for different cloud
 /// providers

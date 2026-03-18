@@ -1,4 +1,10 @@
 version: otel_dataflow/v1
+
+policies:
+  telemetry:
+    # 'normal' metric level enables processor compute-duration in addition to channel metrics.
+    channel_metrics: normal
+
 engine:
   telemetry:
     logs:
