@@ -27,17 +27,11 @@ testcontainers = "0.27"
 minijinja = "1"
 reqwest = { version = "0.12", features = ["json"] }
 
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
-otap-df-core-nodes = { path = "../core-nodes" }
-otap-df-pdata = { path = "../pdata" }
+otap-df-core-nodes = { path = "../core-nodes", features = ["dev-tools"] }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
@@ -53,3 +47,8 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 [dev-dependencies]
 tempfile = "3"
 otap-test-tls-certs = { workspace = true }
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}

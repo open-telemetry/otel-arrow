@@ -18,6 +18,15 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: System topology (NUMA, CPU, memory)
+        run: |
+          echo "### System Topology" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lscpu | grep -E "Model name|Socket|Core|Thread|NUMA|CPU\(s\)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" | tee -a $GITHUB_STEP_SUMMARY
+          numactl --hardware 2>/dev/null | tee -a $GITHUB_STEP_SUMMARY || echo "numactl not available"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - id: detect_os
         name: Detect OS (self-hosted)
         shell: bash
@@ -71,7 +80,7 @@ jobs:
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Install dependencies
