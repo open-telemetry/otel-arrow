@@ -77,6 +77,15 @@ static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     ])))
 });
 
+/// representation of assignment source and destination
+pub struct Assignment<'a> {
+    pub dest_column: ColumnAccessor,
+
+    pub dest_query_location: Option<&'a QueryLocation>,
+
+    pub source: ScopedLogicalExpr,
+}
+
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
 /// This can do more than one assignment to a given record batch at a time, to attempt to minimize
@@ -108,7 +117,7 @@ pub(crate) struct AssignPipelineStage {
 
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
-    pub fn try_new(assignments: &[(&SourceScalarExpression, &ScalarExpression)]) -> Result<Self> {
+    pub fn try_new(assignments: &mut Vec<Assignment<'_>>) -> Result<Self> {
         // validate the inputs:
         if assignments.is_empty() {
             return Err(Error::InvalidPipelineError {
@@ -119,15 +128,15 @@ impl AssignPipelineStage {
 
         let mut dest_columns = Vec::with_capacity(assignments.len());
         let mut source_physical_exprs = Vec::with_capacity(assignments.len());
-        for (dest, source) in assignments {
-            let logical_planner = ExprLogicalPlanner::default();
-            let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
+        for assignment in assignments.drain(..) {
+            // let logical_planner = ExprLogicalPlanner::default();
+            // let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
 
-            let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
+            // let dest_column = ColumnAccessor::try_from(dest.get_value_accessor())?;
 
             // validate that all the assignments are for the same record batch:
             if let Some(last_dest_col) = dest_columns.last() {
-                let same_dest = match (&dest_column, last_dest_col) {
+                let same_dest = match (&assignment.dest_column, last_dest_col) {
                     (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(_)) => true,
                     (
                         ColumnAccessor::Attributes(last_attr_id, _),
@@ -140,7 +149,8 @@ impl AssignPipelineStage {
                     return Err(Error::InvalidPipelineError {
                         cause: format!(
                             "all assignments must be for same record batch. \
-                            Found destinations {last_dest_col:?}, {dest_column:?}"
+                            Found destinations {last_dest_col:?}, {:?}",
+                            assignment.dest_column
                         ),
                         query_location: None,
                     });
@@ -149,14 +159,14 @@ impl AssignPipelineStage {
 
             // validate that the assignment is expression is valid for the destination:
             validate_assign(
-                &dest_column,
-                dest.get_query_location(),
-                &source_logical_plan,
+                &assignment.dest_column,
+                assignment.dest_query_location.clone(),
+                &assignment.source,
             )?;
 
-            dest_columns.push(dest_column);
+            dest_columns.push(assignment.dest_column);
             let physical_planner = ExprPhysicalPlanner::default();
-            let physical_expr = physical_planner.plan(source_logical_plan)?;
+            let physical_expr = physical_planner.plan(assignment.source)?;
             source_physical_exprs.push(physical_expr);
         }
 
@@ -1013,7 +1023,7 @@ impl PipelineStage for AssignPipelineStage {
 ///
 fn validate_assign(
     dest_column: &ColumnAccessor,
-    dest_query_location: &QueryLocation,
+    dest_query_location: Option<&QueryLocation>,
     source_logical_plan: &ScopedLogicalExpr,
 ) -> Result<()> {
     match dest_column {
@@ -1025,7 +1035,7 @@ fn validate_assign(
             let dest_type =
                 root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
                     cause: format!("cannot assign to non-existent column '{col_name}'"),
-                    query_location: Some(dest_query_location.clone()),
+                    query_location: dest_query_location.cloned(),
                 })?;
 
             let source_type = &source_logical_plan.expr_type;
@@ -1034,7 +1044,7 @@ fn validate_assign(
                     cause: format!(
                         "cannot assign expression of type {source_type:?} to type {dest_type:?}"
                     ),
-                    query_location: Some(dest_query_location.clone()),
+                    query_location: dest_query_location.cloned(),
                 });
             }
         }
@@ -1045,7 +1055,7 @@ fn validate_assign(
                         "cannot assign expression of type {:?} to type AnyValue",
                         source_logical_plan.expr_type
                     ),
-                    query_location: Some(dest_query_location.clone()),
+                    query_location: dest_query_location.cloned(),
                 });
             }
 
@@ -1077,7 +1087,7 @@ fn validate_assign(
 /// actual value should be and os we consider this an invalid expression
 fn validate_attribute_assign_cardinality(
     dest_attrs_id: AttributesIdentifier,
-    dest_query_location: &QueryLocation,
+    dest_query_location: Option<&QueryLocation>,
     source_logical_plan: &ScopedLogicalExpr,
 ) -> Result<()> {
     if dest_attrs_id == AttributesIdentifier::Root {
@@ -1115,7 +1125,7 @@ fn validate_attribute_assign_cardinality(
                         "cannot assign data scope {data_scope:?} to \
                                 attributes {dest_attrs_id:?}"
                     ),
-                    query_location: Some(dest_query_location.clone()),
+                    query_location: dest_query_location.cloned(),
                 });
             }
         }

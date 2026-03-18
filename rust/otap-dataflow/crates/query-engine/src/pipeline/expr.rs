@@ -148,7 +148,7 @@ pub(crate) enum LogicalExprDataSource {
 #[derive(Debug)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
-    logical_expr: Expr,
+    pub(crate) logical_expr: Expr,
 
     /// the type that the expression will produce.
     ///
@@ -204,26 +204,6 @@ impl ScopedLogicalExpr {
                 downcast_dicts: self.requires_dict_downcast,
             },
         })
-    }
-
-    pub(crate) fn visit<F>(&self, visitor: &mut F) -> bool
-    where
-        F: FnMut(&Self) -> bool,
-    {
-        if !visitor(self) {
-            return false;
-        }
-
-        if let LogicalExprDataSource::Join(left, right) = &self.source {
-            if !left.visit(visitor) {
-                return false;
-            }
-            if !right.visit(visitor) {
-                return false;
-            }
-        }
-
-        return true;
     }
 }
 

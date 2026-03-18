@@ -13,6 +13,7 @@ use data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
@@ -25,10 +26,12 @@ use otap_df_pdata::schema::consts;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
-use crate::pipeline::assign::AssignPipelineStage;
+use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::expr::{DataScope, ExprLogicalPlanner, LogicalExprDataSource};
+use crate::pipeline::expr::{
+    DataScope, ExprLogicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
+};
 use crate::pipeline::filter::optimize::{
     AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
 };
@@ -555,6 +558,11 @@ impl PipelinePlanner {
         Ok(pipeline_stages)
     }
 
+    /// Create a set of [`PipelineStage`]s that will execute the "Set" expressions.
+    ///
+    /// This function may combine multiple assignments into a single pipeline stage in the case
+    /// where there may be performance benefits for doing so. Generally this means materializing
+    /// an arrow [`RecordBatch`] for some OTAP payload type multiple times.
     fn plan_sets(
         &self,
         set_exprs: &[&SetTransformExpression],
@@ -564,31 +572,104 @@ impl PipelinePlanner {
     ) -> Result<Vec<BoxedPipelineStage>> {
         let mut results: Vec<BoxedPipelineStage> = Vec::new();
 
-        // TODO - somewhere in here we gotta make sure we don't combine sets for the same key
-        // and either produce an error if this is happening or have some defined behaviour
-
+        // list of combined assignments for the next assignment pipeline stage.
         let mut assignments = Vec::new();
-        let mut dest_accessors = Vec::new();
-        let mut attr_key_set = HashSet::new();
+        let logical_planner = ExprLogicalPlanner::default();
 
-        fn check_combine(
-            prev: &ColumnAccessor,
-            next: &ColumnAccessor,
-            attr_key_set: &HashSet<String>,
-        ) -> bool {
-            match (prev, next) {
-                (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(_)) => true,
-                (
-                    ColumnAccessor::Attributes(prev_attrs_id, _),
-                    ColumnAccessor::Attributes(next_attrs_id, next_key),
-                ) => prev_attrs_id == next_attrs_id && !attr_key_set.contains(next_key),
-                _ => false,
+        // when doing multiple assignments in bulk, the underlying Assignment pipeline stage makes
+        // no guarantees about the logical order in which the assignments are executed. This can
+        // lead to ambiguity about the final result if the same column or attribute key is used
+        // in multiple expressions.For example, if we combine two expressions like:
+        // `attributes["x"] = "y"` and `attributes["x"] = "z"` the order result would be different
+        // depending on which executed "first". Similar situation exist for cases like:
+        // `attributes["x"] = "A"` and `attributes["y"] = attributes["x"]`.
+        //
+        // to avoid the ambiguity, we keep track of which keys or columns used in the combined
+        // expressions in this set..
+        let mut cols_or_keys_referenced = HashSet::new();
+
+        // update the referenced column/attr key tracking set
+        fn set_dest_attr_key(dest_accessor: &ColumnAccessor, referenced: &mut HashSet<String>) {
+            if let ColumnAccessor::ColumnName(col_name) = dest_accessor {
+                _ = referenced.insert(col_name.into());
+            }
+            if let ColumnAccessor::Attributes(_, key) = dest_accessor {
+                _ = referenced.insert(key.into());
             }
         }
 
-        fn set_dest_attr_key(dest_accessor: &ColumnAccessor, attr_key_set: &mut HashSet<String>) {
-            if let ColumnAccessor::Attributes(_, key) = dest_accessor {
-                _ = attr_key_set.insert(key.into());
+        // checks if the next attribute can be combined with the previous attribute by validating
+        // they have the same destination. The assign pipeline stage will only do multiple
+        // assignments for the same destination.
+        //
+        // This also validates that the next doesn't reference keys or columns that would make the
+        // combined assignment ambiguous (see comments above about ambiguity)
+        fn check_combine(
+            prev: &Assignment<'_>,
+            next: &Assignment<'_>,
+            cols_or_keys_referenced: &HashSet<String>,
+        ) -> bool {
+            let can_combine_dests = match (&prev.dest_column, &next.dest_column) {
+                (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(next_key)) => {
+                    !cols_or_keys_referenced.contains(next_key)
+                }
+                (
+                    ColumnAccessor::Attributes(prev_attrs_id, _),
+                    ColumnAccessor::Attributes(next_attrs_id, next_key),
+                ) => prev_attrs_id == next_attrs_id && !cols_or_keys_referenced.contains(next_key),
+
+                // in all other cases, the destinations don't match so we can't combine into
+                // a single assignment
+                _ => false,
+            };
+
+            if !can_combine_dests {
+                return false;
+            }
+
+            // ensure that if the source is an attribute
+            if source_references_col_or_key(&next.source, cols_or_keys_referenced) {
+                return false;
+            }
+
+            true
+        }
+
+        // recursively descends the source plan to find any cases where the source references
+        // an attribute key or column whose value is in the `referenced` set (which is the set
+        // of destinations that may have been reassigned a new value).
+        fn source_references_col_or_key(
+            source_expr: &ScopedLogicalExpr,
+            referenced: &HashSet<String>,
+        ) -> bool {
+            match &source_expr.source {
+                LogicalExprDataSource::DataSource(data_scope) => match &data_scope {
+                    DataScope::Attributes(_, key) => referenced.contains(key),
+                    DataScope::StaticScalar => false,
+
+                    // visit the expression applied to the root and search for any column exprs
+                    DataScope::Root => {
+                        let mut source_contains_refed_column = false;
+                        _ = source_expr.logical_expr.apply(|expr| {
+                            if let Expr::Column(column) = expr {
+                                source_contains_refed_column = referenced.contains(column.name());
+                            }
+
+                            Ok(if source_contains_refed_column {
+                                TreeNodeRecursion::Stop
+                            } else {
+                                TreeNodeRecursion::Continue
+                            })
+                        });
+
+                        source_contains_refed_column
+                    }
+                },
+                LogicalExprDataSource::Join(left, right) => {
+                    let left = source_references_col_or_key(left.as_ref(), referenced);
+                    let right = source_references_col_or_key(right.as_ref(), referenced);
+                    left | right
+                }
             }
         }
 
@@ -600,13 +681,23 @@ impl PipelinePlanner {
             };
 
             // handle if this "set" expr is a nested pipeline that should be applied to attributes.
-            // In our AST expression tree, these are modeled as function invocations.
+            // In our AST expression tree, these are modeled as function invocations. These are
+            // never combined into a single "set" expression because it would add complexity
+            // without any performance benefit.
             //
             // TODO - in the future we may want some way to identify that this is the special type
             // of "function" that represents a nested pipeline applied to attributes, either by
             // its name or some additional metadata. For now, we just know this is the only type
             // of function invocation supported.
             if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
+                // create a pipeline stage to execute any previous assignments before executing
+                // this nested pipeline
+                if !assignments.is_empty() {
+                    let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+                    results.push(Box::new(pipeline_stage));
+                    assignments.clear()
+                }
+
                 let function_id = func.get_function_id();
                 let function =
                     functions
@@ -620,10 +711,8 @@ impl PipelinePlanner {
                     function.get_implementation()
                 else {
                     return Err(Error::NotYetSupportedError {
-                    message:
-                        "only functions with 'Expressions' implementation is currently supported"
-                            .into(),
-                });
+                        message:"only functions with 'Expressions' implementation is currently supported".into(),
+                    });
                 };
 
                 let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
@@ -673,47 +762,34 @@ impl PipelinePlanner {
                 continue;
             }
 
-            let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
+            // create new assignment argument
+            let assignment = Assignment {
+                dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
+                source: logical_planner.plan_scalar_expr(set_expr.get_source())?,
+                dest_query_location: Some(dest.get_query_location()),
+            };
 
-            let mut combine = dest_accessors
+            // check if can combine with previous set of assignments
+            let combine = assignments
                 .last()
-                .map(|prev_dest| check_combine(prev_dest, &dest_accessor, &attr_key_set))
+                .map(|prev| check_combine(prev, &assignment, &cols_or_keys_referenced))
                 .unwrap_or(true);
 
-            // TODO about to do something really weird - we duplicate the planning
-            let source = set_expr.get_source();
-            let logical_planner = ExprLogicalPlanner::default();
-            let source_logical_plan = logical_planner.plan_scalar_expr(source)?;
-            combine &= source_logical_plan.visit(&mut |logical_expr| {
-                if let LogicalExprDataSource::DataSource(data_source) = &logical_expr.source {
-                    match data_source {
-                        DataScope::Attributes(_, key) => {
-                            if attr_key_set.contains(key) {
-                                return false;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                true
-            });
-
+            // if cannot combine with other assignments, create new pipeline stage and clear
+            // list of current assignments
             if !combine {
-                let pipeline_stage = AssignPipelineStage::try_new(&assignments)?;
+                let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
                 results.push(Box::new(pipeline_stage));
-
                 assignments.clear();
-                dest_accessors.clear();
             }
 
-            assignments.push((dest, set_expr.get_source()));
-            set_dest_attr_key(&dest_accessor, &mut attr_key_set);
-            dest_accessors.push(dest_accessor);
+            // assignment will be combined with previous assignments
+            set_dest_attr_key(&assignment.dest_column, &mut cols_or_keys_referenced);
+            assignments.push(assignment);
         }
 
         if !assignments.is_empty() {
-            let pipeline_stage = AssignPipelineStage::try_new(&assignments)?;
+            let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
             results.push(Box::new(pipeline_stage));
         }
 
