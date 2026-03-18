@@ -1692,9 +1692,12 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 
     // Spawn a thread to:
     // 1. Wait for permanent NACKs to occur
-    // 2. Switch to ACK mode to verify pipeline still works
+    // 2. Switch to ACK mode so the pipeline can deliver data and shut down
+    //
+    // Note: we do NOT wait for delivery here. The pipeline shutdown condition
+    // (`counter > 0`) handles that with a generous timeout. Adding a second,
+    // tighter timeout in this thread caused failures on slow CI (see #2354).
     let flip_test_id = test_id.to_owned();
-    let flip_counter = counter.clone();
     let flip_handle = std::thread::spawn(move || {
         // Wait for at least 3 permanent NACKs
         let permanent_nacks_observed = wait_for_condition(
@@ -1711,19 +1714,10 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         let permanent_nacks_before = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
         let transient_nacks_before = flaky_exporter::nack_count_by_id(&flip_test_id);
 
-        // Switch to ACK mode - new data should be delivered
+        // Switch to ACK mode - new data should be delivered.
+        // The pipeline shutdown condition gates on delivered_counter > 0, so delivery
+        // is verified there (with a 15 s ceiling) rather than here.
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
-
-        // Wait for some data to be delivered in ACK mode
-        let delivered = wait_for_condition(
-            || flip_counter.load(Ordering::Relaxed) > 0,
-            Duration::from_secs(5),
-            Duration::from_millis(10),
-        );
-        assert!(
-            delivered,
-            "Expected data to be delivered after switching to ACK mode"
-        );
 
         (permanent_nacks_before, transient_nacks_before)
     });
@@ -1924,7 +1918,6 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         .build(&pipeline_group_id, &pipeline_id);
 
     let flip_test_id = test_id.to_owned();
-    let flip_counter = counter.clone();
     let flip_handle = std::thread::spawn(move || {
         // Phase 1: Wait for transient NACKs
         let transient_observed = wait_for_condition(
@@ -1954,18 +1947,11 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         );
         let permanent_nacks_phase2 = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
 
-        // Phase 3: Switch to ACK mode
+        // Phase 3: Switch to ACK mode.
+        // The pipeline shutdown condition gates on delivered_counter > 0 with a 15 s
+        // ceiling, so delivery is verified there rather than here. Waiting
+        // here with a tighter timeout caused failures on slow CI (see #2354).
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
-
-        let delivered = wait_for_condition(
-            || flip_counter.load(Ordering::Relaxed) > 0,
-            Duration::from_secs(5),
-            Duration::from_millis(10),
-        );
-        assert!(
-            delivered,
-            "Expected data delivery after switching to ACK mode"
-        );
 
         (transient_nacks_phase1, permanent_nacks_phase2)
     });
