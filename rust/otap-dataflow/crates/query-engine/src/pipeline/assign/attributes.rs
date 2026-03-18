@@ -988,110 +988,6 @@ fn merge_value_column(
     Ok((new_field, result))
 }
 
-/// Iterate over all values in `values_arr`, deduplicating via `value_to_idx` and appending
-/// novel values to `unified_builder`. Returns a remap vector mapping each value index to its
-/// unified dict index, or `None` if cardinality would exceed `max_cardinality`.
-fn build_values_remap<'a>(
-    values_arr: &'a ArrayRef,
-    source_idx: usize,
-    value_to_idx: &mut HashMap<Option<&'a [u8]>, u16>,
-    unified_builder: &mut MutableArrayData<'_>,
-    num_distinct: &mut usize,
-    max_cardinality: usize,
-) -> Option<Vec<u16>> {
-    let mut remap: Vec<u16> = Vec::with_capacity(values_arr.len());
-    for i in 0..values_arr.len() {
-        let key = array_value_as_bytes(values_arr, i);
-        if let Some(&idx) = value_to_idx.get(&key) {
-            remap.push(idx);
-            continue;
-        }
-        if *num_distinct >= max_cardinality {
-            return None;
-        }
-        let idx = *num_distinct as u16;
-        let _ = value_to_idx.insert(key, idx);
-        unified_builder.extend(source_idx, i, i + 1);
-        *num_distinct += 1;
-        remap.push(idx);
-    }
-    Some(remap)
-}
-
-/// Extract dict values as ArrayRef and per-row keys from a dict column (any value type).
-///
-/// For UInt16 keys, borrows directly from the underlying key buffer (zero-copy).
-/// For UInt8 keys, widens to u16 which requires an allocation.
-fn extract_dict_any_info<'a>(
-    col: &'a ArrayRef,
-    key_type: &DataType,
-) -> Result<(ArrayRef, Cow<'a, [u16]>)> {
-    match key_type {
-        DataType::UInt8 => {
-            let dict = col
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt8Type>>()
-                .expect("dict<u8>");
-            let keys: Vec<u16> = dict
-                .keys()
-                .values()
-                .iter()
-                .enumerate()
-                .map(|(i, &k)| if dict.is_null(i) { 0 } else { k as u16 })
-                .collect();
-            Ok((Arc::clone(dict.values()), Cow::Owned(keys)))
-        }
-        DataType::UInt16 => {
-            let dict = col
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt16Type>>()
-                .expect("dict<u16>");
-            // Borrow directly from the key array's underlying buffer -- zero copy.
-            let keys: &[u16] = dict.keys().values();
-            Ok((Arc::clone(dict.values()), Cow::Borrowed(keys)))
-        }
-        other => Err(Error::ExecutionError {
-            cause: format!("unsupported dictionary key type: {other:?}"),
-        }),
-    }
-}
-
-/// Extract a borrowed byte representation of an array element for use as a HashMap key.
-///
-/// Returns `None` for null values. The returned slice borrows directly from the array's
-/// underlying buffers -- no allocation or copy.
-///
-/// Handles the types that can be dictionary-encoded in OTAP attribute value columns:
-/// Utf8 (str), Int64 (int), and Binary (bytes, ser).
-fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Option<&'a [u8]> {
-    if arr.is_null(idx) {
-        return None;
-    }
-    match arr.data_type() {
-        DataType::Utf8 => {
-            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
-            Some(str_arr.value(idx).as_bytes())
-        }
-        DataType::Int64 => {
-            let int_arr = arr
-                .as_any()
-                .downcast_ref::<arrow::array::Int64Array>()
-                .unwrap();
-            let buf: &[u8] = int_arr.values().inner().as_slice();
-            let offset = idx * size_of::<i64>();
-            Some(&buf[offset..offset + size_of::<i64>()])
-        }
-        DataType::Binary => {
-            let bin_arr = arr
-                .as_any()
-                .downcast_ref::<arrow::array::BinaryArray>()
-                .unwrap();
-            Some(bin_arr.value(idx))
-        }
-        other => panic!("array_value_as_bytes: unsupported type {other:?}"),
-    }
-}
-
 /// Per-active-upsert key mapping into a unified dictionary.
 enum ActiveKeys {
     /// A scalar value: broadcast this single key for all update/insert rows.
@@ -1136,12 +1032,12 @@ fn try_build_unified_dict_multi<'a>(
         _ => (Arc::clone(existing_col), None),
     };
 
-    // Map from value bytes → unified dict index for O(1) dedup.
+    // Map from value (bytes) to unified dict index
     let mut value_to_idx: HashMap<Option<&[u8]>, u16> = HashMap::new();
     let mut num_distinct: usize = 0;
 
     // MutableArrayData to build the unified values array. We start with the existing values
-    // as source 0, and add each active upsert's values as additional sources.
+    // as source 0, and add each active upsert's values if they're not already in the dict
     let existing_data = existing_values_arr.to_data();
 
     // Pre-extract all new value arrays so they live long enough for borrowing.
@@ -1152,7 +1048,6 @@ fn try_build_unified_dict_multi<'a>(
         is_scalar: bool,
     }
 
-    // TODO use smallvec to avoid heap allocation
     let mut new_sources: SmallVec<[NewSource; SMALLVEC_SIZE]> =
         SmallVec::with_capacity(active_upserts.len());
     for &r in active_upserts {
@@ -1178,8 +1073,8 @@ fn try_build_unified_dict_multi<'a>(
     let new_data: Vec<_> = new_sources.iter().map(|s| s.values_arr.to_data()).collect();
     let mut all_sources = Vec::with_capacity(1 + new_sources.len());
     all_sources.push(&existing_data);
-    for d in &new_data {
-        all_sources.push(d);
+    for new_data in &new_data {
+        all_sources.push(&new_data);
     }
 
     let total_capacity = existing_values_arr.len()
@@ -1206,6 +1101,8 @@ fn try_build_unified_dict_multi<'a>(
         // Existing dict keys map directly — no remap needed.
         existing_dict_keys.unwrap().into_owned()
     } else {
+        // since the original array was not dict encoded, we dedup the values
+        // and build a mapping to dictionary keys
         match build_values_remap(
             &existing_values_arr,
             0,
@@ -1219,21 +1116,22 @@ fn try_build_unified_dict_multi<'a>(
         }
     };
 
-    // Step 2: For each active upsert, build key mappings.
-    // TODO smallvecs
+    // Step 2: For each active upsert, build key mappings and append values to deduped dict values
     let mut all_new_keys: SmallVec<[ActiveKeys; SMALLVEC_SIZE]> =
         SmallVec::with_capacity(new_sources.len());
     let mut all_num_updates: SmallVec<[usize; SMALLVEC_SIZE]> =
         SmallVec::with_capacity(new_sources.len());
 
-    for (source_idx, (ns, &r)) in new_sources.iter().zip(active_upserts.iter()).enumerate() {
+    for (source_idx, (new_source, &resolved_upsert)) in
+        new_sources.iter().zip(active_upserts.iter()).enumerate()
+    {
         let mutable_source_idx = source_idx + 1; // offset by 1 (source 0 = existing)
 
-        all_num_updates.push(r.num_updates);
+        all_num_updates.push(resolved_upsert.num_updates);
 
-        if ns.is_scalar {
+        if new_source.is_scalar {
             // Scalar: just one value to lookup/add.
-            let key_byte = array_value_as_bytes(&ns.values_arr, 0);
+            let key_byte = array_value_as_bytes(&new_source.values_arr, 0);
             let unified_key = if let Some(&idx) = value_to_idx.get(&key_byte) {
                 idx
             } else {
@@ -1250,7 +1148,7 @@ fn try_build_unified_dict_multi<'a>(
         } else {
             // Array: build full remap.
             let remap = build_values_remap(
-                &ns.values_arr,
+                &new_source.values_arr,
                 mutable_source_idx,
                 &mut value_to_idx,
                 &mut unified_builder,
@@ -1262,7 +1160,7 @@ fn try_build_unified_dict_multi<'a>(
                 None => return Ok(None),
             };
             // If the new source was dict-encoded, remap through its dict keys.
-            let final_keys = match &ns.dict_keys {
+            let final_keys = match &new_source.dict_keys {
                 Some(dk) => dk.iter().map(|&k| remap[k as usize]).collect(),
                 None => remap,
             };
@@ -1278,6 +1176,107 @@ fn try_build_unified_dict_multi<'a>(
         new_keys: all_new_keys,
         num_updates: all_num_updates,
     }))
+}
+
+/// Extract dict values as ArrayRef and per-row keys from a dict column (any value type).
+fn extract_dict_any_info<'a>(
+    col: &'a ArrayRef,
+    key_type: &DataType,
+) -> Result<(ArrayRef, Cow<'a, [u16]>)> {
+    match key_type {
+        DataType::UInt8 => {
+            let dict = col
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt8Type>>()
+                .expect("dict<u8>");
+            let keys: Vec<u16> = dict
+                .keys()
+                .values()
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| if dict.is_null(i) { 0 } else { k as u16 })
+                .collect();
+            Ok((Arc::clone(dict.values()), Cow::Owned(keys)))
+        }
+        DataType::UInt16 => {
+            let dict = col
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .expect("dict<u16>");
+            // Borrow directly from the key array's underlying buffer -- zero copy.
+            let keys: &[u16] = dict.keys().values();
+            Ok((Arc::clone(dict.values()), Cow::Borrowed(keys)))
+        }
+        other => Err(Error::ExecutionError {
+            cause: format!("unsupported dictionary key type: {other:?}"),
+        }),
+    }
+}
+
+/// Iterate over all values in `values_arr`, deduplicating via `value_to_idx` and appending
+/// novel values to `unified_builder`. Returns a remap vector mapping each value index to its
+/// unified dict index, or `None` if cardinality would exceed `max_cardinality`.
+fn build_values_remap<'a>(
+    values_arr: &'a ArrayRef,
+    source_idx: usize,
+    value_to_idx: &mut HashMap<Option<&'a [u8]>, u16>,
+    unified_builder: &mut MutableArrayData<'_>,
+    num_distinct: &mut usize,
+    max_cardinality: usize,
+) -> Option<Vec<u16>> {
+    let mut remap: Vec<u16> = Vec::with_capacity(values_arr.len());
+    for i in 0..values_arr.len() {
+        let key = array_value_as_bytes(values_arr, i);
+        if let Some(&idx) = value_to_idx.get(&key) {
+            remap.push(idx);
+            continue;
+        }
+        if *num_distinct >= max_cardinality {
+            return None;
+        }
+        let idx = *num_distinct as u16;
+        let _ = value_to_idx.insert(key, idx);
+        unified_builder.extend(source_idx, i, i + 1);
+        *num_distinct += 1;
+        remap.push(idx);
+    }
+    Some(remap)
+}
+
+/// Extract a borrowed byte representation of an array element.
+///
+/// Returns `None` for null values.
+///
+/// Handles the types that can be dictionary-encoded in OTAP attribute value columns:
+/// Utf8 (str), Int64 (int), and Binary (bytes, ser).
+fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Option<&'a [u8]> {
+    if arr.is_null(idx) {
+        return None;
+    }
+    match arr.data_type() {
+        DataType::Utf8 => {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            Some(str_arr.value(idx).as_bytes())
+        }
+        DataType::Int64 => {
+            let int_arr = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Int64Array>()
+                .unwrap();
+            let buf: &[u8] = int_arr.values().inner().as_slice();
+            let offset = idx * size_of::<i64>();
+            Some(&buf[offset..offset + size_of::<i64>()])
+        }
+        DataType::Binary => {
+            let bin_arr = arr
+                .as_any()
+                .downcast_ref::<arrow::array::BinaryArray>()
+                .unwrap();
+            Some(bin_arr.value(idx))
+        }
+        // TODO don't panic here, we should return execution error
+        other => panic!("array_value_as_bytes: unsupported type {other:?}"),
+    }
 }
 
 /// Merge keys from a [`UnifiedDictMulti`] using ownership runs, producing a dict-encoded output.
