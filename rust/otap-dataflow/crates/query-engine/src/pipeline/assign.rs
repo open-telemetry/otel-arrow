@@ -63,6 +63,8 @@ use crate::pipeline::state::ExecutionState;
 
 mod attributes;
 
+/// empty placeholder record batch used when assigning attributes in cases where there is not a
+/// pre-existing attributes record batch
 static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     RecordBatch::new_empty(Arc::new(Schema::new(vec![
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -145,19 +147,23 @@ impl AssignPipelineStage {
                 }
             }
 
+            // validate that the assignment is expression is valid for the destination:
             validate_assign(
                 &dest_column,
                 dest.get_query_location(),
                 &source_logical_plan,
             )?;
-            dest_columns.push(dest_column);
 
+            dest_columns.push(dest_column);
             let physical_planner = ExprPhysicalPlanner::default();
             let physical_expr = physical_planner.plan(source_logical_plan)?;
             source_physical_exprs.push(physical_expr);
         }
 
-        // TODO comment on why we can do this ...
+        // determine, in the case that we're doing assignment on a nested pipeline for attributes,
+        // whether we need to project the virtual "value" column. We only look at the first expr
+        // because for these nested pipelines, the planner shouldn't be combining multiple
+        // set expressions together.
         let projection_contains_value_column = source_physical_exprs[0]
             .projection
             .schema
@@ -1043,52 +1049,11 @@ fn validate_assign(
                 });
             }
 
-            if *dest_attrs_id != AttributesIdentifier::Root {
-                // TODO blah blah comments about relationship cardinality
-                let mut invalid_data_scope = None;
-                _ = source_logical_plan.visit(&mut |source_logical_plan: &ScopedLogicalExpr| {
-                    if let LogicalExprDataSource::DataSource(data_scope) =
-                        &source_logical_plan.source
-                    {
-                        let is_valid = match data_scope {
-                            DataScope::Root => false,
-                            DataScope::Attributes(source_attr_id, _) => {
-                                if dest_attrs_id == source_attr_id {
-                                    true
-                                } else if matches!(
-                                    dest_attrs_id,
-                                    AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
-                                ) && matches!(
-                                    dest_attrs_id,
-                                    AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
-                                ) {
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            DataScope::StaticScalar => true,
-                        };
-
-                        if !is_valid {
-                            invalid_data_scope = Some(data_scope.clone())
-                        }
-                    }
-
-                    return true;
-                });
-
-                // TODO - we need have a better error message here
-                if let Some(invalid_data_scope) = invalid_data_scope {
-                    return Err(Error::InvalidPipelineError {
-                        cause: format!(
-                            "cannot assign data scope {invalid_data_scope:?} to \
-                            attributes {dest_attrs_id:?}"
-                        ),
-                        query_location: Some(dest_query_location.clone()),
-                    });
-                }
-            }
+            validate_attribute_assign_cardinality(
+                *dest_attrs_id,
+                dest_query_location,
+                source_logical_plan,
+            )?;
         }
         other_dest => {
             // TODO other assignment destinations will be supported soon
@@ -1098,6 +1063,65 @@ fn validate_assign(
                     other_dest
                 ),
             });
+        }
+    }
+
+    Ok(())
+}
+
+/// validates that the assignment of an attribute does not involve an expression where the
+/// relationship between the destination and source is one-to-many.
+///
+/// For example, if we had an expression like `resource.attributes["x"] = event_name`, because
+/// there can be many logs with different events to a single resource, it is ambiguous what the
+/// actual value should be and os we consider this an invalid expression
+fn validate_attribute_assign_cardinality(
+    dest_attrs_id: AttributesIdentifier,
+    dest_query_location: &QueryLocation,
+    source_logical_plan: &ScopedLogicalExpr,
+) -> Result<()> {
+    if dest_attrs_id == AttributesIdentifier::Root {
+        // root attributes has no 1:many relations
+        return Ok(());
+    }
+
+    match &source_logical_plan.source {
+        LogicalExprDataSource::DataSource(data_scope) => {
+            let is_valid = match data_scope {
+                // always valid to assign a scalar
+                DataScope::StaticScalar => true,
+
+                // we've already determined we're not assigning to a root attribute, so the
+                // destination must be something that has a one:many relationship with root like
+                // resource or scope
+                DataScope::Root => false,
+
+                DataScope::Attributes(source_attrs_id, _) => {
+                    dest_attrs_id == *source_attrs_id
+                        || matches!(
+                            dest_attrs_id,
+                            AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                        ) && matches!(
+                            source_attrs_id,
+                            AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                        )
+                }
+            };
+
+            if !is_valid {
+                // we didn't return, so must be invalid
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign data scope {data_scope:?} to \
+                                attributes {dest_attrs_id:?}"
+                    ),
+                    query_location: Some(dest_query_location.clone()),
+                });
+            }
+        }
+        LogicalExprDataSource::Join(left, right) => {
+            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, left)?;
+            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, right)?;
         }
     }
 

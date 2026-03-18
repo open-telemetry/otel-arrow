@@ -237,12 +237,7 @@ impl IdBitmap {
 
     /// Returns an iterator over IDs present in the bitmap.
     pub fn iter(&self) -> IdBitmapIter<'_> {
-        IdBitmapIter {
-            bitmap: self,
-            page_idx: 0,
-            word_idx: 0,
-            current_word: 0,
-        }
+        IdBitmapIter::new(self)
     }
 }
 
@@ -312,6 +307,17 @@ pub struct IdBitmapIter<'a> {
     /// Remaining bits from the word at `words[word_idx - 1]`. Set bits are consumed by clearing
     /// the lowest set bit on each `next()` call.
     current_word: u64,
+}
+
+impl<'a> IdBitmapIter<'a> {
+    fn new(bitmap: &'a IdBitmap) -> Self {
+        Self {
+            bitmap,
+            page_idx: 0,
+            word_idx: 0,
+            current_word: 0,
+        }
+    }
 }
 
 impl Iterator for IdBitmapIter<'_> {

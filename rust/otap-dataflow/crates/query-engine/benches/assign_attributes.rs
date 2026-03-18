@@ -162,7 +162,11 @@ fn bench_assign_attribute_pipelines(c: &mut Criterion) {
         &rt,
         &batch_sizes,
         "upsert_two_existing_one_new_str_keys",
-        r#"logs | extend attributes["code.namespace"] = "hello", attributes["code.function.name"] = "world", attributes["new_key2"] = "val2""#,
+        r#"logs | 
+            extend attributes["code.namespace"] = "hello", 
+            attributes["code.function.name"] = "world", 
+            attributes["new_key2"] = "val2"
+        "#,
     );
 }
 
