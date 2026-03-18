@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773707082234,
+  "lastUpdate": 1773793546501,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2594,6 +2594,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 86.59,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "76e942858ac1aa0273636e1ca6888fecae444ce1",
+          "message": "feat: Improve pdata::otap::testing module and expose it to other crates (#2349)\n\n# Change Summary\n\nThis is another PR on the path to #2289. During my initial\nimplementation, I realized that a lot of tests were generating invalid\notap batches. In order to make that easier, I've updated the\nlogs/metrics/traces macros in the pdata crate to automatically fill in\nanything required to be spec compliant based on what's been specified. I\nhad a half-baked version of this before, but now that we have the spec\nwe can do this properly.\n\nAdditional changes:\n\n- Added an `Into<OtapArrowRecords>` trait bound to OtapBatchStore.\nFrom<Logs/Metrics/Traces> was already implemented, it's just useful to\nhave in the bound.\n- added a `testing` feature which lets these be consumed across other\ncrates.\n\n## What issue does this PR close?\n\n* Part of #2289\n\n## How are these changes tested?\n\nUnit.\n\n## Are there any user-facing changes?\n\nNo\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-03-17T20:56:22Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/76e942858ac1aa0273636e1ca6888fecae444ce1"
+        },
+        "date": 1773793541284,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.7,
             "unit": "MB"
           }
         ]
