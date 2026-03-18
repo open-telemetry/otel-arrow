@@ -407,7 +407,6 @@ clarity, and long-term extensibility**.
 Characteristics:
 
 * extensions are global components
-* typically singletons
 * accessed indirectly by receivers/processors/exporters
 
 Pros:
