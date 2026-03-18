@@ -362,7 +362,7 @@ impl<'a> CefExtensionsIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syslog_cef_receiver::parser;
+    use crate::receivers::syslog_cef_receiver::parser::ParseError;
 
     #[test]
     fn test_cef_parsing() {
@@ -564,13 +564,13 @@ mod tests {
         let input = b"CEF:";
         let result = parse_cef(input);
         assert!(result.is_err());
-        assert!(matches!(result, Err(parser::ParseError::EmptyCEFContent)));
+        assert!(matches!(result, Err(ParseError::EmptyCEFContent)));
 
         // Test with incomplete header
         let input = b"CEF:0";
         let result = parse_cef(input);
         assert!(result.is_err());
-        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+        assert!(matches!(result, Err(ParseError::InvalidCef)));
     }
 
     #[test]
@@ -597,13 +597,13 @@ mod tests {
         let input = b"CEF:0|vendor|product|version|id";
         let result = parse_cef(input);
         assert!(result.is_err());
-        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+        assert!(matches!(result, Err(ParseError::InvalidCef)));
 
         // Test with only 5 pipes (6 parts) - missing severity
         let input = b"CEF:0|vendor|product|version|id|name";
         let result = parse_cef(input);
         assert!(result.is_err());
-        assert!(matches!(result, Err(parser::ParseError::InvalidCef)));
+        assert!(matches!(result, Err(ParseError::InvalidCef)));
 
         // Test with exactly 6 pipes (7 parts) - valid without extensions
         let input = b"CEF:0|vendor|product|version|id|name|10";

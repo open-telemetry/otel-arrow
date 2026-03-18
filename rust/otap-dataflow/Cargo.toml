@@ -209,7 +209,7 @@ wiremock = "0.6.5"
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring"]
+default = ["jemalloc", "crypto-ring", "dev-tools"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -217,6 +217,9 @@ aws = ["otap-df-otap/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+
+# Dev/test tooling (fake data generator).
+dev-tools = ["otap-df-core-nodes/dev-tools"]
 
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls"]

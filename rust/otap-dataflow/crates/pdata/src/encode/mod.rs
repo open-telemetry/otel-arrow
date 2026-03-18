@@ -11,12 +11,6 @@ mod error;
 
 pub use error::{Error, Result};
 
-use crate::views::metrics::{
-    self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
-    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
-    SummaryDataPointView, SummaryView, ValueAtQuantileView,
-};
 use crate::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
@@ -38,6 +32,12 @@ use otap_df_pdata_views::views::common::{
 };
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::metrics::{
+    self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
+    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+    SummaryDataPointView, SummaryView, ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{

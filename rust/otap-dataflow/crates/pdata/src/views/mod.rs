@@ -32,8 +32,6 @@
 pub mod otap;
 pub mod otlp;
 
-pub mod metrics;
-
 /// helpers for writing benchmarks against view implementations
 #[cfg(feature = "bench")]
 pub mod bench_helpers {

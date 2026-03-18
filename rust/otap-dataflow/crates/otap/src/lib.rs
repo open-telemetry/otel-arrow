@@ -7,24 +7,8 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Implementation of OTAP Exporter that implements the exporter trait
-pub mod otap_exporter;
 /// gRPC service implementation
 pub mod otap_grpc;
-/// Implementation of OTAP Receiver that implements the receiver trait
-pub mod otap_receiver;
-
-/// This receiver receives OTLP bytes from the grpc service request and
-/// produce for the pipeline OTAP PData
-pub mod otlp_receiver;
-
-/// Implementation of OTLP gRPC exporter that implements the exporter trait
-pub mod otlp_grpc_exporter;
-
-pub mod otlp_http_exporter;
-
-/// Receiver that reads in syslog data
-pub mod syslog_cef_receiver;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
@@ -33,16 +17,16 @@ pub mod pdata;
 
 mod pdata_conversions;
 
-pub mod parquet_exporter;
+pub mod metrics;
+
+/// Shared OTLP receiver metric definitions used by OTLP protocol support.
+pub mod otlp_metrics;
 
 /// testing utilities
-#[cfg(test)]
-mod otap_mock;
-#[cfg(test)]
-mod otlp_mock;
-
-#[cfg(test)]
-mod fixtures;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otap_mock;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otlp_mock;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
@@ -50,12 +34,10 @@ pub mod testing;
 /// compression formats
 pub mod compression;
 
-pub mod metrics;
-
 pub(crate) mod socket_options;
 
 /// Shared concurrency limiting across protocol servers
-pub(crate) mod shared_concurrency;
+pub mod shared_concurrency;
 
 /// gRPC service implementation
 pub mod otlp_grpc;

@@ -55,7 +55,7 @@ use otap_df_config::tls::TlsServerConfig;
 pub mod client_settings;
 
 /// OTLP protobuf content type
-pub(crate) const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
+pub const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 
 /// Settings for the OTLP/HTTP server.
 #[derive(Debug, Deserialize, Clone)]
@@ -260,11 +260,13 @@ fn ok_response(signal: SignalType) -> Response<Full<Bytes>> {
 /// in protobuf format for consistency with gRPC error handling.
 /// See: https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub(crate) struct RpcStatus {
+pub struct RpcStatus {
+    /// gRPC-compatible numeric status code.
     #[prost(int32, tag = "1")]
-    pub(crate) code: i32,
+    pub code: i32,
+    /// Human-readable status message.
     #[prost(string, tag = "2")]
-    pub(crate) message: String,
+    pub message: String,
     #[prost(message, repeated, tag = "3")]
     details: Vec<Any>,
 }
@@ -499,7 +501,7 @@ fn read_to_end_limited<R: std::io::Read>(
 struct HttpHandler {
     effect_handler: EffectHandler<OtapPdata>,
     ack_registry: AckRegistry,
-    metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
     settings: HttpServerSettings,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
     /// receiver-wide backpressure tied to downstream capacity.
@@ -781,7 +783,7 @@ pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
-    metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
     global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
@@ -977,7 +979,7 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<crate::otlp_receiver::OtlpReceiverMetrics>(),
+            pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
         ));
 
         let ack_registry = AckRegistry::new(Some(AckSlot::new(4)), None, None);

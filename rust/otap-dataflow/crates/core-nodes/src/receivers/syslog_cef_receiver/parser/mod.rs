@@ -12,10 +12,10 @@ pub mod rfc3164;
 /// Parser for syslog messages in RFC5424 format
 pub mod rfc5424;
 
-use crate::syslog_cef_receiver::parser::cef::parse_cef;
-use crate::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
-use crate::syslog_cef_receiver::parser::rfc3164::parse_rfc3164;
-use crate::syslog_cef_receiver::parser::rfc5424::parse_rfc5424;
+use self::cef::parse_cef;
+use self::parsed_message::ParsedSyslogMessage;
+use self::rfc3164::parse_rfc3164;
+use self::rfc5424::parse_rfc5424;
 
 /// Priority structure containing facility and severity
 #[derive(Debug, Clone, PartialEq)]
