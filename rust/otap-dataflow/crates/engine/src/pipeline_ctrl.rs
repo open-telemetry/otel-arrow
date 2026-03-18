@@ -12,6 +12,7 @@
 //! are supported.
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
+use crate::clock;
 use crate::context::PipelineContext;
 use crate::control::RouteData;
 use crate::control::UnwindData;
@@ -117,7 +118,7 @@ impl TimerSet {
 
     /// Schedule or replace a repeating timer for node_id.
     fn start(&mut self, node_id: usize, duration: Duration) {
-        let when = Instant::now() + duration;
+        let when = clock::now() + duration;
         self.timers.push(Reverse((when, node_id)));
         let _ = self.timer_states.insert(
             node_id,
@@ -305,30 +306,20 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut pending_receivers: HashSet<usize> = HashSet::new();
         let mut downstream_shutdown_sent = false;
         let mut consecutive_runtime_ctrl = 0usize;
-
-        // Single reusable timer for retrying buffered sends. Created once,
-        // reset only when `pending_sends` transitions from empty to non-empty.
-        // This avoids allocating a new Sleep future on every loop iteration
-        // (the standard tokio::select! pinned-sleep pattern).
-        let retry_delay = tokio::time::sleep(Duration::from_millis(5));
-        tokio::pin!(retry_delay);
-        let mut retry_armed = false;
+        let mut retry_delay: Option<clock::Sleep> = None;
 
         loop {
             // Drain any buffered sends before processing new messages.
             self.drain_pending_sends();
 
             // Arm the retry timer when pending sends appear; disarm when drained.
-            if !self.pending_sends.is_empty() && !retry_armed {
-                retry_delay
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + Duration::from_millis(5));
-                retry_armed = true;
+            if !self.pending_sends.is_empty() && retry_delay.is_none() {
+                retry_delay = Some(clock::sleep(Duration::from_millis(5)));
             } else if self.pending_sends.is_empty() {
-                retry_armed = false;
+                retry_delay = None;
             }
 
-            let now = Instant::now();
+            let now = clock::now();
 
             if let Some(deadline) = shutdown_deadline {
                 if now >= deadline {
@@ -491,19 +482,22 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 _ = async {
                     if let Some(when) = next_earliest {
                         if when > now {
-                            let tokio_when = tokio::time::Instant::from_std(when);
-                            tokio::time::sleep_until(tokio_when).await;
+                            clock::sleep_until(when).await;
                         }
                     }
                 }, if next_earliest.is_some() => {
                     consecutive_runtime_ctrl = 0;
                     if !is_draining_ingress {
-                        self.handle_due_events(Instant::now(), &mut pipeline_metrics_monitor);
+                        self.handle_due_events(clock::now(), &mut pipeline_metrics_monitor);
                     }
                 }
 
-                _ = &mut retry_delay, if retry_armed => {
-                    retry_armed = false;
+                _ = async {
+                    if let Some(delay) = retry_delay.as_mut() {
+                        delay.await;
+                    }
+                }, if retry_delay.is_some() => {
+                    retry_delay = None;
                     continue;
                 }
             }
@@ -770,20 +764,15 @@ impl<PData> PipelineResultMsgDispatcher<PData> {
 impl<PData: Unwindable> PipelineResultMsgDispatcher<PData> {
     /// Runs the return-path dispatcher until all return senders are dropped.
     pub async fn run(mut self) -> Result<(), Error> {
-        let retry_delay = tokio::time::sleep(Duration::from_millis(5));
-        tokio::pin!(retry_delay);
-        let mut retry_armed = false;
+        let mut retry_delay: Option<clock::Sleep> = None;
 
         loop {
             self.drain_pending_sends();
 
-            if !self.pending_sends.is_empty() && !retry_armed {
-                retry_delay
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + Duration::from_millis(5));
-                retry_armed = true;
+            if !self.pending_sends.is_empty() && retry_delay.is_none() {
+                retry_delay = Some(clock::sleep(Duration::from_millis(5)));
             } else if self.pending_sends.is_empty() {
-                retry_armed = false;
+                retry_delay = None;
             }
 
             tokio::select! {
@@ -797,8 +786,12 @@ impl<PData: Unwindable> PipelineResultMsgDispatcher<PData> {
                     }
                 }
 
-                _ = &mut retry_delay, if retry_armed => {
-                    retry_armed = false;
+                _ = async {
+                    if let Some(delay) = retry_delay.as_mut() {
+                        delay.await;
+                    }
+                }, if retry_delay.is_some() => {
+                    retry_delay = None;
                 }
             }
         }

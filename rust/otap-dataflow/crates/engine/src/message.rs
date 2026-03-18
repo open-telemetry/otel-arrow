@@ -3,6 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
+use crate::clock;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -10,9 +11,7 @@ use crate::{Interests, ReceivedAtNode};
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::ops::Add;
-use std::pin::Pin;
 use std::time::{Duration, Instant};
-use tokio::time::{Sleep, sleep_until};
 
 /// Maximum number of consecutive control messages delivered before the channel
 /// forces one pdata attempt when pdata delivery is allowed.
@@ -243,7 +242,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     fn closed_pdata_shutdown(&mut self) -> Message<PData> {
         self.shutdown();
         Message::Control(NodeControlMsg::Shutdown {
-            deadline: Instant::now().add(Duration::from_secs(1)),
+            deadline: clock::now().add(Duration::from_secs(1)),
             reason: "pdata channel closed".to_owned(),
         })
     }
@@ -286,7 +285,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// Returns a [`RecvError`] if both channels are closed, or if the
     /// shutdown deadline has passed.
     pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
-        let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
+        let mut sleep_until_deadline: Option<clock::Sleep> = None;
 
         loop {
             if self.control_rx.is_none() || self.pdata_rx.is_none() {
@@ -334,7 +333,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
                 if sleep_until_deadline.is_none() {
                     // Create a sleep timer for the deadline
-                    sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
+                    sleep_until_deadline = Some(clock::sleep_until(dl));
                 }
 
                 if accept_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
@@ -443,11 +442,11 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                             Err(RecvError::Closed) => return Ok(self.closed_pdata_shutdown()),
                             Err(e) => return Err(e),
                         }
-                    }
+                        }
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            if deadline.duration_since(Instant::now()).is_zero() {
+                            if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }
@@ -465,7 +464,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            if deadline.duration_since(Instant::now()).is_zero() {
+                            if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }

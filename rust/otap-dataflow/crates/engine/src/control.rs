@@ -5,6 +5,7 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
+use crate::clock;
 use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
@@ -13,15 +14,9 @@ use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
-
-thread_local! {
-    /// Temporary; see nanos_since_birth
-    static BIRTH_KEY: Cell<Instant> = Cell::new(Instant::now());
-}
 
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
 /// Used for duration calculations in pipeline component metrics.
@@ -29,15 +24,9 @@ thread_local! {
 /// `0` is reserved as the sentinel for "timestamp not set", so this function
 /// always returns a strictly positive value.
 ///
-/// TODO: This should not use a thread_local; it should not store any
-/// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
 #[must_use]
 pub fn nanos_since_birth() -> u64 {
-    let birth = BIRTH_KEY.get();
-    Instant::now()
-        .duration_since(birth)
-        .as_nanos()
-        .saturating_add(1) as u64
+    clock::nanos_since_birth()
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data

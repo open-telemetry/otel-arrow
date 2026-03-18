@@ -27,6 +27,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
+use otap_df_engine::clock;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -375,21 +376,20 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut server_task_done = false;
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
-        let mut drain_deadline_sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        let mut drain_deadline_sleep: Option<clock::Sleep> = None;
         let terminal_state: TerminalState;
 
         loop {
             if let Some(deadline) = draining_deadline {
                 grpc_shutdown.cancel();
 
-                if Instant::now() >= deadline {
+                if clock::now() >= deadline {
                     if let Some(reason) = draining_reason.as_deref() {
                         states.force_shutdown(reason);
                     }
                     drain_deadline_sleep = None;
                 } else if drain_deadline_sleep.is_none() {
-                    drain_deadline_sleep =
-                        Some(Box::pin(tokio::time::sleep_until(deadline.into())));
+                    drain_deadline_sleep = Some(clock::sleep_until(deadline));
                 }
 
                 if server_task_done && states.is_empty() {
@@ -471,7 +471,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             _ = handle.cancel().await;
                         }
                         terminal_state = TerminalState::new(
-                            Instant::now().add(Duration::from_secs(1)),
+                            clock::now().add(Duration::from_secs(1)),
                             [self.metrics.snapshot()],
                         );
                         break;

@@ -113,7 +113,7 @@ tempfile.workspace = true
 tokio-util.workspace = true
 time.workspace = true
 wiremock.workspace = true
-rustls.workspace = true
+rustls = { workspace = true, features = ["ring"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true

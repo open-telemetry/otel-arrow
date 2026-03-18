@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::clock;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -46,9 +47,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
-use std::pin::Pin;
 use std::time::{Duration, Instant};
-use tokio::time::{Sleep, sleep_until};
 
 /// Maximum number of consecutive control messages delivered before the channel
 /// forces one pdata attempt.
@@ -139,7 +138,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// Returns a [`RecvError`] if both channels are closed, or if the
     /// shutdown deadline has passed.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
-        let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
+        let mut sleep_until_deadline: Option<clock::Sleep> = None;
 
         loop {
             if self.control_rx.is_none() || self.pdata_rx.is_none() {
@@ -150,7 +149,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
             // Draining mode: Shutdown pending
             if let Some(dl) = self.shutting_down_deadline {
                 // If the deadline has passed, emit the pending Shutdown now.
-                if Instant::now() >= dl {
+                if clock::now() >= dl {
                     let shutdown = self
                         .pending_shutdown
                         .take()
@@ -161,7 +160,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
                 if sleep_until_deadline.is_none() {
                     // Create a sleep timer for the deadline
-                    sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
+                    sleep_until_deadline = Some(clock::sleep_until(dl));
                 }
 
                 if self.consecutive_control >= CONTROL_BURST_LIMIT {
@@ -270,7 +269,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            if deadline.duration_since(Instant::now()).is_zero() {
+                            if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }
@@ -288,7 +287,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            if deadline.duration_since(Instant::now()).is_zero() {
+                            if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }

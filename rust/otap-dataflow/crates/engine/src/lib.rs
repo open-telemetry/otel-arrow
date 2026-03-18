@@ -47,6 +47,8 @@ use std::{
     sync::OnceLock,
 };
 
+#[doc(hidden)]
+pub mod clock;
 pub mod error;
 pub mod exporter;
 pub mod message;

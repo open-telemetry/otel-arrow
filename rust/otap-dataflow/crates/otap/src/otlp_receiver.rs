@@ -34,6 +34,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
+use otap_df_engine::clock;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -716,7 +717,7 @@ impl OTLPReceiver {
         let mut http_task_done = !http_enabled;
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
-        let mut drain_deadline_sleep: Option<Pin<Box<tokio::time::Sleep>>> = None;
+        let mut drain_deadline_sleep: Option<clock::Sleep> = None;
         let terminal_state: TerminalState;
 
         loop {
@@ -724,14 +725,13 @@ impl OTLPReceiver {
                 grpc_shutdown.cancel();
                 http_shutdown.cancel();
 
-                if Instant::now() >= deadline {
+                if clock::now() >= deadline {
                     if let Some(reason) = draining_reason.as_deref() {
                         ack_registry.force_shutdown(reason);
                     }
                     drain_deadline_sleep = None;
                 } else if drain_deadline_sleep.is_none() {
-                    drain_deadline_sleep =
-                        Some(Box::pin(tokio::time::sleep_until(deadline.into())));
+                    drain_deadline_sleep = Some(clock::sleep_until(deadline));
                 }
 
                 if grpc_task_done && http_task_done && ack_registry.is_empty() {
@@ -810,7 +810,7 @@ impl OTLPReceiver {
                     }
                     if draining_deadline.is_none() {
                         terminal_state = TerminalState::new(
-                            Instant::now().add(Duration::from_secs(1)),
+                            clock::now().add(Duration::from_secs(1)),
                             [self.metrics.lock().snapshot()],
                         );
                         http_shutdown.cancel();
@@ -819,7 +819,7 @@ impl OTLPReceiver {
                 }
 
                 // HTTP serving loop; exits on IO error.
-                result = &mut http_fut, if http_enabled => {
+                result = &mut http_fut, if http_enabled && !http_task_done => {
                     if let Err(error) = result {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(effect_handler, error));
@@ -827,7 +827,7 @@ impl OTLPReceiver {
                     http_task_done = true;
                     if draining_deadline.is_none() {
                         terminal_state = TerminalState::new(
-                            Instant::now().add(Duration::from_secs(1)),
+                            clock::now().add(Duration::from_secs(1)),
                             [self.metrics.lock().snapshot()],
                         );
                         break;
@@ -871,12 +871,22 @@ mod tests {
 
     use crate::compression::CompressionMethod;
     use crate::testing::{next_ack, next_nack};
+    use otap_df_channel::error::RecvError;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
+    use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
+    use otap_df_engine::ProducerEffectHandlerExtension;
+    use otap_df_engine::clock;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;
-    use otap_df_engine::control::{AckMsg, NodeControlMsg};
+    use otap_df_engine::control::{
+        AckMsg, NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
+    };
     use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::shared::message::{SharedReceiver, SharedSender};
+    use otap_df_engine::shared::receiver as shared_receiver;
     use otap_df_engine::testing::{
+        dst::{SimClock, dst_seeds},
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
@@ -900,6 +910,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
+    use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::time::{Duration, Instant};
@@ -1042,6 +1053,238 @@ mod tests {
                 ..Default::default()
             }],
         }
+    }
+
+    fn create_logs_pdata() -> OtapPdata {
+        let request = create_logs_service_request();
+        let mut bytes = Vec::new();
+        request
+            .encode(&mut bytes)
+            .expect("encode test OTLP request");
+        OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
+    }
+
+    async fn yield_cycles(count: usize) {
+        for _ in 0..count {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn run_wait_for_result_dst_seed(seed: u64) {
+        let sim_clock = SimClock::new();
+        let _clock_guard = sim_clock.install();
+        let (rt, local_tasks) = otap_df_engine::testing::setup_test_runtime();
+
+        rt.block_on(local_tasks.run_until(async move {
+            let scenario = seed % 4;
+            let shutdown_reason = format!("dst shutdown seed {seed}");
+
+            let listen_addr: SocketAddr = "127.0.0.1:4318".parse().unwrap();
+            let metrics_registry_handle = TelemetryRegistryHandle::new();
+            let controller_ctx = ControllerContext::new(metrics_registry_handle);
+            let pipeline_ctx =
+                controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+            let mut receiver = OTLPReceiver {
+                config: test_config_http_only(listen_addr),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+                global_max_concurrent_requests: None,
+            };
+            receiver.tune_max_concurrent_requests(16);
+
+            let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(16);
+            let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+            let metrics_reporter = metrics_system.reporter();
+
+            let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(16);
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("out".into(), SharedSender::mpsc(output_tx));
+
+            let effect_handler = shared_receiver::EffectHandler::new(
+                test_node("otlp-dst"),
+                outputs,
+                Some("out".into()),
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+            let request_effect_handler = effect_handler.clone();
+
+            let ack_registry = AckRegistry::new(
+                Some(crate::otap_grpc::otlp::server_new::AckSlot::new(16)),
+                None,
+                None,
+            );
+            let slot = ack_registry.logs.clone().expect("logs slot");
+
+            let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(16);
+            let mut ctrl_chan = shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx));
+            let ctrl_tx = SharedSender::mpsc(ctrl_tx);
+
+            let http_shutdown = CancellationToken::new();
+            let http_task: HttpServerTask = {
+                let shutdown = http_shutdown.clone();
+                Box::pin(async move {
+                    shutdown.cancelled().await;
+                    Ok(())
+                })
+            };
+
+            let receiver_handle = tokio::task::spawn_local(async move {
+                let mut telemetry_cancel_handle = None;
+                receiver
+                    .run_event_loop(
+                        &mut ctrl_chan,
+                        &effect_handler,
+                        &ack_registry,
+                        &mut telemetry_cancel_handle,
+                        None,
+                        CancellationToken::new(),
+                        Some(http_task),
+                        http_shutdown,
+                    )
+                    .await
+            });
+
+            let (slot_key, slot_rx) = {
+                let mut guard = slot.0.lock();
+                guard
+                    .allocate(tokio::sync::oneshot::channel)
+                    .expect("slot allocation")
+            };
+
+            let mut pdata = create_logs_pdata();
+            request_effect_handler.subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                slot_key.into(),
+                &mut pdata,
+            );
+            request_effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .expect("admit request into pipeline");
+            let admitted = output_rx
+                .recv()
+                .await
+                .expect("downstream should observe admitted request");
+
+            match scenario {
+                0 => {
+                    let (_node_id, ack) =
+                        next_ack(AckMsg::new(admitted)).expect("ack subscription frame");
+                    ctrl_tx.send(NodeControlMsg::Ack(ack)).await.unwrap();
+                    let ack_result = slot_rx.await.expect("slot should resolve");
+                    assert!(
+                        ack_result.is_ok(),
+                        "seed={seed}: expected ack before drain, got {ack_result:?}"
+                    );
+
+                    ctrl_tx
+                        .send(NodeControlMsg::DrainIngress {
+                            deadline: clock::now() + Duration::from_millis(20),
+                            reason: shutdown_reason.clone(),
+                        })
+                        .await
+                        .unwrap();
+                }
+                1 => {
+                    ctrl_tx
+                        .send(NodeControlMsg::DrainIngress {
+                            deadline: clock::now() + Duration::from_millis(20),
+                            reason: shutdown_reason.clone(),
+                        })
+                        .await
+                        .unwrap();
+                    yield_cycles(3).await;
+                    assert!(
+                        matches!(runtime_ctrl_rx.try_recv(), Err(RecvError::Empty)),
+                        "seed={seed}: receiver drained before in-flight request resolved"
+                    );
+
+                    let (_node_id, nack) = next_nack(NackMsg::new("temporary", admitted))
+                        .expect("nack subscription frame");
+                    ctrl_tx.send(NodeControlMsg::Nack(nack)).await.unwrap();
+                    let nack = slot_rx
+                        .await
+                        .expect("slot should resolve")
+                        .expect_err("temporary nack should fail");
+                    assert!(
+                        !nack.permanent,
+                        "seed={seed}: temporary nack must stay retryable"
+                    );
+                }
+                2 => {
+                    ctrl_tx
+                        .send(NodeControlMsg::DrainIngress {
+                            deadline: clock::now() + Duration::from_millis(20),
+                            reason: shutdown_reason.clone(),
+                        })
+                        .await
+                        .unwrap();
+                    yield_cycles(3).await;
+                    assert!(
+                        matches!(runtime_ctrl_rx.try_recv(), Err(RecvError::Empty)),
+                        "seed={seed}: receiver drained before permanent nack resolved"
+                    );
+
+                    let (_node_id, nack) = next_nack(NackMsg::new_permanent("permanent", admitted))
+                        .expect("nack subscription frame");
+                    ctrl_tx.send(NodeControlMsg::Nack(nack)).await.unwrap();
+                    let nack = slot_rx
+                        .await
+                        .expect("slot should resolve")
+                        .expect_err("permanent nack should fail");
+                    assert!(nack.permanent, "seed={seed}: expected permanent nack");
+                }
+                _ => {
+                    ctrl_tx
+                        .send(NodeControlMsg::DrainIngress {
+                            deadline: clock::now() + Duration::from_millis(20),
+                            reason: shutdown_reason.clone(),
+                        })
+                        .await
+                        .unwrap();
+                    yield_cycles(3).await;
+                    assert!(
+                        matches!(runtime_ctrl_rx.try_recv(), Err(RecvError::Empty)),
+                        "seed={seed}: receiver drained before shutdown deadline"
+                    );
+
+                    sim_clock.advance(Duration::from_millis(25));
+                    yield_cycles(6).await;
+                    let nack = slot_rx
+                        .await
+                        .expect("slot should resolve")
+                        .expect_err("deadline should force shutdown failure");
+                    assert!(
+                        !nack.permanent,
+                        "seed={seed}: shutdown result should remain retryable"
+                    );
+                    assert!(
+                        nack.reason.contains(&shutdown_reason),
+                        "seed={seed}: shutdown nack must include shutdown reason"
+                    );
+                }
+            }
+
+            let drained = timeout(Duration::from_secs(1), runtime_ctrl_rx.recv())
+                .await
+                .expect("receiver should report drained")
+                .expect("runtime control channel should stay open");
+            assert!(
+                matches!(drained, RuntimeControlMsg::ReceiverDrained { .. }),
+                "seed={seed}: expected ReceiverDrained, got {drained:?}"
+            );
+
+            drop(ctrl_tx);
+
+            let _terminal_state = timeout(Duration::from_secs(1), receiver_handle)
+                .await
+                .expect("receiver loop should finish")
+                .unwrap()
+                .expect("receiver loop should succeed");
+        }));
     }
 
     fn create_metrics_service_request() -> ExportMetricsServiceRequest {
@@ -3382,5 +3625,12 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn dst_otlp_wait_for_result_shutdown_seeded() {
+        for seed in dst_seeds(&[7, 23, 61], 8) {
+            futures::executor::block_on(run_wait_for_result_dst_seed(seed));
+        }
     }
 }
