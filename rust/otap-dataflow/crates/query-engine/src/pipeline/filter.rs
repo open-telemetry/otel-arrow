@@ -1748,7 +1748,7 @@ mod test {
 
     use arrow::array::{
         DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
-        StringArray, UInt16Array, UInt8Array,
+        StringArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
