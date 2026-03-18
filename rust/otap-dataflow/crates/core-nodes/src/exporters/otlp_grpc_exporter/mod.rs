@@ -9,11 +9,6 @@
 //! request finishes we forward the Ack/Nack to the pipeline controller so the dataflow can make
 //! progress.
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::metrics::ExporterPDataMetrics;
-use crate::otap_grpc::client_settings::GrpcClientSettings;
-use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
-use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
@@ -32,6 +27,13 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otap_df_otap::otap_grpc::otlp::client::{
+    LogsServiceClient, MetricsServiceClient, TraceServiceClient,
+};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -748,10 +750,6 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
-    use crate::otlp_grpc::OTLPData;
-    use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
-    use crate::pdata::OtapPdata;
-    use crate::testing::{TestCallData, next_ack, next_nack};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
@@ -761,6 +759,10 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::otlp_grpc::OTLPData;
+    use otap_df_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;

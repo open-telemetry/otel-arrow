@@ -92,7 +92,9 @@ impl ArrowLogsService for ArrowLogsServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consumer.consume_bar(&mut batch).unwrap();
+                let batch_data = consumer
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode log batch in mock OTAP stream");
                 let pdata = OtapArrowRecords::Logs(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
@@ -139,7 +141,9 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consumer.consume_bar(&mut batch).unwrap();
+                let batch_data = consumer
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode metrics batch in mock OTAP stream");
                 let pdata = OtapArrowRecords::Metrics(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
@@ -185,7 +189,9 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consume.consume_bar(&mut batch).unwrap();
+                let batch_data = consume
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode trace batch in mock OTAP stream");
                 let pdata = OtapArrowRecords::Traces(from_record_messages(batch_data));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
@@ -223,7 +229,7 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
             batch_id as u16,
         ]))],
     )
-    .unwrap();
+    .expect("failed to build test OTAP batch record");
 
     let mut otap_batch = match payload_type {
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
