@@ -343,25 +343,12 @@ impl AssignPipelineStage {
         let root_record_batch = match otap_batch.root_record_batch() {
             Some(root_rb) => root_rb,
             None => {
-                todo!("add a test case for this and return nothing to do!")
+                // nothing to do
+                return Ok(otap_batch);
             }
         };
 
-        let (attrs_payload_type, id_col, mutable_root_id_column) = match dest_attrs_id {
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let struct_col_name = match payload_type {
-                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
-                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
-                    _ => {
-                        todo!("return error")
-                    }
-                };
-                let id_col = root_record_batch
-                    .column_by_name(struct_col_name)
-                    .map(|s| s.as_any().downcast_ref::<StructArray>().unwrap())
-                    .and_then(|s| s.column_by_name(consts::ID));
-                (payload_type, id_col, false)
-            }
+        let (attrs_payload_type, id_col) = match dest_attrs_id {
             AttributesIdentifier::Root => {
                 let attrs_payload_type = match otap_batch {
                     OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
@@ -369,7 +356,26 @@ impl AssignPipelineStage {
                     OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
                 };
                 let id_col = root_record_batch.column_by_name(consts::ID);
-                (attrs_payload_type, id_col, true)
+                (attrs_payload_type, id_col)
+            }
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let struct_col_name = match payload_type {
+                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                    other => {
+                        return Err(Error::InvalidPipelineError {
+                            cause: format!("Unsupported attributes payload type {other:?}"),
+                            query_location: None,
+                        });
+                    }
+                };
+
+                // access the ID column from the nested Resource/Scope struct
+                let id_col = root_record_batch
+                    .column_by_name(struct_col_name)
+                    .map(|s| s.as_any().downcast_ref::<StructArray>().unwrap())
+                    .and_then(|s| s.column_by_name(consts::ID));
+                (payload_type, id_col)
             }
         };
 
@@ -377,9 +383,6 @@ impl AssignPipelineStage {
             Some(attrs_batch) => attrs_batch,
             None => EMPTY_ATTRS_RECORD_BATCH.deref(),
         };
-
-        // TODO fix the arguments to this w/out unwrapping, and actually compute if the thing is mutable
-        // and comment on why you think scope/resource ID should not be nullable
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
         if let Some(id_col) = id_col {
@@ -394,21 +397,30 @@ impl AssignPipelineStage {
                 })?;
             parent_id_set.populate(id_col.iter().flatten().map(|i| i.into()));
         }
-        // get the rows that will have the value replaced (all others, the value will be inserted)
+
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
-            .unwrap();
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "attribute record batch missing key column".into(),
+            })?;
 
         let parent_ids_col = attrs_record_batch
             .column_by_name(consts::PARENT_ID)
-            .unwrap();
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "attribute record batch missing parent_id column".into(),
+            })?;
 
+        // iterate the list of expression evaluations and build arguments that will be used to
+        // insert attributes
         let mut attrs_upserts = Vec::with_capacity(eval_results.len());
-
         for (i, eval_result) in eval_results.iter_mut().enumerate() {
+            // select the key for the attribute for which this expression evaluation result should
+            // be assigned.
             let ColumnAccessor::Attributes(_, attrs_key) = &self.dest_columns[i] else {
-                // TODO - is it?
-                unreachable!("")
+                // safety: this function will only be called if we're inserting attributes, which
+                // we check that the dest_column is of this ColumnAccessor variant. We also check
+                // in the constructor that all dest_columns are the same variant.
+                unreachable!("invalid column accessor variant")
             };
 
             // if the evaluation was of the expression turned out to be null, we'll create
@@ -416,14 +428,26 @@ impl AssignPipelineStage {
             let eval_result = eval_result
                 .take()
                 .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
-            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
 
+            // determine for which rows will be treated as an attribute "update", and which will
+            // be treated as an "insert" (create new attributes)
+            //
+            // we make the determination by scanning all the IDs from the parent record batch and
+            // checking if each one appears in the list of parent IDs of rows that already have
+            // the attribute with this key.
+            //
+            // the goal here is to build up a list of parent_ids where all the updates come first
+            // and are sorted in the same order as they appear in the original attribute record
+            // batch, then all the inserts come after (this is what's expected as an argument to
+            // the utility function that does attribute inserts)
+            //
+            // TODO ^^^ DO WE HAVE A SORT ORDER PROBLEM HERE????
+            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
             let update_parent_ids_u16 = update_parent_ids
                 .as_any()
                 .downcast_ref::<UInt16Array>()
                 .unwrap();
-
             let mut update_parent_id_set = self.id_bitmap_pool.acquire();
             update_parent_id_set.populate(update_parent_ids_u16.iter().flatten().map(|i| i.into()));
 
@@ -442,72 +466,66 @@ impl AssignPipelineStage {
                 }
             }
             self.id_bitmap_pool.release(update_parent_id_set);
-
             let parent_ids = UInt16Array::from(parent_ids);
 
-            let new_values = match &eval_result.values {
-                ColumnarValue::Scalar(s) => {
-                    // TODO - is scalar clone cheap?
-                    ColumnarValue::Scalar(s.clone())
-                }
-                ColumnarValue::Array(result_values) => {
-                    let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
-                        ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
-                        self.dest_scopes[i].clone(),
-                        // TODO heap allocation, and kind of hokey clone
-                        Arc::new(parent_ids.clone()),
-                    );
+            let aligned_values = if let ColumnarValue::Scalar(s) = eval_result.values {
+                // if it's a scalar, there's actually no alignment needed
+                ColumnarValue::Scalar(s)
+            } else {
+                // align the row-order of the result with the row-order that they will be inserted into
+                // the resulting record batch.
+                let ColumnarValue::Array(result_values) = &eval_result.values else {
+                    // safety: this is the else block of an if statement where we've tried to check if
+                    // this is is a scalar. Since we've determined it's not scalar, it must be array.
+                    unreachable!("expected ColumnarResult::Array")
+                };
+                let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
+                    ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
+                    Rc::clone(&self.dest_scopes[i]),
+                    &parent_ids,
+                );
 
-                    // TODO - there _might_ be a check we can do here to determine if the data
-                    // is already aligned and avoid the join (e.g. in cases like attrs["x"] == attrs["x"] * 2)
-                    let vals_take_indices = match eval_result.data_scope.as_ref() {
-                        DataScope::Attributes(result_attrs_id, _) => {
-                            if dest_attrs_id == *result_attrs_id {
-                                AttributeToSameAttributeJoin::new().rows_to_take(
-                                    &left_join_input,
-                                    &eval_result,
-                                    &otap_batch,
-                                )?
-                            } else {
-                                AttributeToDifferentAttributeJoin::new(
-                                    dest_attrs_id,
-                                    *result_attrs_id,
-                                )
-                                .rows_to_take(
-                                    &left_join_input,
-                                    &eval_result,
-                                    &otap_batch,
-                                )?
-                            }
+                let vals_take_indices = match eval_result.data_scope.as_ref() {
+                    DataScope::Attributes(result_attrs_id, _) => {
+                        if dest_attrs_id == *result_attrs_id {
+                            AttributeToSameAttributeJoin::new().rows_to_take(
+                                &left_join_input,
+                                &eval_result,
+                                &otap_batch,
+                            )?
+                        } else {
+                            AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
+                                .rows_to_take(&left_join_input, &eval_result, &otap_batch)?
                         }
-                        DataScope::Root => RootAttrsToRootJoin::new().rows_to_take(
-                            &left_join_input,
-                            &eval_result,
-                            &otap_batch,
-                        )?,
-                        _ => {
-                            // TODO comment on why unreachable
-                            unreachable!("TODO")
-                        }
-                    };
+                    }
+                    DataScope::Root => RootAttrsToRootJoin::new().rows_to_take(
+                        &left_join_input,
+                        &eval_result,
+                        &otap_batch,
+                    )?,
+                    DataScope::StaticScalar => {
+                        // safety: if the data scope was scalar, the result would have also been a
+                        // Scalar which would have been handled above where we checked the
+                        // ColumnarValue variant of the eval result's values.
+                        unreachable!("unexpected array for scalar data scope")
+                    }
+                };
 
-                    ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
-                }
+                ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
             };
 
             attrs_upserts.push(AttributeUpsert {
                 attrs_key,
-                existing_key_mask: existing_key_mask,
-                new_values,
+                existing_key_mask,
+                new_values: aligned_values,
                 upsert_parent_ids: parent_ids,
             })
         }
 
         self.id_bitmap_pool.release(parent_id_set);
 
-        let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
-
         // replace attributes batch
+        let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
         otap_batch.set(attrs_payload_type, new_attrs);
 
         Ok(otap_batch)
@@ -548,13 +566,12 @@ impl AssignPipelineStage {
                         ),
                     })?;
 
+                // assign new IDs
                 let mut max_id = max(id_col).unwrap_or(0);
-
                 let mut new_ids = id_col.values().to_vec();
                 for i in 0..id_col.len() {
                     if id_col.is_null(i) {
-                        // very unfortunate error, but nothing we can really do here. We're not in a
-                        // position at this point to automatically split the batch to give us more IDs
+                        // unfortunate error, but nothing we can really do here
                         if max_id == u16::MAX {
                             return Err(Error::ExecutionError {
                                 cause: "ID space saturated when assigning attributes. \
@@ -574,7 +591,9 @@ impl AssignPipelineStage {
                 if root_record_batch.num_rows() > u16::MAX as usize {
                     // again unfortunate error, but nothing can be done
                     return Err(Error::ExecutionError {
-                        cause: "ID space saturated when assigning attributes. Please try a smaller batch size".into(),
+                        cause: "ID space saturated when assigning attributes. \
+                            Please try a smaller batch size"
+                            .into(),
                     });
                 }
 
@@ -584,12 +603,11 @@ impl AssignPipelineStage {
             }
         };
 
-        // safety: we're OK to expect here because if we're here, it means we were able to access
-        // the id column from this record batch, which means the record batch must exist so this
-        // call will not return None.
-        let root_record_batch = otap_batch.root_record_batch().expect("no root batch");
-        let new_root = try_upsert_column(consts::ID, new_ids, root_record_batch)?;
-        otap_batch.set(otap_batch.root_payload_type(), new_root);
+        // replace the ID column and replace the root batch
+        otap_batch.set(
+            otap_batch.root_payload_type(),
+            try_upsert_column(consts::ID, new_ids, root_record_batch)?,
+        );
 
         Ok(())
     }
@@ -1689,6 +1707,17 @@ mod test {
     #[tokio::test]
     async fn test_assign_empty_batch() {
         let pipeline_expr = OplParser::parse("logs | set severity_number = 1")
+            .unwrap()
+            .pipeline;
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_attribute_to_empty_batch() {
+        let pipeline_expr = OplParser::parse("logs | set attributes[\"x\"] = 1")
             .unwrap()
             .pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());

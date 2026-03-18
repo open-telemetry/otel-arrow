@@ -45,7 +45,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{Field, Schema};
@@ -775,13 +775,13 @@ impl PhysicalExprEvalResult {
     pub fn new_with_parent_ids(
         values: ColumnarValue,
         data_scope: Rc<DataScope>,
-        parent_ids: ArrayRef,
+        parent_ids: &UInt16Array,
     ) -> Self {
         Self {
             values,
             data_scope,
             ids: None,
-            parent_ids: Some(parent_ids),
+            parent_ids: Some(Arc::new(parent_ids.clone())),
             scope_ids: None,
             resource_ids: None,
         }
