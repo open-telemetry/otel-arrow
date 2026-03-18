@@ -4,10 +4,7 @@
 use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-};
+use std::collections::{HashMap, HashSet};
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -100,12 +97,7 @@ pub struct ApiConfig {
     pub schema: SchemaConfig,
 
     /// Arm Resource ID header for the logs exported to Azure Monitor (optional)
-    #[serde(default = "default_arm_resource_id_header")]
     pub azure_monitor_source_resourceid: Option<String>,
-}
-
-fn default_arm_resource_id_header() -> Option<String> {
-    env::var("AZURE_MONITOR_SOURCE_RESOURCEID").ok()
 }
 
 /// Schema mapping configuration
@@ -508,33 +500,6 @@ mod tests {
         };
 
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_azure_monitor_source_resourceid_default_is_none() {
-        // Without the env var set, default should be None
-        let value = default_arm_resource_id_header();
-        if env::var("AZURE_MONITOR_SOURCE_RESOURCEID").is_err() {
-            assert_eq!(value, None);
-        }
-    }
-
-    #[test]
-    #[allow(unsafe_code)]
-    fn test_azure_monitor_source_resourceid_from_env() {
-        unsafe {
-            env::set_var(
-                "AZURE_MONITOR_SOURCE_RESOURCEID",
-                "/subscriptions/test-sub/resourceGroups/test-rg",
-            );
-        }
-        let value = default_arm_resource_id_header();
-        assert_eq!(
-            value,
-            Some("/subscriptions/test-sub/resourceGroups/test-rg".to_string())
-        );
-        unsafe { env::remove_var("AZURE_MONITOR_SOURCE_RESOURCEID") };
-        assert_eq!(default_arm_resource_id_header(), None);
     }
 
     #[test]
