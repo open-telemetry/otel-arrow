@@ -25,9 +25,7 @@ use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::{cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
-use data_engine_expressions::{
-    Expression, QueryLocation, ScalarExpression, SourceScalarExpression,
-};
+use data_engine_expressions::QueryLocation;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::ColumnarValue;

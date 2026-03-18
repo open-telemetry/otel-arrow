@@ -17,9 +17,7 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{
-    AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-};
+use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -1082,4 +1080,116 @@ pub fn try_attrs_value_filter_from_literal(
         binary_op,
         Box::new(try_static_scalar_to_attr_literal(scalar_lit)?),
     ))
+}
+
+#[cfg(test)]
+mod test {
+    use data_engine_kql_parser::Parser;
+    use otap_df_opl::parser::OplParser;
+    use otap_df_pdata::{OtapArrowRecords, otap::Logs};
+
+    use crate::pipeline::{Pipeline, planner::PipelinePlanner};
+
+    #[test]
+    fn test_combines_set_expressions_for_root() {
+        let pipeline_expr =
+            OplParser::parse("logs | set severity_number = 5 | set severity_text = \"INFO\"")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 1)
+    }
+
+    #[test]
+    fn test_combines_set_expressions_for_attributes() {
+        let pipeline_expr =
+            OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = 6")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 1)
+    }
+
+    #[test]
+    fn test_does_not_combine_set_expressions_for_same_attribute_destination() {
+        let pipeline_expr =
+            OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"x\"] = 6")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
+
+    #[test]
+    fn test_does_not_combine_set_expressions_for_same_root() {
+        let pipeline_expr =
+            OplParser::parse("logs | set severity_text=\"INFO\" | set severity_text=\"ERROR\"")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
+
+    #[test]
+    fn test_does_not_combine_set_expressions_for_root_when_source_reassigned() {
+        let pipeline_expr =
+            OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=severity_text")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
+
+    #[test]
+    fn test_does_not_combine_set_expressions_for_attributes_when_source_reassigned() {
+        let pipeline_expr = OplParser::parse(
+            "logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = attributes[\"x\"]",
+        )
+        .unwrap()
+        .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
 }
