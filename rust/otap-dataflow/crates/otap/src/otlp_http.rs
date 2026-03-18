@@ -42,7 +42,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
@@ -675,15 +675,12 @@ impl HttpHandler {
                     return Err(internal_error());
                 };
 
-                let (key, rx) = {
-                    let mut guard = state.0.lock();
-                    match guard.allocate(|| oneshot::channel()) {
-                        None => {
-                            self.metrics.lock().rejected_requests.inc();
-                            return Err(service_unavailable());
-                        }
-                        Some(pair) => pair,
+                let (key, rx) = match state.allocate_slot() {
+                    None => {
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(service_unavailable());
                     }
+                    Some(pair) => pair,
                 };
 
                 // Register calldata in the context.
@@ -766,7 +763,7 @@ struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        self.state.0.lock().cancel(self.key);
+        self.state.cancel_slot(self.key);
     }
 }
 

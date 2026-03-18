@@ -52,6 +52,9 @@ pub struct AckSlot(
     pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
 );
 
+/// Receiver side of a wait-for-result subscription slot.
+pub type AckSlotReceiver = oneshot::Receiver<Result<(), NackMsg<OtapPdata>>>;
+
 impl AckSlot {
     /// Build a new per-signal slot map sized for the configured concurrency.
     #[must_use]
@@ -73,6 +76,23 @@ impl AckSlot {
                 OtapPdata::new_todo_context(OtapPayload::empty(signal)),
             )));
         });
+    }
+
+    /// Allocate a raw slot key plus its paired receiver.
+    pub(crate) fn allocate_slot(&self) -> Option<(SlotKey, AckSlotReceiver)> {
+        let mut guard = self.0.lock();
+        guard.allocate(oneshot::channel)
+    }
+
+    /// Allocate a wait-for-result subscription in calldata form.
+    #[must_use]
+    pub fn allocate_waiter(&self) -> Option<(CallData, AckSlotReceiver)> {
+        self.allocate_slot().map(|(key, rx)| (key.into(), rx))
+    }
+
+    /// Cancel an outstanding wait-for-result subscription.
+    pub(crate) fn cancel_slot(&self, key: SlotKey) {
+        self.0.lock().cancel(key);
     }
 }
 
@@ -336,7 +356,7 @@ pub(crate) struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        self.state.0.lock().cancel(self.key);
+        self.state.cancel_slot(self.key);
     }
 }
 
@@ -356,16 +376,13 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         Box::pin(async move {
             metrics.lock().requests_started.inc();
             let cancel_rx = if let Some(state) = state {
-                // Try to allocate a slot (under the mutex) for calldata.
-                let mut guard = state.0.lock();
-                let (key, rx) = match guard.allocate(|| oneshot::channel()) {
+                let (key, rx) = match state.allocate_slot() {
                     None => {
                         metrics.lock().rejected_requests.inc();
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                     Some(pair) => pair,
                 };
-                drop(guard);
 
                 // Enter the subscription. Slot key becomes calldata.
                 effect_handler.subscribe_to(

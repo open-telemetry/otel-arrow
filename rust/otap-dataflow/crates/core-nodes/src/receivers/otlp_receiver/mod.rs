@@ -844,6 +844,8 @@ mod tests {
         test_node,
     };
     use otap_df_otap::compression::CompressionMethod;
+    use otap_df_otap::otap_grpc::otlp::server_new::AckSlot;
+    use otap_df_otap::otlp_http::RpcStatus;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -1066,11 +1068,7 @@ mod tests {
             );
             let request_effect_handler = effect_handler.clone();
 
-            let ack_registry = AckRegistry::new(
-                Some(crate::otap_grpc::otlp::server_new::AckSlot::new(16)),
-                None,
-                None,
-            );
+            let ack_registry = AckRegistry::new(Some(AckSlot::new(16)), None, None);
             let slot = ack_registry.logs.clone().expect("logs slot");
 
             let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(16);
@@ -1102,17 +1100,12 @@ mod tests {
                     .await
             });
 
-            let (slot_key, slot_rx) = {
-                let mut guard = slot.0.lock();
-                guard
-                    .allocate(tokio::sync::oneshot::channel)
-                    .expect("slot allocation")
-            };
+            let (slot_key, slot_rx) = slot.allocate_waiter().expect("slot allocation");
 
             let mut pdata = create_logs_pdata();
             request_effect_handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
-                slot_key.into(),
+                slot_key,
                 &mut pdata,
             );
             request_effect_handler
@@ -2654,8 +2647,7 @@ mod tests {
                     .expect("HTTP request should return a response");
                 assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
 
-                let rpc_status = crate::otlp_http::RpcStatus::decode(body.as_ref())
-                    .expect("Should decode RpcStatus");
+                let rpc_status = RpcStatus::decode(body.as_ref()).expect("Should decode RpcStatus");
                 assert_eq!(rpc_status.code, 14);
                 assert!(rpc_status.message.contains("Pipeline processing failed"));
                 assert!(rpc_status.message.contains(shutdown_reason));
@@ -3029,8 +3021,7 @@ mod tests {
                 assert!(!body.is_empty(), "Response body should contain NACK reason");
 
                 // Decode the RpcStatus response
-                let rpc_status = otap_df_otap::otlp_http::RpcStatus::decode(body.as_ref())
-                    .expect("Should decode RpcStatus");
+                let rpc_status = RpcStatus::decode(body.as_ref()).expect("Should decode RpcStatus");
 
                 // Verify the NACK reason is included
                 assert_eq!(rpc_status.code, 14); // gRPC UNAVAILABLE code
