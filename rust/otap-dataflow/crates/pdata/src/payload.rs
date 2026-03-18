@@ -291,7 +291,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportMetricsRequest(bytes) => {
                 let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use crate::views::metrics::{
+                use otap_df_pdata_views::views::metrics::{
                     DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
                     MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
                 };

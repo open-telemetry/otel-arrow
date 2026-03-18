@@ -22,6 +22,7 @@ use otap_df_engine::{
     error::Error,
     local::processor::{EffectHandler, Processor},
     message::Message,
+    process_duration::ComputeDuration,
 };
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
@@ -42,12 +43,13 @@ pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = Proces
 pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
+    compute_duration: ComputeDuration,
 }
 
 impl RecordsetKqlProcessor {
     /// Creates a new KQL processor
     pub fn with_pipeline_ctx(
-        _pipeline_ctx: PipelineContext,
+        pipeline_ctx: PipelineContext,
         config: RecordsetKqlProcessorConfig,
     ) -> Result<Self, ConfigError> {
         let parsed_bridge_options = Self::parse_bridge_options(&config.bridge_options)?;
@@ -59,9 +61,15 @@ impl RecordsetKqlProcessor {
             error: format!("Failed to parse KQL query: {:?}", errors),
         })?;
 
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
+
         otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
 
-        Ok(Self { config, pipeline })
+        Ok(Self {
+            config,
+            pipeline,
+            compute_duration,
+        })
     }
 
     /// Parse bridge options from JSON value
@@ -123,8 +131,8 @@ impl RecordsetKqlProcessor {
         let (ctx, payload) = data.into_parts();
         let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
 
-        // Process based on signal type
-        let result = match otlp_bytes {
+        // Process based on signal type (timed).
+        let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.processing_logs",
@@ -138,7 +146,7 @@ impl RecordsetKqlProcessor {
             OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
                 message: "Traces processing not yet implemented in KQL bridge".to_string(),
             }),
-        };
+        });
 
         match result {
             Ok(processed_bytes) => {
@@ -179,7 +187,7 @@ impl RecordsetKqlProcessor {
     }
 
     fn process_logs(
-        &mut self,
+        &self,
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
@@ -264,6 +272,12 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 self.config = new_config;
                             }
                         }
+                        Ok(())
+                    }
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => {
+                        self.compute_duration.report(&mut metrics_reporter);
                         Ok(())
                     }
                     _ => Ok(()),

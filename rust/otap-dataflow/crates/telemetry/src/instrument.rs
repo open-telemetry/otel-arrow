@@ -13,6 +13,7 @@
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
+use std::time::Instant;
 
 /// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
@@ -530,6 +531,56 @@ impl Mmsc {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Merge another Mmsc into this.
+    ///
+    /// Handles the empty-receiver case explicitly so the result is
+    /// correct regardless of sentinel values in a default/reset `Mmsc`.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        if other.count == 0 {
+            return;
+        }
+        if self.count == 0 {
+            *self = other;
+            return;
+        }
+        if other.min < self.min {
+            self.min = other.min;
+        }
+        if other.max > self.max {
+            self.max = other.max;
+        }
+        self.sum += other.sum;
+        self.count += other.count;
+    }
+}
+
+/// A lightweight wall-clock timer.
+///
+/// Call [`Timer::start`] to capture the current instant, then call
+/// [`Timer::elapsed_nanos`] to get the elapsed duration.
+#[must_use]
+pub struct Timer {
+    start: Instant,
+}
+
+impl Timer {
+    /// Capture the current instant.
+    #[inline]
+    pub fn start() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+
+    /// Consume the timer and return the elapsed wall-clock duration
+    /// in nanoseconds as an f64.
+    #[inline]
+    #[must_use]
+    pub fn elapsed_nanos(self) -> f64 {
+        self.start.elapsed().as_secs_f64() * 1e9
+    }
 }
 
 /// An immutable snapshot of MMSC (min, max, sum, count) values.
@@ -653,5 +704,64 @@ mod tests {
         assert_eq!(snap.max, -1.0);
         assert_eq!(snap.sum, -16.0);
         assert_eq!(snap.count, 3);
+    }
+
+    #[test]
+    fn test_mmsc_merge_both_populated() {
+        let mut a = Mmsc::default();
+        a.record(2.0);
+        a.record(8.0);
+
+        let mut b = Mmsc::default();
+        b.record(1.0);
+        b.record(5.0);
+        b.record(10.0);
+
+        a.merge(b);
+        let snap = a.get();
+        assert_eq!(snap.min, 1.0);
+        assert_eq!(snap.max, 10.0);
+        assert_eq!(snap.sum, 26.0);
+        assert_eq!(snap.count, 5);
+    }
+
+    #[test]
+    fn test_mmsc_merge_into_empty() {
+        let mut a = Mmsc::default();
+
+        let mut b = Mmsc::default();
+        b.record(3.0);
+        b.record(7.0);
+
+        a.merge(b);
+        let snap = a.get();
+        assert_eq!(snap.min, 3.0);
+        assert_eq!(snap.max, 7.0);
+        assert_eq!(snap.sum, 10.0);
+        assert_eq!(snap.count, 2);
+    }
+
+    #[test]
+    fn test_mmsc_merge_empty_into_populated() {
+        let mut a = Mmsc::default();
+        a.record(4.0);
+
+        let b = Mmsc::default();
+        a.merge(b);
+
+        let snap = a.get();
+        assert_eq!(snap.min, 4.0);
+        assert_eq!(snap.max, 4.0);
+        assert_eq!(snap.sum, 4.0);
+        assert_eq!(snap.count, 1);
+    }
+
+    #[test]
+    fn test_mmsc_merge_both_empty() {
+        let mut a = Mmsc::default();
+        let b = Mmsc::default();
+        a.merge(b);
+        let snap = a.get();
+        assert_eq!(snap.count, 0);
     }
 }
