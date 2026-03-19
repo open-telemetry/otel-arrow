@@ -132,7 +132,7 @@ class LoadGenConfig(BaseModel):
     batch_size: int = Field(5000, gt=0, description="Number of logs per batch")
     threads: int = Field(4, gt=0, description="Number of worker threads to run")
     target_rate: Optional[int] = Field(
-        None, gt=0, description="Optional target messages per second"
+        None, ge=0, description="Optional target messages per second (0 = no limit)"
     )
     tcp_connection_per_thread: bool = Field(
         True, description="Use a dedicated TCP connection per-thread"
