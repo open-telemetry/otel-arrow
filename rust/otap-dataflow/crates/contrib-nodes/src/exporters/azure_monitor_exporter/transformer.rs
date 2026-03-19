@@ -537,6 +537,7 @@ mod tests {
                         ("attributes".into(), json!({"test.attr": "TestAttr"})),
                     ]),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         }
@@ -838,6 +839,7 @@ mod tests {
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         };

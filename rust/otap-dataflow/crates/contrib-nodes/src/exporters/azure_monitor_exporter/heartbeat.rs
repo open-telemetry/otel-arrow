@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
 use super::config::ApiConfig;
 use super::error::Error;
 use chrono::Utc;
@@ -25,6 +26,9 @@ pub struct Heartbeat {
 
     /// Pre-formatted authorization header for zero-allocation reuse
     pub auth_header: HeaderValue,
+
+    /// Optional ARM resource ID header for Azure Monitor source tracking.
+    resource_id_header: Option<HeaderValue>,
 }
 
 #[derive(Serialize)]
@@ -146,6 +150,13 @@ impl Heartbeat {
                 version: default_heartbeat_version(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
+            resource_id_header: config
+                .azure_monitor_source_resourceid
+                .as_deref()
+                .and_then(|v| {
+                    let encoded = super::client::url_encode_header_value(v);
+                    HeaderValue::from_str(&encoded).ok()
+                }),
         })
     }
 
@@ -166,6 +177,7 @@ impl Heartbeat {
                 version: "test-version".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
+            resource_id_header: None,
         }
     }
 
@@ -178,11 +190,17 @@ impl Heartbeat {
     pub async fn send(&mut self) -> Result<(), Error> {
         self.heartbeat_row.time = Utc::now().to_rfc3339();
         let payload = serde_json::json!([self.heartbeat_row]);
-        let response = self
+        let mut request = self
             .client
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, &self.auth_header)
+            .header(AUTHORIZATION, &self.auth_header);
+
+        if let Some(ref resource_id) = self.resource_id_header {
+            request = request.header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, resource_id);
+        }
+
+        let response = request
             .body(payload.to_string())
             .send()
             .await
@@ -335,6 +353,7 @@ mod tests {
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),
             },
+            azure_monitor_source_resourceid: None,
         };
 
         let expected = format!(
@@ -587,5 +606,26 @@ mod tests {
             heartbeat.auth_header,
             HeaderValue::from_static("Bearer new_token")
         );
+    }
+
+    // ==================== Resource ID Header Tests ====================
+
+    #[test]
+    fn test_resource_id_header_set_when_configured() {
+        let input = "/subscriptions/215b5735-fa8b-4dd4-86dc-997320c68c2d/resourceGroups/rg-test/providers/Microsoft.Kubernetes/connectedClusters/test-cluster/providers/microsoft.kubernetesconfiguration/extensions/pipe";
+        let encoded = super::super::client::url_encode_header_value(input);
+        let header = HeaderValue::from_str(&encoded).expect("valid header value");
+
+        let expected = "%2Fsubscriptions%2F215b5735-fa8b-4dd4-86dc-997320c68c2d%2FresourceGroups%2Frg-test%2Fproviders%2FMicrosoft.Kubernetes%2FconnectedClusters%2Ftest-cluster%2Fproviders%2Fmicrosoft.kubernetesconfiguration%2Fextensions%2Fpipe";
+        assert_eq!(header.to_str().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_resource_id_header_none_when_not_configured() {
+        let result: Option<HeaderValue> = None::<String>.as_deref().and_then(|v| {
+            let encoded = super::super::client::url_encode_header_value(v);
+            HeaderValue::from_str(&encoded).ok()
+        });
+        assert!(result.is_none());
     }
 }
