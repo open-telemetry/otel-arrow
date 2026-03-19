@@ -189,6 +189,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     // finished.
                     if last_message_time.elapsed() >= self.idle_timeout
                         && self.metrics.finished.get() != 1
+                        && !self.suv_msgs.is_empty()
                     {
                         self.validate_and_record();
                         self.metrics.finished.set(1);
