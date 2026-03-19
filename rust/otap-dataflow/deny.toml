@@ -111,7 +111,7 @@ allow = [
     "CC0-1.0",
     "ISC",  # Used by the `is_ci`, similar to MIT license
     "OpenSSL",
-    "bzip2-1.0.6", # This is a BSD license.
+    "bzip2-1.0.6"
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
