@@ -613,6 +613,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
+                // TODO: Ensure that when rejecting pdata, data loss doesn't occur. (pending on lquerel's msg channel rework)
                 // Control always flows; pdata guarded by has_token && !at_capacity
                 msg = msg_chan.recv_when(accepting_pdata) => {
                     match msg {
