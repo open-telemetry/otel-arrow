@@ -1059,16 +1059,10 @@ fn try_build_unified_dict_multi<'a>(
     let mut value_to_idx: HashMap<Option<&[u8]>, u16> = HashMap::new();
     let mut num_distinct: usize = 0;
 
-    // Pre-extract all new value arrays so they live long enough for borrowing.
-    // Each entry is `Some(...)` for active upserts (targeting this column), `None` for inactive.
-    struct NewSource {
-        values_arr: ArrayRef,
-        // TODO - don't like that this is owned - should maybe be a cloned/borrowed ...
-        dict_keys: Option<Vec<u16>>,
-        is_scalar: bool,
-    }
-
-    let mut new_sources: Vec<Option<NewSource>> = (0..resolved.len()).map(|_| None).collect();
+    // extract either reference to the array (if source is array), otherwise convert the
+    // scalar into a unit length array. We keep them in this vec so that they live long enough
+    // that we can borrow the dict keys later on if they're already the correct type.
+    let mut maybe_scalar_arrays: SmallVec<[_; SMALLVEC_SIZE]> = smallvec![None; resolved.len()];
     for (i, r) in resolved.iter().enumerate() {
         if r.target_col_name != Some(col_name) {
             continue;
@@ -1077,17 +1071,32 @@ fn try_build_unified_dict_multi<'a>(
             Some(arr) => (Arc::clone(arr), false),
             None => (r.new_values_scalar.unwrap().to_array()?, true),
         };
+        maybe_scalar_arrays[i] = Some((arr, is_scalar));
+    }
+
+    // Each entry is `Some(...)` for active upserts (targeting this column), `None` for inactive.
+    struct NewSource<'a> {
+        values_arr: ArrayRef,
+        dict_keys: Option<Cow<'a, [u16]>>,
+        is_scalar: bool,
+    }
+    let mut new_sources: SmallVec<[Option<NewSource<'_>>; SMALLVEC_SIZE]> =
+        (0..resolved.len()).map(|_| None).collect();
+    for (i, maybe_scalar_arr) in maybe_scalar_arrays.iter().enumerate() {
+        let Some((arr, is_scalar)) = maybe_scalar_arr else {
+            continue;
+        };
         let (values_arr, dict_keys) = match arr.data_type() {
             DataType::Dictionary(key_type, _) => {
                 let (vals, keys) = extract_dict_any_info(&arr, key_type)?;
-                (vals, Some(keys.into_owned()))
+                (vals, Some(keys))
             }
-            _ => (arr, None),
+            _ => (Arc::clone(arr), None),
         };
         new_sources[i] = Some(NewSource {
             values_arr,
             dict_keys,
-            is_scalar,
+            is_scalar: *is_scalar,
         });
     }
 
@@ -1153,7 +1162,7 @@ fn try_build_unified_dict_multi<'a>(
                     return Ok(None);
                 }
                 for i in 0..n {
-                    let key = array_value_as_bytes(existing_values_arr, i);
+                    let key = array_value_as_bytes(existing_values_arr, i)?;
                     let _ = value_to_idx.insert(key, i as u16);
                 }
                 unified_builder.extend(0, 0, n);
@@ -1170,7 +1179,7 @@ fn try_build_unified_dict_multi<'a>(
                     &mut unified_builder,
                     &mut num_distinct,
                     MAX_DICT_CARDINALITY,
-                ) {
+                )? {
                     Some(remap) => remap,
                     None => return Ok(None),
                 }
@@ -1193,7 +1202,7 @@ fn try_build_unified_dict_multi<'a>(
 
         if new_source.is_scalar {
             // Scalar: just one value to lookup/add.
-            let key_byte = array_value_as_bytes(&new_source.values_arr, 0);
+            let key_byte = array_value_as_bytes(&new_source.values_arr, 0)?;
             let unified_key = if let Some(&idx) = value_to_idx.get(&key_byte) {
                 idx
             } else {
@@ -1216,7 +1225,7 @@ fn try_build_unified_dict_multi<'a>(
                 &mut unified_builder,
                 &mut num_distinct,
                 MAX_DICT_CARDINALITY,
-            );
+            )?;
             let remap = match remap {
                 Some(r) => r,
                 None => return Ok(None),
@@ -1284,16 +1293,16 @@ fn build_values_remap<'a>(
     unified_builder: &mut MutableArrayData<'_>,
     num_distinct: &mut usize,
     max_cardinality: usize,
-) -> Option<Vec<u16>> {
+) -> Result<Option<Vec<u16>>> {
     let mut remap: Vec<u16> = Vec::with_capacity(values_arr.len());
     for i in 0..values_arr.len() {
-        let key = array_value_as_bytes(values_arr, i);
+        let key = array_value_as_bytes(values_arr, i)?;
         if let Some(&idx) = value_to_idx.get(&key) {
             remap.push(idx);
             continue;
         }
         if *num_distinct >= max_cardinality {
-            return None;
+            return Ok(None);
         }
         let idx = *num_distinct as u16;
         let _ = value_to_idx.insert(key, idx);
@@ -1301,7 +1310,7 @@ fn build_values_remap<'a>(
         *num_distinct += 1;
         remap.push(idx);
     }
-    Some(remap)
+    Ok(Some(remap))
 }
 
 /// Extract a borrowed byte representation of an array element.
@@ -1309,15 +1318,16 @@ fn build_values_remap<'a>(
 /// Returns `None` for null values.
 ///
 /// Handles the types that can be dictionary-encoded in OTAP attribute value columns:
-/// Utf8 (str), Int64 (int), and Binary (bytes, ser).
-fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Option<&'a [u8]> {
+/// Utf8 (str), Int64 (int), and Binary (bytes, ser). Returns an error if any other
+/// type is passed.
+fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Result<Option<&'a [u8]>> {
     if arr.is_null(idx) {
-        return None;
+        return Ok(None);
     }
     match arr.data_type() {
         DataType::Utf8 => {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
-            Some(str_arr.value(idx).as_bytes())
+            Ok(Some(str_arr.value(idx).as_bytes()))
         }
         DataType::Int64 => {
             let int_arr = arr
@@ -1326,17 +1336,18 @@ fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Option<&'a [u8]> {
                 .unwrap();
             let buf: &[u8] = int_arr.values().inner().as_slice();
             let offset = idx * size_of::<i64>();
-            Some(&buf[offset..offset + size_of::<i64>()])
+            Ok(Some(&buf[offset..offset + size_of::<i64>()]))
         }
         DataType::Binary => {
             let bin_arr = arr
                 .as_any()
                 .downcast_ref::<arrow::array::BinaryArray>()
                 .unwrap();
-            Some(bin_arr.value(idx))
+            Ok(Some(bin_arr.value(idx)))
         }
-        // TODO don't panic here, we should return execution error
-        other => panic!("array_value_as_bytes: unsupported type {other:?}"),
+        other => Err(Error::ExecutionError {
+            cause: format!("Invalid type for byte conversion {other:?}"),
+        }),
     }
 }
 
