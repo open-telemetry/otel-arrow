@@ -23,6 +23,7 @@ use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
@@ -39,6 +40,7 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 pub struct FilterProcessor {
     config: Config,
     metrics: MetricSet<FilterPdataMetrics>,
+    compute_duration: ComputeDuration,
 }
 
 /// Factory function to create a FilterProcessor.
@@ -80,17 +82,27 @@ impl FilterProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
-        FilterProcessor { config, metrics }
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
+        FilterProcessor {
+            config,
+            metrics,
+            compute_duration,
+        }
     }
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
-        Ok(FilterProcessor { config, metrics })
+        Ok(FilterProcessor {
+            config,
+            metrics,
+            compute_duration,
+        })
     }
 }
 
@@ -108,6 +120,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 } = control
                 {
                     _ = metrics_reporter.report(&mut self.metrics);
+                    self.compute_duration.report(&mut metrics_reporter);
                 }
                 Ok(())
             }
@@ -119,59 +132,62 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let filtered_arrow_records: OtapArrowRecords = match signal {
-                    SignalType::Metrics => {
-                        // ToDo: Add support for metrics
-                        arrow_records
-                    }
+                let (filtered_arrow_records, signals_consumed, signals_filtered): (
+                    OtapArrowRecords,
+                    u64,
+                    u64,
+                ) =
+                    effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
+                        match signal {
+                            SignalType::Metrics => {
+                                // ToDo: Add support for metrics
+                                Ok((arrow_records, 0, 0))
+                            }
+                            SignalType::Logs => {
+                                let (filtered, consumed, filtered_count) =
+                                    self.config.log_filters().filter(arrow_records).map_err(
+                                        |e| {
+                                            let source_detail = format_error_sources(&e);
+                                            Error::ProcessorError {
+                                                processor: effect_handler.processor_id(),
+                                                kind: ProcessorErrorKind::Other,
+                                                error: format!("Filter error: {e}"),
+                                                source_detail,
+                                            }
+                                        },
+                                    )?;
+                                Ok((filtered, consumed, filtered_count))
+                            }
+                            SignalType::Traces => {
+                                let (filtered, consumed, filtered_count) =
+                                    self.config.trace_filters().filter(arrow_records).map_err(
+                                        |e| {
+                                            let source_detail = format_error_sources(&e);
+                                            Error::ProcessorError {
+                                                processor: effect_handler.processor_id(),
+                                                kind: ProcessorErrorKind::Other,
+                                                error: format!("Filter error: {e}"),
+                                                source_detail,
+                                            }
+                                        },
+                                    )?;
+                                Ok((filtered, consumed, filtered_count))
+                            }
+                        }
+                    })?;
+
+                match signal {
+                    SignalType::Metrics => {}
                     SignalType::Logs => {
-                        // get logs
-                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) =
-                            self.config
-                                .log_filters()
-                                .filter(arrow_records)
-                                .map_err(|e| {
-                                    let source_detail = format_error_sources(&e);
-                                    Error::ProcessorError {
-                                        processor: effect_handler.processor_id(),
-                                        kind: ProcessorErrorKind::Other,
-                                        error: format!("Filter error: {e}"),
-                                        source_detail,
-                                    }
-                                })?;
-
-                        // get logs after
-                        self.metrics.log_signals_consumed.add(log_signals_consumed);
-                        self.metrics.log_signals_filtered.add(log_signals_filtered);
-
-                        filtered_arrow_records
+                        self.metrics.log_signals_consumed.add(signals_consumed);
+                        self.metrics.log_signals_filtered.add(signals_filtered);
                     }
                     SignalType::Traces => {
-                        // get spans
-                        let (filtered_arrow_records, span_signals_consumed, span_signals_filtered) =
-                            self.config
-                                .trace_filters()
-                                .filter(arrow_records)
-                                .map_err(|e| {
-                                    let source_detail = format_error_sources(&e);
-                                    Error::ProcessorError {
-                                        processor: effect_handler.processor_id(),
-                                        kind: ProcessorErrorKind::Other,
-                                        error: format!("Filter error: {e}"),
-                                        source_detail,
-                                    }
-                                })?;
-
-                        self.metrics
-                            .span_signals_consumed
-                            .add(span_signals_consumed);
-                        self.metrics
-                            .span_signals_filtered
-                            .add(span_signals_filtered);
-
-                        filtered_arrow_records
+                        self.metrics.span_signals_consumed.add(signals_consumed);
+                        self.metrics.span_signals_filtered.add(signals_filtered);
                     }
-                };
+                }
+
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(
                         context,

@@ -153,7 +153,7 @@ pub fn from_storage_type(
 ) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
     match storage {
         StorageType::File { base_uri } => {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             {
                 if base_uri.starts_with("testdelayed://") {
                     return test::delayed_test_object_store(base_uri);
@@ -224,7 +224,8 @@ pub fn from_storage_type(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code, unused_imports)]
 mod test {
     use futures::stream::BoxStream;
     use object_store::path::Path;
@@ -689,6 +690,7 @@ mod test {
         assert_eq!(prefix, None);
     }
 
+    #[cfg(test)]
     fn test_deserialize(json: &str, expected: StorageType) {
         let deserialized: StorageType =
             serde_json::from_str(json).expect("Failed to deserialize Config");

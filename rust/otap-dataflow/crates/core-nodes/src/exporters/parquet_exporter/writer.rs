@@ -55,6 +55,7 @@ pub struct WriteBatch<'a> {
 }
 
 impl<'a> WriteBatch<'a> {
+    #[must_use]
     pub const fn new(
         batch_id: i64,
         otap_batch: &'a OtapArrowRecords,
@@ -483,8 +484,10 @@ mod test {
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
 
-    use crate::fixtures::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches};
-    use crate::parquet_exporter::partition::PartitionAttributeValue;
+    use crate::exporters::parquet_exporter::fixtures::{
+        SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
+    };
+    use crate::exporters::parquet_exporter::partition::PartitionAttributeValue;
 
     fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapArrowRecords {
         let mut consumer = Consumer::default();

@@ -14,8 +14,12 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
+use crate::context::{ControllerContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use otap_df_channel::mpsc;
+use otap_df_config::node::NodeKind;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::runtime::Builder;
@@ -27,6 +31,26 @@ pub mod processor;
 pub mod receiver;
 
 pub use node::{test_node, test_nodes};
+
+/// Create a minimal [`PipelineContext`] suitable for unit tests that
+/// need to register metrics or construct engine objects.
+///
+/// Returns both the context and the [`TelemetryRegistryHandle`] so
+/// callers can inspect registered metrics.
+#[must_use]
+pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
+    let registry = TelemetryRegistryHandle::new();
+    let controller = ControllerContext::new(registry.clone());
+    let ctx = controller
+        .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+        .with_node_context(
+            "test_node".into(),
+            "urn:test:processor:example".into(),
+            NodeKind::Processor,
+            HashMap::new(),
+        );
+    (ctx, registry)
+}
 
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]
