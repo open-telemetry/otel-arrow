@@ -3411,15 +3411,6 @@ mod test {
         let log_1_filter = eq(&parent_id, &UInt16Array::new_scalar(1)).unwrap();
         let log_1_attrs = filter_record_batch(log_attrs, &log_1_filter).unwrap();
 
-        println!("LOGs");
-        arrow::util::pretty::print_batches(&[logs.clone()]).unwrap();
-        println!("LOG ATTRSs");
-        arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
-        println!("LOG ATTRS 0s");
-        arrow::util::pretty::print_batches(&[log_0_attrs.clone()]).unwrap();
-        println!("LOG ATTRS 1s");
-        arrow::util::pretty::print_batches(&[log_1_attrs.clone()]).unwrap();
-
         let log0_keys = cast(
             log_0_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap(),
             &DataType::Utf8,
