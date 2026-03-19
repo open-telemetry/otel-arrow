@@ -47,23 +47,41 @@ slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower.workspace = true
+tonic-middleware.workspace = true
+tonic.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+http.workspace = true
+async-stream.workspace = true
+arrow-ipc.workspace = true
 uuid.workspace = true
-weaver_common.workspace = true
-weaver_forge.workspace = true
-weaver_resolved_schema.workspace = true
-weaver_resolver.workspace = true
-weaver_semconv.workspace = true
+weaver_common = { workspace = true, optional = true }
+weaver_forge = { workspace = true, optional = true }
+weaver_resolved_schema = { workspace = true, optional = true }
+weaver_resolver = { workspace = true, optional = true }
+weaver_semconv = { workspace = true, optional = true }
 
 [features]
-experimental-tls = []
+experimental-tls = ["otap-df-otap/experimental-tls"]
+dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
 
 [dev-dependencies]
 arrow-ipc.workspace = true
 fluke-hpack.workspace = true
+flume.workspace = true
 otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
-otap-df-otap = { path = "../otap", features = ["test-utils"] }
+otap-df-otap = { path = "../otap", features = ["test-utils", "crypto-ring"] }
 otap-df-telemetry = { path = "../telemetry" }
+flate2.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio-stream.workspace = true
+zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 portpicker.workspace = true
+otap-test-tls-certs.workspace = true

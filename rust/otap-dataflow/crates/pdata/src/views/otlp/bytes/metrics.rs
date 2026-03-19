@@ -33,12 +33,6 @@ use crate::proto::consts::field_num::metrics::{
 };
 use crate::proto::consts::wire_types;
 use crate::schema::{SpanId, TraceId};
-use crate::views::metrics::{
-    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
-    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
-    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
-    ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
-};
 use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, RawKeyValue};
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldEncodings, RepeatedFieldProtoBytesParser,
@@ -47,6 +41,12 @@ use crate::views::otlp::bytes::decode::{
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::metrics::{
+    AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
+    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
+};
 
 /// Implementation of [`MetricView`] backed by protobuf serialized `MetricsData` message
 pub struct RawMetricsData<'a> {

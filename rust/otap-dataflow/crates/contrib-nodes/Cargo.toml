@@ -50,6 +50,7 @@ rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
+urlencoding = { version = "2", optional = true }
 
 [features]
 contrib-exporters = [
@@ -73,6 +74,7 @@ azure-monitor-exporter = [
     "dep:itoa",
     "dep:rand",
     "dep:ryu",
+    "dep:urlencoding",
 ]
 
 contrib-processors = [

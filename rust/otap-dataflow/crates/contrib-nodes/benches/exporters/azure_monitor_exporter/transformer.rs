@@ -62,6 +62,7 @@ fn create_config() -> Config {
                     ),
                 ]),
             },
+            azure_monitor_source_resourceid: None,
         },
         auth: AuthConfig::default(),
     }

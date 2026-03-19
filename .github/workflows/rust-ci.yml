@@ -349,6 +349,34 @@ jobs:
         run: ./scripts/check-direct-telemetry-macros.sh
         working-directory: ./rust/${{ matrix.folder }}
 
+  # Verify the workspace builds with --no-default-features to catch broken
+  # optional feature gates (e.g., dev-tools, crypto-*).
+  no_default_features_check:
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [otap-dataflow]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+      - name: cargo check --no-default-features --workspace
+        run: cargo check --no-default-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: cargo check validation --no-default-features
+        run: cargo check -p otap-df-validation --lib --no-default-features
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: cargo check benchmarks --no-default-features
+        run: cargo check -p benchmarks --benches --no-default-features
+        working-directory: ./rust/${{ matrix.folder }}
+
   # Required matrix combinations for test_and_coverage: otap-dataflow on ubuntu and windows
   test_and_coverage_required:
     strategy:
@@ -579,6 +607,7 @@ jobs:
       - docs_required
       - structure_check
       - pest-fmt
+      - no_default_features_check
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -608,6 +637,10 @@ jobs:
           fi
           if [[ "${{ needs.pest-fmt.result }}" != "success" ]]; then
             echo "pest-fmt failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.no_default_features_check.result }}" != "success" ]]; then
+            echo "no_default_features_check failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

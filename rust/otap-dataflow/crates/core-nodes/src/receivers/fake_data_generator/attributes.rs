@@ -31,7 +31,7 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                 PrimitiveOrArrayTypeSpec::Double => match &attribute.examples {
                     Some(Examples::Double(d)) => AnyValue::new_double(f64::from(*d)),
                     Some(Examples::Doubles(doubles)) => AnyValue::new_double(f64::from(
-                        *doubles.choose(&mut rng).unwrap_or((&3.13).into()),
+                        *doubles.choose(&mut rng).unwrap_or(&(3.13).into()),
                     )),
                     _ => AnyValue::new_double(3.13),
                 },
@@ -77,7 +77,7 @@ pub fn get_attribute_name_value(attribute: &Attribute) -> KeyValue {
                     // Double-based examples
                     Some(Examples::Double(d)) => AnyValue::new_double(f64::from(*d)),
                     Some(Examples::Doubles(doubles)) => AnyValue::new_double(f64::from(
-                        *doubles.choose(&mut rng).unwrap_or((&3.13).into()),
+                        *doubles.choose(&mut rng).unwrap_or(&(3.13).into()),
                     )),
                     Some(Examples::ListOfDoubles(list_of_doubles)) => AnyValue::new_array(
                         list_of_doubles
