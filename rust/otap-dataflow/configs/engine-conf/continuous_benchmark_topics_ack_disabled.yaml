@@ -24,7 +24,7 @@ policies:
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    channel_metrics: basic
+    runtime_metrics: basic
   resources:
     core_allocation:
       type: all_cores

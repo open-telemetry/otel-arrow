@@ -214,7 +214,7 @@ policies:
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    channel_metrics: true
+    runtime_metrics: basic
   resources:
     core_allocation:
       type: all_cores
@@ -236,7 +236,7 @@ Defaults at top-level:
 - `channel_capacity.pdata = 128`
 - `telemetry.pipeline_metrics = true`
 - `telemetry.tokio_metrics = true`
-- `telemetry.channel_metrics = true`
+- `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
 
 Control channel keys:
@@ -244,6 +244,19 @@ Control channel keys:
 - `node`: per-node control inboxes
 - `pipeline`: shared pipeline-runtime orchestration channel
 - `completion`: shared Ack/Nack completion channel
+
+Telemetry policy notes:
+
+- `telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or `detailed`
+- this level now gates:
+  - channel endpoint transport metrics
+  - per-node produced/consumed outcome metrics
+  - shared pipeline control-plane metrics such as `pipeline.runtime_control`
+    and `pipeline.completion`
+- `basic` exports gauges and transport counters
+- `normal` adds message and phase counters
+- `detailed` adds latency/duration summaries and completion unwind-depth
+  distribution
 
 Resolution semantics:
 

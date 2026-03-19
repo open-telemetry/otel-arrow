@@ -15,6 +15,8 @@ use crate::testing::dst::common::{
     recv_controls, recv_until, setup_dst_runtime, yield_cycles,
 };
 use crate::testing::test_nodes;
+use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -44,13 +46,16 @@ async fn run_control_plane_seed(seed: u64) {
             let _ = control_receivers.insert(node.index, receiver);
         }
 
-        let (manager, runtime_tx, _scope, _pipeline_context) =
+        let (manager, runtime_tx, _scope, pipeline_context) =
             build_manager::<DstPData>(256, control_senders.clone());
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(256);
         let dispatcher = PipelineCompletionMsgDispatcher::new(
+            pipeline_context,
             completion_rx,
             control_senders.clone(),
             empty_node_metric_handles(),
+            MetricsReporter::create_new_and_receiver(16).1,
+            TelemetryPolicy::default(),
         );
 
         let manager_handle = tokio::task::spawn_local(async move { manager.run().await });

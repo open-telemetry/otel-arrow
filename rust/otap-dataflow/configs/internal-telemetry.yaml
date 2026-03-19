@@ -6,7 +6,7 @@ policies:
         pipeline: 256
       pdata: 128
   telemetry:
-    channel_metrics: detailed
+    runtime_metrics: detailed
 engine:
   telemetry:
     metrics:
@@ -38,7 +38,7 @@ engine:
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
-          channel_metrics: detailed
+          runtime_metrics: detailed
       # Internal telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:

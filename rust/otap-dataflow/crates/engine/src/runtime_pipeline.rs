@@ -190,7 +190,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             telemetry_policy,
         } = self;
 
-        let metric_level = telemetry_policy.channel_metrics;
+        let metric_level = telemetry_policy.runtime_metrics;
         let node_interests = Interests::from_metric_level(metric_level);
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
@@ -370,15 +370,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let return_node_metric_handles = node_metric_handles.clone();
         let final_node_metric_handles = node_metric_handles.clone();
         let final_metrics_reporter = metrics_reporter.clone();
+        let manager_pipeline_context = pipeline_context.clone();
+        let manager_metrics_reporter = metrics_reporter.clone();
+        let manager_telemetry_policy = telemetry_policy.clone();
+        let dispatcher_pipeline_context = pipeline_context.clone();
+        let dispatcher_metrics_reporter = metrics_reporter.clone();
+        let dispatcher_telemetry_policy = telemetry_policy.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
-                pipeline_context,
+                manager_pipeline_context,
                 runtime_ctrl_msg_rx,
                 control_senders,
                 event_reporter,
-                metrics_reporter,
-                telemetry_policy,
+                manager_metrics_reporter,
+                manager_telemetry_policy,
                 channel_metrics,
                 node_metric_handles,
             );
@@ -387,9 +393,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
 
         futures.push(local_tasks.spawn_local(async move {
             let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_pipeline_context,
                 pipeline_completion_msg_rx,
                 return_control_senders,
                 return_node_metric_handles,
+                dispatcher_metrics_reporter,
+                dispatcher_telemetry_policy,
             );
             dispatcher.run().await
         }));

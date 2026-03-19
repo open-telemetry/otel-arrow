@@ -352,7 +352,7 @@ groups:
         assert!(config.policies.telemetry.pipeline_metrics);
         assert!(config.policies.telemetry.tokio_metrics);
         assert_eq!(
-            config.policies.telemetry.channel_metrics,
+            config.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
@@ -375,7 +375,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: none
+    runtime_metrics: none
   resources:
     core_allocation:
       type: core_count
@@ -393,7 +393,7 @@ groups:
       health:
         ready_if: [Running, Updating]
       telemetry:
-        channel_metrics: basic
+        runtime_metrics: basic
       resources:
         core_allocation:
           type: core_count
@@ -410,7 +410,7 @@ groups:
           health:
             ready_if: [Failed]
           telemetry:
-            channel_metrics: none
+            runtime_metrics: none
           resources:
             core_allocation:
               type: core_count
@@ -493,7 +493,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            p1_resolved.policies.telemetry.channel_metrics,
+            p1_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::None
         );
 
@@ -517,7 +517,7 @@ groups:
             ]
         );
         assert_eq!(
-            p2_resolved.policies.telemetry.channel_metrics,
+            p2_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
@@ -542,7 +542,7 @@ groups:
             vec![crate::health::PhaseKind::Running]
         );
         assert_eq!(
-            p3_resolved.policies.telemetry.channel_metrics,
+            p3_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::None
         );
         assert_eq!(
@@ -854,7 +854,7 @@ policies:
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: none
+    runtime_metrics: none
 engine:
   observability:
     pipeline:
@@ -868,7 +868,7 @@ engine:
         health:
           ready_if: [Failed]
         telemetry:
-          channel_metrics: normal
+          runtime_metrics: normal
       nodes:
         itr:
           type: "urn:otel:receiver:internal_telemetry"
@@ -913,7 +913,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            obs.policies.telemetry.channel_metrics,
+            obs.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Normal
         );
         assert_eq!(

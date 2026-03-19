@@ -17,6 +17,8 @@ use crate::testing::dst::common::{
 };
 use crate::testing::test_nodes;
 use otap_df_channel::mpsc;
+use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -72,13 +74,16 @@ async fn run_backpressure_interblock_seed(seed: u64) {
             }
         }
 
-        let (manager, runtime_tx, _scope, _pipeline_context) =
+        let (manager, runtime_tx, _scope, pipeline_context) =
             build_manager::<DstPData>(32, control_senders.clone());
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
         let dispatcher = PipelineCompletionMsgDispatcher::new(
+            pipeline_context,
             completion_rx,
             control_senders.clone(),
             empty_node_metric_handles(),
+            MetricsReporter::create_new_and_receiver(16).1,
+            TelemetryPolicy::default(),
         );
 
         let manager_handle = tokio::task::spawn_local(async move { manager.run().await });

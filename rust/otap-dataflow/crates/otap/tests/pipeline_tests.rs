@@ -40,10 +40,10 @@ fn test_telemetry_registries_cleanup() {
     let config = build_test_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
@@ -132,10 +132,10 @@ fn test_pipeline_fan_in_builds() {
     let config = build_fan_in_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
@@ -169,10 +169,10 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
         build_mixed_receiver_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).

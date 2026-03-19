@@ -138,7 +138,7 @@ pub(super) fn build_manager<PData>(
         observed_state_store.reporter(SendPolicy::default()),
         metrics_reporter,
         TelemetryPolicy {
-            channel_metrics: MetricLevel::None,
+            runtime_metrics: MetricLevel::None,
             pipeline_metrics: false,
             tokio_metrics: false,
         },

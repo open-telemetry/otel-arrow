@@ -20,6 +20,7 @@ use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineCompletionMsg,
     PipelineCompletionMsgReceiver, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
 };
+use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeControlMetricsState};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::{Interests, RequestOutcome, Unwindable};
@@ -260,6 +261,7 @@ pub struct RuntimeCtrlMsgManager<PData> {
     /// which would cause a circular-wait stall on the single-threaded
     /// LocalSet runtime.
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
+    runtime_control_metrics: RuntimeControlMetricsState,
 }
 
 impl<PData> RuntimeCtrlMsgManager<PData> {
@@ -277,6 +279,14 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
     ) -> Self {
         Self {
+            runtime_control_metrics: RuntimeControlMetricsState::new(
+                &pipeline_context,
+                metrics_reporter.clone(),
+                telemetry_policy.runtime_metrics,
+                0,
+                0,
+                0,
+            ),
             pipeline_key,
             pipeline_context,
             runtime_ctrl_msg_receiver,
@@ -307,10 +317,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut downstream_shutdown_sent = false;
         let mut consecutive_runtime_ctrl = 0usize;
         let mut retry_delay: Option<clock::Sleep> = None;
+        let mut shutdown_deadline_forced = false;
 
         loop {
             // Drain any buffered sends before processing new messages.
             self.drain_pending_sends();
+            self.report_runtime_control_metrics();
 
             // Arm the retry timer when pending sends appear; disarm when drained.
             if !self.pending_sends.is_empty() && retry_delay.is_none() {
@@ -323,6 +335,14 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 
             if let Some(deadline) = shutdown_deadline {
                 if now >= deadline {
+                    shutdown_deadline_forced = true;
+                    self.runtime_control_metrics
+                        .record_shutdown_deadline_forced(now);
+                    self.event_reporter
+                        .report(EngineEvent::drain_deadline_reached(
+                            self.pipeline_key.clone(),
+                            shutdown_reason.clone(),
+                        ));
                     if let Some(reason) = shutdown_reason.as_ref() {
                         for node_id in self.control_senders.non_receiver_ids() {
                             self.send(
@@ -343,6 +363,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             );
                         }
                     }
+                    self.report_runtime_control_metrics();
                     break;
                 }
             }
@@ -383,9 +404,23 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             shutdown_deadline = Some(deadline);
                             shutdown_reason = Some(reason.clone());
                             pending_receivers = self.control_senders.receiver_ids().into_iter().collect();
+                            self.runtime_control_metrics
+                                .record_shutdown_received(now, pending_receivers.len());
                             self.tick_timers.cancel_all();
                             self.telemetry_timers.cancel_all();
-                            self.flush_delayed_data_now(now);
+                            self.runtime_control_metrics.set_timer_counts(
+                                self.tick_timers.timer_states.len(),
+                                self.telemetry_timers.timer_states.len(),
+                            );
+                            let flushed = self.flush_delayed_data_now(now);
+                            self.runtime_control_metrics
+                                .set_delayed_data_queued(self.delayed_data.len());
+                            if flushed > 0 {
+                                for _ in 0..flushed {
+                                    self.runtime_control_metrics
+                                        .record_delay_data_returned_during_drain();
+                                }
+                            }
 
                             for node_id in pending_receivers.iter().copied() {
                                 self.send(
@@ -396,6 +431,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     },
                                 );
                             }
+                            self.runtime_control_metrics.record_drain_ingress_sent();
+                            self.event_reporter.report(EngineEvent::ingress_drain_started(
+                                self.pipeline_key.clone(),
+                                Some(reason.clone()),
+                            ));
 
                             if pending_receivers.is_empty() {
                                 for node_id in self.control_senders.non_receiver_ids() {
@@ -408,14 +448,30 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     );
                                 }
                                 downstream_shutdown_sent = true;
+                                self.runtime_control_metrics.record_downstream_shutdown_sent();
+                                self.event_reporter.report(
+                                    EngineEvent::downstream_shutdown_started(
+                                        self.pipeline_key.clone(),
+                                        Some(reason.clone()),
+                                    ),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         },
                         RuntimeControlMsg::ReceiverDrained { node_id } => {
                             if !is_draining_ingress {
                                 continue;
                             }
-                            let _ = pending_receivers.remove(&node_id);
+                            let removed = pending_receivers.remove(&node_id);
+                            if removed {
+                                self.runtime_control_metrics
+                                    .record_receiver_drained(now, pending_receivers.len());
+                            }
                             if pending_receivers.is_empty() && !downstream_shutdown_sent {
+                                self.event_reporter.report(EngineEvent::receivers_drained(
+                                    self.pipeline_key.clone(),
+                                    shutdown_reason.clone(),
+                                ));
                                 let deadline = shutdown_deadline.unwrap_or(now);
                                 let reason = shutdown_reason
                                     .clone()
@@ -430,9 +486,18 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     );
                                 }
                                 downstream_shutdown_sent = true;
+                                self.runtime_control_metrics.record_downstream_shutdown_sent();
+                                self.event_reporter.report(
+                                    EngineEvent::downstream_shutdown_started(
+                                        self.pipeline_key.clone(),
+                                        Some(reason.clone()),
+                                    ),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::StartTimer { node_id, duration } => {
+                            self.runtime_control_metrics.record_start_timer_received();
                             if is_draining_ingress {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_timer",
@@ -440,14 +505,27 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                 );
                             } else {
                                 self.tick_timers.start(node_id, duration);
+                                self.runtime_control_metrics.set_timer_counts(
+                                    self.tick_timers.timer_states.len(),
+                                    self.telemetry_timers.timer_states.len(),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::CancelTimer { node_id } => {
+                            self.runtime_control_metrics.record_cancel_timer_received();
                             if !is_draining_ingress {
                                 self.tick_timers.cancel(node_id);
+                                self.runtime_control_metrics.set_timer_counts(
+                                    self.tick_timers.timer_states.len(),
+                                    self.telemetry_timers.timer_states.len(),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::StartTelemetryTimer { node_id, duration } => {
+                            self.runtime_control_metrics
+                                .record_start_telemetry_timer_received();
                             if is_draining_ingress {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_telemetry_timer",
@@ -456,14 +534,27 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                 );
                             } else {
                                 self.telemetry_timers.start(node_id, duration);
+                                self.runtime_control_metrics.set_timer_counts(
+                                    self.tick_timers.timer_states.len(),
+                                    self.telemetry_timers.timer_states.len(),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::CancelTelemetryTimer { node_id, .. } => {
+                            self.runtime_control_metrics
+                                .record_cancel_telemetry_timer_received();
                             if !is_draining_ingress {
                                 self.telemetry_timers.cancel(node_id);
+                                self.runtime_control_metrics.set_timer_counts(
+                                    self.tick_timers.timer_states.len(),
+                                    self.telemetry_timers.timer_states.len(),
+                                );
                             }
+                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::DelayData { node_id, when, data } => {
+                            self.runtime_control_metrics.record_delay_data_received();
                             if is_draining_ingress {
                                 self.send(
                                     node_id,
@@ -472,10 +563,15 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                         data,
                                     },
                                 );
+                                self.runtime_control_metrics
+                                    .record_delay_data_returned_during_drain();
                             } else {
                                 let delayed = Delayed { node_id, when, data };
                                 self.delayed_data.push(delayed);
+                                self.runtime_control_metrics
+                                    .set_delayed_data_queued(self.delayed_data.len());
                             }
+                            self.report_runtime_control_metrics();
                         }
                     }
                 }
@@ -489,6 +585,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     consecutive_runtime_ctrl = 0;
                     if !is_draining_ingress {
                         self.handle_due_events(clock::now(), &mut pipeline_metrics_monitor);
+                        self.report_runtime_control_metrics();
                     }
                 }
 
@@ -503,14 +600,21 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             }
         }
 
-        if self.telemetry.channel_metrics >= MetricLevel::Normal {
+        if is_draining_ingress && !shutdown_deadline_forced {
+            self.runtime_control_metrics
+                .record_shutdown_completed(clock::now());
+            self.report_runtime_control_metrics();
+        }
+
+        if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
         }
 
         Ok(())
     }
 
-    fn flush_delayed_data_now(&mut self, when: Instant) {
+    fn flush_delayed_data_now(&mut self, when: Instant) -> usize {
+        let mut flushed = 0;
         while let Some(delayed) = self.delayed_data.pop() {
             self.send(
                 delayed.node_id,
@@ -519,7 +623,9 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     data: delayed.data,
                 },
             );
+            flushed += 1;
         }
+        flushed
     }
 
     fn handle_due_events(
@@ -528,9 +634,13 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         pipeline_metrics_monitor: &mut Option<PipelineMetricsMonitor>,
     ) {
         let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
+        let mut timer_tick_count = 0usize;
+        let mut collect_telemetry_count = 0usize;
+        let mut delayed_data_count = 0usize;
 
         self.tick_timers.fire_due(now, |node_id| {
             to_send.push((*node_id, NodeControlMsg::TimerTick {}));
+            timer_tick_count += 1;
         });
 
         let metrics_reporter = self.metrics_reporter.clone();
@@ -541,6 +651,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     metrics_reporter: metrics_reporter.clone(),
                 },
             ));
+            collect_telemetry_count += 1;
         });
 
         while self
@@ -557,7 +668,20 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     data: delayed.data,
                 },
             ));
+            delayed_data_count += 1;
         }
+
+        self.runtime_control_metrics.set_timer_counts(
+            self.tick_timers.timer_states.len(),
+            self.telemetry_timers.timer_states.len(),
+        );
+        self.runtime_control_metrics
+            .set_delayed_data_queued(self.delayed_data.len());
+        self.runtime_control_metrics.record_due_events(
+            timer_tick_count,
+            collect_telemetry_count,
+            delayed_data_count,
+        );
 
         if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
             if self.telemetry.pipeline_metrics {
@@ -581,14 +705,14 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             }
         }
 
-        if self.telemetry.channel_metrics >= MetricLevel::Basic {
+        if self.telemetry.runtime_metrics >= MetricLevel::Basic {
             for metrics in &self.channel_metrics {
                 if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                     otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                 }
             }
         }
-        if self.telemetry.channel_metrics >= MetricLevel::Normal {
+        if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             if let Err(err) = self.report_node_metrics() {
                 otel_warn!("node.metrics.reporting.fail", error = err.to_string());
             }
@@ -618,6 +742,8 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 Ok(()) => {}
                 Err(otap_df_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
+                    self.runtime_control_metrics
+                        .set_pending_sends_buffered(self.pending_sends.len());
                     if self.pending_sends.len() == PENDING_SENDS_WARN_THRESHOLD {
                         otel_warn!(
                             "pipeline.ctrl.pending_sends.high",
@@ -654,6 +780,17 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 }
             }
         }
+        self.runtime_control_metrics
+            .set_pending_sends_buffered(self.pending_sends.len());
+    }
+
+    fn report_runtime_control_metrics(&mut self) {
+        if let Err(err) = self.runtime_control_metrics.report_if_needed() {
+            otel_warn!(
+                "pipeline.runtime_control.metrics.reporting.fail",
+                error = err.to_string()
+            );
+        }
     }
 }
 
@@ -663,20 +800,29 @@ pub struct PipelineCompletionMsgDispatcher<PData> {
     control_senders: ControlSenders<PData>,
     node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
+    completion_metrics: PipelineCompletionMetricsState,
 }
 
 impl<PData> PipelineCompletionMsgDispatcher<PData> {
     #[must_use]
     pub(crate) fn new(
+        pipeline_context: PipelineContext,
         pipeline_completion_msg_receiver: PipelineCompletionMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
+        metrics_reporter: MetricsReporter,
+        telemetry_policy: TelemetryPolicy,
     ) -> Self {
         Self {
             pipeline_completion_msg_receiver,
             control_senders,
             node_metric_handles,
             pending_sends: VecDeque::new(),
+            completion_metrics: PipelineCompletionMetricsState::new(
+                &pipeline_context,
+                metrics_reporter,
+                telemetry_policy.runtime_metrics,
+            ),
         }
     }
 
@@ -686,6 +832,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                 Ok(()) => {}
                 Err(otap_df_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
+                    self.completion_metrics
+                        .set_pending_sends_buffered(self.pending_sends.len());
                     if self.pending_sends.len() == PENDING_SENDS_WARN_THRESHOLD {
                         otel_warn!(
                             "pipeline.return.pending_sends.high",
@@ -758,6 +906,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                 }
             }
         }
+        self.completion_metrics
+            .set_pending_sends_buffered(self.pending_sends.len());
     }
 }
 
@@ -768,6 +918,7 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
 
         loop {
             self.drain_pending_sends();
+            self.report_completion_metrics();
 
             if !self.pending_sends.is_empty() && retry_delay.is_none() {
                 retry_delay = Some(clock::sleep(Duration::from_millis(5)));
@@ -781,9 +932,16 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                 msg = self.pipeline_completion_msg_receiver.recv() => {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
-                        PipelineCompletionMsg::DeliverAck { ack } => self.unwind_ack(ack),
-                        PipelineCompletionMsg::DeliverNack { nack } => self.unwind_nack(nack),
+                        PipelineCompletionMsg::DeliverAck { ack } => {
+                            self.completion_metrics.record_deliver_ack_received();
+                            self.unwind_ack(ack);
+                        }
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            self.completion_metrics.record_deliver_nack_received();
+                            self.unwind_nack(nack);
+                        }
                     }
+                    self.report_completion_metrics();
                 }
 
                 _ = async {
@@ -805,11 +963,13 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         now_ns: u64,
         outcome: RequestOutcome,
         interest: Interests,
-    ) -> Option<(usize, RouteData)> {
+    ) -> (Option<(usize, RouteData)>, usize) {
+        let mut unwind_depth = 0usize;
         loop {
             match pdata.pop_frame() {
-                None => return None,
+                None => return (None, unwind_depth),
                 Some(frame) => {
+                    unwind_depth += 1;
                     if frame.interests.intersects(Interests::PIPELINE_METRICS) {
                         self.record_frame_metrics(
                             frame.node_id,
@@ -823,7 +983,7 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                         if !frame.interests.contains(Interests::RETURN_DATA) {
                             pdata.drop_payload();
                         }
-                        return Some((frame.node_id, frame.route));
+                        return (Some((frame.node_id, frame.route)), unwind_depth);
                     }
                 }
             }
@@ -832,14 +992,19 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
 
     fn unwind_ack(&mut self, mut ack: AckMsg<PData>) {
         let now_ns = ack.unwind.return_time_ns;
-        if let Some((node_id, route)) = self.unwind_frames(
+        let (next, unwind_depth) = self.unwind_frames(
             &mut ack.accepted,
             now_ns,
             RequestOutcome::Success,
             Interests::ACKS,
-        ) {
+        );
+        if let Some((node_id, route)) = next {
             ack.unwind = UnwindData::new(route, now_ns);
             self.send(node_id, NodeControlMsg::Ack(ack));
+            self.completion_metrics.record_ack_sent(unwind_depth);
+        } else {
+            self.completion_metrics
+                .record_ack_dropped_no_interest(unwind_depth);
         }
     }
 
@@ -850,11 +1015,24 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         } else {
             RequestOutcome::Failure
         };
-        if let Some((node_id, route)) =
-            self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS)
-        {
+        let (next, unwind_depth) =
+            self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS);
+        if let Some((node_id, route)) = next {
             nack.unwind = UnwindData::new(route, now_ns);
             self.send(node_id, NodeControlMsg::Nack(nack));
+            self.completion_metrics.record_nack_sent(unwind_depth);
+        } else {
+            self.completion_metrics
+                .record_nack_dropped_no_interest(unwind_depth);
+        }
+    }
+
+    fn report_completion_metrics(&mut self) {
+        if let Err(err) = self.completion_metrics.report_if_needed() {
+            otel_warn!(
+                "pipeline.completion.metrics.reporting.fail",
+                error = err.to_string()
+            );
         }
     }
 }
@@ -907,6 +1085,10 @@ mod tests {
     use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
+    use otap_df_telemetry::event::{
+        EngineEvent, ErrorEvent as TelemetryErrorEvent, EventType, ObservedEventReporter,
+        RequestEvent as TelemetryRequestEvent, SuccessEvent as TelemetrySuccessEvent,
+    };
     use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otap_df_telemetry::registry::MetricSetKey;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -919,6 +1101,26 @@ mod tests {
 
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
+    }
+
+    fn create_test_pipeline_context()
+    -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            Default::default(),
+            Default::default(),
+            0,
+            1,
+            0,
+        );
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
+        (pipeline_context, pipeline_entity_guard)
     }
 
     fn create_mock_control_sender<PData>() -> (
@@ -2151,10 +2353,14 @@ mod tests {
                 let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
                 let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
+                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
                 let dispatcher = PipelineCompletionMsgDispatcher::new(
+                    dispatcher_context,
                     return_rx,
                     ControlSenders::new(),
                     empty_node_metric_handles(),
+                    MetricsReporter::create_new_and_receiver(16).1,
+                    TelemetryPolicy::default(),
                 );
 
                 // Start the manager in the background
@@ -2198,6 +2404,7 @@ mod tests {
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+                drop(dispatcher_guard);
             })
             .await;
     }
@@ -2217,10 +2424,14 @@ mod tests {
                 let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
                 let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
+                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
                 let dispatcher = PipelineCompletionMsgDispatcher::new(
+                    dispatcher_context,
                     return_rx,
                     ControlSenders::new(),
                     empty_node_metric_handles(),
+                    MetricsReporter::create_new_and_receiver(16).1,
+                    TelemetryPolicy::default(),
                 );
 
                 // Start the manager in the background
@@ -2264,6 +2475,7 @@ mod tests {
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+                drop(dispatcher_guard);
             })
             .await;
     }
@@ -2666,6 +2878,8 @@ mod tests {
     struct MetricsTestHarness {
         manager: RuntimeCtrlMsgManager<TestPData>,
         metrics_reporter: MetricsReporter,
+        pipeline_context: PipelineContext,
+        telemetry_policy: TelemetryPolicy,
         pipeline_tx: crate::control::RuntimeCtrlMsgSender<TestPData>,
         nodes: Vec<NodeId>,
         _guard: crate::entity_context::PipelineEntityScope,
@@ -2788,7 +3002,7 @@ mod tests {
         });
 
         let telemetry_policy = TelemetryPolicy {
-            channel_metrics: MetricLevel::Detailed,
+            runtime_metrics: MetricLevel::Detailed,
             ..Default::default()
         };
 
@@ -2800,12 +3014,12 @@ mod tests {
                 pipeline_id,
                 core_id: 0,
             },
-            pipeline_context,
+            pipeline_context.clone(),
             pipeline_rx,
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter.clone(),
-            telemetry_policy,
+            telemetry_policy.clone(),
             Vec::new(),
             node_metric_handles.clone(),
         );
@@ -2813,6 +3027,8 @@ mod tests {
         MetricsTestHarness {
             manager,
             metrics_reporter: metrics_reporter.clone(),
+            pipeline_context,
+            telemetry_policy,
             pipeline_tx,
             nodes,
             _guard: pipeline_entity_guard,
@@ -2876,6 +3092,228 @@ mod tests {
     const PRODUCER_SUCCESS: usize = 1;
     const PRODUCER_FAILURE: usize = 2;
     const PRODUCER_REFUSED: usize = 3;
+
+    const RUNTIME_DRAIN_ACTIVE: usize = 0;
+    const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
+    const RUNTIME_PENDING_SENDS_BUFFERED: usize = 2;
+    const RUNTIME_TIMERS_ACTIVE: usize = 3;
+    const RUNTIME_TELEMETRY_TIMERS_ACTIVE: usize = 4;
+    const RUNTIME_DELAYED_DATA_QUEUED: usize = 5;
+    const RUNTIME_SHUTDOWN_RECEIVED: usize = 6;
+    const RUNTIME_DRAIN_INGRESS_SENT: usize = 7;
+    const RUNTIME_RECEIVER_DRAINED_RECEIVED: usize = 8;
+    const RUNTIME_DOWNSTREAM_SHUTDOWN_SENT: usize = 9;
+    const RUNTIME_SHUTDOWN_DEADLINE_FORCED: usize = 10;
+    const RUNTIME_START_TIMER_RECEIVED: usize = 11;
+    const RUNTIME_START_TELEMETRY_TIMER_RECEIVED: usize = 13;
+    const RUNTIME_DELAY_DATA_RECEIVED: usize = 15;
+    const RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN: usize = 16;
+    const RUNTIME_TIMER_TICK_SENT: usize = 17;
+    const RUNTIME_COLLECT_TELEMETRY_SENT: usize = 18;
+    const RUNTIME_DELAYED_DATA_SENT: usize = 19;
+    const RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS: usize = 20;
+    const RUNTIME_DRAIN_TOTAL_DURATION_NS: usize = 21;
+
+    const COMPLETION_PENDING_SENDS_BUFFERED: usize = 0;
+    const COMPLETION_DELIVER_ACK_RECEIVED: usize = 1;
+    const COMPLETION_DELIVER_NACK_RECEIVED: usize = 2;
+    const COMPLETION_ACK_SENT: usize = 3;
+    const COMPLETION_NACK_SENT: usize = 4;
+    const COMPLETION_ACK_DROPPED_NO_INTEREST: usize = 5;
+    const COMPLETION_NACK_DROPPED_NO_INTEREST: usize = 6;
+    const COMPLETION_UNWIND_DEPTH: usize = 7;
+
+    fn merge_metric_snapshots(
+        snapshots: Vec<Vec<MetricValue>>,
+        gauge_indices: &[usize],
+    ) -> Option<Vec<MetricValue>> {
+        let mut iter = snapshots.into_iter();
+        let mut merged = iter.next()?;
+        for values in iter {
+            for (index, value) in values.iter().enumerate() {
+                if gauge_indices.contains(&index) {
+                    merged[index] = *value;
+                } else {
+                    merged[index].add_in_place(*value);
+                }
+            }
+        }
+        Some(merged)
+    }
+
+    fn collect_metric_set_snapshots(
+        rx: &flume::Receiver<MetricSetSnapshot>,
+        key: Option<MetricSetKey>,
+        gauge_indices: &[usize],
+    ) -> Option<Vec<MetricValue>> {
+        let key = key?;
+        let mut matching = Vec::new();
+        while let Ok(snapshot) = rx.try_recv() {
+            if snapshot.key() == key {
+                matching.push(snapshot.get_metrics().to_vec());
+            }
+        }
+        merge_metric_snapshots(matching, gauge_indices)
+    }
+
+    fn collect_engine_event_types(rx: &flume::Receiver<EngineEvent>) -> Vec<EventType> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event.r#type);
+        }
+        events
+    }
+
+    struct RuntimeControlTelemetryHarness<PData> {
+        manager: RuntimeCtrlMsgManager<PData>,
+        pipeline_tx: crate::control::RuntimeCtrlMsgSender<PData>,
+        control_receivers: HashMap<usize, Receiver<NodeControlMsg<PData>>>,
+        nodes: Vec<NodeId>,
+        runtime_metrics_key: Option<MetricSetKey>,
+        snapshot_rx: flume::Receiver<MetricSetSnapshot>,
+        engine_rx: flume::Receiver<EngineEvent>,
+        _guard: crate::entity_context::PipelineEntityScope,
+    }
+
+    fn setup_runtime_control_telemetry_harness<PData: Clone>(
+        node_specs: Vec<(&'static str, NodeType, usize)>,
+        metric_level: MetricLevel,
+    ) -> RuntimeControlTelemetryHarness<PData> {
+        let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_group_id: PipelineGroupId = Default::default();
+        let pipeline_id: PipelineId = Default::default();
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            0,
+            1,
+            0,
+        );
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
+        let nodes = test_nodes(node_specs.iter().map(|(name, _, _)| *name).collect());
+        let mut control_senders = ControlSenders::new();
+        let mut control_receivers = HashMap::new();
+        for (node, (_, node_type, capacity)) in nodes.iter().zip(node_specs.iter()) {
+            let (sender, receiver) = create_mock_control_sender_with_capacity(*capacity);
+            control_senders.register(node.clone(), *node_type, sender);
+            let _ = control_receivers.insert(node.index, receiver);
+        }
+
+        let (_log_tx, _log_rx) = flume::bounded(1);
+        let (engine_tx, engine_rx) = flume::unbounded();
+        let event_reporter = ObservedEventReporter::new_with_engine_sender(
+            SendPolicy::default(),
+            _log_tx,
+            engine_tx,
+        );
+
+        let manager = RuntimeCtrlMsgManager::new(
+            DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id: 0,
+            },
+            pipeline_context,
+            pipeline_rx,
+            control_senders,
+            event_reporter,
+            metrics_reporter,
+            TelemetryPolicy {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                runtime_metrics: metric_level,
+            },
+            Vec::new(),
+            empty_node_metric_handles(),
+        );
+        let runtime_metrics_key = manager.runtime_control_metrics.metric_set_key();
+
+        RuntimeControlTelemetryHarness {
+            manager,
+            pipeline_tx,
+            control_receivers,
+            nodes,
+            runtime_metrics_key,
+            snapshot_rx,
+            engine_rx,
+            _guard: pipeline_entity_guard,
+        }
+    }
+
+    struct CompletionTelemetryHarness {
+        dispatcher: PipelineCompletionMsgDispatcher<TestPData>,
+        completion_tx: crate::control::PipelineCompletionMsgSender<TestPData>,
+        control_receivers: HashMap<usize, Receiver<NodeControlMsg<TestPData>>>,
+        nodes: Vec<NodeId>,
+        completion_metrics_key: Option<MetricSetKey>,
+        snapshot_rx: flume::Receiver<MetricSetSnapshot>,
+        _guard: crate::entity_context::PipelineEntityScope,
+    }
+
+    fn setup_completion_telemetry_harness(metric_level: MetricLevel) -> CompletionTelemetryHarness {
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            Default::default(),
+            Default::default(),
+            0,
+            1,
+            0,
+        );
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
+
+        let nodes = test_nodes(vec!["receiver", "processor", "exporter"]);
+        let mut control_senders = ControlSenders::new();
+        let mut control_receivers = HashMap::new();
+        for (node, node_type) in [
+            (&nodes[0], NodeType::Receiver),
+            (&nodes[1], NodeType::Processor),
+            (&nodes[2], NodeType::Exporter),
+        ] {
+            let (sender, receiver) = create_mock_control_sender_with_capacity(16);
+            control_senders.register(node.clone(), node_type, sender);
+            let _ = control_receivers.insert(node.index, receiver);
+        }
+
+        let dispatcher = PipelineCompletionMsgDispatcher::new(
+            pipeline_context,
+            completion_rx,
+            control_senders,
+            empty_node_metric_handles(),
+            metrics_reporter,
+            TelemetryPolicy {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                runtime_metrics: metric_level,
+            },
+        );
+        let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();
+
+        CompletionTelemetryHarness {
+            dispatcher,
+            completion_tx,
+            control_receivers,
+            nodes,
+            completion_metrics_key,
+            snapshot_rx,
+            _guard: pipeline_entity_guard,
+        }
+    }
 
     /// Build a TestPData with frames simulating a 3-node pipeline:
     /// receiver(node0) → processor(node1) → exporter(node2).
@@ -3002,6 +3440,8 @@ mod tests {
         let MetricsTestHarness {
             manager,
             mut metrics_reporter,
+            pipeline_context,
+            telemetry_policy,
             pipeline_tx,
             nodes,
             _guard,
@@ -3016,9 +3456,12 @@ mod tests {
                 let msgs = send_fn(&nodes);
                 let (return_tx, return_rx) = pipeline_completion_msg_channel(32);
                 let return_dispatcher = PipelineCompletionMsgDispatcher::new(
+                    pipeline_context.clone(),
                     return_rx,
                     ControlSenders::new(),
                     node_metric_handles.clone(),
+                    metrics_reporter.clone(),
+                    telemetry_policy.clone(),
                 );
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
                 let dispatcher_handle =
@@ -3405,6 +3848,1181 @@ mod tests {
         assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
     }
 
+    // Shutdown of a receiver+processor pipeline should first stop ingress, then
+    // wait for the receiver to report drained before sending downstream
+    // shutdown. The runtime-control metrics should expose both phases.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_track_receiver_first_drain() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx,
+                    _guard: _,
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![
+                        ("receiver", NodeType::Receiver, 16),
+                        ("processor", NodeType::Processor, 16),
+                    ],
+                    MetricLevel::Detailed,
+                );
+
+                let receiver = nodes[0].clone();
+                let processor = nodes[1].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
+
+                let shutdown_start_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("runtime-control metrics should be exported");
+                assert_u64(
+                    &shutdown_start_metrics,
+                    RUNTIME_DRAIN_ACTIVE,
+                    1,
+                    "drain.active should latch on shutdown",
+                );
+                assert_u64(
+                    &shutdown_start_metrics,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    1,
+                    "drain.pending_receivers should reflect the single receiver",
+                );
+                assert_u64(
+                    &shutdown_start_metrics,
+                    RUNTIME_SHUTDOWN_RECEIVED,
+                    1,
+                    "shutdown.received should increment once per shutdown request",
+                );
+                assert_u64(
+                    &shutdown_start_metrics,
+                    RUNTIME_DRAIN_INGRESS_SENT,
+                    1,
+                    "drain_ingress.sent should increment once when ingress drain starts",
+                );
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::ReceiverDrained {
+                        node_id: receiver.index,
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let shutdown_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should get Shutdown after receivers drain")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(shutdown_msg, NodeControlMsg::Shutdown { .. }));
+
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let drain_finish_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("runtime-control metrics should export receiver-drained transition");
+                assert_u64(
+                    &drain_finish_metrics,
+                    RUNTIME_RECEIVER_DRAINED_RECEIVED,
+                    1,
+                    "receiver_drained.received should increment once",
+                );
+                assert_u64(
+                    &drain_finish_metrics,
+                    RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
+                    1,
+                    "downstream_shutdown.sent should increment once receivers are drained",
+                );
+                let receiver_phase = assert_mmsc(
+                    &drain_finish_metrics,
+                    RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
+                    "receiver-phase duration",
+                );
+                assert_eq!(
+                    receiver_phase.count, 1,
+                    "receiver phase duration should record once"
+                );
+                let total_drain = assert_mmsc(
+                    &drain_finish_metrics,
+                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                    "total drain duration",
+                );
+                assert_eq!(
+                    total_drain.count, 1,
+                    "total drain duration should record once"
+                );
+
+                let event_types = collect_engine_event_types(&engine_rx);
+                assert!(matches!(
+                    event_types.as_slice(),
+                    [
+                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                        EventType::Success(TelemetrySuccessEvent::ReceiversDrained),
+                        EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
+                    ]
+                ));
+            })
+            .await;
+    }
+
+    // A short shutdown deadline should surface both the forced-drain counter
+    // and the dedicated DrainDeadlineReached engine event.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_record_forced_deadline() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx,
+                    _guard: _,
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![("receiver", NodeType::Receiver, 16)],
+                    MetricLevel::Detailed,
+                );
+
+                let receiver = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_millis(25),
+                        reason: "deadline test".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
+
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop on deadline");
+
+                let forced_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("runtime-control metrics should export forced-deadline snapshot");
+                assert_u64(
+                    &forced_metrics,
+                    RUNTIME_SHUTDOWN_DEADLINE_FORCED,
+                    1,
+                    "shutdown.deadline_forced should increment once",
+                );
+                let total_drain = assert_mmsc(
+                    &forced_metrics,
+                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                    "forced drain duration",
+                );
+                assert_eq!(
+                    total_drain.count, 1,
+                    "forced drain should still record total duration"
+                );
+
+                let event_types = collect_engine_event_types(&engine_rx);
+                assert!(matches!(
+                    event_types.as_slice(),
+                    [
+                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                        EventType::Error(TelemetryErrorEvent::DrainDeadlineReached),
+                    ]
+                ));
+            })
+            .await;
+    }
+
+    // Pipelines without receivers should send downstream shutdown immediately
+    // after shutdown is latched, without waiting for a ReceiversDrained phase.
+    #[tokio::test]
+    async fn test_no_receiver_shutdown_emits_downstream_event_immediately() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    engine_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![("processor", NodeType::Processor, 16)],
+                    MetricLevel::Normal,
+                );
+
+                let processor = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "no receiver".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should get immediate Shutdown")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(msg, NodeControlMsg::Shutdown { .. }));
+
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let event_types = collect_engine_event_types(&engine_rx);
+                assert!(matches!(
+                    event_types.as_slice(),
+                    [
+                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                        EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
+                    ]
+                ));
+            })
+            .await;
+    }
+
+    // Timer ticks, telemetry ticks, and delayed-data resumptions should all be
+    // reflected in runtime-control counters when they become due.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_track_due_work_dispatch() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                    engine_rx: _,
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![("processor", NodeType::Processor, 16)],
+                    MetricLevel::Detailed,
+                );
+
+                let processor = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: processor.index,
+                        duration: Duration::from_millis(5),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTelemetryTimer {
+                        node_id: processor.index,
+                        duration: Duration::from_millis(5),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(RuntimeControlMsg::DelayData {
+                        node_id: processor.index,
+                        when: Instant::now() + Duration::from_millis(5),
+                        data: Box::new("retry".to_owned()),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let mut timer_tick = false;
+                let mut collect_telemetry = false;
+                let mut delayed_data = false;
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+                while !(timer_tick && collect_telemetry && delayed_data)
+                    && tokio::time::Instant::now() < deadline
+                {
+                    match timeout(Duration::from_millis(100), processor_ctrl.recv()).await {
+                        Ok(Ok(NodeControlMsg::TimerTick {})) => timer_tick = true,
+                        Ok(Ok(NodeControlMsg::CollectTelemetry { .. })) => collect_telemetry = true,
+                        Ok(Ok(NodeControlMsg::DelayedData { data, .. })) => {
+                            delayed_data = *data == "retry"
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(_)) | Err(_) => break,
+                    }
+                }
+                assert!(timer_tick, "due timer should reach the processor");
+                assert!(
+                    collect_telemetry,
+                    "due telemetry timer should reach the processor"
+                );
+                assert!(delayed_data, "due delayed data should be resumed");
+
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let due_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("runtime-control metrics should export due-work counters");
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_START_TIMER_RECEIVED,
+                    1,
+                    "start_timer.received should count timer requests",
+                );
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_START_TELEMETRY_TIMER_RECEIVED,
+                    1,
+                    "start_telemetry_timer.received should count telemetry timer requests",
+                );
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_DELAY_DATA_RECEIVED,
+                    1,
+                    "delay_data.received should count delayed-data requests",
+                );
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_TIMER_TICK_SENT,
+                    1,
+                    "timer_tick.sent should count due timer dispatches",
+                );
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_COLLECT_TELEMETRY_SENT,
+                    1,
+                    "collect_telemetry.sent should count due telemetry dispatches",
+                );
+                assert_u64(
+                    &due_metrics,
+                    RUNTIME_DELAYED_DATA_SENT,
+                    1,
+                    "delayed_data.sent should count due delayed-data dispatches",
+                );
+            })
+            .await;
+    }
+
+    // Once shutdown is latched, newly submitted DelayData requests should be
+    // returned immediately and counted separately from ordinary delayed-data
+    // scheduling.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_track_delay_data_returned_during_drain() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx: _engine_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![("processor", NodeType::Processor, 16)],
+                    MetricLevel::Normal,
+                );
+
+                let processor = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "drain retry".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                pipeline_tx
+                    .send(RuntimeControlMsg::DelayData {
+                        node_id: processor.index,
+                        when: Instant::now() + Duration::from_secs(30),
+                        data: Box::new("retry".to_owned()),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let first = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should get first control message")
+                    .expect("processor control channel should stay open");
+                let second = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should get delayed data during drain")
+                    .expect("processor control channel should stay open");
+                assert!(
+                    matches!(first, NodeControlMsg::Shutdown { .. })
+                        || matches!(second, NodeControlMsg::Shutdown { .. })
+                );
+                assert!(
+                    matches!(first, NodeControlMsg::DelayedData { .. })
+                        || matches!(second, NodeControlMsg::DelayedData { .. })
+                );
+
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let drain_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("runtime-control metrics should export drain-time delay-data counters");
+                assert_u64(
+                    &drain_metrics,
+                    RUNTIME_DELAY_DATA_RECEIVED,
+                    1,
+                    "delay_data.received should count the drain-time request",
+                );
+                assert_u64(
+                    &drain_metrics,
+                    RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN,
+                    1,
+                    "delay_data.returned_during_drain should count immediate drain returns",
+                );
+            })
+            .await;
+    }
+
+    // `runtime_metrics = none` should suppress the pipeline-scoped runtime
+    // control metric set entirely.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_gated_off_at_none() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx: _engine_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![("processor", NodeType::Processor, 16)],
+                    MetricLevel::None,
+                );
+
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "none".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                assert!(
+                    runtime_metrics_key.is_none(),
+                    "runtime-control metrics should not be registered at level none"
+                );
+                assert!(
+                    collect_metric_set_snapshots(
+                        &snapshot_rx,
+                        runtime_metrics_key,
+                        &[RUNTIME_DRAIN_ACTIVE]
+                    )
+                    .is_none(),
+                    "no runtime-control snapshots should be emitted at level none"
+                );
+            })
+            .await;
+    }
+
+    // `basic` should export state gauges but suppress per-message counters and
+    // detailed drain durations.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_basic_only_exports_gauges() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx: _engine_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![
+                        ("receiver", NodeType::Receiver, 16),
+                        ("processor", NodeType::Processor, 16),
+                    ],
+                    MetricLevel::Basic,
+                );
+
+                let receiver = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "basic".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("basic runtime-control metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    RUNTIME_DRAIN_ACTIVE,
+                    1,
+                    "basic should export gauges",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    1,
+                    "basic should export pending receiver gauge",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_SHUTDOWN_RECEIVED,
+                    0,
+                    "basic should suppress normal counters",
+                );
+                let receiver_phase = assert_mmsc(
+                    &metrics,
+                    RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
+                    "basic receiver-phase duration",
+                );
+                assert_eq!(
+                    receiver_phase.count, 0,
+                    "basic should suppress detailed durations"
+                );
+            })
+            .await;
+    }
+
+    // `normal` should include phase/message counters while still suppressing
+    // the detailed drain-duration summaries.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_normal_exports_counters_without_durations() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    engine_rx: _engine_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![
+                        ("receiver", NodeType::Receiver, 16),
+                        ("processor", NodeType::Processor, 16),
+                    ],
+                    MetricLevel::Normal,
+                );
+
+                let receiver = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "normal".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                pipeline_tx
+                    .send(RuntimeControlMsg::ReceiverDrained {
+                        node_id: receiver.index,
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("normal runtime-control metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    RUNTIME_SHUTDOWN_RECEIVED,
+                    1,
+                    "normal should export shutdown counter",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_RECEIVER_DRAINED_RECEIVED,
+                    1,
+                    "normal should export receiver_drained counter",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
+                    1,
+                    "normal should export downstream shutdown counter",
+                );
+                let total_drain = assert_mmsc(
+                    &metrics,
+                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                    "normal total drain duration",
+                );
+                assert_eq!(
+                    total_drain.count, 0,
+                    "normal should suppress detailed durations"
+                );
+            })
+            .await;
+    }
+
+    // Ack delivery with an interested upstream frame should increment the
+    // completion receive/send counters and record how many frames were unwound
+    // before delivery.
+    #[tokio::test]
+    async fn test_completion_metrics_track_ack_delivery_and_unwind_depth() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                } = setup_completion_telemetry_harness(MetricLevel::Detailed);
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    1,
+                    "deliver_ack.received should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_SENT,
+                    1,
+                    "ack.sent should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DROPPED_NO_INTEREST,
+                    0,
+                    "ack.dropped_no_interest should stay at zero for interested unwind",
+                );
+                let unwind =
+                    assert_mmsc(&metrics, COMPLETION_UNWIND_DEPTH, "completion unwind depth");
+                assert_eq!(unwind.count, 1, "unwind depth should record one Ack unwind");
+                assert_eq!(
+                    unwind.min, 2.0,
+                    "Ack should unwind exporter+processor frames"
+                );
+                assert_eq!(unwind.max, 2.0, "single unwind depth should be exact");
+            })
+            .await;
+    }
+
+    // Nack delivery should report the receive/send counters on the completion
+    // path in the same way as Ack delivery.
+    #[tokio::test]
+    async fn test_completion_metrics_track_nack_delivery() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                } = setup_completion_telemetry_harness(MetricLevel::Normal);
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverNack {
+                        nack: NackMsg::new("transient", build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let nack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive Nack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(nack_msg, NodeControlMsg::Nack(_)));
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_NACK_RECEIVED,
+                    1,
+                    "deliver_nack.received should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_NACK_SENT,
+                    1,
+                    "nack.sent should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_NACK_DROPPED_NO_INTEREST,
+                    0,
+                    "nack.dropped_no_interest should stay at zero for interested unwind",
+                );
+                let unwind = assert_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "normal completion unwind depth",
+                );
+                assert_eq!(
+                    unwind.count, 0,
+                    "normal should suppress detailed unwind depth"
+                );
+            })
+            .await;
+    }
+
+    // If no upstream frame subscribes to the completion, the dispatcher should
+    // count a dropped-no-interest unwind instead of inventing a delivery.
+    #[tokio::test]
+    async fn test_completion_metrics_track_dropped_no_interest() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    nodes,
+                    _guard: _,
+                    control_receivers: _,
+                } = setup_completion_telemetry_harness(MetricLevel::Detailed);
+
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata_no_subscribers(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    1,
+                    "deliver_ack.received should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_SENT,
+                    0,
+                    "ack.sent should stay at zero when no frame is interested",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DROPPED_NO_INTEREST,
+                    1,
+                    "ack.dropped_no_interest should count uninterested unwinds",
+                );
+                let unwind = assert_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "dropped-no-interest unwind depth",
+                );
+                assert_eq!(
+                    unwind.count, 1,
+                    "unwind depth should record dropped completion depth"
+                );
+                assert_eq!(unwind.min, 3.0, "all three frames should be popped");
+                assert_eq!(
+                    unwind.max, 3.0,
+                    "single dropped unwind depth should be exact"
+                );
+            })
+            .await;
+    }
+
+    // `runtime_metrics = none` should suppress the pipeline-scoped completion
+    // metric set entirely, even though completion dispatch still works.
+    #[tokio::test]
+    async fn test_completion_metrics_gated_off_at_none() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    ..
+                } = setup_completion_telemetry_harness(MetricLevel::None);
+
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(TestPData::new()),
+                    })
+                    .await
+                    .unwrap();
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                assert!(
+                    completion_metrics_key.is_none(),
+                    "completion metrics should not be registered at level none"
+                );
+                assert!(
+                    collect_metric_set_snapshots(
+                        &snapshot_rx,
+                        completion_metrics_key,
+                        &[COMPLETION_PENDING_SENDS_BUFFERED],
+                    )
+                    .is_none(),
+                    "no completion snapshots should be emitted at level none"
+                );
+            })
+            .await;
+    }
+
+    // `basic` should export only the completion backlog gauge while suppressing
+    // per-message counters and detailed unwind-depth summaries.
+    #[tokio::test]
+    async fn test_completion_metrics_basic_only_exports_gauge() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                } = setup_completion_telemetry_harness(MetricLevel::Basic);
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("basic completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_PENDING_SENDS_BUFFERED,
+                    0,
+                    "basic should export the backlog gauge",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    0,
+                    "basic should suppress completion counters",
+                );
+                let unwind = assert_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "basic completion unwind depth",
+                );
+                assert_eq!(
+                    unwind.count, 0,
+                    "basic should suppress unwind-depth details"
+                );
+            })
+            .await;
+    }
+
+    // `normal` should add Ack/Nack counters for the completion dispatcher
+    // while still suppressing the detailed unwind-depth distribution.
+    #[tokio::test]
+    async fn test_completion_metrics_normal_exports_counters_without_unwind_depth() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                } = setup_completion_telemetry_harness(MetricLevel::Normal);
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("normal completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    1,
+                    "normal should export completion receive counters",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_SENT,
+                    1,
+                    "normal should export completion send counters",
+                );
+                let unwind = assert_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "normal completion unwind depth",
+                );
+                assert_eq!(
+                    unwind.count, 0,
+                    "normal should suppress unwind-depth details"
+                );
+            })
+            .await;
+    }
+
     // Completion traffic must remain live even when the runtime-control lane is
     // saturated with unrelated work. An Ack routed through the completion lane
     // should still reach its node promptly.
@@ -3459,10 +5077,14 @@ mod tests {
                     .await
                     .unwrap();
 
+                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
                 let dispatcher = PipelineCompletionMsgDispatcher::new(
+                    dispatcher_context,
                     return_rx,
                     control_senders,
                     empty_node_metric_handles(),
+                    MetricsReporter::create_new_and_receiver(16).1,
+                    TelemetryPolicy::default(),
                 );
 
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -3487,6 +5109,7 @@ mod tests {
                 );
                 let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
                 assert!(manager_result.is_ok(), "Manager should shut down cleanly");
+                drop(dispatcher_guard);
             })
             .await;
     }
@@ -3577,10 +5200,14 @@ mod tests {
                     Sender::Shared(SharedSender::mpsc(tx_b)),
                 );
 
+                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
                 let dispatcher = PipelineCompletionMsgDispatcher::new(
+                    dispatcher_context,
                     return_rx,
                     control_senders,
                     empty_node_metric_handles(),
+                    MetricsReporter::create_new_and_receiver(16).1,
+                    TelemetryPolicy::default(),
                 );
 
                 // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
@@ -3652,6 +5279,7 @@ mod tests {
                 // Cleanup
                 drop(return_tx);
                 dispatcher_handle.abort();
+                drop(dispatcher_guard);
             })
             .await;
     }
@@ -3716,10 +5344,14 @@ mod tests {
                         .unwrap();
                 }
 
+                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
                 let dispatcher = PipelineCompletionMsgDispatcher::new(
+                    dispatcher_context,
                     return_rx,
                     control_senders,
                     empty_node_metric_handles(),
+                    MetricsReporter::create_new_and_receiver(16).1,
+                    TelemetryPolicy::default(),
                 );
 
                 let node_a_tx = return_tx.clone();
@@ -3764,6 +5396,7 @@ mod tests {
                 );
                 let manager_result = timeout(Duration::from_millis(500), manager_handle).await;
                 assert!(manager_result.is_ok(), "Manager should shut down cleanly");
+                drop(dispatcher_guard);
             })
             .await;
     }

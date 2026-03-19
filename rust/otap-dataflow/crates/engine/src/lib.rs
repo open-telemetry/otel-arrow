@@ -61,6 +61,7 @@ mod channel_mode;
 pub mod config;
 pub mod context;
 pub mod control;
+mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
@@ -564,7 +565,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+        let channel_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;

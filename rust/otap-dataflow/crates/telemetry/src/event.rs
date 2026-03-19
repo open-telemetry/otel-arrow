@@ -221,6 +221,12 @@ pub enum SuccessEvent {
     UpdateApplied,
     /// Rollback finished successfully; last known good is restored.
     RollbackComplete,
+    /// Graceful shutdown was latched and receivers were asked to stop new ingress.
+    IngressDrainStarted,
+    /// All receivers finished their drain work and downstream shutdown may proceed.
+    ReceiversDrained,
+    /// Shutdown has propagated from receivers to processors/exporters.
+    DownstreamShutdownStarted,
     /// All ongoing work has drained to zero; safe to stop or delete.
     Drained,
     /// Resource teardown has finished; nothing remains.
@@ -241,6 +247,8 @@ pub enum ErrorEvent {
     RollbackFailed(ErrorSummary),
     /// Draining failed or timed out according to policy.
     DrainError(ErrorSummary),
+    /// Graceful shutdown reached its deadline before natural drain completion.
+    DrainDeadlineReached,
     /// An unrecoverable runtime fault/crash occurred.
     RuntimeError(ErrorSummary),
     /// An error occurred during teardown.
@@ -339,6 +347,45 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::RollbackComplete),
+            message,
+        }
+    }
+
+    /// Create an `IngressDrainStarted` pipeline-level event.
+    #[must_use]
+    pub fn ingress_drain_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::IngressDrainStarted),
+            message,
+        }
+    }
+
+    /// Create a `ReceiversDrained` pipeline-level event.
+    #[must_use]
+    pub fn receivers_drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::ReceiversDrained),
+            message,
+        }
+    }
+
+    /// Create a `DownstreamShutdownStarted` pipeline-level event.
+    #[must_use]
+    pub fn downstream_shutdown_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::DownstreamShutdownStarted),
             message,
         }
     }
@@ -450,6 +497,19 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DrainError(error)),
+            message,
+        }
+    }
+
+    /// Create a `DrainDeadlineReached` pipeline-level event.
+    #[must_use]
+    pub fn drain_deadline_reached(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DrainDeadlineReached),
             message,
         }
     }

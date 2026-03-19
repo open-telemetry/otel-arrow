@@ -75,7 +75,7 @@ impl Policies {
     }
 }
 
-/// Engine-wide metric level controlling per-channel and per-node
+/// Engine-wide metric level controlling channel, node, and shared control-plane
 /// instrumentation overhead.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -85,12 +85,13 @@ pub enum MetricLevel {
     /// No instrumentation.
     #[default]
     None,
-    /// Channel transport metrics (send/recv counts, capacity).
+    /// Channel transport metrics plus shared control-plane state gauges.
     Basic,
-    /// Adds per-node produced/consumed outcome metrics
-    /// (success, failure, refused).
+    /// Adds per-node produced/consumed outcome metrics (success, failure,
+    /// refused) and shared control-plane message/phase counters.
     Normal,
-    /// Adds pipeline latency measurement (entry timestamps).
+    /// Adds pipeline latency measurement (entry timestamps), shared drain
+    /// durations, and completion unwind-depth summaries.
     Detailed,
 }
 
@@ -104,9 +105,10 @@ pub struct TelemetryPolicy {
     /// Enable capture of Tokio runtime internal metrics.
     #[serde(default = "default_true")]
     pub tokio_metrics: bool,
-    /// Channel and component metric detail level.
+    /// Runtime metric detail level for channel transport, node outcomes, and
+    /// shared control-plane telemetry.
     #[serde(default = "default_metric_level_basic")]
-    pub channel_metrics: MetricLevel,
+    pub runtime_metrics: MetricLevel,
 }
 
 impl Default for TelemetryPolicy {
@@ -114,7 +116,7 @@ impl Default for TelemetryPolicy {
         Self {
             pipeline_metrics: true,
             tokio_metrics: true,
-            channel_metrics: MetricLevel::Basic,
+            runtime_metrics: MetricLevel::Basic,
         }
     }
 }
@@ -272,7 +274,7 @@ mod tests {
         assert!(policies.telemetry.pipeline_metrics);
         assert!(policies.telemetry.tokio_metrics);
         assert_eq!(
-            policies.telemetry.channel_metrics,
+            policies.telemetry.runtime_metrics,
             super::MetricLevel::Basic
         );
         assert_eq!(
@@ -362,23 +364,23 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_policy_with_channel_metrics_level() {
+    fn telemetry_policy_with_runtime_metrics_level() {
         let yaml = r#"
             pipeline_metrics: true
             tokio_metrics: false
-            channel_metrics: detailed
+            runtime_metrics: detailed
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
-        assert_eq!(policy.channel_metrics, super::MetricLevel::Detailed);
+        assert_eq!(policy.runtime_metrics, super::MetricLevel::Detailed);
         assert!(!policy.tokio_metrics);
     }
 
     #[test]
-    fn telemetry_policy_defaults_channel_metrics_to_basic() {
+    fn telemetry_policy_defaults_runtime_metrics_to_basic() {
         let yaml = r#"
             pipeline_metrics: true
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
-        assert_eq!(policy.channel_metrics, super::MetricLevel::Basic);
+        assert_eq!(policy.runtime_metrics, super::MetricLevel::Basic);
     }
 }
