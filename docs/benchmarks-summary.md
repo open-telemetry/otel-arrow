@@ -47,10 +47,10 @@ post-initialization idle state and validate minimal resource footprint. Note
 that longer-duration soak testing for memory leak detection is outside the scope
 of this benchmark summary.
 
-| Configuration | CPU Usage | Memory Usage |
-|---------------|-----------|--------------|
-| Single Core   | 0.06%     | 27 MB        |
-| All Cores (128) | 2.5%    | 600 MB       |
+| Configuration   | CPU Usage | Memory Usage |
+| --------------- | --------- | ------------ |
+| Single Core     | 0.06%     | 27 MB        |
+| All Cores (128) | 2.5%      | 600 MB       |
 
 *Note: CPU usage is normalized (percentage of total system capacity). Memory
 usage scales with core count due to the [thread-per-core
