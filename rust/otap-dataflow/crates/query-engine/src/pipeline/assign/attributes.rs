@@ -1125,6 +1125,48 @@ fn try_build_unified_dict_multi<'a>(
         None => None,
     };
 
+    // Build a bitset of "live" dict value indices — values still referenced by at least one
+    // passthrough (non-updated) row. This prevents dead values from being included in the
+    // unified dictionary, which is important for data redaction scenarios.
+    //
+    // The bitset covers all 65536 possible dict value indices (1024 * 64 bits = 8KB).
+    let mut live_values = [0u64; 1024];
+    if let Some(existing_col) = existing_col {
+        let num_existing = existing_col.len();
+
+        // Build combined mask (OR of all upsert masks). Rows where mask=true are being
+        // updated/nulled; rows where mask=false are passthrough and keep their values.
+        let combined_mask = build_combined_mask(resolved)?;
+
+        // Get reference to existing dict keys for lookup.
+        let existing_dict_keys_ref = existing_info
+            .as_ref()
+            .and_then(|(_, dk)| dk.as_ref().map(|k| k.as_ref()));
+
+        // Iterate passthrough rows (gaps between true ranges in combined_mask) and mark
+        // their dict value indices as live.
+        let mut pos = 0;
+        for (start, end) in SlicesIterator::new(&combined_mask) {
+            // Gap before this true range = passthrough rows
+            for row in pos..start {
+                let value_idx = match existing_dict_keys_ref {
+                    Some(keys) => keys[row] as usize,
+                    None => row, // non-dict: row index IS value index
+                };
+                live_values[value_idx / 64] |= 1u64 << (value_idx % 64);
+            }
+            pos = end;
+        }
+        // Trailing passthrough rows
+        for row in pos..num_existing {
+            let value_idx = match existing_dict_keys_ref {
+                Some(keys) => keys[row] as usize,
+                None => row,
+            };
+            live_values[value_idx / 64] |= 1u64 << (value_idx % 64);
+        }
+    }
+
     // Build source list for MutableArrayData.
     // If existing_col is Some: source 0 = existing, sources 1..N = new sources
     // If existing_col is None: sources 0..N = new sources only
@@ -1163,36 +1205,63 @@ fn try_build_unified_dict_multi<'a>(
     let mut unified_builder =
         MutableArrayData::new(all_sources, false, MAX_DICT_CARDINALITY.min(total_capacity));
 
-    // Step 1: Seed HashMap from existing column's values (if any).
+    // Step 1: Seed HashMap from existing column's live values only (if any).
+    // Dead values (only referenced by updated rows) are excluded to support data redaction.
     let existing_keys: Option<Vec<u16>> = match &existing_info {
         Some((existing_values_arr, existing_dict_keys)) => {
-            let keys = if existing_dict_keys.is_some() {
+            let keys = if let Some(dict_keys) = existing_dict_keys {
+                // Dict-encoded existing column: only add live values to the unified dict,
+                // then remap existing keys through the filtered mapping.
                 let n = existing_values_arr.len();
-                if n > MAX_DICT_CARDINALITY {
-                    return Ok(None);
-                }
+
+                // Build old_to_new remap: maps old value index → new value index.
+                // Dead values get placeholder 0 (updated rows will be overwritten/nulled anyway).
+                let mut old_to_new: Vec<u16> = vec![0; n];
                 for i in 0..n {
+                    let is_live = (live_values[i / 64] >> (i % 64)) & 1 == 1;
+                    if !is_live {
+                        continue;
+                    }
+                    if num_distinct >= MAX_DICT_CARDINALITY {
+                        return Ok(None);
+                    }
                     let key = array_value_as_bytes(existing_values_arr, i)?;
-                    let _ = value_to_idx.insert(key, i as u16);
+                    let idx = num_distinct as u16;
+                    let _ = value_to_idx.insert(key, idx);
+                    unified_builder.extend(0, i, i + 1);
+                    old_to_new[i] = idx;
+                    num_distinct += 1;
                 }
-                unified_builder.extend(0, 0, n);
-                num_distinct = n;
-                // Existing dict keys map directly — no remap needed.
-                existing_dict_keys.as_ref().unwrap().clone().into_owned()
+
+                // Remap existing keys. Updated rows get placeholder 0 (will be overwritten).
+                dict_keys.iter().map(|&old_key| old_to_new[old_key as usize]).collect()
             } else {
-                // since the original array was not dict encoded, we dedup the values
-                // and build a mapping to dictionary keys
-                match build_values_remap(
-                    existing_values_arr,
-                    0,
-                    &mut value_to_idx,
-                    &mut unified_builder,
-                    &mut num_distinct,
-                    MAX_DICT_CARDINALITY,
-                )? {
-                    Some(remap) => remap,
-                    None => return Ok(None),
+                // Non-dict existing column: only add live (passthrough) rows to the unified
+                // dict, deduplicating as we go.
+                let n = existing_values_arr.len();
+                let mut remap: Vec<u16> = vec![0; n]; // placeholder for updated rows
+
+                for row in 0..n {
+                    let is_live = (live_values[row / 64] >> (row % 64)) & 1 == 1;
+                    if !is_live {
+                        continue; // Updated row — skip, leave remap as 0
+                    }
+                    let key = array_value_as_bytes(existing_values_arr, row)?;
+                    if let Some(&idx) = value_to_idx.get(&key) {
+                        remap[row] = idx;
+                    } else {
+                        if num_distinct >= MAX_DICT_CARDINALITY {
+                            return Ok(None);
+                        }
+                        let idx = num_distinct as u16;
+                        let _ = value_to_idx.insert(key, idx);
+                        unified_builder.extend(0, row, row + 1);
+                        num_distinct += 1;
+                        remap[row] = idx;
+                    }
                 }
+
+                remap
             };
             Some(keys)
         }
@@ -2508,6 +2577,70 @@ mod tests {
         assert_eq!(strs.value(1), "hello"); // update
         assert_eq!(strs.value(2), "c"); // passthrough
         assert_eq!(strs.value(3), "hello"); // insert
+    }
+
+    #[test]
+    fn test_upsert_redacts_dead_dict_values() {
+        // When a value is updated, the old value should NOT persist in the output dict's
+        // values array. This is important for data redaction: if someone upserts to replace
+        // sensitive data, the old value must not leak through the dictionary.
+        //
+        // Existing:
+        //   Row 0: parent_id=0, key="x", type=Str(1), str="secret"
+        //   Row 1: parent_id=1, key="x", type=Str(1), str="public"
+        //
+        // Upsert: attributes["x"] = "REDACTED" for parent 0 only
+        //   Row 0 matches → update (replaces "secret" with "REDACTED")
+        //   Row 1 does not match → passthrough (keeps "public")
+        //   Parent 2 doesn't have key "x" → insert ("REDACTED")
+        //
+        // Expected: the output str column's dictionary values should contain "public" and
+        // "REDACTED" but NOT "secret".
+        let existing =
+            build_attrs_batch(&[(0, "x", 1, "secret"), (1, "x", 1, "public")]);
+        let mask = BooleanArray::from(vec![true, false]);
+        let upsert_parent_ids = UInt16Array::from(vec![0u16, 2]);
+        let new_values = ColumnarValue::Scalar(ScalarValue::Utf8(Some("REDACTED".into())));
+
+        let result = upsert_attributes(
+            &existing,
+            &[AttributeUpsert {
+                attrs_key: "x",
+                existing_key_mask: mask,
+                new_values,
+                upsert_parent_ids: upsert_parent_ids,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(result.num_rows(), 3);
+
+        // Check logical values are correct.
+        let strs = decode_to_utf8(result.column_by_name(consts::ATTRIBUTE_STR).unwrap());
+        assert_eq!(strs.value(0), "REDACTED"); // update
+        assert_eq!(strs.value(1), "public"); // passthrough
+        assert_eq!(strs.value(2), "REDACTED"); // insert
+
+        // The critical check: inspect the dictionary values array to ensure "secret" is NOT
+        // present. If the column is dict-encoded, the values array should only contain values
+        // that are actually referenced by live keys.
+        let str_col = result.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        if let DataType::Dictionary(_, _) = str_col.data_type() {
+            let dict = str_col
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .expect("expected Dict(u16, Utf8)");
+            let values = dict
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("expected Utf8 values");
+            let dict_values: Vec<&str> = (0..values.len()).map(|i| values.value(i)).collect();
+            assert!(
+                !dict_values.contains(&"secret"),
+                "dead value 'secret' should not appear in dict values, but found: {dict_values:?}"
+            );
+        }
     }
 
     #[test]
