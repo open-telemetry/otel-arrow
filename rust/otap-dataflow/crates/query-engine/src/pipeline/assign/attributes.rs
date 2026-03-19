@@ -251,6 +251,7 @@ fn resolve_attr_type_and_col_name(
 
 /// A contiguous run of rows with the same ownership."Ownership" meaning the source of the rows
 /// for each column in the final result.
+#[derive(Debug)]
 struct OwnershipRun {
     start: usize,
     end: usize,
@@ -413,7 +414,11 @@ fn merge_type_column(
 
     let mut output = Vec::with_capacity(total_output_rows);
 
-    // Existing rows: copy contiguous runs.
+    // Per-upsert counters tracking how many update rows have been consumed from the values
+    // array. Used to index into the null bitmap when the values array has nulls.
+    let mut update_counters: SmallVec<[usize; SMALLVEC_SIZE]> = smallvec![0; resolved.len()];
+
+    // Existing rows: copy contiguous runs while updating type to Empty for null rows
     for run in row_owners {
         match run.owner {
             None => {
@@ -422,23 +427,40 @@ fn merge_type_column(
             }
             Some(idx) => {
                 let resolved_upsert = &resolved[idx];
+                let count = run.end - run.start;
+                let attr_type = resolved_upsert.attr_value_type as u8;
+
                 if let Some(arr) = &resolved_upsert.new_values_array {
                     if let Some(nulls) = arr.nulls() {
-                        let validity_slice_iter = BitSliceIterator::new(
-                            nulls.buffer().as_slice(),
-                            run.start,
-                            run.end - run.start,
-                        );
-                        for range in validity_slice_iter {
-                            println!("RANGE = {range:?}")
+                        // Array with nulls: write Empty for null values, attr_type for
+                        // non-null.
+                        let counter = &mut update_counters[idx];
+                        let validity_iter =
+                            BitSliceIterator::new(nulls.buffer().as_slice(), *counter, count);
+                        let mut last_valid_range_end = 0;
+                        for (start, end) in validity_iter {
+                            if start != last_valid_range_end {
+                                output.extend(std::iter::repeat_n(
+                                    AttributeValueType::Empty as u8,
+                                    start - last_valid_range_end,
+                                ));
+                            }
+                            output.extend(std::iter::repeat_n(attr_type, end - start));
+                            last_valid_range_end = end;
                         }
-
-                        todo!()
+                        if last_valid_range_end != count {
+                            output.extend(std::iter::repeat_n(
+                                AttributeValueType::Empty as u8,
+                                count - last_valid_range_end,
+                            ));
+                        }
+                        *counter += count;
+                        continue;
                     }
                 }
-                // Owned: fill with this upsert's type discriminant.
-                let attr_type = resolved_upsert.attr_value_type as u8;
-                output.extend(std::iter::repeat_n(attr_type, run.end - run.start));
+
+                // No nulls (or scalar): fill with this upsert's type discriminant.
+                output.extend(std::iter::repeat_n(attr_type, count));
             }
         }
     }
