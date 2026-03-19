@@ -3099,6 +3099,42 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_inserting_multiple_scalar_root_attribute_when_no_attrs_exist() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = \"hello\", attributes[\"x\"] = \"world\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("hello")),
+                KeyValue::new("x", AnyValue::new_string("world")),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("hello")),
+                KeyValue::new("x", AnyValue::new_string("world")),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn test_assigning_to_resource_attributes_invalid_assignments() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().event_name("event1").finish(),

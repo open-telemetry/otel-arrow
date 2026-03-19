@@ -21,7 +21,6 @@ use arrow::compute::{SlicesIterator, cast};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
 
@@ -197,10 +196,7 @@ pub(crate) fn upsert_attributes(
         output_columns.push(merged_col);
     }
 
-    // Create new value columns for any upsert targets not found in the existing schema.
-    //
-    // TODO - not sure the logic here is correct -- this will  create new columns from
-    // only a single source?
+    // For any upserts targeting column that doesn't exist in the current schema create new column
     let mut created_cols: SmallVec<[&str; SMALLVEC_SIZE]> = SmallVec::new();
     for (i, r) in resolved.iter().enumerate() {
         if written_target_cols[i] {
@@ -208,6 +204,7 @@ pub(crate) fn upsert_attributes(
         }
         if let Some(col_name) = r.target_col_name {
             if created_cols.contains(&col_name) {
+                // column already created in previous iteration of loop via some other upsert
                 continue;
             }
             let (field, col) = create_new_value_column_batched(
@@ -846,7 +843,7 @@ fn merge_value_column(
     // try to merge into a dict column if supported and new values will fit
     let dict_encoding_supported = values_column_supports_dictionary_encoding(col_name);
     if dict_encoding_supported
-        && let Some(unified) = try_build_unified_dict_multi(existing_col, resolved, col_name)?
+        && let Some(unified) = try_build_unified_dict_multi(Some(existing_col), resolved, col_name)?
     {
         return merge_values_with_unified_dict(
             field,
@@ -855,18 +852,6 @@ fn merge_value_column(
             resolved,
             total_output_rows,
         );
-    }
-
-    // Fallback: primitive merge with MutableArrayData.
-    //
-    // Source 0 = existing column (decoded to plain if dict).
-    // Sources 1..N = per-active-upsert value arrays (1-element for scalars, decoded if dict).
-    #[derive(Clone, Copy)]
-    struct ActiveSource {
-        source_idx: usize,
-        is_scalar: bool,
-        num_updates: usize,
-        num_inserts: usize,
     }
 
     let existing_plain = decode_to_plain(existing_col)?;
@@ -979,19 +964,36 @@ enum ActiveKeys {
     Array(Vec<u16>),
 }
 
+/// Identifier of a upsert that is being used to merge new values to some particular
+/// values column. Used internally when merging new values into existing values column
+/// or when creating a new values column.
+#[derive(Clone, Copy)]
+struct ActiveSource {
+    source_idx: usize,
+    is_scalar: bool,
+    num_updates: usize,
+    num_inserts: usize,
+}
+
 /// Result of building a unified dictionary across the existing column and multiple new value
 /// sources (one per active upsert).
 struct UnifiedDictMulti {
     /// The deduplicated unified dictionary values array.
     values: ArrayRef,
     /// Per-row key mapping for existing column rows → unified dict keys.
-    existing_keys: Vec<u16>,
+    /// `None` when there is no existing column (creating a new column).
+    existing_keys: Option<Vec<u16>>,
     /// Per-upsert key mappings, indexed by position in `resolved`. `None` for upserts that
     /// are inactive (don't target this column).
     new_keys: SmallVec<[Option<ActiveKeys>; SMALLVEC_SIZE]>,
 }
 
-/// Attempt to build a unified dictionary from the existing column and the resolved upserts.
+/// Attempt to build a unified dictionary from the existing column (if any) and the resolved
+/// upserts.
+///
+/// When `existing_col` is `Some`, the existing column's values are included in the unified
+/// dictionary and `existing_keys` in the result will be `Some`. When `existing_col` is `None`
+/// (creating a new column), `existing_keys` will be `None`.
 ///
 /// Only upserts whose `target_col_name` matches `col_name` are considered active. Inactive
 /// upserts get `None` in the returned `new_keys` array.
@@ -1002,28 +1004,15 @@ struct UnifiedDictMulti {
 /// Scalars are handled efficiently — only one value is added to the dict, producing an
 /// `ActiveKeys::Scalar(key)` that the merge phase can broadcast without expansion.
 fn try_build_unified_dict_multi<'a>(
-    existing_col: &'a ArrayRef,
+    existing_col: Option<&'a ArrayRef>,
     resolved: &[ResolvedUpsert<'_>],
     col_name: &str,
 ) -> Result<Option<UnifiedDictMulti>> {
     const MAX_DICT_CARDINALITY: usize = 65535;
 
-    // Extract existing dict values and per-row keys.
-    let (existing_values_arr, existing_dict_keys) = match existing_col.data_type() {
-        DataType::Dictionary(key_type, _) => {
-            let (vals, keys) = extract_dict_any_info(existing_col, key_type)?;
-            (vals, Some(keys))
-        }
-        _ => (Arc::clone(existing_col), None),
-    };
-
     // Map from value (bytes) to unified dict index
     let mut value_to_idx: HashMap<Option<&[u8]>, u16> = HashMap::new();
     let mut num_distinct: usize = 0;
-
-    // MutableArrayData to build the unified values array. We start with the existing values
-    // as source 0, and add each active upsert's values if they're not already in the dict
-    let existing_data = existing_values_arr.to_data();
 
     // Pre-extract all new value arrays so they live long enough for borrowing.
     // Each entry is `Some(...)` for active upserts (targeting this column), `None` for inactive.
@@ -1035,7 +1024,6 @@ fn try_build_unified_dict_multi<'a>(
     }
 
     let mut new_sources: Vec<Option<NewSource>> = (0..resolved.len()).map(|_| None).collect();
-    let mut num_active: usize = 0;
     for (i, r) in resolved.iter().enumerate() {
         if r.target_col_name != Some(col_name) {
             continue;
@@ -1056,14 +1044,32 @@ fn try_build_unified_dict_multi<'a>(
             dict_keys,
             is_scalar,
         });
-        num_active += 1;
     }
 
-    // Build source list for MutableArrayData: source 0 = existing, sources 1..N = active only.
-    // We need a local mapping from upsert_idx to mutable source index.
+    // Extract existing dict values and per-row keys (if existing column provided).
+    let existing_info: Option<(ArrayRef, Option<Cow<'_, [u16]>>)> = match existing_col {
+        Some(col) => {
+            let (values_arr, dict_keys) = match col.data_type() {
+                DataType::Dictionary(key_type, _) => {
+                    let (vals, keys) = extract_dict_any_info(col, key_type)?;
+                    (vals, Some(keys))
+                }
+                _ => (Arc::clone(col), None),
+            };
+            Some((values_arr, dict_keys))
+        }
+        None => None,
+    };
+
+    // Build source list for MutableArrayData.
+    // If existing_col is Some: source 0 = existing, sources 1..N = new sources
+    // If existing_col is None: sources 0..N = new sources only
+    let existing_data: Option<ArrayData> = existing_info.as_ref().map(|(arr, _)| arr.to_data());
+
     let mut mutable_source_map: Vec<usize> = vec![0; resolved.len()];
-    let mut source_data_vecs: Vec<ArrayData> = Vec::with_capacity(num_active);
-    let mut next_source_idx: usize = 1; // 0 is reserved for existing
+    let mut source_data_vecs: Vec<ArrayData> = Vec::new();
+    let source_offset = if existing_data.is_some() { 1 } else { 0 };
+    let mut next_source_idx: usize = source_offset;
     for (i, ns) in new_sources.iter().enumerate() {
         if let Some(ns) = ns {
             source_data_vecs.push(ns.values_arr.to_data());
@@ -1072,13 +1078,19 @@ fn try_build_unified_dict_multi<'a>(
         }
     }
 
-    let mut all_sources: Vec<&ArrayData> = Vec::with_capacity(1 + source_data_vecs.len());
-    all_sources.push(&existing_data);
+    let mut all_sources: Vec<&ArrayData> =
+        Vec::with_capacity(source_offset + source_data_vecs.len());
+    if let Some(ref existing_data) = existing_data {
+        all_sources.push(existing_data);
+    }
     for d in &source_data_vecs {
         all_sources.push(d);
     }
 
-    let total_capacity = existing_values_arr.len()
+    let total_capacity = existing_info
+        .as_ref()
+        .map(|(arr, _)| arr.len())
+        .unwrap_or(0)
         + new_sources
             .iter()
             .filter_map(|s| s.as_ref())
@@ -1087,35 +1099,40 @@ fn try_build_unified_dict_multi<'a>(
     let mut unified_builder =
         MutableArrayData::new(all_sources, false, MAX_DICT_CARDINALITY.min(total_capacity));
 
-    // Step 1: Seed HashMap from existing column's values.
-    let existing_keys: Vec<u16> = if existing_dict_keys.is_some() {
-        let n = existing_values_arr.len();
-        if n > MAX_DICT_CARDINALITY {
-            // TODO - would be optimal to do this check earlier
-            return Ok(None);
+    // Step 1: Seed HashMap from existing column's values (if any).
+    let existing_keys: Option<Vec<u16>> = match &existing_info {
+        Some((existing_values_arr, existing_dict_keys)) => {
+            let keys = if existing_dict_keys.is_some() {
+                let n = existing_values_arr.len();
+                if n > MAX_DICT_CARDINALITY {
+                    return Ok(None);
+                }
+                for i in 0..n {
+                    let key = array_value_as_bytes(existing_values_arr, i);
+                    let _ = value_to_idx.insert(key, i as u16);
+                }
+                unified_builder.extend(0, 0, n);
+                num_distinct = n;
+                // Existing dict keys map directly — no remap needed.
+                existing_dict_keys.as_ref().unwrap().clone().into_owned()
+            } else {
+                // since the original array was not dict encoded, we dedup the values
+                // and build a mapping to dictionary keys
+                match build_values_remap(
+                    existing_values_arr,
+                    0,
+                    &mut value_to_idx,
+                    &mut unified_builder,
+                    &mut num_distinct,
+                    MAX_DICT_CARDINALITY,
+                ) {
+                    Some(remap) => remap,
+                    None => return Ok(None),
+                }
+            };
+            Some(keys)
         }
-        for i in 0..n {
-            let key = array_value_as_bytes(&existing_values_arr, i);
-            let _ = value_to_idx.insert(key, i as u16);
-        }
-        unified_builder.extend(0, 0, n);
-        num_distinct = n;
-        // Existing dict keys map directly — no remap needed.
-        existing_dict_keys.unwrap().into_owned()
-    } else {
-        // since the original array was not dict encoded, we dedup the values
-        // and build a mapping to dictionary keys
-        match build_values_remap(
-            &existing_values_arr,
-            0,
-            &mut value_to_idx,
-            &mut unified_builder,
-            &mut num_distinct,
-            MAX_DICT_CARDINALITY,
-        ) {
-            Some(remap) => remap,
-            None => return Ok(None),
-        }
+        None => None,
     };
 
     // Step 2: For each active upsert, build key mappings and append values to deduped dict values.
@@ -1320,9 +1337,18 @@ fn merge_values_with_unified_dict(
         let count = run.end - run.start;
         match run.owner {
             None => {
-                // Passthrough: copy existing keys.
-                output_keys.extend_from_slice(&unified.existing_keys[run.start..run.end]);
-                mark_valid(&mut nulls, count);
+                // Passthrough: copy existing keys if we have an existing column,
+                // otherwise emit nulls (new column case).
+                match &unified.existing_keys {
+                    Some(existing_keys) => {
+                        output_keys.extend_from_slice(&existing_keys[run.start..run.end]);
+                        mark_valid(&mut nulls, count);
+                    }
+                    None => {
+                        mark_nulls(&mut nulls, output_keys.len(), count);
+                        output_keys.extend(std::iter::repeat_n(0u16, count));
+                    }
+                }
             }
             Some(owner_idx) => {
                 if let Some(active_keys) = &unified.new_keys[owner_idx] {
@@ -1460,6 +1486,10 @@ fn values_column_supports_dictionary_encoding(col_name: &str) -> bool {
 ///
 /// All existing rows are null. Insert rows are interleaved: active upserts contribute values,
 /// inactive upserts contribute nulls.
+///
+/// Strategy: if dictionary encoding is supported for the column, try to build a unified
+/// dictionary first. If that succeeds (cardinality fits in u16), use the dict path. If it
+/// fails (overflow) or dict encoding is not supported, fall back to primitive merge.
 fn create_new_value_column_batched(
     target_col_name: &str,
     resolved: &[ResolvedUpsert<'_>],
@@ -1467,17 +1497,30 @@ fn create_new_value_column_batched(
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
     let supports_dict_encoding = values_column_supports_dictionary_encoding(target_col_name);
-    // Build source arrays for active upserts. Scalars stay as 1-element arrays.
-    #[derive(Clone, Copy)]
-    struct ActiveSource {
-        source_idx: usize,
-        is_scalar: bool,
-        num_updates: usize,
-        num_inserts: usize,
+
+    // Try dict encoding path first if supported.
+    if supports_dict_encoding {
+        if let Some(unified) = try_build_unified_dict_multi(None, resolved, target_col_name)? {
+            let field = Field::new(
+                target_col_name,
+                DataType::Dictionary(
+                    Box::new(DataType::UInt16),
+                    Box::new(unified.values.data_type().clone()),
+                ),
+                true,
+            );
+            return merge_values_with_unified_dict(
+                &field,
+                row_owners,
+                &unified,
+                resolved,
+                total_output_rows,
+            );
+        }
     }
 
+    // Fallback: primitive merge with decoded-to-plain sources.
     let mut source_arrays: Vec<ArrayRef> = Vec::new();
-    // Direct-indexed by upsert_idx: None for inactive upserts.
     let mut active_sources: Vec<Option<ActiveSource>> = vec![None; resolved.len()];
 
     for (i, r) in resolved.iter().enumerate() {
@@ -1486,27 +1529,11 @@ fn create_new_value_column_batched(
         }
         let arr = match &r.new_values_array {
             Some(arr) => Arc::clone(arr),
-            None => r.new_values_scalar.unwrap().to_array()?, // 1-element, NOT expanded
+            None => r.new_values_scalar.unwrap().to_array()?,
         };
         let is_scalar = r.new_values_array.is_none();
-
-        // Dict-encode up front if eligible per the OTAP spec.
-        let arr = if supports_dict_encoding {
-            let field_info = FieldInfo::new_from_array(&arr);
-            let cardinality = estimate_cardinality(&field_info);
-            match cardinality {
-                Cardinality::WithinU8 | Cardinality::WithinU16 => {
-                    let dict_type = DataType::Dictionary(
-                        Box::new(DataType::UInt16),
-                        Box::new(arr.data_type().clone()),
-                    );
-                    cast(&arr, &dict_type)?
-                }
-                Cardinality::GreaterThanU16 => arr,
-            }
-        } else {
-            arr
-        };
+        // Decode to plain (non-dict) for primitive merge.
+        let arr = decode_to_plain(&arr)?;
 
         let source_idx = source_arrays.len();
         source_arrays.push(arr);
@@ -1530,7 +1557,7 @@ fn create_new_value_column_batched(
         let count = run.end - run.start;
         match run.owner {
             None => {
-                // Passthrough: null (column didn't exist before).
+                // For ranges we are not updating, insert nulls (column didn't exist before).
                 mutable.extend_nulls(count);
             }
             Some(owner_idx) => {
@@ -1545,7 +1572,7 @@ fn create_new_value_column_batched(
                         *counter += count;
                     }
                 } else {
-                    // Inactive: null (this upsert changed the type to something else).
+                    // inactive: update must be for a different column. write nulls in this column
                     mutable.extend_nulls(count);
                 }
             }
@@ -1570,6 +1597,7 @@ fn create_new_value_column_batched(
                 );
             }
         } else {
+            // inactive: insert must be for a different column. write nulls in this column
             mutable.extend_nulls(r.num_inserts);
         }
     }
