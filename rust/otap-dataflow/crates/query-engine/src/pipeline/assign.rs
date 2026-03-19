@@ -154,7 +154,7 @@ impl AssignPipelineStage {
             // validate that the assignment is expression is valid for the destination:
             validate_assign(
                 &assignment.dest_column,
-                assignment.dest_query_location.clone(),
+                assignment.dest_query_location,
                 &assignment.source,
             )?;
 
@@ -183,7 +183,7 @@ impl AssignPipelineStage {
                 .map(DataScope::from)
                 .map(Rc::new)
                 .collect(),
-            dest_columns: dest_columns,
+            dest_columns,
             sources: source_physical_exprs,
             projection_contains_value_column,
             id_bitmap_pool: IdBitmapPool::new(),
@@ -383,7 +383,17 @@ impl AssignPipelineStage {
                 // access the ID column from the nested Resource/Scope struct
                 let id_col = root_record_batch
                     .column_by_name(struct_col_name)
-                    .map(|s| s.as_any().downcast_ref::<StructArray>().unwrap())
+                    .map(|s| {
+                        s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                            Error::ExecutionError {
+                                cause: format!(
+                                    "invalid struct column. found type {:?}",
+                                    s.data_type()
+                                ),
+                            }
+                        })
+                    })
+                    .transpose()?
                     .and_then(|s| s.column_by_name(consts::ID));
                 (payload_type, id_col)
             }
@@ -454,7 +464,12 @@ impl AssignPipelineStage {
             let update_parent_ids_u16 = update_parent_ids
                 .as_any()
                 .downcast_ref::<UInt16Array>()
-                .unwrap();
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "invalid ID column. expected u16 type, found {:?}",
+                        update_parent_ids.data_type()
+                    ),
+                })?;
             let mut update_parent_id_set = self.id_bitmap_pool.acquire();
             update_parent_id_set.populate(update_parent_ids_u16.iter().flatten().map(|i| i.into()));
 
@@ -497,17 +512,17 @@ impl AssignPipelineStage {
                     DataScope::Attributes(result_attrs_id, _) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
-                                &left_join_input,
+                                left_join_input,
                                 &eval_result,
                                 &otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(&left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
                     DataScope::Root => RootAttrsToRootJoin::new().rows_to_take(
-                        &left_join_input,
+                        left_join_input,
                         &eval_result,
                         &otap_batch,
                     )?,
@@ -533,7 +548,7 @@ impl AssignPipelineStage {
         self.id_bitmap_pool.release(parent_id_set);
 
         // replace attributes batch
-        let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
+        let new_attrs = upsert_attributes(attrs_record_batch, &attrs_upserts)?;
         otap_batch.set(attrs_payload_type, new_attrs);
 
         Ok(otap_batch)
@@ -577,7 +592,7 @@ impl AssignPipelineStage {
                 // assign new IDs
                 let mut max_id = max(id_col).unwrap_or(0);
                 let mut new_ids = id_col.values().to_vec();
-                for i in 0..id_col.len() {
+                for (i, new_id) in new_ids.iter_mut().enumerate().take(id_col.len()) {
                     if id_col.is_null(i) {
                         // unfortunate error, but nothing we can really do here
                         if max_id == u16::MAX {
@@ -588,7 +603,7 @@ impl AssignPipelineStage {
                             });
                         }
                         max_id += 1;
-                        new_ids[i] = max_id;
+                        *new_id = max_id
                     }
                 }
 
@@ -669,7 +684,7 @@ impl PipelineStage for AssignPipelineStage {
                 Some(eval_result) => {
                     self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
                 }
-                None => self.assign_null_root_column(otap_batch, &dest_col_name),
+                None => self.assign_null_root_column(otap_batch, dest_col_name),
             }?;
         }
 

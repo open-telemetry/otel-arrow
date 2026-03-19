@@ -200,13 +200,12 @@ pub(crate) fn upsert_attributes(
             }
         };
 
-        let required_col = match col_name {
+        let keep_column = match col_name {
+            // for required columns always keep it
             consts::PARENT_ID | consts::ATTRIBUTE_TYPE | consts::ATTRIBUTE_KEY => true,
-            _ => false,
+            // for non-required columns, only keep it if it's not all null
+            _ => merged_col.null_count() < merged_col.len(),
         };
-
-        // only keep the column if it's required, or if it's not entirely null
-        let keep_column = required_col || merged_col.null_count() < merged_col.len();
 
         if keep_column {
             output_fields.push(Arc::new(merged_field));
@@ -309,7 +308,8 @@ fn build_row_owners(num_existing: usize, resolved: &[ResolvedUpsert<'_>]) -> Vec
         let mut best: Option<(usize, usize, usize)> = None; // (iter_idx, start, end)
         for (i, iter) in iters.iter_mut().enumerate() {
             if let Some(&(start, end)) = iter.peek() {
-                if best.is_none() || start < best.unwrap().1 {
+                // safety: we can expect because we've checked it's None in LHS of ||
+                if best.is_none() || start < best.expect("best set").1 {
                     best = Some((i, start, end));
                 }
             }
@@ -792,7 +792,7 @@ fn merge_key_column_plain(
     // Build the offsets buffer: existing offsets + insert offsets.
     let mut offsets_buf = MutableBuffer::with_capacity((total_output_rows + 1) * size_of::<i32>());
     offsets_buf.extend_from_slice(existing_offsets.inner().as_ref());
-    let mut offset = *existing_offsets.last().unwrap();
+    let mut offset = *existing_offsets.last().unwrap_or(&0);
     for &(key_str, count) in insert_keys {
         let key_len = key_str.len() as i32;
         for _ in 0..count {
@@ -810,12 +810,7 @@ fn merge_key_column_plain(
 
 /// Search for a value in the string array. Returns the index if found.
 fn index_of(string_arr: &StringArray, value: &str) -> Option<usize> {
-    for i in 0..string_arr.len() {
-        if string_arr.value(i) == value {
-            return Some(i);
-        }
-    }
-    None
+    (0..string_arr.len()).find(|&i| string_arr.value(i) == value)
 }
 
 /// Append a strings to a StringArray's underlying buffers, returning a new ArrayRef.
@@ -836,9 +831,9 @@ fn append_strings(existing: &StringArray, new_values: &[&str]) -> ArrayRef {
     let new_num_values = existing.len() + new_values.len();
     let mut offsets_buf = MutableBuffer::with_capacity((new_num_values + 1) * size_of::<i32>());
     offsets_buf.extend_from_slice(existing_offsets.inner().as_ref());
-    let mut prev_offset = *existing_offsets.last().unwrap();
+    let mut prev_offset = *existing_offsets.last().unwrap_or(&0);
     for new_value in new_values {
-        let next_offset = prev_offset + new_value.as_bytes().len() as i32;
+        let next_offset = prev_offset + new_value.len() as i32;
         offsets_buf.push(next_offset);
         prev_offset = next_offset;
     }
@@ -922,7 +917,12 @@ fn merge_value_column(
         let resolved_upsert = &resolved[active_idx];
         let arr = match &resolved_upsert.new_values_array {
             Some(arr) => Arc::clone(arr),
-            None => resolved_upsert.new_values_scalar.unwrap().to_array()?,
+            // safety: OK to expect here because when we construct resolved upsert, we set either
+            // the new_values_array as Some or new_values_scalar to Some, never neither
+            None => resolved_upsert
+                .new_values_scalar
+                .expect("is scalar")
+                .to_array()?,
         };
         let is_scalar = resolved_upsert.new_values_array.is_none();
         let arr = decode_to_plain(&arr)?;
@@ -1058,8 +1058,8 @@ struct UnifiedDictMulti {
 ///
 /// Scalars are handled efficiently — only one value is added to the dict, producing an
 /// `ActiveKeys::Scalar(key)` that the merge phase can broadcast without expansion.
-fn try_build_unified_dict_multi<'a>(
-    existing_col: Option<&'a ArrayRef>,
+fn try_build_unified_dict_multi(
+    existing_col: Option<&ArrayRef>,
     resolved: &[ResolvedUpsert<'_>],
     col_name: &str,
 ) -> Result<Option<UnifiedDictMulti>> {
@@ -1079,7 +1079,9 @@ fn try_build_unified_dict_multi<'a>(
         }
         let (arr, is_scalar) = match &r.new_values_array {
             Some(arr) => (Arc::clone(arr), false),
-            None => (r.new_values_scalar.unwrap().to_array()?, true),
+            // safety: OK to expect here because when we construct resolved upsert, we set either
+            // the new_values_array as Some or new_values_scalar to Some, never neither
+            None => (r.new_values_scalar.expect("is scalar").to_array()?, true),
         };
         maybe_scalar_arrays[i] = Some((arr, is_scalar));
     }
@@ -1098,7 +1100,7 @@ fn try_build_unified_dict_multi<'a>(
         };
         let (values_arr, dict_keys) = match arr.data_type() {
             DataType::Dictionary(key_type, _) => {
-                let (vals, keys) = extract_dict_any_info(&arr, key_type)?;
+                let (vals, keys) = extract_dict_any_info(arr, key_type)?;
                 (vals, Some(keys))
             }
             _ => (Arc::clone(arr), None),
@@ -1234,7 +1236,10 @@ fn try_build_unified_dict_multi<'a>(
                 }
 
                 // Remap existing keys. Updated rows get placeholder 0 (will be overwritten).
-                dict_keys.iter().map(|&old_key| old_to_new[old_key as usize]).collect()
+                dict_keys
+                    .iter()
+                    .map(|&old_key| old_to_new[old_key as usize])
+                    .collect()
             } else {
                 // Non-dict existing column: only add live (passthrough) rows to the unified
                 // dict, deduplicating as we go.
@@ -1399,20 +1404,25 @@ fn build_values_remap<'a>(
 /// Handles the types that can be dictionary-encoded in OTAP attribute value columns:
 /// Utf8 (str), Int64 (int), and Binary (bytes, ser). Returns an error if any other
 /// type is passed.
-fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Result<Option<&'a [u8]>> {
+fn array_value_as_bytes(arr: &ArrayRef, idx: usize) -> Result<Option<&[u8]>> {
     if arr.is_null(idx) {
         return Ok(None);
     }
     match arr.data_type() {
         DataType::Utf8 => {
-            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            let str_arr = arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                // safety: we've checked the data type as part of match statement
+                .expect("is utf8");
             Ok(Some(str_arr.value(idx).as_bytes()))
         }
         DataType::Int64 => {
             let int_arr = arr
                 .as_any()
                 .downcast_ref::<arrow::array::Int64Array>()
-                .unwrap();
+                // safety: we've checked the data type as part of match statement
+                .expect("is int64");
             let buf: &[u8] = int_arr.values().inner().as_slice();
             let offset = idx * size_of::<i64>();
             Ok(Some(&buf[offset..offset + size_of::<i64>()]))
@@ -1421,7 +1431,8 @@ fn array_value_as_bytes<'a>(arr: &'a ArrayRef, idx: usize) -> Result<Option<&'a 
             let bin_arr = arr
                 .as_any()
                 .downcast_ref::<arrow::array::BinaryArray>()
-                .unwrap();
+                // safety: we've checked the data type as part of match statement
+                .expect("is binary");
             Ok(Some(bin_arr.value(idx)))
         }
         other => Err(Error::ExecutionError {
@@ -1562,6 +1573,7 @@ fn merge_values_with_unified_dict(
 /// that are no longer referenced by any key. We should scan the remaining keys to detect
 /// unreferenced dict values and either compact the dictionary or fall back to plain encoding.
 /// Without this, the dictionary accumulates dead values over repeated upserts.
+/// Fix this when handling https://github.com/open-telemetry/otel-arrow/issues/2313
 fn merge_passthrough_column(
     field: &Field,
     existing_col: &ArrayRef,
@@ -1611,10 +1623,7 @@ fn merge_passthrough_column(
 /// it is expected that the argument is a valid values column name. If it receives an invalid
 /// column name, is will not return an error but the result is meaningless.
 fn values_column_supports_dictionary_encoding(col_name: &str) -> bool {
-    match col_name {
-        consts::ATTRIBUTE_BOOL | consts::ATTRIBUTE_DOUBLE => false,
-        _ => true,
-    }
+    !matches!(col_name, consts::ATTRIBUTE_BOOL | consts::ATTRIBUTE_DOUBLE)
 }
 
 /// Create a new value column for a batched upsert (column didn't exist in the existing batch).
@@ -1664,7 +1673,9 @@ fn create_new_value_column_batched(
         }
         let arr = match &r.new_values_array {
             Some(arr) => Arc::clone(arr),
-            None => r.new_values_scalar.unwrap().to_array()?,
+            // safety: OK to expect here because when we construct resolved upsert, we set either
+            // the new_values_array as Some or new_values_scalar to Some, never neither
+            None => r.new_values_scalar.expect("scalar").to_array()?,
         };
         let is_scalar = r.new_values_array.is_none();
         // Decode to plain (non-dict) for primitive merge.
@@ -2533,7 +2544,7 @@ mod tests {
                 attrs_key: "y",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2596,8 +2607,7 @@ mod tests {
         //
         // Expected: the output str column's dictionary values should contain "public" and
         // "REDACTED" but NOT "secret".
-        let existing =
-            build_attrs_batch(&[(0, "x", 1, "secret"), (1, "x", 1, "public")]);
+        let existing = build_attrs_batch(&[(0, "x", 1, "secret"), (1, "x", 1, "public")]);
         let mask = BooleanArray::from(vec![true, false]);
         let upsert_parent_ids = UInt16Array::from(vec![0u16, 2]);
         let new_values = ColumnarValue::Scalar(ScalarValue::Utf8(Some("REDACTED".into())));
@@ -2608,7 +2618,7 @@ mod tests {
                 attrs_key: "x",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2671,7 +2681,7 @@ mod tests {
                 attrs_key: "z",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2760,7 +2770,7 @@ mod tests {
                 attrs_key: "y",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2811,7 +2821,7 @@ mod tests {
                 attrs_key: "z",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2866,7 +2876,7 @@ mod tests {
         //   Row 0: parent_id=0, key="x", type=Str(1), str="a"
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
-        // Upsert: attributes["temp"] = 3.14f64
+        // Upsert: attributes["temp"] = 3.00f64
         //   Neither parent has key "temp" → both are inserts.
         //
         // Expected output (4 rows):
@@ -2877,7 +2887,7 @@ mod tests {
         let existing = build_attrs_batch(&[(0, "x", 1, "a"), (1, "x", 1, "b")]);
         let mask = BooleanArray::from(vec![false, false]);
         let upsert_parent_ids = UInt16Array::from(vec![0u16, 1]);
-        let new_values = ColumnarValue::Scalar(ScalarValue::Float64(Some(3.14)));
+        let new_values = ColumnarValue::Scalar(ScalarValue::Float64(Some(3.00)));
 
         let result = upsert_attributes(
             &existing,
@@ -2885,7 +2895,7 @@ mod tests {
                 attrs_key: "temp",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();
@@ -2907,8 +2917,8 @@ mod tests {
             .unwrap();
         assert!(doubles.is_null(0)); // passthrough
         assert!(doubles.is_null(1)); // passthrough
-        assert!((doubles.value(2) - 3.14).abs() < f64::EPSILON); // insert
-        assert!((doubles.value(3) - 3.14).abs() < f64::EPSILON); // insert
+        assert!((doubles.value(2) - 3.00).abs() < f64::EPSILON); // insert
+        assert!((doubles.value(3) - 3.00).abs() < f64::EPSILON); // insert
 
         // Check type column: existing keep Str(1), inserts get Double(3).
         let types = result
@@ -2951,7 +2961,7 @@ mod tests {
                 attrs_key: "flag",
                 existing_key_mask: mask,
                 new_values,
-                upsert_parent_ids: upsert_parent_ids,
+                upsert_parent_ids,
             }],
         )
         .unwrap();

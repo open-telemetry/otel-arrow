@@ -236,6 +236,7 @@ impl IdBitmap {
     }
 
     /// Returns an iterator over IDs present in the bitmap.
+    #[must_use]
     pub fn iter(&self) -> IdBitmapIter<'_> {
         IdBitmapIter::new(self)
     }
@@ -331,7 +332,7 @@ impl Iterator for IdBitmapIter<'_> {
             if self.current_word != 0 {
                 let bit = self.current_word.trailing_zeros();
                 self.current_word &= self.current_word - 1;
-                let id = (self.page_idx as u32) << 16 | ((self.word_idx as u32) - 1) * 64 | bit;
+                let id = ((self.page_idx as u32) << 16) | (((self.word_idx as u32) - 1) * 64) | bit;
                 return Some(id);
             }
 

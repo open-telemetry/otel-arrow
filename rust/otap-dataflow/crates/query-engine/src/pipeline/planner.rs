@@ -136,10 +136,7 @@ impl PipelinePlanner {
 
     fn as_set_exp(data_expr: &DataExpression) -> Option<&SetTransformExpression> {
         match data_expr {
-            DataExpression::Transform(transform_exor) => match transform_exor {
-                TransformExpression::Set(s) => Some(s),
-                _ => None,
-            },
+            DataExpression::Transform(TransformExpression::Set(s)) => Some(s),
             _ => None,
         }
     }
