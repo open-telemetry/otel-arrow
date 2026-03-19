@@ -41,6 +41,7 @@ groups:
                 dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
                 stream_name: "Custom-MyTable_CL"
                 dcr: "dcr-abc123"
+                azure_monitor_source_resourceid: "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.Kubernetes/connectedClusters/<cluster-name>/providers/microsoft.kubernetesconfiguration/extensions/<extension-name>" # Azure Specific - Optional
                 schema:
                   resource_mapping:
                     "service.name": "ServiceName"
