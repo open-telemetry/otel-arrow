@@ -1,6 +1,6 @@
 [package]
-name = "otap-df-otap"
-description = "OTAP nodes"
+name = "otap-df-common"
+description = "Common shared infrastructure for OTAP dataflow (transport, utilities, test support)"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -18,7 +18,7 @@ use otap_df_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use otap_df_engine::testing::exporter::create_test_pipeline_context;
 use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_engine::topic::{TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet};
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::reporter::MetricsReporter;
 use prost::Message as _;

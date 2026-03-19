@@ -43,7 +43,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_common::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 /// URN for the fan-out processor.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout";
@@ -1206,8 +1206,8 @@ mod tests {
     use otap_df_engine::message::Sender;
     use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
     use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::{next_ack, next_nack};
+    use otap_df_common::pdata::Context;
+    use otap_df_common::testing::{next_ack, next_nack};
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
@@ -2344,7 +2344,7 @@ mod tests {
     /// 4. Fanout should propagate the ack to the original receiver (not to itself)
     #[tokio::test]
     async fn upstream_ack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otap_df_common::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2417,7 +2417,7 @@ mod tests {
     /// Test that verifies upstream nack is routed to the correct node with correct calldata.
     #[tokio::test]
     async fn upstream_nack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otap_df_common::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),

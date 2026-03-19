@@ -6,7 +6,7 @@ pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;
 use self::processor::RecordsetKqlProcessor;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{

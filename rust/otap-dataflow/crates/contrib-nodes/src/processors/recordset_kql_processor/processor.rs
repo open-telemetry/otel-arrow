@@ -3,7 +3,7 @@
 
 use super::config::RecordsetKqlProcessorConfig;
 use super::create_recordset_kql_processor;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use data_engine_recordset::RecordSetEngineDiagnosticLevel;
@@ -31,7 +31,7 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset
 
 /// OTAP KQL Processor
 #[allow(unsafe_code)]
-#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
+#[distributed_slice(otap_df_common::OTAP_PROCESSOR_FACTORIES)]
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
@@ -297,7 +297,7 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_common::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,

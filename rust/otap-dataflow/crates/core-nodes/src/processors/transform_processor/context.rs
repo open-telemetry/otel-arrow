@@ -7,7 +7,7 @@
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 
-use otap_df_otap::{
+use otap_df_common::{
     accessory::slots::{Key, State},
     pdata::Context,
 };
@@ -152,7 +152,7 @@ impl Contexts {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_otap::testing::create_test_pdata;
+    use otap_df_common::testing::create_test_pdata;
     use std::num::NonZeroUsize;
 
     fn new_contexts() -> Contexts {

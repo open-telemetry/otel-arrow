@@ -54,8 +54,8 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_PROCESSOR_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -1375,7 +1375,7 @@ mod tests {
         };
         use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
-        use otap_df_otap::pdata::OtapPdata;
+        use otap_df_common::pdata::OtapPdata;
         use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;

@@ -45,9 +45,9 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_common::OTAP_PROCESSOR_FACTORIES;
+use otap_df_common::accessory::slots::{Key as SlotKey, State as SlotState};
+use otap_df_common::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
     otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
@@ -1342,9 +1342,9 @@ mod tests {
     use otap_df_engine::node::Node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::TestCallData;
-    use otap_df_otap::testing::{next_ack, next_nack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::TestCallData;
+    use otap_df_common::testing::{next_ack, next_nack};
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::OtlpProtoMessage;

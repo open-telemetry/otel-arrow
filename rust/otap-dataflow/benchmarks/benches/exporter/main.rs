@@ -20,7 +20,7 @@ use otap_df_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_common::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
@@ -61,7 +61,7 @@ use tonic::{Request, Response, Status};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
-use otap_df_otap::otlp_grpc::OTLPData;
+use otap_df_common::otlp_grpc::OTLPData;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::pin::Pin;

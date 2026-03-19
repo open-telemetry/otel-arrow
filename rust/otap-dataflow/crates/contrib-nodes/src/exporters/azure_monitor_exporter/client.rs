@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn create_test_http_client() -> Client {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(4);
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients_zero() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(0);

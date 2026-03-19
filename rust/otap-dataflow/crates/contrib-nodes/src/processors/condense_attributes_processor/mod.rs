@@ -39,8 +39,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_PROCESSOR_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -685,8 +685,8 @@ mod condense_tests {
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, next_nack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{TestCallData, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::{

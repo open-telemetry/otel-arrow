@@ -22,9 +22,9 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_EXPORTER_FACTORIES;
+use otap_df_common::metrics::ExporterPDataMetrics;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::encode::producer::ProducerOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
@@ -502,10 +502,10 @@ mod tests {
     use crate::exporters::otap_exporter::OTAP_EXPORTER_URN;
     use crate::exporters::otap_exporter::OTAPExporter;
     use crate::exporters::otap_exporter::config::ArrowPayloadCompression;
-    use otap_df_otap::otap_mock::{
+    use otap_df_common::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
-    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_common::pdata::OtapPdata;
 
     use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
@@ -529,7 +529,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::compression::CompressionMethod;
+    use otap_df_common::compression::CompressionMethod;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus,

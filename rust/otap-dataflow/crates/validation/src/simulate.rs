@@ -5,7 +5,7 @@ use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_common::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};

@@ -35,7 +35,7 @@ otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
-otap-df-otap.workspace = true
+otap-df-common.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
@@ -53,7 +53,7 @@ otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
-otap-df-otap = { path = "crates/otap" }
+otap-df-common = { path = "crates/common" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
@@ -212,8 +212,8 @@ wiremock = "0.6.5"
 default = ["jemalloc", "crypto-ring", "dev-tools"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
-azure = ["otap-df-otap/azure"]
-aws = ["otap-df-otap/aws"]
+azure = ["otap-df-common/azure"]
+aws = ["otap-df-common/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
@@ -222,13 +222,13 @@ unchecked-arithmetic = []
 dev-tools = ["otap-df-core-nodes/dev-tools"]
 
 # Experimental features
-experimental-tls = ["otap-df-otap/experimental-tls"]
+experimental-tls = ["otap-df-common/experimental-tls"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
-crypto-ring = ["otap-df-otap/crypto-ring"]
-crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
-crypto-openssl = ["otap-df-otap/crypto-openssl"]
+crypto-ring = ["otap-df-common/crypto-ring"]
+crypto-aws-lc = ["otap-df-common/crypto-aws-lc"]
+crypto-openssl = ["otap-df-common/crypto-openssl"]
 
 # Contrib exporters (opt-in) - now in contrib-nodes
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]

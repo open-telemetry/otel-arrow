@@ -50,9 +50,9 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_EXPORTER_FACTORIES;
+use otap_df_common::metrics::ExporterPDataMetrics;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -157,7 +157,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        let object_store = otap_df_otap::object_store::from_storage_type(&self.config.storage)
+        let object_store = otap_df_common::object_store::from_storage_type(&self.config.storage)
             .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
@@ -444,7 +444,7 @@ mod test {
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::object_store;
+    use otap_df_common::object_store;
     use otap_df_pdata::Consumer;
     use otap_df_pdata::otap::from_record_messages;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;

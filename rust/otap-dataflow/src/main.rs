@@ -20,7 +20,7 @@ use otap_df_controller::Controller;
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_common::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
 
@@ -291,7 +291,7 @@ fn validate_engine_components(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
-    otap_df_otap::crypto::install_crypto_provider()
+    otap_df_common::crypto::install_crypto_provider()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let Args {

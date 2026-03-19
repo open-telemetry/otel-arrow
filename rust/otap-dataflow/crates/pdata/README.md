@@ -46,7 +46,7 @@ bytes from OTAP records to a `&mut ProtoBuffer` output, likewise for
 `metrics::Metrics` and `traces::Traces`.
 
 In the OTAP-Dataflow engine, see
-`otap_df_otap::pdata::TryFrom<OtapArrowRecords>` for example, to
+`otap_df_common::pdata::TryFrom<OtapArrowRecords>` for example, to
 translate from OTLP bytes into OTAP records.
 
 ### OTLP bytes to OTAP records
@@ -63,7 +63,7 @@ This translation into records is:
 
 1. `otap_df_pdata_views::otlp::bytes::logs::RawLogsData`: Construct a
   view over the OTLP bytes for zero-copy traversal
-2. `otap_df_otap::encoder::encode_logs_otap_batch<T: LogsDataView>()`
+2. `otap_df_common::encoder::encode_logs_otap_batch<T: LogsDataView>()`
   is a function to build OTAP records in a traversal
 3. `otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder`
   is a OTel-Arrow builder which assembles Arrow arrays as the output of traversal.

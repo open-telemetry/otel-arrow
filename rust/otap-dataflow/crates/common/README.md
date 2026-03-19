@@ -1,8 +1,8 @@
-# OTAP Pipeline
+# Common Infrastructure
 
-The OTAP (OpenTelemetry Arrow Protocol) crate now primarily contains shared OTAP
-and OTLP transport infrastructure, pdata types, TLS/compression helpers, and
-test support used by node implementations in other crates.
+The common crate contains shared infrastructure used across OTAP dataflow components,
+including OTAP and OTLP transport support, pdata types, TLS/compression helpers, and
+test utilities used by node implementations in other crates.
 
 Core node implementations live in `crates/core-nodes`.
 

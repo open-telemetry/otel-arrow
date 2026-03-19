@@ -12,7 +12,7 @@
 //! Valid-config paths are already covered by the CI `validate-configs.sh` script
 //! which runs `--validate-and-exit` against every example YAML in the repo.
 
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_common::OTAP_PIPELINE_FACTORY;
 use serde_json::json;
 
 // Keep this side-effect import so the crate is linked and its `linkme`

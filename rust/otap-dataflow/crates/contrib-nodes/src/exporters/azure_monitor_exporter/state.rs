@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use otap_df_otap::pdata::Context;
+use otap_df_common::pdata::Context;
 use otap_df_pdata::OtapPayload;
 
 /// Tracks relationships between batches ⇄ messages + their data.
@@ -143,7 +143,7 @@ impl AzureMonitorExporterState {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_otap::pdata::Context;
+    use otap_df_common::pdata::Context;
     use otap_df_pdata::otlp::OtlpProtoBytes;
 
     /// Helper to create a test OtapPayload from bytes

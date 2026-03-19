@@ -24,8 +24,8 @@ use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, Subscript
 use otap_df_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_RECEIVER_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -438,8 +438,8 @@ mod tests {
         PipelineTopicBinding, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
         TrackedPublishOutcome,
     };
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{create_test_pdata, next_ack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{create_test_pdata, next_ack};
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;

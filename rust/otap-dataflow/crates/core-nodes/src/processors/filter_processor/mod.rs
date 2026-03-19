@@ -25,7 +25,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_common::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -212,7 +212,7 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_common::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,

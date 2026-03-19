@@ -17,13 +17,13 @@
 //! Periodic telemetry snapshots update the `OtlpReceiverMetrics` counters, which focus on ACK/NACK
 //! behaviour today.
 
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::otap_grpc::otlp::server_new::{
+use otap_df_common::OTAP_RECEIVER_FACTORIES;
+use otap_df_common::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer,
 };
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 #[cfg(feature = "experimental-tls")]
-use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otap_df_common::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -37,12 +37,12 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::otap_grpc::common;
-use otap_df_otap::otap_grpc::common::AckRegistry;
-use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
-use otap_df_otap::otlp_http::HttpServerSettings;
-use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
-use otap_df_otap::shared_concurrency::SharedConcurrencyLayer;
+use otap_df_common::otap_grpc::common;
+use otap_df_common::otap_grpc::common::AckRegistry;
+use otap_df_common::otap_grpc::server_settings::GrpcServerSettings;
+use otap_df_common::otlp_http::HttpServerSettings;
+use otap_df_common::otlp_metrics::OtlpReceiverMetrics;
+use otap_df_common::shared_concurrency::SharedConcurrencyLayer;
 use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -276,7 +276,7 @@ impl OTLPReceiver {
             common::tune_max_concurrent_requests(grpc, downstream_capacity);
         }
         if let Some(http) = self.config.protocols.http.as_mut() {
-            otap_df_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
+            otap_df_common::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
         }
     }
 
@@ -315,13 +315,13 @@ impl OTLPReceiver {
         };
 
         let logs_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otap_df_common::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let metrics_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otap_df_common::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let traces_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otap_df_common::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
 
         // Build gRPC service servers only if gRPC is enabled.
@@ -595,7 +595,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let http_shutdown = CancellationToken::new();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
-                Some(Box::pin(otap_df_otap::otlp_http::serve(
+                Some(Box::pin(otap_df_common::otlp_http::serve(
                     effect_handler.clone(),
                     http_config,
                     ack_registry.clone(),
@@ -752,8 +752,8 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::compression::CompressionMethod;
-    use otap_df_otap::testing::{next_ack, next_nack};
+    use otap_df_common::compression::CompressionMethod;
+    use otap_df_common::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
@@ -2531,7 +2531,7 @@ mod tests {
                 assert!(!body.is_empty(), "Response body should contain NACK reason");
 
                 // Decode the RpcStatus response
-                let rpc_status = otap_df_otap::otlp_http::RpcStatus::decode(body.as_ref())
+                let rpc_status = otap_df_common::otlp_http::RpcStatus::decode(body.as_ref())
                     .expect("Should decode RpcStatus");
 
                 // Verify the NACK reason is included

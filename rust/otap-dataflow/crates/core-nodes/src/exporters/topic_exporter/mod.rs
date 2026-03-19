@@ -23,8 +23,8 @@ use otap_df_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedTryPublishOutcome,
 };
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_EXPORTER_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -379,8 +379,8 @@ mod tests {
         PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
         TopicBroker, TopicOptions, TopicSet,
     };
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;

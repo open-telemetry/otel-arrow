@@ -29,7 +29,7 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_common::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
@@ -683,13 +683,13 @@ mod tests {
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
-    use otap_df_otap::pdata::Context;
+    use otap_df_common::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
     fn create_test_pipeline_ctx() -> PipelineContext {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)

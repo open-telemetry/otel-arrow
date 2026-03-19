@@ -16,8 +16,8 @@ use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_RECEIVER_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -35,7 +35,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 #[cfg(feature = "experimental-tls")]
-use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
+use otap_df_common::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_debug;
 

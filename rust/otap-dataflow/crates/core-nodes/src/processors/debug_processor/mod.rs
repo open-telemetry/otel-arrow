@@ -28,7 +28,7 @@ use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_common::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
@@ -566,8 +566,8 @@ mod tests {
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::processor::{TestContext, ValidateContext};
     use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1432,7 +1432,7 @@ mod tests {
     fn test_debug_processor_forwards_ack_upstream() {
         use otap_df_engine::Interests;
         use otap_df_engine::control::{AckMsg, PipelineControlMsg};
-        use otap_df_otap::testing::TestCallData;
+        use otap_df_common::testing::TestCallData;
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_ack_test.txt");
@@ -1484,7 +1484,7 @@ mod tests {
     fn test_debug_processor_forwards_nack_upstream() {
         use otap_df_engine::Interests;
         use otap_df_engine::control::{NackMsg, PipelineControlMsg};
-        use otap_df_otap::testing::TestCallData;
+        use otap_df_common::testing::TestCallData;
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_nack_test.txt");

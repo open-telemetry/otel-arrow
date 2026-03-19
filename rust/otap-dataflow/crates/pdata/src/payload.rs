@@ -67,7 +67,7 @@
 //!                                          │                 │
 //!                                          │                 │
 //!                                          ▼                 │
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
+//!    otap_df_common::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
 //!                                          │                 ▲
 //!                                          │                 │
 //!                                          │                 │

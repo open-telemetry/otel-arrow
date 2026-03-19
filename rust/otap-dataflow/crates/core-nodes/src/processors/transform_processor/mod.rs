@@ -33,7 +33,7 @@ use otap_df_engine::{
     processor::ProcessorWrapper,
 };
 use otap_df_opl::parser::OplParser;
-use otap_df_otap::{
+use otap_df_common::{
     OTAP_PROCESSOR_FACTORIES,
     accessory::slots::Key,
     pdata::{Context, OtapPdata},
@@ -452,7 +452,7 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
-    use otap_df_otap::{
+    use otap_df_common::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
     };

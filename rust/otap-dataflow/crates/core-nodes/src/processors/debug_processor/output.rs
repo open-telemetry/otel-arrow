@@ -15,7 +15,7 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::proto::{
     OtlpProtoMessage,
     opentelemetry::{

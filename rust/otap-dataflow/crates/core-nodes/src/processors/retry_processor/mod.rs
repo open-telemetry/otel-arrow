@@ -14,7 +14,7 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -319,7 +319,7 @@ impl RetryProcessorMetrics {
 
 /// OTAP RetryProcessor
 #[allow(unsafe_code)]
-#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
+#[distributed_slice(otap_df_common::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
@@ -687,8 +687,8 @@ mod test {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::{Interests, message::Message};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;

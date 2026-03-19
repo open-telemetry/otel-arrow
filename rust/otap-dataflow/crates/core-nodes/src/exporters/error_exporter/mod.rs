@@ -14,8 +14,8 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_EXPORTER_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -103,7 +103,7 @@ impl Exporter<OtapPdata> for ErrorExporter {
 mod tests {
     use super::*;
     use otap_df_engine::Interests;
-    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
+    use otap_df_common::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
     use serde_json::json;
 
     #[test]

@@ -63,9 +63,9 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_EXPORTER_FACTORIES;
+use otap_df_common::metrics::ExporterPDataMetrics;
+use otap_df_common::pdata::OtapPdata;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
@@ -707,7 +707,7 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineControlMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
+    use otap_df_common::testing::{TestCallData, next_ack, next_nack};
     use std::time::{Duration, Instant};
 
     // TODO: Re-enable these imports when zero-copy view tests are uncommented

@@ -224,7 +224,7 @@ data.
 
 Some components will require dedicated space that does not fit the
 calldata pattern, they will have to manage their own state. See the
-`otap_df_otap::accessory::slots::State` structure as an example that
+`otap_df_common::accessory::slots::State` structure as an example that
 supports a limited number of slots for user-defined storage with a
 built-in `CallData` type.
 

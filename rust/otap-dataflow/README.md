@@ -60,9 +60,9 @@ are the major aspects of its design:
   we choose single-threaded `local` components when possible.
 
 The basic unit of data in an OTAP Dataflow pipeline is the OTAP
-pipeline data object, `otap_df_otap::pdata::OtapPdata`. In the
+pipeline data object, `otap_df_common::pdata::OtapPdata`. In the
 hierarchy of types a pipeline component interacts with, this crate
-`otap_df_otap::pdata` crate is a focal point. The `OtapPdata` data
+`otap_df_common::pdata` crate is a focal point. The `OtapPdata` data
 type is a struct consisting of "context" and "payload", where context
 is used for routing "Ack" and "Nack" responses, and payload has two
 equivalent, signal-specific representations:
@@ -122,12 +122,12 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 |-- runtime_pipeline.rs: Builds the graph of component channels
 ```
 
-### OTAP: OTel-Arrow Protocol pipeline data
+### Common: Shared infrastructure
 
-[See crate README.](./crates/otap/README.md)
+[See crate README.](./crates/common/README.md)
 The OTAP pipeline data type is defined here, therefore all of our
 built-in components are provided here as well.  The main entry point
-into this crate is the `otap_df_otap::pdata::OtapPdata` type with its
+into this crate is the `otap_df_common::pdata::OtapPdata` type with its
 two alternate representations, OTAP records and OTLP bytes, specific
 by signal type.
 
@@ -142,7 +142,7 @@ Here are the key files to know that support the components in this
 crate:
 
 ```text
-crates/otap/lib.rs:      OTAP Dataflow pipeline factory
+crates/common/lib.rs:      OTAP Dataflow pipeline factory
 |-- compression.rs:      OTLP and OTAP compression settings
 |-- encoder.rs:          Computes OTAP from OTLP view representations
 |-- metrics.rs           Metrics logic shared by several components

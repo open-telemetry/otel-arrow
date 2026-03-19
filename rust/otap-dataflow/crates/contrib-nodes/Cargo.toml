@@ -17,7 +17,7 @@ workspace = true
 otap-df-config = { path = "../config" }
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
-otap-df-otap = { path = "../otap" }
+otap-df-common = { path = "../common" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { path = "../telemetry" }
@@ -93,7 +93,7 @@ resource-validator-processor = []
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
-otap-df-otap = { path = "../otap", features = ["test-utils"] }
+otap-df-common = { path = "../common", features = ["test-utils"] }
 pretty_assertions.workspace = true
 wiremock.workspace = true
 

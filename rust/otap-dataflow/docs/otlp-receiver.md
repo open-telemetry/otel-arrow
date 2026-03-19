@@ -644,4 +644,4 @@ is lost when the process terminates:
    request timeout (default 30s) and coded in sync with it; if the default
    changes in code, update this doc accordingly.
 
-[shared-concurrency]: ../crates/otap/src/shared_concurrency.rs
+[shared-concurrency]: ../crates/common/src/shared_concurrency.rs

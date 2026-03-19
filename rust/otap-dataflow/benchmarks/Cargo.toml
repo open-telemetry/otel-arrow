@@ -13,7 +13,7 @@ arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 otap-df-core-nodes = { path = "../crates/core-nodes", features = ["dev-tools"] }
-otap-df-otap = { path = "../crates/otap" }
+otap-df-common = { path = "../crates/common" }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }

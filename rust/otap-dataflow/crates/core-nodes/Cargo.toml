@@ -17,7 +17,7 @@ otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-engine = { path = "../engine" }
 otap-df-opl = { path = "../opl" }
-otap-df-otap = { path = "../otap" }
+otap-df-common = { path = "../common" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-pdata-views = { workspace = true }
 otap-df-query-engine = { path = "../query-engine" }
@@ -64,7 +64,7 @@ weaver_resolver = { workspace = true, optional = true }
 weaver_semconv = { workspace = true, optional = true }
 
 [features]
-experimental-tls = ["otap-df-otap/experimental-tls"]
+experimental-tls = ["otap-df-common/experimental-tls"]
 dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
 
 [dev-dependencies]
@@ -73,7 +73,7 @@ fluke-hpack.workspace = true
 flume.workspace = true
 otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
-otap-df-otap = { path = "../otap", features = ["test-utils", "crypto-ring"] }
+otap-df-common = { path = "../common", features = ["test-utils", "crypto-ring"] }
 otap-df-telemetry = { path = "../telemetry" }
 flate2.workspace = true
 http-body-util.workspace = true

@@ -47,7 +47,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_common::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
@@ -580,7 +580,7 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_common::pdata::OtapPdata;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1799,7 +1799,7 @@ mod telemetry_tests {
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_common::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use prost::Message as _;
     use serde_json::json;

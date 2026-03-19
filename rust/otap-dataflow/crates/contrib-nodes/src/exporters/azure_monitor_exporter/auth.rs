@@ -244,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_with_managed_identity_user_assigned() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: Some("test-client-id".to_string()),
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_with_managed_identity_system_assigned() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: None,

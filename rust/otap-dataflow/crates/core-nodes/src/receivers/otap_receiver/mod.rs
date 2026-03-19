@@ -11,16 +11,16 @@
 
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::compression::CompressionMethod;
-use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
-use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
-use otap_df_otap::otap_grpc::{
+use otap_df_common::OTAP_RECEIVER_FACTORIES;
+use otap_df_common::compression::CompressionMethod;
+use otap_df_common::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
+use otap_df_common::otap_grpc::otlp::server::{RouteResponse, SharedState};
+use otap_df_common::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
 };
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::pdata::OtapPdata;
 #[cfg(feature = "experimental-tls")]
-use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otap_df_common::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -397,9 +397,9 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::otap_mock::create_otap_batch;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
+    use otap_df_common::otap_mock::create_otap_batch;
+    use otap_df_common::pdata::OtapPdata;
+    use otap_df_common::testing::{next_ack, next_nack};
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_config_parsing() {
-        use otap_df_otap::compression::CompressionMethod;
+        use otap_df_common::compression::CompressionMethod;
         use serde_json::json;
 
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();

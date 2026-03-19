@@ -24,8 +24,8 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{
     Interests, ProducerEffectHandlerExtension, ReceiverFactory, control::NodeControlMsg,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_common::OTAP_RECEIVER_FACTORIES;
+use otap_df_common::pdata::OtapPdata;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};

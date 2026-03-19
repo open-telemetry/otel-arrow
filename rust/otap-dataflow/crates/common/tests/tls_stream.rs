@@ -6,7 +6,7 @@
 #[cfg(feature = "experimental-tls")]
 mod tests {
     use futures::StreamExt;
-    use otap_df_otap::tls_utils::create_tls_stream;
+    use otap_df_common::tls_utils::create_tls_stream;
     use otap_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -47,7 +47,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_tls_stream_success() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -113,7 +113,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_tls_stream_handshake_failure_filtered() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -183,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_stream_transport_error_propagated() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -230,7 +230,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_handshake_respects_timeout() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
@@ -319,7 +319,7 @@ mod tests {
         ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
     )]
     async fn test_concurrent_handshakes_not_blocked() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_common::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let _ = write_ca_and_leaf_to_dir(
