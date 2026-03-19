@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773946734745,
+  "lastUpdate": 1773954445456,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "3f3fec1e30b4f44d53734dd142a838fe9c546fa5",
-          "message": "Fix eventname for OTAP nodes to include identifying prefix (#2118)\n\n# Change Summary\n\nPrefix node name to help identify events properly, as all nodes have\nsame crate name.\n\n## How are these changes tested?\n\nLocal run.\n\n## Are there any user-facing changes?\n\nyes better event names.\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
-          "timestamp": "2026-03-03T23:00:13Z",
-          "tree_id": "0c9f0d4017ef4839ce31f2397cf1e48cec424f00",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3f3fec1e30b4f44d53734dd142a838fe9c546fa5"
-        },
-        "date": 1772582040695,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.7921033501625061,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.34393587394283,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.76193756051997,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.239453125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 59.16796875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 490110.32250992284,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 493992.5027394068,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.007518,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11411838.875503011,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11353072.057384532,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16841222.54074465,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d6de33408c9256fd4664f4a738c0190226d9fa7",
+          "message": "perf: increase syslog TCP load generator target rate (#2376)\n\n## Summary\n\nRemove the 5K logs/sec rate cap on the syslog load generator tests (both\nTCP and UDP) so they can actually stress-test the df-engine.\n\n## Changes\n\n1. **`loadgen.py`**: Changed `target_rate` Pydantic field from `gt=0` to\n`ge=0` so that `0` is accepted. When `target_rate` is 0 (falsy), the\nexisting worker code skips all timer/sleep logic entirely, running at\nmax throughput.\n\n2. **`syslog-tcp-docker.yaml`**: Added `syslog_rate: 0` to all 4 test\ntemplate variables. (The template's `update_component_strategy` step was\noverriding the component-level config with a hardcoded default of 5000.)\n\n3. **`syslog-docker.yaml`** (UDP): Added `syslog_rate: 0` and\n`syslog_threads: 8` to all 4 test template variables. UDP needs multiple\nthreads because each message is a separate `sendto()` syscall, limiting\na single Python thread to ~9K logs/sec.\n\n## Results (1-core df-engine, 0% drops)\n\n### TCP (1 thread, no rate limit)\n| Test | Before | After | Speedup |\n|---|---|---|---|\n| ATTR-OTLP | 5,418 | **197,321** | 36x |\n| CEF-ATTR-OTLP | 5,420 | **93,609** | 17x |\n| ATTR-OTAP | 5,420 | **90,130** | 17x |\n| CEF-ATTR-OTAP | 5,420 | **80,434** | 15x |\n\n### UDP (8 threads, no rate limit)\n| Test | Before | After | Speedup |\n|---|---|---|---|\n| ATTR-OTLP | 5,418 | **57,127** | 11x |\n| CEF-ATTR-OTLP | 5,420 | **56,819** | 10x |\n| ATTR-OTAP | 5,420 | **55,397** | 10x |\n| CEF-ATTR-OTAP | 5,420 | **55,153** | 10x |\n\nAll tests now saturate the 1-core df-engine with 0% log drops (except\nCEF-ATTR-OTAP UDP at 0.4%).",
+          "timestamp": "2026-03-19T20:19:33Z",
+          "tree_id": "fca551407897f61f4a0d8a267caae908de770199",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5d6de33408c9256fd4664f4a738c0190226d9fa7"
+        },
+        "date": 1773954444874,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.1551567316055298,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.07372328920499,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.33427509293679,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 25.785546875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 27.02734375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 648567.3725892559,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 656059.3424490499,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002377,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 17130159.360017043,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 17152501.412847776,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
