@@ -7,13 +7,19 @@ use crate::Interests;
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
+use futures::channel::oneshot;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
-use std::net::SocketAddr;
+use std::future::Future;
+use std::io;
+use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio_util::sync::CancellationToken;
 
 /// SourceTagging indicates whether the Context will contain empty source frames.
 #[derive(Clone, Copy)]
@@ -26,6 +32,156 @@ pub enum SourceTagging {
     /// Enabled means a source node_id will be automatically entered
     /// by creating a new frame in as messagees are sent.
     Enabled,
+}
+
+/// Boxed async reader type owned by the engine boundary.
+pub type LocalAsyncBufRead = dyn tokio::io::AsyncBufRead + Unpin;
+/// Engine-owned buffered reader for runtime local sockets/streams.
+pub type LocalBufReader<R> = tokio::io::BufReader<R>;
+/// Extension trait for buffered reads owned by the engine boundary.
+pub use tokio::io::AsyncBufReadExt as LocalAsyncBufReadExt;
+
+/// Create a buffered reader owned by the engine boundary.
+#[must_use]
+pub fn local_buf_reader<R>(reader: R) -> LocalBufReader<R>
+where
+    R: tokio::io::AsyncRead,
+{
+    tokio::io::BufReader::new(reader)
+}
+
+/// Convert a standard TCP listener into the engine runtime's async listener.
+pub fn runtime_tcp_listener(listener: TcpListener) -> io::Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::from_std(listener)
+}
+
+/// Convert a standard UDP socket into the engine runtime's async socket.
+pub fn runtime_udp_socket(socket: UdpSocket) -> io::Result<tokio::net::UdpSocket> {
+    tokio::net::UdpSocket::from_std(socket)
+}
+
+/// Sleep for the requested duration on the engine-owned runtime.
+pub async fn sleep(duration: Duration) {
+    tokio::time::sleep(duration).await;
+}
+
+/// Sleep until the requested deadline on the engine-owned runtime.
+pub async fn sleep_until(deadline: Instant) {
+    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+}
+
+/// Wait for a future with a timeout on the engine-owned runtime.
+pub async fn timeout<F>(
+    duration: Duration,
+    future: F,
+) -> Result<F::Output, tokio::time::error::Elapsed>
+where
+    F: Future,
+{
+    tokio::time::timeout(duration, future).await
+}
+
+/// Handle for a task spawned onto the engine-owned local runtime.
+#[must_use = "Dropping the task handle detaches the task"]
+pub struct LocalTaskHandle<T> {
+    inner: tokio::task::JoinHandle<T>,
+}
+
+impl<T> LocalTaskHandle<T> {
+    /// Abort the underlying task.
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+
+    /// Returns true if the task has finished.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+}
+
+impl<T> Future for LocalTaskHandle<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.inner).poll(cx)
+    }
+}
+
+/// Sender side of a local oneshot channel created by the engine boundary.
+pub type LocalOneshotSender<T> = oneshot::Sender<T>;
+/// Receiver side of a local oneshot channel created by the engine boundary.
+pub type LocalOneshotReceiver<T> = oneshot::Receiver<T>;
+
+/// Cancellation token owned by the engine boundary.
+#[derive(Clone, Default)]
+pub struct SharedCancellationToken {
+    inner: CancellationToken,
+}
+
+impl SharedCancellationToken {
+    /// Create a new cancellation token.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: CancellationToken::new(),
+        }
+    }
+
+    /// Cancel the token and all of its clones.
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    /// Wait until the token is cancelled.
+    pub async fn cancelled(&self) {
+        self.inner.cancelled().await;
+    }
+
+    /// Clone the inner cancellation token for engine-owned transport code.
+    #[must_use]
+    pub fn clone_inner(&self) -> CancellationToken {
+        self.inner.clone()
+    }
+}
+
+/// Shared semaphore owned by the engine boundary.
+#[derive(Clone)]
+pub struct SharedSemaphore {
+    inner: Arc<tokio::sync::Semaphore>,
+}
+
+impl SharedSemaphore {
+    /// Create a new semaphore with the given capacity.
+    #[must_use]
+    pub fn new(permits: usize) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Semaphore::new(permits)),
+        }
+    }
+
+    /// Clone the inner semaphore handle for engine-owned transport code.
+    #[must_use]
+    pub fn clone_inner(&self) -> Arc<tokio::sync::Semaphore> {
+        self.inner.clone()
+    }
+}
+
+/// Interval driven by the engine-owned runtime.
+pub struct LocalInterval {
+    inner: tokio::time::Interval,
+}
+
+impl LocalInterval {
+    /// Wait for the next tick.
+    pub async fn tick(&mut self) {
+        _ = self.inner.tick().await;
+    }
+
+    /// Reset the interval to start a new period from now.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 impl SourceTagging {
@@ -112,12 +268,64 @@ impl<PData> EffectHandlerCore<PData> {
     /// This method provides a standardized way for all nodes in the pipeline
     /// to output informational messages without blocking the async runtime.
     pub(crate) async fn info(&self, message: &str) {
-        use tokio::io::{AsyncWriteExt, stdout};
+        use std::io::{Write, stdout};
         let mut out = stdout();
         // Ignore write errors as they're typically not recoverable for stdout
-        let _ = out.write_all(message.as_bytes()).await;
-        let _ = out.write_all(b"\n").await;
-        let _ = out.flush().await;
+        let _ = out.write_all(message.as_bytes());
+        let _ = out.write_all(b"\n");
+        let _ = out.flush();
+    }
+
+    /// Sleep for the requested duration on the engine-owned runtime.
+    pub(crate) async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+
+    /// Sleep until the requested deadline on the engine-owned runtime.
+    pub(crate) async fn sleep_until(&self, deadline: Instant) {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    }
+
+    /// Create an interval on the engine-owned runtime.
+    pub(crate) fn interval(&self, period: Duration) -> LocalInterval {
+        LocalInterval {
+            inner: tokio::time::interval(period),
+        }
+    }
+
+    /// Create an interval starting at the given deadline on the engine-owned runtime.
+    pub(crate) fn interval_at(&self, start: Instant, period: Duration) -> LocalInterval {
+        LocalInterval {
+            inner: tokio::time::interval_at(tokio::time::Instant::from_std(start), period),
+        }
+    }
+
+    /// Yield to other tasks on the engine-owned runtime.
+    pub(crate) async fn yield_now(&self) {
+        tokio::task::yield_now().await;
+    }
+
+    /// Spawn a task onto the engine-owned local runtime.
+    pub(crate) fn spawn_local<F>(&self, future: F) -> LocalTaskHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
+        LocalTaskHandle {
+            inner: tokio::task::spawn_local(future),
+        }
+    }
+
+    /// Wait for a future with a timeout on the engine-owned runtime.
+    pub(crate) async fn timeout<F>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> Result<F::Output, tokio::time::error::Elapsed>
+    where
+        F: Future,
+    {
+        tokio::time::timeout(duration, future).await
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -128,14 +336,13 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
-    /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
     pub(crate) fn tcp_listener(
         &self,
         addr: SocketAddr,
         receiver_id: NodeId,
     ) -> Result<TcpListener, Error> {
         // Helper closure to convert errors.
-        let into_engine_error = |error: std::io::Error| Error::IoError {
+        let into_engine_error = |error: io::Error| Error::IoError {
             node: receiver_id.clone(),
             error,
         };
@@ -168,7 +375,7 @@ impl<PData> EffectHandlerCore<PData> {
         sock.bind(&addr.into()).map_err(into_engine_error)?;
         sock.listen(8192).map_err(into_engine_error)?;
 
-        TcpListener::from_std(sock.into()).map_err(into_engine_error)
+        Ok(sock.into())
     }
 
     /// Creates a non-blocking UDP socket on the given address with socket options defined by the
@@ -179,7 +386,6 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
-    /// ToDo: return a std::net::UdpSocket instead of a tokio::net::UdpSocket to avoid leaking our current dependency on Tokio.
     #[allow(dead_code)]
     pub(crate) fn udp_socket(
         &self,
@@ -187,7 +393,7 @@ impl<PData> EffectHandlerCore<PData> {
         receiver_id: NodeId,
     ) -> Result<UdpSocket, Error> {
         // Helper closure to convert errors.
-        let into_engine_error = |error: std::io::Error| Error::IoError {
+        let into_engine_error = |error: io::Error| Error::IoError {
             node: receiver_id.clone(),
             error,
         };
@@ -217,7 +423,7 @@ impl<PData> EffectHandlerCore<PData> {
         sock.set_nonblocking(true).map_err(into_engine_error)?;
         sock.bind(&addr.into()).map_err(into_engine_error)?;
 
-        UdpSocket::from_std(sock.into()).map_err(into_engine_error)
+        Ok(sock.into())
     }
 
     /// Reports the provided metrics to the engine.

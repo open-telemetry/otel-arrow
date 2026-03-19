@@ -381,7 +381,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         message = "Topic receiver blocked while forwarding to downstream pipeline channel"
                                     );
                                 }
-                                tokio::task::consume_budget().await;
+                                effect_handler.yield_now().await;
                             }
                             Ok(RecvItem::Lagged { missed }) => {
                                 metrics.lagged_notifications.add(1);
@@ -402,7 +402,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         message = "Topic receiver lagged and skipped messages."
                                     );
                                 }
-                                tokio::task::consume_budget().await;
+                                effect_handler.yield_now().await;
                             }
                             Err(Error::SubscriptionClosed) => break,
                             Err(e) => return Err(e),

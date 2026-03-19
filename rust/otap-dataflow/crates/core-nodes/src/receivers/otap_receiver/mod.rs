@@ -30,6 +30,7 @@ use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otap_df_engine::effect_handler::runtime_tcp_listener;
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -242,7 +243,12 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         );
 
         // create listener on addr provided from config
-        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        let listener =
+            runtime_tcp_listener(effect_handler.tcp_listener(self.config.listening_addr)?)
+                .map_err(|error| Error::IoError {
+                    node: effect_handler.receiver_id(),
+                    error,
+                })?;
         let listener_stream = TcpListenerStream::new(listener);
 
         let settings = Settings {

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
-use tokio::time::Duration;
+use std::time::Duration;
 
 use super::client::LogsIngestionClient;
 use super::error::Error;

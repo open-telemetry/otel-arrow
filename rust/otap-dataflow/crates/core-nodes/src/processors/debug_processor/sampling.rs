@@ -5,7 +5,7 @@
 
 use otap_df_engine::error::Error;
 use serde::Deserialize;
-use tokio::time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -724,6 +724,7 @@ mod test {
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::effect_handler::SharedCancellationToken;
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
@@ -746,7 +747,7 @@ mod test {
     use portpicker::pick_unused_port;
     use prost::Message;
     use tokio::runtime::Runtime;
-    use tokio_util::sync::CancellationToken;
+    use tokio_util::sync::CancellationToken as TestCancellationToken;
     use tokio_util::task::TaskTracker;
 
     #[cfg(feature = "experimental-tls")]
@@ -771,7 +772,10 @@ mod test {
         tokio_rt: &Runtime,
         pipeline_ctx: &PipelineContext,
         endpoint_addr: &str,
-    ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
+    ) -> (
+        tokio::sync::mpsc::Receiver<OtapPdata>,
+        SharedCancellationToken,
+    ) {
         let server_node_id = test_node("test-server");
         let port_name = PortName::from("server_out");
         let mut msg_senders = HashMap::new();
@@ -797,7 +801,7 @@ mod test {
 
         let ack_registry = AckRegistry::new(None, None, None);
         let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
-        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token = SharedCancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
 
         _ = tokio_rt.spawn(async move {
@@ -824,8 +828,8 @@ mod test {
         tokio_rt: &Runtime,
         endpoint_addr: &str,
         status_err: Option<u16>,
-    ) -> CancellationToken {
-        let server_cancellation_token = CancellationToken::new();
+    ) -> TestCancellationToken {
+        let server_cancellation_token = TestCancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
         let endpoint_addr = endpoint_addr.to_string();
         _ = tokio_rt.spawn(async move {
@@ -837,7 +841,7 @@ mod test {
 
     async fn serve_errors(
         endpoint_addr: String,
-        shutdown_token: CancellationToken,
+        shutdown_token: TestCancellationToken,
         status_err: Option<u16>,
     ) {
         let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
@@ -928,7 +932,10 @@ mod test {
         pipeline_ctx: &PipelineContext,
         endpoint_addr: &str,
         tls_server_config: TlsServerConfig,
-    ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
+    ) -> (
+        tokio::sync::mpsc::Receiver<OtapPdata>,
+        SharedCancellationToken,
+    ) {
         let server_node_id = test_node("test-server");
         let port_name = PortName::from("server_out");
         let mut msg_senders = HashMap::new();
@@ -955,7 +962,7 @@ mod test {
 
         let ack_registry = AckRegistry::new(None, None, None);
         let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
-        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token = SharedCancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
 
         _ = tokio_rt.spawn(async move {

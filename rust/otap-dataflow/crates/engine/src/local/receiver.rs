@@ -35,9 +35,11 @@
 use crate::Interests;
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
-    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+    EffectHandlerCore, LocalInterval, LocalOneshotReceiver, LocalOneshotSender, LocalTaskHandle,
+    SharedCancellationToken, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
@@ -49,9 +51,9 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::future::Future;
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::time::Duration;
-use tokio::net::{TcpListener, UdpSocket};
 
 /// A trait for ingress receivers (!Send definition).
 ///
@@ -274,6 +276,71 @@ impl<PData> EffectHandler<PData> {
         self.core.info(message).await;
     }
 
+    /// Sleep for the requested duration on the engine-owned runtime.
+    pub async fn sleep(&self, duration: Duration) {
+        self.core.sleep(duration).await;
+    }
+
+    /// Sleep until the requested deadline on the engine-owned runtime.
+    pub async fn sleep_until(&self, deadline: std::time::Instant) {
+        self.core.sleep_until(deadline).await;
+    }
+
+    /// Create an interval on the engine-owned runtime.
+    #[must_use]
+    pub fn interval(&self, period: Duration) -> LocalInterval {
+        self.core.interval(period)
+    }
+
+    /// Create an interval starting at the given deadline on the engine-owned runtime.
+    #[must_use]
+    pub fn interval_at(&self, start: std::time::Instant, period: Duration) -> LocalInterval {
+        self.core.interval_at(start, period)
+    }
+
+    /// Yield to other tasks on the engine-owned runtime.
+    pub async fn yield_now(&self) {
+        self.core.yield_now().await;
+    }
+
+    /// Spawn a task onto the engine-owned local runtime.
+    pub fn spawn_local<F>(&self, future: F) -> LocalTaskHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
+        self.core.spawn_local(future)
+    }
+
+    /// Create a node-local MPSC channel owned by the engine boundary.
+    pub fn local_channel<T>(&self, capacity: usize) -> (LocalSender<T>, LocalReceiver<T>) {
+        let (sender, receiver) = otap_df_channel::mpsc::Channel::new(capacity);
+        (LocalSender::mpsc(sender), LocalReceiver::mpsc(receiver))
+    }
+
+    /// Create a node-local oneshot channel owned by the engine boundary.
+    pub fn oneshot<T>(&self) -> (LocalOneshotSender<T>, LocalOneshotReceiver<T>) {
+        futures::channel::oneshot::channel()
+    }
+
+    /// Create a cancellation token owned by the engine boundary.
+    #[must_use]
+    pub fn cancellation_token(&self) -> SharedCancellationToken {
+        SharedCancellationToken::new()
+    }
+
+    /// Wait for a future with a timeout on the engine-owned runtime.
+    pub async fn timeout<F>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> Result<F::Output, tokio::time::error::Elapsed>
+    where
+        F: Future,
+    {
+        self.core.timeout(duration, future).await
+    }
+
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
     ///
@@ -315,7 +382,10 @@ mod tests {
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
+    use std::cell::Cell;
     use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+    use tokio::task::LocalSet;
     use tokio::time::{Duration, timeout};
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
@@ -344,6 +414,55 @@ mod tests {
                 .is_err()
         );
         assert_eq!(b_rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_spawn_local_runs_on_engine_runtime() {
+        let local_set = LocalSet::new();
+        local_set
+            .run_until(async {
+                let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel::<u64>(4);
+                let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+                let eh = EffectHandler::new(
+                    test_node("recv"),
+                    HashMap::new(),
+                    None,
+                    ctrl_tx,
+                    metrics_reporter,
+                );
+                let value = Rc::new(Cell::new(0u64));
+                let value_task = value.clone();
+
+                let handle = eh.spawn_local(async move {
+                    value_task.set(7);
+                    11u64
+                });
+
+                assert_eq!(handle.await.unwrap(), 11);
+                assert_eq!(value.get(), 7);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn effect_handler_local_channel_and_oneshot() {
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel::<u64>(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        let (sender, mut receiver) = eh.local_channel::<u64>(2);
+        sender.send(5).await.unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 5);
+
+        let (tx, rx) = eh.oneshot::<u64>();
+        tx.send(9).unwrap();
+        assert_eq!(rx.await.unwrap(), 9);
     }
 
     #[tokio::test]

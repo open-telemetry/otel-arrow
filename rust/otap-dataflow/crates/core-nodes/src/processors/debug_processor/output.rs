@@ -25,8 +25,8 @@ use otap_df_pdata::proto::{
     },
 };
 use serde::Deserialize;
-use tokio::fs::File;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use std::fs::File;
+use std::io::{Write, stdout};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -59,7 +59,7 @@ pub trait DebugOutput {
 
 /// A wrapper around AsyncWrite that simplifies error handling for debug output
 pub struct DebugOutputWriter {
-    writer: Box<dyn AsyncWrite + Unpin>,
+    writer: Box<dyn Write>,
     processor_id: NodeId,
     marshaler: Option<Box<dyn ViewMarshaler>>,
     display_mode: DisplayMode,
@@ -72,14 +72,12 @@ impl DebugOutputWriter {
         verbosity: Verbosity,
         display_mode: DisplayMode,
     ) -> Result<Self, Error> {
-        let writer: Box<dyn AsyncWrite + Unpin> = match output_file {
+        let writer: Box<dyn Write> = match output_file {
             Some(file_name) => {
                 let file = File::options()
-                    .write(true)
                     .append(true)
                     .create(true)
                     .open(file_name)
-                    .await
                     .map_err(|e| {
                         let source_detail = format_error_sources(&e);
                         Error::ProcessorError {
@@ -91,7 +89,7 @@ impl DebugOutputWriter {
                     })?;
                 Box::new(file)
             }
-            None => Box::new(tokio::io::stdout()),
+            None => Box::new(stdout()),
         };
         // determine which marshler to use
         let marshaler: Option<Box<dyn ViewMarshaler>> = match verbosity {
@@ -112,18 +110,15 @@ impl DebugOutputWriter {
 #[async_trait(?Send)]
 impl DebugOutput for DebugOutputWriter {
     async fn output_message(&mut self, message: &str) -> Result<(), Error> {
-        self.writer
-            .write_all(message.as_bytes())
-            .await
-            .map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                Error::ProcessorError {
-                    processor: self.processor_id.clone(),
-                    kind: ProcessorErrorKind::Transport,
-                    error: format!("Write error: {e}"),
-                    source_detail,
-                }
-            })
+        self.writer.write_all(message.as_bytes()).map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ProcessorError {
+                processor: self.processor_id.clone(),
+                kind: ProcessorErrorKind::Transport,
+                error: format!("Write error: {e}"),
+                source_detail,
+            }
+        })
     }
     async fn output_metrics(
         &mut self,

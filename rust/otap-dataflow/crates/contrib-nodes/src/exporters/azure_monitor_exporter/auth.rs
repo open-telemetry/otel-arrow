@@ -6,8 +6,10 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
+use otap_df_engine::effect_handler::{sleep, timeout};
 use otap_df_telemetry::{otel_debug, otel_warn};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
@@ -17,7 +19,7 @@ use super::metrics::AzureMonitorExporterMetricsRc;
 /// The Azure SDK already performs exponential backoff internally
 /// (e.g., 6 retries over ~72s for IMDS), so this is just a short
 /// breather before the next SDK retry cycle.
-const RETRY_PAUSE: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+const RETRY_PAUSE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
@@ -74,19 +76,19 @@ impl Auth {
     /// fail or the overall timeout is reached.
     pub async fn try_get_token(
         &self,
-        timeout: tokio::time::Duration,
+        timeout_duration: Duration,
         max_attempts: u32,
     ) -> Result<AccessToken, Error> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = Instant::now() + timeout_duration;
         let mut last_error = None;
 
         for attempt in 1..=max_attempts {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
 
-            match tokio::time::timeout(remaining, self.get_token_internal()).await {
+            match timeout(remaining, self.get_token_internal()).await {
                 Ok(Ok(token)) => return Ok(token),
                 Ok(Err(e)) => {
                     otel_debug!(
@@ -98,26 +100,25 @@ impl Auth {
                     last_error = Some(e);
                 }
                 Err(_elapsed) => {
-                    return Err(Error::token_acquisition_timeout(timeout));
+                    return Err(Error::token_acquisition_timeout(timeout_duration));
                 }
             }
 
             // Brief pause between retries (not after the last attempt)
             if attempt < max_attempts {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let remaining = deadline.saturating_duration_since(Instant::now());
                 if !remaining.is_zero() {
-                    tokio::time::sleep(remaining.min(tokio::time::Duration::from_millis(500)))
-                        .await;
+                    sleep(remaining.min(Duration::from_millis(500))).await;
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| Error::token_acquisition_timeout(timeout)))
+        Err(last_error.unwrap_or_else(|| Error::token_acquisition_timeout(timeout_duration)))
     }
 
     pub async fn get_token(&mut self) -> Result<AccessToken, Error> {
         let mut attempt = 0_i32;
-        let start = tokio::time::Instant::now();
+        let start = Instant::now();
         loop {
             attempt += 1;
 
@@ -144,7 +145,7 @@ impl Auth {
                     // The Azure SDK already retries internally with exponential
                     // backoff (e.g., 6 retries over ~72s for IMDS). This short
                     // pause just prevents a tight spin before the next SDK cycle.
-                    tokio::time::sleep(RETRY_PAUSE).await;
+                    sleep(RETRY_PAUSE).await;
                 }
             }
         }

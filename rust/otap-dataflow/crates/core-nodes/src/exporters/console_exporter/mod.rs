@@ -216,9 +216,9 @@ impl HierarchicalFormatter {
         let mut output = Vec::new();
         self.format_logs_data_to(logs_data, &mut output);
 
-        use tokio::io::AsyncWriteExt;
+        use std::io::{Write, stdout};
 
-        if let Err(err) = tokio::io::stdout().write_all(&output).await {
+        if let Err(err) = stdout().write_all(&output) {
             otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
         }
     }

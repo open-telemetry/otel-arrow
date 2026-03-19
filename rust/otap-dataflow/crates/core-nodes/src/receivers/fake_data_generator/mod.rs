@@ -32,7 +32,7 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{Duration, Instant, sleep};
+use std::time::{Duration, Instant};
 use weaver_forge::registry::ResolvedRegistry;
 
 pub mod attributes;
@@ -421,7 +421,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
                                         "Sleeping to maintain configured signal rate"
                                     );
-                                    sleep(remaining_time).await;
+                                    effect_handler.sleep(remaining_time).await;
                                 }
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
                             } else {
@@ -899,7 +899,7 @@ mod tests {
                 // wait for the scenario to finish running
                 sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(std::time::Instant::now(), "Test")
+                ctx.send_shutdown(Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })

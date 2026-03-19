@@ -35,9 +35,11 @@
 use crate::Interests;
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{
-    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+    EffectHandlerCore, LocalInterval, LocalOneshotReceiver, LocalOneshotSender, LocalTaskHandle,
+    SharedCancellationToken, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
+use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
@@ -48,6 +50,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -236,6 +239,71 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Sleep for the requested duration on the engine-owned runtime.
+    pub async fn sleep(&self, duration: Duration) {
+        self.core.sleep(duration).await;
+    }
+
+    /// Sleep until the requested deadline on the engine-owned runtime.
+    pub async fn sleep_until(&self, deadline: Instant) {
+        self.core.sleep_until(deadline).await;
+    }
+
+    /// Create an interval on the engine-owned runtime.
+    #[must_use]
+    pub fn interval(&self, period: Duration) -> LocalInterval {
+        self.core.interval(period)
+    }
+
+    /// Create an interval starting at the given deadline on the engine-owned runtime.
+    #[must_use]
+    pub fn interval_at(&self, start: Instant, period: Duration) -> LocalInterval {
+        self.core.interval_at(start, period)
+    }
+
+    /// Yield to other tasks on the engine-owned runtime.
+    pub async fn yield_now(&self) {
+        self.core.yield_now().await;
+    }
+
+    /// Spawn a task onto the engine-owned local runtime.
+    pub fn spawn_local<F>(&self, future: F) -> LocalTaskHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
+        self.core.spawn_local(future)
+    }
+
+    /// Create a node-local MPSC channel owned by the engine boundary.
+    pub fn local_channel<T>(&self, capacity: usize) -> (LocalSender<T>, LocalReceiver<T>) {
+        let (sender, receiver) = otap_df_channel::mpsc::Channel::new(capacity);
+        (LocalSender::mpsc(sender), LocalReceiver::mpsc(receiver))
+    }
+
+    /// Create a node-local oneshot channel owned by the engine boundary.
+    pub fn oneshot<T>(&self) -> (LocalOneshotSender<T>, LocalOneshotReceiver<T>) {
+        futures::channel::oneshot::channel()
+    }
+
+    /// Create a cancellation token owned by the engine boundary.
+    #[must_use]
+    pub fn cancellation_token(&self) -> SharedCancellationToken {
+        SharedCancellationToken::new()
+    }
+
+    /// Wait for a future with a timeout on the engine-owned runtime.
+    pub async fn timeout<F>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> Result<F::Output, tokio::time::error::Elapsed>
+    where
+        F: Future,
+    {
+        self.core.timeout(duration, future).await
     }
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.

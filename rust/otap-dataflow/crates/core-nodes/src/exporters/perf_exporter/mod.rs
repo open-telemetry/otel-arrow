@@ -46,8 +46,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The URN for the OTAP Perf exporter
 pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";

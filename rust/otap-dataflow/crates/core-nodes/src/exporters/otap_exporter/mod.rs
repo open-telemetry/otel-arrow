@@ -6,6 +6,7 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use async_channel::{Receiver, Sender};
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -39,7 +40,6 @@ use otap_df_telemetry::{otel_error, otel_info};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
@@ -155,47 +155,46 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 .accept_compressed(encoding);
         }
 
-        // TODO comment on the purpose of these
-        // TODO import so can use as just "channel" here
-        // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
         let (logs_sender, logs_receiver) =
-            tokio::sync::mpsc::channel::<(OtapPdata, OtapArrowRecords)>(64);
+            async_channel::bounded::<(OtapPdata, OtapArrowRecords)>(64);
         let (metrics_sender, metrics_receiver) =
-            tokio::sync::mpsc::channel::<(OtapPdata, OtapArrowRecords)>(64);
+            async_channel::bounded::<(OtapPdata, OtapArrowRecords)>(64);
         let (traces_sender, traces_receiver) =
-            tokio::sync::mpsc::channel::<(OtapPdata, OtapArrowRecords)>(64);
-        let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            async_channel::bounded::<(OtapPdata, OtapArrowRecords)>(64);
+        let (pdata_metrics_tx, pdata_metrics_rx) = async_channel::bounded(64);
+        let shutdown = effect_handler.cancellation_token();
         let ipc_compression = matches!(
             self.config.arrow.payload_compression,
             Some(config::ArrowPayloadCompression::Zstd)
         )
         .then(|| arrow_ipc::CompressionType::ZSTD);
 
-        // TODO check if we can expose/use spawn_local method in the effect handler
-        let logs_handle = tokio::task::spawn_local(stream_arrow_batches(
+        let logs_handle = effect_handler.spawn_local(stream_arrow_batches(
+            effect_handler.clone(),
             arrow_logs_client,
             SignalType::Logs,
             ipc_compression,
             logs_receiver,
             pdata_metrics_tx.clone(),
-            shutdown_rx.clone(),
+            shutdown.clone(),
         ));
-        let metrics_handle = tokio::task::spawn_local(stream_arrow_batches(
+        let metrics_handle = effect_handler.spawn_local(stream_arrow_batches(
+            effect_handler.clone(),
             arrow_metrics_client,
             SignalType::Metrics,
             ipc_compression,
             metrics_receiver,
             pdata_metrics_tx.clone(),
-            shutdown_rx.clone(),
+            shutdown.clone(),
         ));
-        let traces_handle = tokio::task::spawn_local(stream_arrow_batches(
+        let traces_handle = effect_handler.spawn_local(stream_arrow_batches(
+            effect_handler.clone(),
             arrow_traces_client,
             SignalType::Traces,
             ipc_compression,
             traces_receiver,
             pdata_metrics_tx.clone(),
-            shutdown_rx.clone(),
+            shutdown.clone(),
         ));
 
         // Loop until a Shutdown event is received.
@@ -222,7 +221,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             "otap_exporter.shutdown",
                             message = "OTAP Exporter shutting down"
                         );
-                        _ = shutdown_tx.send_replace(true);
+                        shutdown.cancel();
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
                         _ = traces_handle.await;
@@ -261,11 +260,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                 },
                 metrics_update = pdata_metrics_rx.recv() => match metrics_update {
-                    Some(PDataMetricsUpdate::IncFailed(signal_type, pdata)) => {
+                    Ok(PDataMetricsUpdate::IncFailed(signal_type, pdata)) => {
                         self.pdata_metrics.inc_failed(signal_type);
                         effect_handler.notify_nack(NackMsg::new("export failed", pdata)).await?;
                     },
-                    Some(PDataMetricsUpdate::IncExported(signal_type, pdata)) => {
+                    Ok(PDataMetricsUpdate::IncExported(signal_type, pdata)) => {
                         self.pdata_metrics.inc_exported(signal_type);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     },
@@ -320,14 +319,14 @@ enum PDataMetricsUpdate {
 }
 
 async fn stream_arrow_batches<T: StreamingArrowService>(
+    effect_handler: local::EffectHandler<OtapPdata>,
     mut client: T,
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
     otap_batches_rx: Receiver<(OtapPdata, OtapArrowRecords)>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_token: otap_df_engine::effect_handler::SharedCancellationToken,
 ) {
-    let otap_batches_rx = Arc::new(tokio::sync::Mutex::new(otap_batches_rx));
     let mut shutdown = false;
 
     // we'll do an exponential backoff if there was an error creating the streaming request
@@ -338,15 +337,12 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
 
     // send streams of batches to the server until shutdown
     while !shutdown {
-        let mut rx = otap_batches_rx.lock().await;
         tokio::select! {
             // wait to receive the first batch to create the streaming request
-            first_batch = rx.recv() => {
-                drop(rx);
+            first_batch = otap_batches_rx.recv() => {
                 let (first_pdata, first_batch) = match first_batch {
-                    Some(f) => f,
-
-                    None => {
+                    Ok(first_batch) => first_batch,
+                    Err(_) => {
                         // no more batches
                         break
                     }
@@ -354,7 +350,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
 
                 // correlation channel: req_stream sends OtapPdata for each batch yielded,
                 // res_stream receives them to pair with server responses.
-                let (correlation_tx, mut correlation_rx) = tokio::sync::mpsc::channel::<OtapPdata>(64);
+                let (correlation_tx, correlation_rx) = async_channel::bounded::<OtapPdata>(64);
 
                 // Clone first_pdata before moving it into the stream, so we can
                 // NACK it if the connection fails before the stream is polled.
@@ -376,11 +372,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         failed_request_backoff = INITIAL_BACKOFF;
 
                         // handle server responses until error or shutdown
-                        shutdown = handle_res_stream(
+                            shutdown = handle_res_stream(
                             res.into_inner(),
                             pdata_metrics_tx.clone(),
                             signal_type,
-                            shutdown_rx.clone(),
+                            shutdown_token.clone(),
                             correlation_rx,
                         ).await;
                     }
@@ -403,13 +399,13 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             error = %e,
                             backoff = ?failed_request_backoff
                         );
-                        tokio::time::sleep(failed_request_backoff).await;
+                        effect_handler.sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
                 };
             }
-            _ = shutdown_rx.changed() => {
-                 shutdown = *shutdown_rx.borrow();
+            _ = shutdown_token.cancelled() => {
+                 shutdown = true;
             }
         }
     }
@@ -419,7 +415,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
 fn create_req_stream(
     first_pdata: OtapPdata,
     mut first_batch: OtapArrowRecords,
-    remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<(OtapPdata, OtapArrowRecords)>>>,
+    remaining_batches_rx: Receiver<(OtapPdata, OtapArrowRecords)>,
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
@@ -441,9 +437,8 @@ fn create_req_stream(
             }
         };
 
-        let mut rx = remaining_batches_rx.lock().await;
         // send the remaining batches
-        while let Some((pdata, mut otap_batch)) = rx.recv().await {
+        while let Ok((pdata, mut otap_batch)) = remaining_batches_rx.recv().await {
             match producer.produce_bar(&mut otap_batch) {
                 Ok(bar) => {
                     _ = correlation_tx.send(pdata).await;
@@ -461,8 +456,8 @@ async fn handle_res_stream(
     mut res_stream: Streaming<BatchStatus>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     signal_type: SignalType,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    mut correlation_rx: Receiver<OtapPdata>,
+    shutdown_token: otap_df_engine::effect_handler::SharedCancellationToken,
+    correlation_rx: Receiver<OtapPdata>,
 ) -> bool {
     let mut shutdown = false;
 
@@ -472,7 +467,7 @@ async fn handle_res_stream(
             res = res_stream.message() => {
                 match res {
                     Ok(Some(_val)) => {
-                        if let Some(pdata) = correlation_rx.recv().await {
+                        if let Ok(pdata) = correlation_rx.recv().await {
                             _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncExported(signal_type, pdata)).await;
                         }
                     },
@@ -481,15 +476,15 @@ async fn handle_res_stream(
                         break
                     }
                     Err(_grpc_status) => {
-                        if let Some(pdata) = correlation_rx.recv().await {
+                        if let Ok(pdata) = correlation_rx.recv().await {
                             _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata)).await;
                         }
                         break
                     }
                 };
             }
-            _ = shutdown_rx.changed() => {
-                shutdown = *shutdown_rx.borrow();
+            _ = shutdown_token.cancelled() => {
+                shutdown = true;
             }
         }
     }
@@ -1083,10 +1078,21 @@ mod tests {
     #[tokio::test]
     async fn test_stream_arrow_batches_drain_correlation_on_error() {
         use super::{PDataMetricsUpdate, stream_arrow_batches};
+        use otap_df_engine::local::exporter::EffectHandler;
+        use otap_df_engine::node::NodeId;
+        use otap_df_telemetry::reporter::MetricsReporter;
 
-        let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(4);
-        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (batches_tx, batches_rx) = async_channel::bounded(4);
+        let (metrics_tx, metrics_rx) = async_channel::bounded(4);
+        let (_metrics_report_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            NodeId {
+                index: 0,
+                name: "test_exporter".to_string().into(),
+            },
+            metrics_reporter,
+        );
+        let shutdown = otap_df_engine::effect_handler::SharedCancellationToken::new();
 
         let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
         let pdata = OtapPdata::new_default(log_message.into());
@@ -1099,12 +1105,13 @@ mod tests {
         drop(batches_tx);
 
         stream_arrow_batches(
+            effect_handler,
             MockConsumeAndFail,
             SignalType::Logs,
             None,
             batches_rx,
             metrics_tx,
-            shutdown_rx,
+            shutdown,
         )
         .await;
 

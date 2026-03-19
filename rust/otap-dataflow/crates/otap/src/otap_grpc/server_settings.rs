@@ -9,9 +9,8 @@ use otap_df_config::byte_units;
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tonic::codec::EnabledCompressionEncodings;
 use tonic::transport::server::TcpIncoming;
 
@@ -212,13 +211,13 @@ impl GrpcServerSettings {
     }
 
     /// Builds the Tonic TCP Incoming.
-    #[must_use]
-    pub fn build_tcp_incoming(&self, tcp_listener: TcpListener) -> TcpIncoming {
-        TcpIncoming::from(tcp_listener)
+    pub fn build_tcp_incoming(&self, tcp_listener: TcpListener) -> std::io::Result<TcpIncoming> {
+        let tcp_listener = tokio::net::TcpListener::from_std(tcp_listener)?;
+        Ok(TcpIncoming::from(tcp_listener)
             .with_nodelay(Some(self.tcp_nodelay))
             .with_keepalive(self.tcp_keepalive)
             .with_keepalive_interval(self.tcp_keepalive_interval)
-            .with_keepalive_retries(self.tcp_keepalive_retries)
+            .with_keepalive_retries(self.tcp_keepalive_retries))
     }
 
     /// Returns the compression encodings to use for both requests and responses.

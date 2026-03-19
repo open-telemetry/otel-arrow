@@ -25,6 +25,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use otap_df_config::SignalType;
 use otap_df_config::byte_units;
+use otap_df_engine::effect_handler::{SharedCancellationToken, SharedSemaphore};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -43,7 +44,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Semaphore, oneshot};
-use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
 
@@ -505,7 +505,7 @@ struct HttpHandler {
     settings: HttpServerSettings,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
     /// receiver-wide backpressure tied to downstream capacity.
-    global_semaphore: Option<Arc<Semaphore>>,
+    global_semaphore: Option<SharedSemaphore>,
     /// Protocol-local semaphore enforcing HTTP's `max_concurrent_requests`.
     local_semaphore: Arc<Semaphore>,
 }
@@ -541,7 +541,8 @@ impl HttpHandler {
             // HTTP are enabled: global (if any) first, then protocol-local.
             let _global_permit = if let Some(global) = &self.global_semaphore {
                 let permit_result =
-                    tokio::time::timeout(permit_timeout, global.clone().acquire_owned()).await;
+                    tokio::time::timeout(permit_timeout, global.clone_inner().acquire_owned())
+                        .await;
                 match permit_result {
                     Ok(Ok(permit)) => Some(permit),
                     Ok(Err(_)) => {
@@ -784,12 +785,14 @@ pub async fn serve(
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
-    global_semaphore: Option<Arc<Semaphore>>,
-    shutdown: CancellationToken,
+    global_semaphore: Option<SharedSemaphore>,
+    shutdown: SharedCancellationToken,
 ) -> std::io::Result<()> {
-    let listener = effect_handler
-        .tcp_listener(settings.listening_addr)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let listener = tokio::net::TcpListener::from_std(
+        effect_handler
+            .tcp_listener(settings.listening_addr)
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
+    )?;
 
     debug_assert!(
         settings.max_concurrent_requests > 0,
@@ -944,6 +947,7 @@ mod tests {
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
         use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::effect_handler::SharedCancellationToken;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -951,7 +955,6 @@ mod tests {
         use otap_df_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
-        use tokio_util::sync::CancellationToken;
 
         let port = portpicker::pick_unused_port().expect("free port");
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -971,7 +974,7 @@ mod tests {
             wait_for_result: true, // Use wait_for_result to hold the request open
             ..Default::default()
         };
-        let shutdown = CancellationToken::new();
+        let shutdown = SharedCancellationToken::new();
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use bytes::Bytes;
+use otap_df_engine::effect_handler::sleep;
 
 use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
@@ -9,7 +10,7 @@ use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},
 };
-use tokio::time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 use super::config::ApiConfig;
 use super::error::Error;
@@ -239,7 +240,7 @@ impl LogsIngestionClient {
                     // TODO: Revisit whether DEBUG or INFO is the right level for retry attempts.
                     otel_debug!("azure_monitor_exporter.export.retrying", attempt = attempt, delay_ms = delay.as_millis() as u64, error = ?e);
 
-                    tokio::time::sleep(delay).await;
+                    sleep(delay).await;
                 }
             }
         }

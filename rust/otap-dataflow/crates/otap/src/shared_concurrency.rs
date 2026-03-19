@@ -9,10 +9,10 @@
 //! so backpressure propagates before request bodies are accepted/decoded.
 
 use futures::future::BoxFuture;
-use std::sync::Arc;
+use otap_df_engine::effect_handler::SharedSemaphore;
 use std::task::ready;
 use std::task::{Context, Poll};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::PollSemaphore;
 use tower::{Layer, Service};
 
@@ -66,12 +66,13 @@ use tower::{Layer, Service};
 /// ```
 #[derive(Clone)]
 pub struct SharedConcurrencyLayer {
-    semaphore: Arc<Semaphore>,
+    semaphore: SharedSemaphore,
 }
 
 impl SharedConcurrencyLayer {
     /// Creates a new layer using the provided semaphore for concurrency control.
-    pub const fn new(semaphore: Arc<Semaphore>) -> Self {
+    #[must_use]
+    pub const fn new(semaphore: SharedSemaphore) -> Self {
         Self { semaphore }
     }
 }
@@ -82,7 +83,7 @@ impl<S> Layer<S> for SharedConcurrencyLayer {
     fn layer(&self, inner: S) -> Self::Service {
         SharedConcurrencyService {
             inner,
-            semaphore: PollSemaphore::new(self.semaphore.clone()),
+            semaphore: PollSemaphore::new(self.semaphore.clone_inner()),
             permit: None,
         }
     }

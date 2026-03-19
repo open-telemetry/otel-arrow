@@ -8,6 +8,7 @@ use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otap_df_engine::effect_handler::sleep_until;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
@@ -36,6 +37,7 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 ///
@@ -66,7 +68,7 @@ pub struct AzureMonitorExporter {
     metrics: AzureMonitorExporterMetricsRc,
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
-    last_batch_queued_at: tokio::time::Instant,
+    last_batch_queued_at: Instant,
     heartbeat: Heartbeat,
 }
 
@@ -101,7 +103,7 @@ impl AzureMonitorExporter {
             metrics: metrics.clone(),
             client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1, metrics),
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
-            last_batch_queued_at: tokio::time::Instant::now(),
+            last_batch_queued_at: Instant::now(),
             heartbeat,
         })
     }
@@ -227,7 +229,7 @@ impl AzureMonitorExporter {
                 .await?;
         }
 
-        self.last_batch_queued_at = tokio::time::Instant::now();
+        self.last_batch_queued_at = Instant::now();
 
         Ok(())
     }
@@ -367,21 +369,19 @@ impl AzureMonitorExporter {
     }
 
     #[inline]
-    fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
+    fn get_next_token_refresh(token: AccessToken) -> Instant {
         let now = azure_core::time::OffsetDateTime::now_utc();
         let duration_remaining = if token.expires_on > now {
             (token.expires_on - now).unsigned_abs()
         } else {
-            std::time::Duration::ZERO
+            Duration::ZERO
         };
 
-        let token_valid_until = tokio::time::Instant::now() + duration_remaining;
-        let next_token_refresh =
-            token_valid_until - tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
+        let token_valid_until = Instant::now() + duration_remaining;
+        let next_token_refresh = token_valid_until - Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
         std::cmp::max(
             next_token_refresh,
-            tokio::time::Instant::now()
-                + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS),
+            Instant::now() + Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS),
         )
     }
 
@@ -511,10 +511,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         // On success, auth headers are set immediately and token refresh is scheduled normally.
         // On failure (e.g., MSI on a non-Azure machine), a warning surfaces within ~5s
         // and the main loop retries via the regular get_token() infinite retry path.
-        let mut next_token_refresh = match auth
-            .try_get_token(tokio::time::Duration::from_secs(5), 3)
-            .await
-        {
+        let mut next_token_refresh = match auth.try_get_token(Duration::from_secs(5), 3).await {
             Ok(access_token) => {
                 match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
                     Ok(header) => {
@@ -522,8 +519,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         self.heartbeat.update_auth(header.clone());
 
                         let next = Self::get_next_token_refresh(access_token);
-                        let refresh_in =
-                            next.saturating_duration_since(tokio::time::Instant::now());
+                        let refresh_in = next.saturating_duration_since(Instant::now());
                         let total_secs = refresh_in.as_secs();
                         let hours = total_secs / 3600;
                         let minutes = (total_secs % 3600) / 60;
@@ -537,7 +533,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                     Err(e) => {
                         otel_warn!("azure_monitor_exporter.auth.initial_header_creation_failed", error = ?e);
-                        tokio::time::Instant::now()
+                        Instant::now()
                     }
                 }
             }
@@ -547,13 +543,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     error = %e,
                     hint = "Check auth method configuration. Token acquisition will keep retrying in background."
                 );
-                tokio::time::Instant::now()
+                Instant::now()
             }
         };
 
-        let mut next_periodic_export = tokio::time::Instant::now()
-            + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
-        let mut next_heartbeat_send = tokio::time::Instant::now();
+        let mut next_periodic_export =
+            Instant::now() + Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
+        let mut next_heartbeat_send = Instant::now();
 
         loop {
             // Determine if we should accept new messages
@@ -562,7 +558,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             tokio::select! {
                 biased;
 
-                _ = tokio::time::sleep_until(next_token_refresh) => {
+                _ = sleep_until(next_token_refresh) => {
                     match auth.get_token().await {
                         Ok(access_token) => {
                             match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
@@ -573,7 +569,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     // Schedule next token refresh
                                     next_token_refresh = Self::get_next_token_refresh(access_token);
 
-                                    let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
+                                    let refresh_in = next_token_refresh.saturating_duration_since(Instant::now());
                                     let total_secs = refresh_in.as_secs();
                                     let hours = total_secs / 3600;
                                     let minutes = (total_secs % 3600) / 60;
@@ -584,7 +580,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 Err(e) => {
                                     otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
                                     // Retry every 10 seconds
-                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                                    next_token_refresh = Instant::now() + Duration::from_secs(10);
                                 }
                             }
 
@@ -592,13 +588,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         Err(e) => {
                             otel_error!("azure_monitor_exporter.auth.token_refresh_failed", error = ?e);
                             // Retry every 10 seconds
-                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                            next_token_refresh = Instant::now() + Duration::from_secs(10);
                         }
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_heartbeat_send) => {
-                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                _ = sleep_until(next_heartbeat_send) => {
+                    next_heartbeat_send = Instant::now() + Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
                     self.metrics.borrow_mut().add_heartbeat();
                     match self.heartbeat.send().await {
                         Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
@@ -612,10 +608,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_periodic_export), if !at_capacity => {
-                    next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
+                _ = sleep_until(next_periodic_export), if !at_capacity => {
+                    next_periodic_export = Instant::now() + Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
-                    if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
+                    if self.last_batch_queued_at.elapsed() >= Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
                         otel_debug!("azure_monitor_exporter.export.periodic_flush");
                         self.queue_current_batch(&effect_handler).await?;
                     }

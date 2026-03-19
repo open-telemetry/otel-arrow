@@ -52,8 +52,6 @@ use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tower::ServiceBuilder;
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -509,13 +507,19 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         // Optional receiver-wide semaphore used to cap combined gRPC + HTTP load.
         // Only enabled when the cap is provided (i.e., tuning has occurred).
         let global_semaphore = (both_enabled && self.global_max_concurrent_requests.is_some())
-            .then(|| Arc::new(Semaphore::new(global_max)));
+            .then(|| effect_handler.shared_semaphore(global_max));
 
         // Build gRPC server task if gRPC is enabled.
         let grpc_task: Option<GrpcServerTask> =
             if let Some(grpc_config) = &self.config.protocols.grpc {
                 let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
-                let incoming = grpc_config.build_tcp_incoming(listener);
+                let incoming =
+                    grpc_config
+                        .build_tcp_incoming(listener)
+                        .map_err(|error| Error::IoError {
+                            node: effect_handler.receiver_id(),
+                            error,
+                        })?;
 
                 // gRPC enforces its own per-protocol concurrency limit.
                 // When HTTP is also enabled, apply an additional global cap so the combined
@@ -592,7 +596,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             };
 
         // Build HTTP server task if HTTP is enabled.
-        let http_shutdown = CancellationToken::new();
+        let http_shutdown = effect_handler.cancellation_token();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
                 Some(Box::pin(otap_df_otap::otlp_http::serve(
@@ -648,7 +652,7 @@ impl OTLPReceiver {
         >,
         grpc_task: Option<GrpcServerTask>,
         http_task: Option<HttpServerTask>,
-        http_shutdown: CancellationToken,
+        http_shutdown: otap_df_engine::effect_handler::SharedCancellationToken,
     ) -> Result<TerminalState, Error> {
         // Convert Options to futures that either run or pend forever.
         let mut grpc_fut: GrpcServerTask = grpc_task

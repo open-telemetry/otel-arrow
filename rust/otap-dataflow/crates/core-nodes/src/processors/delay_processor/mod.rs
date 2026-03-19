@@ -94,7 +94,7 @@ impl local::Processor<OtapPdata> for DelayProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(pdata) => {
-                tokio::time::sleep(self.delay).await;
+                effect_handler.sleep(self.delay).await;
                 effect_handler.send_message_with_source_node(pdata).await?;
                 Ok(())
             }

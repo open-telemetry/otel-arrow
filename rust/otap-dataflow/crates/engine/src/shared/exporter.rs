@@ -45,6 +45,7 @@ use otap_df_channel::error::RecvError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -260,6 +261,33 @@ impl<PData> EffectHandler<PData> {
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
+    }
+
+    /// Sleep for the requested duration on the engine-owned runtime.
+    pub async fn sleep(&self, duration: Duration) {
+        self.core.sleep(duration).await;
+    }
+
+    /// Sleep until the requested deadline on the engine-owned runtime.
+    pub async fn sleep_until(&self, deadline: Instant) {
+        self.core.sleep_until(deadline).await;
+    }
+
+    /// Yield to other tasks on the engine-owned runtime.
+    pub async fn yield_now(&self) {
+        self.core.yield_now().await;
+    }
+
+    /// Wait for a future with a timeout on the engine-owned runtime.
+    pub async fn timeout<F>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> Result<F::Output, tokio::time::error::Elapsed>
+    where
+        F: Future,
+    {
+        self.core.timeout(duration, future).await
     }
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.

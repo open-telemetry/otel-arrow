@@ -518,7 +518,11 @@ mod tests {
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let listener = effect_handler.tcp_listener(addr)?;
+            let listener = tokio::net::TcpListener::from_std(effect_handler.tcp_listener(addr)?)
+                .map_err(|error| Error::IoError {
+                    node: effect_handler.receiver_id(),
+                    error,
+                })?;
             let local_addr = listener.local_addr().unwrap();
 
             // Notify the test of the actual bound address.
@@ -597,7 +601,11 @@ mod tests {
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let listener = effect_handler.tcp_listener(addr)?;
+            let listener = tokio::net::TcpListener::from_std(effect_handler.tcp_listener(addr)?)
+                .map_err(|error| Error::IoError {
+                    node: effect_handler.receiver_id(),
+                    error,
+                })?;
             let local_addr = listener.local_addr().unwrap();
 
             // Notify the test of the actual bound address.

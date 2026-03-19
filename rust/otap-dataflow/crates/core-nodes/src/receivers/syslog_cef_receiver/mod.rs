@@ -13,6 +13,9 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otap_df_engine::{
+    effect_handler::{
+        LocalAsyncBufReadExt, local_buf_reader, runtime_tcp_listener, runtime_udp_socket,
+    },
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
@@ -30,7 +33,6 @@ use std::num::{NonZeroU16, NonZeroU64};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
@@ -236,7 +238,12 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     listening_addr = tcp_config.listening_addr.to_string()
                 );
 
-                let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
+                let listener =
+                    runtime_tcp_listener(effect_handler.tcp_listener(tcp_config.listening_addr)?)
+                        .map_err(|error| Error::IoError {
+                        node: effect_handler.receiver_id(),
+                        error,
+                    })?;
 
                 // Build TLS acceptor if TLS is configured
                 #[cfg(feature = "experimental-tls")]
@@ -289,9 +296,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // capped at MAX_TASK_DRAIN_WAIT.
                                     let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
                                     let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
-                                    let drain_result = tokio::time::timeout(drain_wait, async {
+                                    let drain_result = effect_handler.timeout(drain_wait, async {
                                         while active_task_count.get() > 0 {
-                                            tokio::task::yield_now().await;
+                                            effect_handler.yield_now().await;
                                         }
                                     }).await;
 
@@ -324,7 +331,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             match accept_result {
                                 Ok((socket, peer_addr)) => {
                                     // Clone the effect handler so the spawned task can send messages.
-                                    let effect_handler = effect_handler.clone();
+                                    let task_effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
 
                                     // Clone TLS acceptor for the spawned task
@@ -339,8 +346,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let task_active_count = active_task_count.clone();
 
                                     // Spawn a task to handle the connection.
-                                    // ToDo should this be abstracted and exposed a method in the effect handler?
-                                    _ = tokio::task::spawn_local(async move {
+                                    _ = effect_handler.spawn_local(async move {
                                         // If already shutting down, exit immediately (nothing to process yet)
                                         if task_shutdown_flag.get() {
                                             return;
@@ -352,7 +358,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         #[cfg(feature = "experimental-tls")]
-                                        let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                        let mut reader: Box<otap_df_engine::effect_handler::LocalAsyncBufRead> = if let Some(acceptor) = tls_acceptor {
                                             // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
                                                 .unwrap_or(Duration::from_secs(10));
@@ -363,7 +369,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
-                                                    Box::new(BufReader::new(tls_stream))
+                                                    Box::new(local_buf_reader(tls_stream))
                                                 }
                                                 Err(e) => {
                                                     otel_warn!(
@@ -379,11 +385,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                             }
                                         } else {
-                                            Box::new(BufReader::new(socket))
+                                            Box::new(local_buf_reader(socket))
                                         };
 
                                         #[cfg(not(feature = "experimental-tls"))]
-                                        let mut reader = BufReader::new(socket);
+                                        let mut reader = local_buf_reader(socket);
 
                                         // Suppress unused variable warning when TLS is disabled
                                         let _ = peer_addr;
@@ -392,17 +398,17 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        let start = tokio::time::Instant::now() + max_batch_duration;
-                                        let mut interval = tokio::time::interval_at(start, max_batch_duration);
+                                        let start = std::time::Instant::now() + max_batch_duration;
+                                        let mut interval = task_effect_handler.interval_at(start, max_batch_duration);
 
                                         loop {
                                             // Check for shutdown signal (simple bool check - very cheap)
                                             if task_shutdown_flag.get() {
                                                 if arrow_records_builder.len() > 0 {
-                                                    let items = u64::from(arrow_records_builder.len());
-                                                    match arrow_records_builder.build() {
-                                                        Ok(arrow_records) => {
-                                                            let res = effect_handler.try_send_message_with_source_node(
+                                                            let items = u64::from(arrow_records_builder.len());
+                                                            match arrow_records_builder.build() {
+                                                                Ok(arrow_records) => {
+                                                            let res = task_effect_handler.try_send_message_with_source_node(
                                                                 OtapPdata::new_todo_context(arrow_records.into())
                                                             );
                                                             let mut m = metrics.borrow_mut();
@@ -460,7 +466,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = task_effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -528,7 +534,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = task_effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
                                                                             match &res {
@@ -552,7 +558,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = task_effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -587,7 +593,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = task_effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -630,15 +636,20 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     listening_addr = udp_config.listening_addr.to_string()
                 );
 
-                let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
+                let socket =
+                    runtime_udp_socket(effect_handler.udp_socket(udp_config.listening_addr)?)
+                        .map_err(|error| Error::IoError {
+                            node: effect_handler.receiver_id(),
+                            error,
+                        })?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
 
-                let start = tokio::time::Instant::now() + max_batch_duration;
-                let mut interval = tokio::time::interval_at(start, max_batch_duration);
+                let start = std::time::Instant::now() + max_batch_duration;
+                let mut interval = effect_handler.interval_at(start, max_batch_duration);
 
                 loop {
                     tokio::select! {
@@ -653,11 +664,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // Flush any remaining records before shutdown
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
-                                        match arrow_records_builder.build() {
-                                            Ok(arrow_records) => {
-                                                let res = effect_handler.try_send_message_with_source_node(
-                                                    OtapPdata::new_todo_context(arrow_records.into())
-                                                );
+                                                    match arrow_records_builder.build() {
+                                                        Ok(arrow_records) => {
+                                                            let res = effect_handler.try_send_message_with_source_node(
+                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                            );
                                                 let mut m = self.metrics.borrow_mut();
                                                 match &res {
                                                     Ok(_) => m.received_logs_forwarded.add(items),

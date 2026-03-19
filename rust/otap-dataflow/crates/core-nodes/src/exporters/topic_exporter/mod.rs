@@ -344,7 +344,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                                     }
                                 }
                             }
-                            tokio::task::consume_budget().await;
+                            effect_handler.yield_now().await;
                         }
                         _ => {}
                     }
