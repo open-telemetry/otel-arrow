@@ -1,0 +1,79 @@
+# Azure Monitor Exporter with Local Mock Server
+#
+# Uses the built-in traffic generator with the mock-la-server for local
+# performance testing without incurring Log Analytics costs.
+#
+# Usage:
+#   1. Start the mock server:
+#      cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
+#
+#   2. Run the pipeline:
+#      cargo run --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml
+#
+# Error simulation examples:
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% → 500
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5  # 10% → 429
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --latency 200ms                  # slow responses
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-after 1000                # 503 after 1000 OK
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine:
+  telemetry:
+    logs:
+      level: "info,typespec_client_core=warn,otap-df-contrib-nodes=info"
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          fake-data-generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: static
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 1000
+                max_batch_size: 50
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+
+          azure-monitor-exporter:
+            type: "urn:microsoft:exporter:azure_monitor"
+            config:
+              api:
+                # Point to local mock server instead of real Azure endpoint
+                dcr_endpoint: "http://localhost:9999"
+                stream_name: "Custom-MyTable_CL"
+                dcr: "dcr-local-test"
+                schema:
+                  resource_mapping:
+                    "service.name": "ServiceName"
+                  scope_mapping:
+                    "otel.library.name": "InstrumentationLibrary"
+                  log_record_mapping:
+                    "body": "Message"
+                    "severity_text": "SeverityText"
+                    "severity_number": "SeverityNumber"
+                    "time_unix_nano": "TimeGenerated"
+                    "trace_id": "TraceId"
+                    "span_id": "SpanId"
+                    "attributes":
+                      "http.method": "HttpMethod"
+                      "http.status_code": "HttpStatusCode"
+
+              auth:
+                method: "dev"
+
+        connections:
+          - from: fake-data-generator
+            to: azure-monitor-exporter
