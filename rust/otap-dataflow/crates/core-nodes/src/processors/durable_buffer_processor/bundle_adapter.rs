@@ -545,7 +545,7 @@ where
     for (slot_id, batch) in payloads {
         // Include signal-specific slots (any signal type)
         if let Some((signal_type, payload_type)) = from_slot_id(*slot_id) {
-            assert_eq!(signal_type, T::SIGNAL_TYPE);
+            debug_assert_eq!(signal_type, T::SIGNAL_TYPE, "Signal type should match slot");
             store
                 .set(payload_type, batch.clone())
                 .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
