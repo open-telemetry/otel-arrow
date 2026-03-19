@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773793546501,
+  "lastUpdate": 1773879886184,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2621,6 +2621,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 86.7,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8ce6364e67702a4c46c76cf1e3fa0de89aa6e8a2",
+          "message": "add resource id header to ame exporter requests (#2355)\n\n# Change Summary\n\nIf configured, sets resource id header for log analytics API.\n\n## What issue does this PR close?\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\nNew config field `azure_monitor_source_resourceid` under `api` config\nsection of azure monitor exporter.\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-03-18T22:05:42Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8ce6364e67702a4c46c76cf1e3fa0de89aa6e8a2"
+        },
+        "date": 1773879880739,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.59,
             "unit": "MB"
           }
         ]
