@@ -32,6 +32,9 @@ tokio = { workspace = true }
 otap-df-opl = { path = "../opl" }
 otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
+
 [[bench]]
 name = "filter"
 harness = false
