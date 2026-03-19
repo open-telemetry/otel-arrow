@@ -485,6 +485,9 @@ async fn run_backpressure_interblock_seed(seed: u64) {
     }));
 }
 
+// Drive a seeded heavy-ingress scenario with bounded pdata channels, processor
+// admission gating, mixed Ack/Nack completion traffic, and runtime noise. This
+// documents the interblock class the refactor was designed to keep live.
 #[test]
 fn dst_heavy_ingress_backpressure_seeded() {
     for seed in dst_seeds(&[7, 23, 31], 8) {

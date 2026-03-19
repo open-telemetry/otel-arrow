@@ -1854,6 +1854,9 @@ mod tests {
             .await;
     }
 
+    // A due timer tick must still reach its node while the runtime-control lane
+    // is busy with unrelated requests. This guards against control traffic
+    // starving timer expiry handling inside the manager loop.
     #[tokio::test]
     async fn test_due_timer_tick_progress_under_runtime_ctrl_burst() {
         let local = LocalSet::new();
@@ -1902,6 +1905,9 @@ mod tests {
             .await;
     }
 
+    // CollectTelemetry shares the same due-work path as timers, so it must also
+    // keep making progress under sustained runtime-control pressure instead of
+    // being postponed behind a busy control lane.
     #[tokio::test]
     async fn test_due_collect_telemetry_progress_under_runtime_ctrl_burst() {
         let local = LocalSet::new();
@@ -1950,6 +1956,9 @@ mod tests {
             .await;
     }
 
+    // DelayedData wakeups are another due event handled by the manager.
+    // This test ensures they are still dispatched promptly even when unrelated
+    // runtime-control requests keep arriving in a burst.
     #[tokio::test]
     async fn test_due_delayed_data_progress_under_runtime_ctrl_burst() {
         let local = LocalSet::new();
@@ -2434,6 +2443,9 @@ mod tests {
             .await;
     }
 
+    // During draining, new telemetry collection work must not be started.
+    // A StartTelemetryTimer sent after Shutdown is latched is ignored, and the
+    // node only observes its Shutdown control message.
     #[tokio::test]
     async fn test_start_telemetry_timer_ignored_during_draining() {
         let local = LocalSet::new();
@@ -2484,6 +2496,9 @@ mod tests {
             .await;
     }
 
+    // DelayData submitted after draining begins represents retry work that
+    // should not stay hidden behind the delayed-data heap. The manager returns
+    // it to the origin node immediately so the node can decide what to do next.
     #[tokio::test]
     async fn test_new_delay_data_returned_immediately_during_draining() {
         let local = LocalSet::new();
@@ -2544,6 +2559,9 @@ mod tests {
             .await;
     }
 
+    // Draining must also flush retry work that was already queued before
+    // shutdown. Once draining starts, delayed data is returned immediately
+    // rather than waiting for its original wake time.
     #[tokio::test]
     async fn test_queued_delayed_data_flushed_when_draining_begins() {
         let local = LocalSet::new();
@@ -3387,6 +3405,9 @@ mod tests {
         assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
     }
 
+    // Completion traffic must remain live even when the runtime-control lane is
+    // saturated with unrelated work. An Ack routed through the completion lane
+    // should still reach its node promptly.
     #[tokio::test]
     async fn test_return_lane_progress_while_runtime_ctrl_lane_is_busy() {
         use crate::control::AckMsg;
@@ -3635,6 +3656,9 @@ mod tests {
             .await;
     }
 
+    // The converse isolation should also hold: a busy completion lane must not
+    // prevent the runtime-control manager from dispatching due work such as a
+    // timer tick to another node.
     #[tokio::test]
     async fn test_runtime_ctrl_progress_while_return_lane_is_busy() {
         use crate::control::AckMsg;

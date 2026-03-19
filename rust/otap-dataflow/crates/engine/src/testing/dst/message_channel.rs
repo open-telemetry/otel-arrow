@@ -160,6 +160,9 @@ async fn run_message_channel_seed(seed: u64) {
     }));
 }
 
+// Sweep seeded message-channel interleavings that combine bounded-fair control
+// vs pdata delivery, processor shutdown draining with admission reopen, and the
+// exporter-specific forced-drain behavior once Shutdown is latched.
 #[test]
 fn dst_message_channel_seeded() {
     for seed in dst_seeds(&[3, 19, 41], 8) {

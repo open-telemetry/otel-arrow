@@ -294,6 +294,9 @@ async fn run_control_plane_seed(seed: u64) {
     }));
 }
 
+// Exercise seeded control-plane mixes where runtime-control traffic, delayed
+// work, completion unwinding, and receiver-first shutdown all compete. The
+// assertion surface is liveness and ordering, not a single fixed trace.
 #[test]
 fn dst_runtime_control_plane_seeded() {
     for seed in dst_seeds(&[5, 17, 29], 8) {

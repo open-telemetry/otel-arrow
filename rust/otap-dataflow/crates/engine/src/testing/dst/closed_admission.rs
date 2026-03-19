@@ -89,6 +89,9 @@ async fn run_closed_admission_deadline_seed(seed: u64) {
     }));
 }
 
+// Keep the known processor limitation explicit in the DST suite: if shutdown is
+// latched and admission never reopens, buffered pdata remains stranded until
+// the deadline and is abandoned when forced Shutdown is returned.
 #[test]
 fn dst_closed_admission_deadline_abandons_buffered_pdata_seeded() {
     for seed in dst_seeds(&[11, 37, 43], 8) {

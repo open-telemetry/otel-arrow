@@ -141,6 +141,53 @@ Each pipeline runtime uses three channel families:
    - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`, consumed by
      `PipelineCompletionMsgDispatcher`
 
+### Why Runtime-Control and Completion Are Split
+
+The split between the runtime-control channel and the pipeline-completion
+channel is there to protect liveness.
+
+These two message families have different jobs:
+
+- runtime-control traffic keeps the runtime itself progressing: timers,
+  delayed-data wakeups, receiver drain notifications, and shutdown
+  orchestration
+- completion traffic unwinds the outcome of already admitted work: `Ack` and
+  `Nack` delivery back to the closest interested upstream node
+
+If both flows share one bounded queue, a burst in one category can crowd out
+the other. That is especially dangerous because nodes publish onto these paths
+from inside their own async loops. Once that shared queue is full, producers
+can block in `send().await`, which can amplify backpressure and, in some
+topologies, contribute to circular wait.
+
+A realistic example looks like this:
+
+```text
+# An OTLP receiver admits requests with wait_for_result enabled.
+# A retry/fanout processor forwards pdata downstream and temporarily closes
+# admission while it waits for outstanding completions to reduce its inflight
+# count.
+# An exporter hits a temporary outage and emits a burst of DeliverNack.
+# The processor also needs to enqueue StartTimer / DelayData to retry work.
+#
+# If DeliverNack, StartTimer, DelayData, and Shutdown all share one bounded
+# channel, the DeliverNack burst can fill it first.
+# Then:
+# - the exporter can block trying to publish more completion traffic
+# - the processor can block trying to publish retry/timer work
+# - receiver drain / shutdown work can be delayed behind completion churn
+# - the processor may stay closed to pdata because the control work needed to
+#   reopen or retry is stuck behind the same queue
+# - backpressure propagates upstream and admitted requests stop making forward
+#   progress
+#
+# With separate channels:
+# - runtime-control traffic stays live even under heavy Ack/Nack churn
+# - Ack/Nack unwinding stays live even while timers or delayed-data requests
+#   are busy
+# - one path being saturated no longer prevents the other from draining
+```
+
 `ProcessorMessageChannel` and `ExporterMessageChannel` both prefer control over
 `pdata`, but neither gives control absolute priority. After a bounded burst of
 control messages, the channel forces one `pdata` receive attempt when node-level

@@ -856,6 +856,9 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
+    // Azure Monitor can temporarily stop accepting new pdata while it is at
+    // capacity. Once shutdown is latched, the exporter channel must still drain
+    // already buffered pdata before delivering the final Shutdown message.
     #[tokio::test]
     async fn test_shutdown_drains_buffered_pdata_while_at_capacity() {
         let (control_tx, pdata_tx, mut msg_chan) = make_msg_channel(8);

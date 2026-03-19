@@ -961,6 +961,9 @@ mod tests {
         ));
     }
 
+    // Preload more control messages than the fairness burst limit plus one pdata.
+    // Once admission is open, the channel must force one pdata through instead of
+    // letting sustained control traffic starve it indefinitely.
     #[tokio::test]
     async fn test_recv_forces_pdata_after_control_burst() {
         let (control_tx, pdata_tx, mut channel) = make_chan_with_capacity(64);
@@ -992,6 +995,9 @@ mod tests {
         ));
     }
 
+    // The same bounded-fair rule must hold while draining after Shutdown is latched.
+    // Buffered pdata should still be surfaced once the control burst limit is hit
+    // when the caller is accepting pdata during shutdown.
     #[tokio::test]
     async fn test_recv_when_true_forces_pdata_after_control_burst_during_shutdown() {
         let (control_tx, pdata_tx, mut channel) = make_chan_with_capacity(64);
@@ -1025,6 +1031,9 @@ mod tests {
         assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
     }
 
+    // Fairness must not punch through closed processor admission.
+    // Even after a large control burst, recv_when(false) keeps pdata buffered
+    // until the processor explicitly reopens admission.
     #[tokio::test]
     async fn test_recv_when_false_does_not_bypass_admission_after_control_burst() {
         let (control_tx, pdata_tx, mut channel) = make_processor_chan_with_capacity(64);
@@ -1104,6 +1113,9 @@ mod tests {
         ));
     }
 
+    // Exporters own their receive loop, so shutdown draining is allowed to
+    // override temporary admission closure and flush the bounded channel backlog
+    // before the final Shutdown is returned.
     #[tokio::test]
     async fn test_exporter_recv_when_false_drains_buffered_pdata_during_shutdown() {
         let (control_tx, pdata_tx, mut channel) = make_chan();
