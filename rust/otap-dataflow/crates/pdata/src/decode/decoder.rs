@@ -116,7 +116,7 @@ impl Consumer {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
                 let mut otap_batch =
-                    OtapArrowRecords::Metrics(from_record_messages(record_messages));
+                    OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.metrics_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -143,7 +143,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
+                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.logs_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -169,7 +169,7 @@ impl Consumer {
             ArrowPayloadType::Spans => {
                 let record_messages = self.consume_bar(records)?;
                 let mut otap_batch =
-                    OtapArrowRecords::Traces(from_record_messages(record_messages));
+                    OtapArrowRecords::Traces(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.traces_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;

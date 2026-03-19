@@ -73,7 +73,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
             otap_batch.remove(attrs_payload_type);
         } else {
             // replace attributes batch with transformed attributes
-            otap_batch.set(attrs_payload_type, attrs_transformed);
+            otap_batch.set(attrs_payload_type, attrs_transformed)?;
         }
 
         Ok(otap_batch)

@@ -82,7 +82,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 
         // replace record batch with pipeline result
         if curr_batch.num_rows() > 0 {
-            otap_batch.set(attrs_payload_type, curr_batch);
+            otap_batch.set(attrs_payload_type, curr_batch)?;
         } else {
             otap_batch.remove(attrs_payload_type);
         }
@@ -904,7 +904,7 @@ mod test {
             .find(consts::ATTRIBUTE_INT)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         let query = r#"
             logs | apply attributes {
@@ -940,7 +940,7 @@ mod test {
             .find(consts::ATTRIBUTE_DOUBLE)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         let query = r#"
             logs | apply attributes {
@@ -980,7 +980,7 @@ mod test {
             .find(consts::ATTRIBUTE_BOOL)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         // kind of a useless update, but just trying to test something that will read from
         // a null column and also produce a null result
@@ -1016,7 +1016,7 @@ mod test {
             .find(consts::ATTRIBUTE_STR)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         // kind of a useless update, but just trying to test something that will read from
         // a null column and also produce a null result

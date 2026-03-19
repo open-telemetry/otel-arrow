@@ -987,7 +987,10 @@ fn apply_filter(
     let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
     let num_rows_removed = num_rows_before - (filtered_record_batch.num_rows() as u64);
-    payload.set(payload_type, filtered_record_batch);
+    // safety: Removing rows from a valid payload should yield a valid payload
+    payload
+        .set(payload_type, filtered_record_batch)
+        .expect("filter did not change validity");
     Ok((num_rows_before, num_rows_removed))
 }
 

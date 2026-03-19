@@ -293,7 +293,9 @@ where
         otel_error!("otap.batch.decode_failed", error = ?e, message = "Error decoding OTAP Batch. Closing stream");
     })?;
 
-    let batch = from_record_messages::<T>(batch);
+    let batch = from_record_messages::<T>(batch).map_err(|e| {
+        otel_error!("otap.batch.validation_failed", error = ?e, message = "Invalid OTAP batch. Closing stream");
+    })?;
     let otap_batch_as_otap_arrow_records = otap_batch(batch);
     let mut otap_pdata =
         OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
