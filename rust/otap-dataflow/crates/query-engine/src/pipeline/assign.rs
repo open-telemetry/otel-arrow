@@ -2924,9 +2924,6 @@ mod test {
         );
     }
 
-    // TODO - need to make versions of these tests where the parent is scope/resource
-    // and maybe there are nulls in the parent_id column?
-
     #[tokio::test]
     async fn test_insert_attribute_scalar_where_some_target_has_no_attrs_opl_parser() {
         test_insert_attribute_scalar_where_some_target_has_no_attrs::<OplParser>().await
@@ -2981,10 +2978,7 @@ mod test {
         test_insert_attribute_from_root_where_some_target_has_no_attrs::<KqlParser>().await
     }
 
-    // TODO this is a ridiculous test name
-    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results<
-        P: Parser,
-    >() {
+    async fn test_insert_attribute_some_target_has_no_attrs_with_null_results<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
@@ -3020,15 +3014,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results_opl_parser()
-     {
-        test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results::<OplParser>().await
+    async fn test_insert_attribute_some_target_has_no_attrs_with_null_results_opl_parser() {
+        test_insert_attribute_some_target_has_no_attrs_with_null_results::<OplParser>().await
     }
 
     #[tokio::test]
-    async fn test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_resultskql_parser()
-     {
-        test_insert_attribute_from_root_where_some_target_has_no_attrs_and_theres_some_null_results::<KqlParser>().await
+    async fn test_insert_attribute_some_target_has_no_attrs_with_null_resultskql_parser() {
+        test_insert_attribute_some_target_has_no_attrs_with_null_results::<KqlParser>().await
     }
 
     async fn test_upsert_attribute_scalar<P: Parser>() {

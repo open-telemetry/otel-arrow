@@ -43,7 +43,9 @@ const SMALLVEC_SIZE: usize = 16;
 /// - the new values to assign
 /// - and the ordered parent IDs (updates first, then inserts).
 ///
-/// TODO confirm comments about order of parent IDs ...
+/// The specific ordering of parent_ids + the mask are build the new attribute record batch
+/// efficiently by quickly merging the values with the existing columns and and appending new rows
+/// for the inserts.
 ///
 /// When multiple `AttributeUpsert`s are passed to [`upsert_attributes`], their keys **must be
 /// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
@@ -142,6 +144,11 @@ pub(crate) fn upsert_attributes(
 
     let existing_schema = existing_attrs.schema();
 
+    // combined update row mask for all inserts. This is only used if we need to insert nulls into
+    // some columns that have had their type changed and some rows must become null. It is
+    // initialized lazily one time, if/when it is needed
+    let mut combined_mask = None;
+
     let mut output_fields: Vec<Arc<Field>> =
         Vec::with_capacity(existing_schema.fields().len() + resolved.len());
     let mut output_columns: Vec<ArrayRef> =
@@ -186,6 +193,7 @@ pub(crate) fn upsert_attributes(
                     existing_col,
                     &resolved,
                     &row_owners,
+                    &mut combined_mask,
                     col_name,
                     total_output_rows,
                 )?
@@ -571,8 +579,13 @@ fn merge_key_column_dict(
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                // TODO we actually can't expect here
-                .expect("dict values are StringArray")
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "encountered invalid key column type in dict.\
+                        expected Utf8, found {:?}",
+                        dict.values().data_type()
+                    ),
+                })?
         }
         DataType::UInt16 => {
             let dict = existing_col
@@ -584,8 +597,13 @@ fn merge_key_column_dict(
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                // TODO we actually can't expect here
-                .expect("dict values are StringArray")
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "encountered invalid key column type in dict.\
+                        expected Utf8, found {:?}",
+                        dict.values().data_type()
+                    ),
+                })?
         }
         other => {
             return Err(Error::ExecutionError {
@@ -829,6 +847,7 @@ fn merge_value_column(
     existing_col: &ArrayRef,
     resolved: &[ResolvedUpsert<'_>],
     row_owners: &[OwnershipRun],
+    combined_mask: &mut Option<BooleanArray>,
     col_name: &str,
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
@@ -843,13 +862,17 @@ fn merge_value_column(
     // If no upserts are active, this is purely a "passthrough column", where we're placing nulls
     // in the rows where there were updated/inserted values in some other column.
     if active_indices.is_empty() {
-        // TODO - this gets built for each column, but it could be built only once?
-        let combined_mask = build_combined_mask(resolved)?;
+        if combined_mask.is_none() {
+            // lazily initialize the null mask
+            *combined_mask = Some(build_combined_mask(resolved)?);
+        }
+        // safety: we can expect here because we've initialized the null mask on the line above
+        let combined_mask = combined_mask.as_ref().expect("initialized");
         let total_num_inserts: usize = resolved.iter().map(|r| r.num_inserts).sum();
         return merge_passthrough_column(
             field,
             existing_col,
-            &combined_mask,
+            combined_mask,
             total_num_inserts,
             total_output_rows,
         );
@@ -1687,11 +1710,13 @@ mod tests {
             num_inserts,
         }];
         let row_owners = build_row_owners(existing_col.len(), &resolved);
+        let mut combined_mask = None;
         merge_value_column(
             field,
             existing_col,
             &resolved,
             &row_owners,
+            &mut combined_mask,
             col_name,
             total_output_rows,
         )
