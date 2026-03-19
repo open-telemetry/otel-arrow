@@ -200,8 +200,18 @@ pub(crate) fn upsert_attributes(
             }
         };
 
-        output_fields.push(Arc::new(merged_field));
-        output_columns.push(merged_col);
+        let required_col = match col_name {
+            consts::PARENT_ID | consts::ATTRIBUTE_TYPE | consts::ATTRIBUTE_KEY => true,
+            _ => false,
+        };
+
+        // only keep the column if it's required, or if it's not entirely null
+        let keep_column = required_col || merged_col.null_count() < merged_col.len();
+
+        if keep_column {
+            output_fields.push(Arc::new(merged_field));
+            output_columns.push(merged_col);
+        }
     }
 
     // For any upserts targeting column that doesn't exist in the current schema create new column

@@ -1327,7 +1327,7 @@ fn try_upsert_column(
 #[cfg(test)]
 mod test {
     use arrow::{
-        array::{ArrayAccessor, Int16Array, StringArray, UInt16Array},
+        array::{StringArray, UInt16Array},
         compute::{
             filter_record_batch,
             kernels::{cast, cmp::eq},
@@ -2028,7 +2028,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_insert_root_column_handles_null_coercion_to_non_null_col_with_error() {
+    async fn test_insert_root_column_handles_null_coercion_to_non_null_column_with_error() {
         let traces_data = to_traces_data(vec![Span::build().finish()]);
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
 
@@ -3266,7 +3266,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_assigning_same_attribute_key_twice_is_handled() {
+    async fn test_assigning_same_attribute_key_twice() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().event_name("event1").finish(),
             LogRecord::build().event_name("event2").finish(),
@@ -3278,6 +3278,7 @@ mod test {
         let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(input).await.unwrap();
 
+        // assert the end result is from the 2nd assignment
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
@@ -3439,6 +3440,70 @@ mod test {
         assert_eq!(
             log_1_vals.as_ref(),
             &StringArray::from_iter_values(["b2", "b", "b2", "b2"])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_new_type_removes_old_column_if_all_null() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = 1.0";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+
+        let result_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(result_attrs.column_by_name(consts::ATTRIBUTE_STR).is_none());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("x", AnyValue::new_double(1.0)),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_null_removes_old_column_if_all_null() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = attributes[\"z\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+
+        let result_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(result_attrs.column_by_name(consts::ATTRIBUTE_STR).is_none());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("x", AnyValue { value: None })]
         );
     }
 }
