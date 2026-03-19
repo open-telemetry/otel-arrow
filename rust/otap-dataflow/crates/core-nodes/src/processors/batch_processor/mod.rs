@@ -514,6 +514,9 @@ pub struct BatchProcessorMetrics {
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
     dropped_empty_records: Counter<u64>,
+    /// Number of requests nacked due to inbound slot exhaustion
+    #[metric(unit = "{msg}")]
+    nacked_inbound_slots: Counter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
@@ -770,26 +773,26 @@ where
         items: usize,
     ) -> Result<(), EngineError> {
         // If there are subscribers, calculate an inbound slot key.
-        let inkey = ctx
-            .has_subscribers()
-            .then(|| {
-                self.buffer
-                    .inbound
-                    .allocate(|| {
-                        (
-                            BatchContext { ctx, outbound: 0 },
-                            (), // not used
-                        )
-                    })
-                    .ok_or_else(|| EngineError::ProcessorError {
-                        processor: effect.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "inbound slots not available".into(),
-                        source_detail: "".into(),
-                    })
-            })
-            .transpose()?
-            .map(|(bc, _)| bc);
+        let inkey = if ctx.has_subscribers() {
+            let slot = self
+                .buffer
+                .inbound
+                .allocate_with_data(BatchContext { ctx, outbound: 0 });
+
+            match slot {
+                Err(bctx) => {
+                    self.metrics.nacked_inbound_slots.inc();
+                    let refused = OtapPdata::new(bctx.ctx, payload.into());
+                    let _ = effect
+                        .route_nack(NackMsg::new("inbound routes exhausted", refused))
+                        .await?;
+                    return Ok(());
+                }
+                Ok(bc) => Some(bc),
+            }
+        } else {
+            None
+        };
 
         // Set the arrival time when the current input is empty.
         let timeout = self.config.max_batch_duration;
