@@ -449,7 +449,6 @@ impl AssignPipelineStage {
             // batch, then all the inserts come after (this is what's expected as an argument to
             // the utility function that does attribute inserts)
             //
-            // TODO ^^^ DO WE HAVE A SORT ORDER PROBLEM HERE????
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
             let update_parent_ids_u16 = update_parent_ids
@@ -461,17 +460,18 @@ impl AssignPipelineStage {
 
             let total = parent_id_set.len() as usize;
             let mut parent_ids = vec![0u16; total];
-            let mut update_index = 0;
-            let mut insert_index = update_parent_ids.len();
-
+            let mut curr_idx = 0;
+            for id in update_parent_ids_u16.iter().flatten() {
+                parent_ids[curr_idx] = id;
+                curr_idx += 1;
+            }
+            // now put in all the IDS for which we need to insert
             for id in parent_id_set.iter() {
                 if update_parent_id_set.contains(id) {
-                    parent_ids[update_index] = id as u16;
-                    update_index += 1
-                } else {
-                    parent_ids[insert_index] = id as u16;
-                    insert_index += 1;
+                    continue;
                 }
+                parent_ids[curr_idx] = id as u16;
+                curr_idx += 1;
             }
             self.id_bitmap_pool.release(update_parent_id_set);
             let parent_ids = UInt16Array::from(parent_ids);
@@ -1326,7 +1326,14 @@ fn try_upsert_column(
 }
 #[cfg(test)]
 mod test {
-    use arrow::{compute::kernels::cast, datatypes::DataType};
+    use arrow::{
+        array::{ArrayAccessor, Int16Array, StringArray, UInt16Array},
+        compute::{
+            filter_record_batch,
+            kernels::{cast, cmp::eq},
+        },
+        datatypes::DataType,
+    };
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
@@ -3337,5 +3344,118 @@ mod test {
     #[tokio::test]
     async fn test_assigning_reassigning_attr_value_then_using_as_source_kql_parser() {
         test_assigning_reassigning_attr_value_then_using_as_source::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_assign_attribute_after_if_condition_rearranges_rows() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("w", AnyValue::new_string("a")),
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                ])
+                .event_name("event1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("w", AnyValue::new_string("a")),
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                ])
+                .event_name("event2")
+                .finish(),
+        ]);
+
+        let query = r#"logs | 
+            if (event_name == "event2") {
+                set attributes["y"] = "b2"
+            } else {
+                set attributes["y"] = "b1"
+            } |
+            set attributes["z"] = attributes["y"], attributes["w"] = attributes["y"]
+        "#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // Ordinarily (for readability) we'd just deserialize to OTLP and assert on all the
+        // attributes for each log, but there's currently a bug in the OTLP deserialization so
+        // for now we'll assert on the arrow batches manually:
+
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+
+        let event_names = cast(
+            logs.column_by_name(consts::EVENT_NAME).unwrap(),
+            &DataType::Utf8,
+        )
+        .unwrap();
+        let event_names_str = event_names.as_any().downcast_ref::<StringArray>().unwrap();
+        let ids = logs
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+
+        assert_eq!(event_names_str.value(0), "event2");
+        assert_eq!(ids.value(0), 1);
+        assert_eq!(event_names_str.value(1), "event1");
+        assert_eq!(ids.value(1), 0);
+
+        let log_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+
+        let parent_id = log_attrs.column_by_name(consts::PARENT_ID).unwrap();
+
+        let log_0_filter = eq(&parent_id, &UInt16Array::new_scalar(0)).unwrap();
+        let log_0_attrs = filter_record_batch(log_attrs, &log_0_filter).unwrap();
+        let log_1_filter = eq(&parent_id, &UInt16Array::new_scalar(1)).unwrap();
+        let log_1_attrs = filter_record_batch(log_attrs, &log_1_filter).unwrap();
+
+        println!("LOGs");
+        arrow::util::pretty::print_batches(&[logs.clone()]).unwrap();
+        println!("LOG ATTRSs");
+        arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
+        println!("LOG ATTRS 0s");
+        arrow::util::pretty::print_batches(&[log_0_attrs.clone()]).unwrap();
+        println!("LOG ATTRS 1s");
+        arrow::util::pretty::print_batches(&[log_1_attrs.clone()]).unwrap();
+
+        let log0_keys = cast(
+            log_0_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap(),
+            &DataType::Utf8,
+        )
+        .unwrap();
+        let log0_vals = cast(
+            log_0_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap(),
+            &DataType::Utf8,
+        )
+        .unwrap();
+        assert_eq!(
+            log0_keys.as_ref(),
+            &StringArray::from_iter_values(["w", "x", "y", "z"])
+        );
+        assert_eq!(
+            log0_vals.as_ref(),
+            &StringArray::from_iter_values(["b1", "a", "b1", "b1"])
+        );
+
+        let log_1_keys = cast(
+            log_1_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap(),
+            &DataType::Utf8,
+        )
+        .unwrap();
+        let log_1_vals = cast(
+            log_1_attrs.column_by_name(consts::ATTRIBUTE_STR).unwrap(),
+            &DataType::Utf8,
+        )
+        .unwrap();
+        assert_eq!(
+            log_1_keys.as_ref(),
+            &StringArray::from_iter_values(["w", "x", "y", "z"])
+        );
+        assert_eq!(
+            log_1_vals.as_ref(),
+            &StringArray::from_iter_values(["b2", "b", "b2", "b2"])
+        );
     }
 }
