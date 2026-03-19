@@ -190,7 +190,7 @@ impl AzureMonitorExporter {
             m.add_failed_batch();
         }
 
-        otel_error!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
+        otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
         for (_, context, payload) in failed_messages {
             effect_handler
@@ -699,6 +699,7 @@ mod tests {
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
             },
             auth: AuthConfig::default(),
         }

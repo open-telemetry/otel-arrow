@@ -14,7 +14,6 @@ use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
 use weaver_resolver::SchemaResolver;
-use weaver_semconv::registry::SemConvRegistry;
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Source of telemetry data schema and attributes
@@ -154,6 +153,18 @@ pub struct TrafficConfig {
     trace_weight: u32,
     #[serde(default = "default_weight")]
     log_weight: u32,
+
+    /// Target size of each log record body in bytes (Static data source only).
+    /// When set, generates a log body string of approximately this size.
+    /// When unset, uses the default hardcoded body ("Order processed successfully").
+    #[serde(default)]
+    log_body_size_bytes: Option<usize>,
+
+    /// Number of attributes to attach to each log record (Static data source only).
+    /// When set, generates this many key-value string attributes.
+    /// When unset, uses the default 2 attributes (thread.id, thread.name).
+    #[serde(default)]
+    num_log_attributes: Option<usize>,
 }
 
 impl Config {
@@ -220,26 +231,18 @@ impl Config {
                 let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
                     .map_err(|err| err.to_string())?;
 
-                // Load the semantic convention specs
-                let semconv_specs =
-                    match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
-                        WResult::Ok(semconv_specs) => semconv_specs,
-                        WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
-                        WResult::FatalErr(err) => return Err(err.to_string()),
-                    };
+                // Load the semantic convention registry.
+                let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
+                    WResult::Ok(registry) => registry,
+                    WResult::OkWithNFEs(registry, _) => registry,
+                    WResult::FatalErr(err) => return Err(err.to_string()),
+                };
 
-                // Resolve the main registry
-                let mut registry =
-                    SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
-                        .map_err(|err| err.to_string())?;
-                // Resolve the semantic convention specifications.
-                let resolved_schema =
-                    match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true)
-                    {
-                        WResult::Ok(resolved_schema) => resolved_schema,
-                        WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                        WResult::FatalErr(err) => return Err(err.to_string()),
-                    };
+                let resolved_schema = match SchemaResolver::resolve(registry, true) {
+                    WResult::Ok(resolved_schema) => resolved_schema,
+                    WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                    WResult::FatalErr(err) => return Err(err.to_string()),
+                };
 
                 let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
                     &resolved_schema.registry,
@@ -277,6 +280,8 @@ impl TrafficConfig {
             metric_weight,
             trace_weight,
             log_weight,
+            log_body_size_bytes: None,
+            num_log_attributes: None,
         }
     }
 
@@ -342,6 +347,18 @@ impl TrafficConfig {
     pub const fn get_max_batch_size(&self) -> usize {
         self.max_batch_size
     }
+
+    /// Returns the configured log body size in bytes, if set.
+    #[must_use]
+    pub const fn log_body_size_bytes(&self) -> Option<usize> {
+        self.log_body_size_bytes
+    }
+
+    /// Returns the configured number of log attributes, if set.
+    #[must_use]
+    pub const fn num_log_attributes(&self) -> Option<usize> {
+        self.num_log_attributes
+    }
 }
 
 const fn default_signals_per_second() -> Option<usize> {
@@ -380,13 +397,12 @@ fn default_resource_weight() -> NonZeroU32 {
 ///
 /// Each entry at position `i` contributes `entry.weight` copies of `i` to the
 /// table.  The hot path is then:
-/// ```
+/// ```text
 /// slot = rotation[batch_index % rotation.len()]
 /// attrs = &entries[slot].attrs
 /// ```
 /// An empty table means no custom attributes are configured.
 ///
-/// # Example
 /// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
 ///
 /// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.

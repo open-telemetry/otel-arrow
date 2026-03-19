@@ -20,6 +20,14 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 2;
 
+/// HTTP header name for Azure Monitor source resource ID tracking.
+pub(super) const AZURE_MONITOR_SOURCE_RESOURCEID_HEADER: &str = "azure-monitor-source-resourceid";
+
+/// URL-encode a value for use in an HTTP header (RFC 3986 percent-encoding).
+pub(super) fn url_encode_header_value(value: &str) -> String {
+    urlencoding::encode(value).into_owned()
+}
+
 /// HTTP client for Azure Log Analytics Data Collection Rule (DCR) endpoint.
 ///
 /// Handles authentication, compression, and HTTP communication with the
@@ -31,6 +39,9 @@ pub struct LogsIngestionClient {
 
     // Pre-formatted authorization header provider
     auth_header: HeaderValue,
+
+    /// Optional ARM resource ID header for Azure Monitor source tracking.
+    resource_id_header: Option<HeaderValue>,
 
     /// Shared metrics tracker for recording HTTP status codes and latency.
     metrics: AzureMonitorExporterMetricsRc,
@@ -118,6 +129,7 @@ impl LogsIngestionClient {
             http_client,
             endpoint,
             auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
+            resource_id_header: None,
             metrics,
         }
     }
@@ -144,10 +156,19 @@ impl LogsIngestionClient {
             config.dcr_endpoint, config.dcr, config.stream_name
         );
 
+        let resource_id_header = config
+            .azure_monitor_source_resourceid
+            .as_deref()
+            .and_then(|v| {
+                let encoded = url_encode_header_value(v);
+                HeaderValue::from_str(&encoded).ok()
+            });
+
         Ok(Self {
             http_client,
             endpoint,
             auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
+            resource_id_header,
             metrics,
         })
     }
@@ -229,16 +250,18 @@ impl LogsIngestionClient {
         let body_len = body.len();
         let start = Instant::now();
 
-        let response = match self
+        let mut request = self
             .http_client
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(CONTENT_ENCODING, "gzip")
-            .header(AUTHORIZATION, &self.auth_header)
-            .body(body)
-            .send()
-            .await
-        {
+            .header(AUTHORIZATION, &self.auth_header);
+
+        if let Some(ref resource_id) = self.resource_id_header {
+            request = request.header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, resource_id);
+        }
+
+        let response = match request.body(body).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 self.metrics.borrow_mut().add_network_error();
@@ -323,6 +346,7 @@ mod tests {
             dcr: "test-dcr".to_string(),
             stream_name: "test-stream".to_string(),
             schema: Default::default(),
+            azure_monitor_source_resourceid: None,
         }
     }
 
@@ -343,6 +367,7 @@ mod tests {
             dcr: "test-dcr-id".to_string(),
             stream_name: "test-stream".to_string(),
             schema: Default::default(),
+            azure_monitor_source_resourceid: None,
         };
 
         let http_client = create_test_http_client();
@@ -363,6 +388,7 @@ mod tests {
             dcr: "dcr-abc-123-def".to_string(),
             stream_name: "Custom-Stream_Name".to_string(),
             schema: Default::default(),
+            azure_monitor_source_resourceid: None,
         };
 
         let http_client = create_test_http_client();
@@ -625,5 +651,23 @@ mod tests {
         assert!(result.is_ok());
         let clients = result.unwrap();
         assert_eq!(clients.len(), 0);
+    }
+
+    // ==================== Resource ID Header Tests ====================
+
+    #[test]
+    fn test_resource_id_header_set_when_configured() {
+        let input = "/subscriptions/215b5735-fa8b-4dd4-86dc-997320c68c2d/resourceGroups/rg-test/providers/Microsoft.Kubernetes/connectedClusters/test-cluster/providers/microsoft.kubernetesconfiguration/extensions/pipe";
+        let encoded = url_encode_header_value(input);
+        let header = HeaderValue::from_str(&encoded).expect("valid header value");
+
+        let expected = "%2Fsubscriptions%2F215b5735-fa8b-4dd4-86dc-997320c68c2d%2FresourceGroups%2Frg-test%2Fproviders%2FMicrosoft.Kubernetes%2FconnectedClusters%2Ftest-cluster%2Fproviders%2Fmicrosoft.kubernetesconfiguration%2Fextensions%2Fpipe";
+        assert_eq!(header.to_str().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_resource_id_header_none_when_not_configured() {
+        let api_config = create_test_api_config();
+        assert!(api_config.azure_monitor_source_resourceid.is_none());
     }
 }

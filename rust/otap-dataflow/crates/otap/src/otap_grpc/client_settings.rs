@@ -246,7 +246,7 @@ impl GrpcClientSettings {
     ///
     /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
     /// which is a common source of connection failures with some proxy servers.
-    pub(crate) fn log_proxy_info(&self) {
+    pub fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();

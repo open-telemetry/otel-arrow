@@ -29,8 +29,6 @@ slotmap = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
-weaver_forge.workspace = true
-weaver_common.workspace = true
 tonic = { workspace = true }
 tonic-middleware = { workspace = true }
 tonic-prost = { workspace = true }
@@ -64,12 +62,8 @@ tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 async-stream.workspace = true
 humantime.workspace = true
-weaver_semconv.workspace = true
-weaver_resolved_schema.workspace = true
-weaver_resolver.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
-zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
 hyper = { workspace = true }
@@ -118,7 +112,8 @@ tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
 otap-df-contrib-nodes = { path = "../contrib-nodes" }
-otap-df-core-nodes = { path = "../core-nodes" }
+otap-df-core-nodes = { path = "../core-nodes", features = ["dev-tools"] }
+weaver_common.workspace = true
 otap-test-tls-certs.workspace = true
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-state = { path = "../state" }

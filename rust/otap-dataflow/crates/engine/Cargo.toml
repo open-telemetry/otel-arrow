@@ -55,6 +55,7 @@ async-channel = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 [dev-dependencies]
+otap-df-engine = { path = ".", features = ["test-utils"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }

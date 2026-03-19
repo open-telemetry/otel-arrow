@@ -11,12 +11,6 @@ mod error;
 
 pub use error::{Error, Result};
 
-use crate::views::metrics::{
-    self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
-    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
-    SummaryDataPointView, SummaryView, ValueAtQuantileView,
-};
 use crate::{
     encode::record::{
         attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
@@ -38,6 +32,12 @@ use otap_df_pdata_views::views::common::{
 };
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+};
+use otap_df_pdata_views::views::metrics::{
+    self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
+    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
+    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
+    SummaryDataPointView, SummaryView, ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{
@@ -4491,6 +4491,15 @@ mod test {
     fn test_spans_all_fields_proto_struct() {
         let traces_view = _generate_traces_data_all_fields();
         _test_traces_data_all_fields(&traces_view);
+    }
+
+    #[test]
+    fn test_traces_all_fields_otap_view() {
+        use crate::views::otap::OtapTracesView;
+        let traces_view = _generate_traces_data_all_fields();
+        let otap_batch = encode_spans_otap_batch(&traces_view).unwrap();
+        let otap_traces_view = OtapTracesView::try_from(&otap_batch).unwrap();
+        _test_traces_data_all_fields(&otap_traces_view);
     }
 
     #[test]
