@@ -23,7 +23,7 @@ TODO: Add metrics information
 Run
 
 ```bash
-docker build  \
+docker build \
   --build-context otel-arrow=../../ \
   -f Dockerfile \
   -t df_engine \
