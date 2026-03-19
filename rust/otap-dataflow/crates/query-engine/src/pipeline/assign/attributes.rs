@@ -2200,54 +2200,49 @@ mod tests {
 
     #[test]
     fn test_merge_key_column_dict_u16_overflows_to_plain_utf8() {
-        // This test verifies the fallback path when Dict(u16) cardinality would exceed 65535.
-        // We can't practically create 65535 distinct values, so we test the boundary logic
-        // by checking that the code path exists and handles the overflow correctly.
-        //
-        // Strategy: Create a dict with a modest number of distinct values, then verify the
-        // overflow check logic by examining what happens at the boundary.
-        //
-        // Note: A full test with 65535 values would be slow and memory-intensive. Instead,
-        // we verify the code handles the case where novel keys would push past the limit.
+        // Existing: Dict(u16, Utf8) with 65535 distinct keys (max for u16)
+        // Insert a novel key → cardinality becomes 65536, which exceeds u16
+        // Expected: Output falls back to plain Utf8
 
-        // For a practical test, we create a scenario with fewer values but verify the
-        // fallback to plain Utf8 works correctly by using a pre-built plain Utf8 column
-        // (which is what the overflow path produces).
+        // Build 65535 distinct keys: "k00000", "k00001", ..., "k65534"
+        let distinct_keys: Vec<String> = (0..65535u32).map(|i| format!("k{i:05}")).collect();
+        let distinct_refs: Vec<&str> = distinct_keys.iter().map(|s| s.as_str()).collect();
 
-        // Build a Dict(u16) column with some values
-        let existing = dict_utf8_u16(&["a", "b", "c"]);
-        let field = Field::new("key", existing.data_type().clone(), true);
-
-        // Insert a novel key
-        let mask = BooleanArray::from(vec![false, false, false]);
-        let parent_ids = UInt16Array::from(vec![0u16]);
-        let resolved = vec![key_test_resolved("d", &mask, &parent_ids, 0, 1)];
-
-        let (result_field, result_col) = merge_key_column(&field, &existing, &resolved, 4).unwrap();
-
-        // In normal cases (cardinality < 65535), stays as Dict(u16).
+        let existing = dict_utf8_u16(&distinct_refs);
         assert!(
-            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt16),
-            "expected Dict(u16, Utf8) for normal case, got {:?}",
+            matches!(existing.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt16),
+            "precondition: existing should be Dict(u16, Utf8)"
+        );
+        assert_eq!(existing.len(), 65535);
+
+        let field = Field::new("key", existing.data_type().clone(), true);
+        let mask = BooleanArray::from(vec![false; 65535]);
+        let parent_ids = UInt16Array::from(vec![0u16]);
+        // Insert a novel key "overflow" which will be the 65536th distinct value.
+        let resolved = vec![key_test_resolved("overflow", &mask, &parent_ids, 0, 1)];
+
+        let (result_field, result_col) =
+            merge_key_column(&field, &existing, &resolved, 65536).unwrap();
+
+        // Should fall back to plain Utf8 since cardinality (65536) exceeds u16 max (65535).
+        assert_eq!(
+            result_field.data_type(),
+            &DataType::Utf8,
+            "expected plain Utf8 output after overflow, got {:?}",
             result_field.data_type()
         );
 
-        // Verify values are correct.
-        let plain = cast(&result_col, &DataType::Utf8).unwrap();
-        let str_arr = plain
+        // Verify we have 65536 rows.
+        assert_eq!(result_col.len(), 65536);
+
+        // Verify first, last existing, and inserted values.
+        let str_arr = result_col
             .as_any()
             .downcast_ref::<StringArray>()
-            .expect("expected StringArray after cast");
-        assert_eq!(str_arr.len(), 4);
-        assert_eq!(str_arr.value(0), "a");
-        assert_eq!(str_arr.value(1), "b");
-        assert_eq!(str_arr.value(2), "c");
-        assert_eq!(str_arr.value(3), "d");
-
-        // Note: Testing the actual 65535 overflow would require building a column with
-        // 65535 distinct string values, which is impractical for a unit test. The overflow
-        // path at line 751-763 is structurally verified by code review. A dedicated
-        // integration test with synthetic data could cover this if needed.
+            .expect("expected StringArray (plain Utf8)");
+        assert_eq!(str_arr.value(0), "k00000"); // first existing
+        assert_eq!(str_arr.value(65534), "k65534"); // last existing
+        assert_eq!(str_arr.value(65535), "overflow"); // inserted novel key
     }
 
     // ---- merge_type_column_batched tests ----
