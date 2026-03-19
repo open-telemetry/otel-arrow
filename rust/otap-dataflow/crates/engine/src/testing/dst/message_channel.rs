@@ -4,8 +4,8 @@
 use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::control::NodeControlMsg;
-use crate::message::{Message, MessageChannel, Receiver};
-use crate::testing::dst::common::{setup_dst_runtime, yield_cycles};
+use crate::message::{ExporterMessageChannel, Message, ProcessorMessageChannel, Receiver};
+use crate::testing::dst::common::setup_dst_runtime;
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Fairness phase.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = MessageChannel::new(
+        let mut channel = ProcessorMessageChannel::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             1,
@@ -69,7 +69,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Draining phase with explicit deadline expiry.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = MessageChannel::new(
+        let mut channel = ProcessorMessageChannel::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             2,
@@ -118,10 +118,10 @@ async fn run_message_channel_seed(seed: u64) {
             "seed={seed}: shutdown should follow drained pdata"
         );
 
-        // Deadline expiry while admission stays closed.
+        // Exporter draining while admission stays closed.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(16);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(16);
-        let mut channel = MessageChannel::new(
+        let mut channel = ExporterMessageChannel::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             3,
@@ -130,7 +130,7 @@ async fn run_message_channel_seed(seed: u64) {
         pdata_tx.send_async("stuck".to_owned()).await.unwrap();
         control_tx
             .send_async(NodeControlMsg::Shutdown {
-                deadline: clock.now() + Duration::from_millis(15),
+                deadline: clock.now() + Duration::from_millis(50),
                 reason: format!("seed-{seed}-deadline"),
             })
             .await
@@ -144,12 +144,18 @@ async fn run_message_channel_seed(seed: u64) {
             matches!(msg, Message::Control(NodeControlMsg::TimerTick {})),
             "seed={seed}: recv_when(false) must keep delivering control while draining"
         );
-        clock.advance(Duration::from_millis(20));
-        yield_cycles(2).await;
+
+        let drained = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(drained, Message::PData(ref value) if value == "stuck"),
+            "seed={seed}: exporter should drain buffered pdata during shutdown without reopening admission"
+        );
+
+        drop(pdata_tx);
         let shutdown = channel.recv_when(false).await.unwrap();
         assert!(
             matches!(shutdown, Message::Control(NodeControlMsg::Shutdown { .. })),
-            "seed={seed}: deadline expiry must force shutdown"
+            "seed={seed}: shutdown should follow once buffered pdata is drained"
         );
     }));
 }

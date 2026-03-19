@@ -10,6 +10,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{Interests, ReceivedAtNode};
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
+use std::future::Future;
 use std::ops::Add;
 use std::time::{Duration, Instant};
 
@@ -182,18 +183,80 @@ impl<T> Receiver<T> {
     }
 }
 
-/// A channel for receiving control and pdata messages.
+/// Small private adapter trait used by [`MessageChannelCore`].
 ///
-/// Control messages are prioritized until the first `Shutdown` is received.
-/// After that, both control messages and pdata are considered up to the deadline,
-/// with pdata gated by the `accept_pdata` flag passed to `recv_when`.
+/// The core receive state machine is shared by:
 ///
-/// Note: This approach is used to implement a graceful shutdown. The engine will first close all
-/// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
-/// the pipeline.
-pub struct MessageChannel<PData> {
-    control_rx: Option<Receiver<NodeControlMsg<PData>>>,
-    pdata_rx: Option<Receiver<PData>>,
+/// - local processor/exporter channels, which use [`Receiver`]
+/// - shared exporter channels, which use [`SharedReceiver`]
+///
+/// Rather than duplicating the shutdown/fairness logic for each concrete
+/// receiver flavor, the core is generic over this minimal interface. The trait
+/// stays private because it is an implementation detail of the channel split,
+/// not part of the engine's public channel API.
+trait ChannelReceiver<T> {
+    fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> + '_;
+
+    fn try_recv(&mut self) -> Result<T, RecvError>;
+
+    fn is_empty(&self) -> bool;
+}
+
+impl<T> ChannelReceiver<T> for Receiver<T> {
+    fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> + '_ {
+        Receiver::recv(self)
+    }
+
+    fn try_recv(&mut self) -> Result<T, RecvError> {
+        Receiver::try_recv(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        Receiver::is_empty(self)
+    }
+}
+
+impl<T> ChannelReceiver<T> for SharedReceiver<T> {
+    fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> + '_ {
+        SharedReceiver::recv(self)
+    }
+
+    fn try_recv(&mut self) -> Result<T, RecvError> {
+        SharedReceiver::try_recv(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        SharedReceiver::is_empty(self)
+    }
+}
+
+/// Shutdown-drain policy for [`MessageChannelCore::recv_with_policy`].
+///
+/// Both processor and exporter channels share the same multiplexing and
+/// shutdown machinery, but they intentionally diverge once shutdown has been
+/// latched:
+///
+/// - processors keep honoring admission closure during drain, because
+///   `accept_pdata()` is part of their existing engine-managed contract
+/// - exporters force-drain already buffered channel data during drain, because
+///   exporter-side admission is a self-managed operational choice rather than a
+///   processor-style engine contract
+///
+/// This enum lets the shared core express that difference explicitly without
+/// forking the whole receive loop.
+enum DrainPolicy {
+    /// Respect the caller's admission flag even after shutdown has been
+    /// latched.
+    HonorAdmission,
+    /// Continue to respect normal admission before shutdown, but once shutdown
+    /// is latched, allow buffered `pdata` to drain even if admission is
+    /// currently closed.
+    ForceDrainDuringShutdown,
+}
+
+struct MessageChannelCore<PData, ControlRx, PDataRx> {
+    control_rx: Option<ControlRx>,
+    pdata_rx: Option<PDataRx>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` representing the drain deadline.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
@@ -206,16 +269,9 @@ pub struct MessageChannel<PData> {
     consecutive_control: usize,
 }
 
-impl<PData> MessageChannel<PData> {
-    /// Creates a new `MessageChannel` with the given control and data receivers.
-    #[must_use]
-    pub fn new(
-        control_rx: Receiver<NodeControlMsg<PData>>,
-        pdata_rx: Receiver<PData>,
-        node_id: usize,
-        interests: Interests,
-    ) -> Self {
-        MessageChannel {
+impl<PData, ControlRx, PDataRx> MessageChannelCore<PData, ControlRx, PDataRx> {
+    fn new(control_rx: ControlRx, pdata_rx: PDataRx, node_id: usize, interests: Interests) -> Self {
+        Self {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
@@ -225,9 +281,21 @@ impl<PData> MessageChannel<PData> {
             consecutive_control: 0,
         }
     }
+
+    fn shutdown(&mut self) {
+        self.shutting_down_deadline = None;
+        self.consecutive_control = 0;
+        drop(self.control_rx.take().expect("control_rx must exist"));
+        drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+    }
 }
 
-impl<PData: ReceivedAtNode> MessageChannel<PData> {
+impl<PData, ControlRx, PDataRx> MessageChannelCore<PData, ControlRx, PDataRx>
+where
+    PData: ReceivedAtNode,
+    ControlRx: ChannelReceiver<NodeControlMsg<PData>>,
+    PDataRx: ChannelReceiver<PData>,
+{
     fn control_message(&mut self, msg: NodeControlMsg<PData>) -> Message<PData> {
         self.consecutive_control = self.consecutive_control.saturating_add(1);
         Message::Control(msg)
@@ -247,44 +315,26 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
         })
     }
 
-    /// Asynchronously receives the next message to process.
+    /// Returns whether shutdown draining is allowed to pull `pdata` from the
+    /// bounded input channel.
     ///
-    /// Order of precedence:
+    /// In normal operation, `accept_pdata` always controls admission. During
+    /// shutdown, the answer becomes role-specific:
     ///
-    /// 1. Before a `Shutdown` is seen: control messages are always
-    ///    returned ahead of pdata.
-    /// 2. After the first `Shutdown` is received (draining mode):
-    ///    - Control messages (e.g. Ack/Nack) continue to be delivered so stateful
-    ///      processors can reduce in-flight state and reopen capacity.
-    ///    - Pending pdata are drained until the shutdown deadline, gated by `accept_pdata`.
-    /// 3. When the deadline expires (or was `0`): the stored `Shutdown` is returned.
-    ///    Subsequent calls return `RecvError::Closed`.
+    /// - processors still honor `accept_pdata`
+    /// - exporters switch to forced draining of already buffered channel data
     ///
-    /// # Errors
-    ///
-    /// Returns a [`RecvError`] if both channels are closed, or if the
-    /// shutdown deadline has passed.
-    pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
-        self.recv_when(true).await
+    /// This method is the single point where that shutdown-time distinction is
+    /// decided for the shared receive loop.
+    fn shutdown_drain_accepts_pdata(accept_pdata: bool, policy: DrainPolicy) -> bool {
+        accept_pdata || matches!(policy, DrainPolicy::ForceDrainDuringShutdown)
     }
 
-    /// Like [`recv()`](Self::recv), but with an `accept_pdata` guard.
-    ///
-    /// When `accept_pdata` is `false`, only control messages are
-    /// returned. Pipeline data stays in the channel, providing
-    /// natural backpressure to upstream nodes.
-    ///
-    /// During shutdown draining, pdata is drained until the deadline.
-    /// The `accept_pdata` guard is still honored — when it is `false`,
-    /// only control messages (e.g. Ack/Nack) are delivered so that
-    /// stateful processors can reduce their in-flight state and
-    /// reopen capacity for further draining.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RecvError`] if both channels are closed, or if the
-    /// shutdown deadline has passed.
-    pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
+    async fn recv_with_policy(
+        &mut self,
+        accept_pdata: bool,
+        drain_policy: DrainPolicy,
+    ) -> Result<Message<PData>, RecvError> {
         let mut sleep_until_deadline: Option<clock::Sleep> = None;
 
         loop {
@@ -316,6 +366,9 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
             // Draining mode: Shutdown pending
             if let Some(dl) = self.shutting_down_deadline {
+                let drain_accepts_pdata =
+                    Self::shutdown_drain_accepts_pdata(accept_pdata, drain_policy);
+
                 // If shutdown pending and no pdata left, return Shutdown immediately
                 if self
                     .pdata_rx
@@ -336,7 +389,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                     sleep_until_deadline = Some(clock::sleep_until(dl));
                 }
 
-                if accept_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
+                if drain_accepts_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
                     match self
                         .pdata_rx
                         .as_mut()
@@ -359,7 +412,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                 // Drain pdata (gated by accept_pdata) and deliver control messages.
                 // Honoring accept_pdata during draining lets stateful processors
                 // receive Ack/Nack to reduce in-flight state and reopen capacity.
-                if accept_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
+                if drain_accepts_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
                     tokio::select! {
                         biased;
 
@@ -404,7 +457,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                             Err(e) => return Err(e),
                         },
 
-                        pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if accept_pdata => match pdata {
+                        pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if drain_accepts_pdata => match pdata {
                             Ok(pdata) => return Ok(self.pdata_message(pdata)),
                             Err(_) => {
                                 let shutdown = self.pending_shutdown
@@ -487,11 +540,116 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
             }
         }
     }
+}
 
-    fn shutdown(&mut self) {
-        self.shutting_down_deadline = None;
-        self.consecutive_control = 0;
-        drop(self.control_rx.take().expect("control_rx must exist"));
-        drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+/// Processor-facing receive channel.
+///
+/// This preserves the existing processor contract: pdata admission is
+/// controlled by the engine via `accept_pdata()`, and the admission guard
+/// remains authoritative during shutdown draining.
+pub struct ProcessorMessageChannel<PData> {
+    core: MessageChannelCore<PData, Receiver<NodeControlMsg<PData>>, Receiver<PData>>,
+}
+
+impl<PData> ProcessorMessageChannel<PData> {
+    /// Creates a new processor message channel.
+    #[must_use]
+    pub fn new(
+        control_rx: Receiver<NodeControlMsg<PData>>,
+        pdata_rx: Receiver<PData>,
+        node_id: usize,
+        interests: Interests,
+    ) -> Self {
+        Self {
+            core: MessageChannelCore::new(control_rx, pdata_rx, node_id, interests),
+        }
     }
 }
+
+impl<PData: ReceivedAtNode> ProcessorMessageChannel<PData> {
+    /// Receives the next message while honoring the current processor
+    /// admission state, including during shutdown draining.
+    pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
+        self.core
+            .recv_with_policy(accept_pdata, DrainPolicy::HonorAdmission)
+            .await
+    }
+}
+
+/// Exporter-facing receive channel.
+///
+/// Exporters own their receive loop directly. During shutdown draining,
+/// buffered pdata is force-drained even when the exporter has temporarily
+/// closed normal pdata admission.
+pub struct ExporterMessageChannel<
+    PData,
+    ControlRx = Receiver<NodeControlMsg<PData>>,
+    PDataRx = Receiver<PData>,
+> {
+    core: MessageChannelCore<PData, ControlRx, PDataRx>,
+}
+
+impl<PData, ControlRx, PDataRx> ExporterMessageChannel<PData, ControlRx, PDataRx> {
+    #[must_use]
+    pub(crate) fn new_internal(
+        control_rx: ControlRx,
+        pdata_rx: PDataRx,
+        node_id: usize,
+        interests: Interests,
+    ) -> Self {
+        Self {
+            core: MessageChannelCore::new(control_rx, pdata_rx, node_id, interests),
+        }
+    }
+}
+
+#[allow(private_bounds)]
+impl<PData, ControlRx, PDataRx> ExporterMessageChannel<PData, ControlRx, PDataRx>
+where
+    PData: ReceivedAtNode,
+    ControlRx: ChannelReceiver<NodeControlMsg<PData>>,
+    PDataRx: ChannelReceiver<PData>,
+{
+    pub(crate) async fn recv_internal(&mut self) -> Result<Message<PData>, RecvError> {
+        self.recv_when_internal(true).await
+    }
+
+    pub(crate) async fn recv_when_internal(
+        &mut self,
+        accept_pdata: bool,
+    ) -> Result<Message<PData>, RecvError> {
+        self.core
+            .recv_with_policy(accept_pdata, DrainPolicy::ForceDrainDuringShutdown)
+            .await
+    }
+}
+
+impl<PData> ExporterMessageChannel<PData> {
+    /// Creates a new exporter message channel.
+    #[must_use]
+    pub fn new(
+        control_rx: Receiver<NodeControlMsg<PData>>,
+        pdata_rx: Receiver<PData>,
+        node_id: usize,
+        interests: Interests,
+    ) -> Self {
+        Self::new_internal(control_rx, pdata_rx, node_id, interests)
+    }
+}
+
+impl<PData: ReceivedAtNode> ExporterMessageChannel<PData> {
+    /// Receives the next message with pdata admission enabled.
+    pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
+        self.recv_internal().await
+    }
+
+    /// Receives the next message. During shutdown draining, buffered pdata is
+    /// drained even if normal exporter admission is currently closed.
+    pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
+        self.recv_when_internal(accept_pdata).await
+    }
+}
+
+/// Send-friendly exporter channel type for shared exporter runtimes.
+pub(crate) type SharedExporterMessageChannel<PData> =
+    ExporterMessageChannel<PData, SharedReceiver<NodeControlMsg<PData>>, SharedReceiver<PData>>;

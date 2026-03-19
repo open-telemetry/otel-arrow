@@ -10,7 +10,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterMessageChannel, Message};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -470,7 +470,7 @@ impl AzureMonitorExporter {
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterMessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
@@ -680,13 +680,18 @@ mod tests {
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;
+    use otap_df_channel::mpsc;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
+    use otap_df_engine::local::message::LocalReceiver;
+    use otap_df_engine::message::Receiver;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     fn create_test_pipeline_ctx() -> PipelineContext {
         otap_df_otap::crypto::ensure_crypto_provider();
@@ -709,6 +714,27 @@ mod tests {
             },
             auth: AuthConfig::default(),
         }
+    }
+
+    fn make_msg_channel(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        mpsc::Sender<OtapPdata>,
+        ExporterMessageChannel<OtapPdata>,
+    ) {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<OtapPdata>>::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<OtapPdata>::new(capacity);
+        (
+            control_tx,
+            pdata_tx,
+            ExporterMessageChannel::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
     }
 
     #[test]
@@ -769,12 +795,7 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(
-                &effect_handler,
-                batch_id,
-                10,
-                std::time::Duration::from_secs(1),
-            )
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
             .await;
 
         // Verify stats
@@ -833,5 +854,49 @@ mod tests {
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
         assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_drains_buffered_pdata_while_at_capacity() {
+        let (control_tx, pdata_tx, mut msg_chan) = make_msg_channel(8);
+        let at_capacity = true;
+
+        pdata_tx
+            .send_async(OtapPdata::new(
+                Context::default(),
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+            ))
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_millis(200),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(msg, Message::PData(_)));
+
+        drop(pdata_tx);
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
     }
 }

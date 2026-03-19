@@ -7,9 +7,11 @@
 //! concurrency-sensitive behavior using real production components under
 //! deterministic time and deterministic interleavings. Rather than
 //! reimplementing shutdown, timers, or Ack/Nack unwinding in a separate
-//! simulator, the harness runs the real [`MessageChannel`],
-//! [`RuntimeCtrlMsgManager`], and [`PipelineCompletionMsgDispatcher`] on the same
-//! kind of single-threaded runtime used by local engine components.
+//! simulator, the harness runs the real
+//! [`crate::message::ProcessorMessageChannel`],
+//! [`crate::message::ExporterMessageChannel`],
+//! [`RuntimeCtrlMsgManager`], and [`PipelineCompletionMsgDispatcher`] on the
+//! same kind of single-threaded runtime used by local engine components.
 //!
 //! The harness combines three ingredients:
 //!
@@ -23,8 +25,9 @@
 //! The current engine DST scenarios cover:
 //!
 //! - `dst_message_channel_seeded`: bounded-fair progress between control and
-//!   `pdata`, shutdown draining after admission reopens, and deadline-forced
-//!   shutdown when admission stays closed
+//!   `pdata`, processor shutdown draining after admission reopens, exporter
+//!   shutdown draining of buffered `pdata` without reopening admission, and
+//!   deadline-forced shutdown when a processor keeps admission closed
 //! - `dst_runtime_control_plane_seeded`: timer and delayed-data progress under
 //!   runtime-control pressure, Ack/Nack unwind correctness, `RETURN_DATA`
 //!   retention/drop behavior, and `DrainIngress` before downstream `Shutdown`

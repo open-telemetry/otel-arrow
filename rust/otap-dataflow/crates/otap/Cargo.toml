@@ -92,7 +92,7 @@ blake3.workspace = true
 byte-unit.workspace = true
 
 [features]
-test-utils = []
+test-utils = ["dep:rustls", "rustls/ring", "otap-df-pdata/testing"]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:arc-swap", "dep:notify", "tonic/tls-native-roots"]
 crypto-ring = ["dep:rustls", "rustls/ring", "tokio-rustls?/ring"]
 crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs", "tokio-rustls?/aws-lc-rs"]

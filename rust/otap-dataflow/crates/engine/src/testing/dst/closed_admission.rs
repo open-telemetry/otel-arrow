@@ -4,7 +4,7 @@
 use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::control::NodeControlMsg;
-use crate::message::{Message, MessageChannel, Receiver};
+use crate::message::{Message, ProcessorMessageChannel, Receiver};
 use crate::testing::dst::common::{setup_dst_runtime, yield_cycles};
 use otap_df_channel::mpsc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ async fn run_closed_admission_deadline_seed(seed: u64) {
         let mut rng = DstRng::new(seed);
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(32);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(32);
-        let mut channel = MessageChannel::new(
+        let mut channel = ProcessorMessageChannel::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             9,

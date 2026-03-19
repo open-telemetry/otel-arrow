@@ -21,7 +21,7 @@ use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{Message, MessageChannel, Receiver, Sender};
+use crate::message::{Message, ProcessorMessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -102,7 +102,7 @@ pub enum ProcessorWrapperRuntime<PData> {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
         /// The message channel
-        message_channel: MessageChannel<PData>,
+        message_channel: ProcessorMessageChannel<PData>,
         /// The local effect handler
         effect_handler: local::EffectHandler<PData>,
     },
@@ -111,7 +111,7 @@ pub enum ProcessorWrapperRuntime<PData> {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
         /// Message channel
-        message_channel: MessageChannel<PData>,
+        message_channel: ProcessorMessageChannel<PData>,
         /// The shared effect handler
         effect_handler: shared::EffectHandler<PData>,
     },
@@ -332,7 +332,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = MessageChannel::new(
+                let message_channel = ProcessorMessageChannel::new(
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -367,7 +367,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = MessageChannel::new(
+                let message_channel = ProcessorMessageChannel::new(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),

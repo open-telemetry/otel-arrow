@@ -132,7 +132,7 @@ Each pipeline runtime uses three channel families:
    There is one bounded node-control channel per node. Receivers consume this
    channel in competition with their external ingress sources and are expected
    to prioritize control. Processors and exporters consume node control together
-   with `pdata` through `MessageChannel`.
+   with `pdata` through role-specific message channels.
 3. **Pipeline runtime channels**
    Each pipeline runtime owns two bounded shared MPSC channels:
    - a **runtime-control channel** for timers, delayed-data requests,
@@ -141,25 +141,33 @@ Each pipeline runtime uses three channel families:
    - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`, consumed by
      `PipelineCompletionMsgDispatcher`
 
-For processors and exporters, `MessageChannel` prefers control over `pdata`,
-but it does not give control absolute priority. After a bounded burst of
-control messages, it forces one `pdata` receive attempt when node-level
+`ProcessorMessageChannel` and `ExporterMessageChannel` both prefer control over
+`pdata`, but neither gives control absolute priority. After a bounded burst of
+control messages, the channel forces one `pdata` receive attempt when node-level
 admission allows it, so control storms do not starve the forward data path.
 
-`MessageChannel::recv_when(...)` is the receive-side primitive that enforces
-that admission control. When the guard is `false`, `pdata` stays queued while
-control messages continue to be delivered, which lets a node reduce in-flight
-state and surface backpressure upstream.
+`recv_when(...)` is the receive-side primitive that enforces that admission
+control. When the guard is `false`, `pdata` stays queued while control messages
+continue to be delivered, which lets a node reduce in-flight state and surface
+backpressure upstream.
 
 Processors and exporters use that mechanism differently. Processors do not
 usually call `recv_when(...)` themselves because the engine owns their receive
 loop. Instead, a processor exposes `accept_pdata()`, and the engine feeds that
-policy into `MessageChannel::recv_when(...)` on the processor's behalf.
-Exporters own their run loops directly, so they call `recv()` or
-`recv_when(...)` themselves. The two mechanisms therefore serve the same
-admission-control contract at different layers: `accept_pdata()` is the
-processor-side readiness hook, while `recv_when(...)` is the channel primitive
-used by self-driven loops such as exporters.
+policy into `ProcessorMessageChannel::recv_when(...)` on the processor's
+behalf. Exporters own their run loops directly, so they call
+`ExporterMessageChannel::recv()` or `ExporterMessageChannel::recv_when(...)`
+themselves. The two mechanisms therefore serve the same admission-control goal
+at different layers: `accept_pdata()` is the processor-side readiness hook,
+while `recv_when(...)` is the channel primitive used by self-driven exporter
+loops.
+
+The shutdown contract is also role-specific. `ProcessorMessageChannel`
+continues to honor closed admission during shutdown, so a processor that keeps
+`accept_pdata() == false` until the deadline may still strand buffered `pdata`.
+`ExporterMessageChannel` is different: once shutdown is latched, it still
+force-drains already buffered channel data even if the exporter has temporarily
+closed normal admission.
 
 The current message families are:
 
@@ -177,13 +185,14 @@ behavior:
 
 1. **Forward `pdata` flow**
    Receivers admit external work and emit `OtapPdata` on `pdata` channels.
-   Processors and exporters then consume that `pdata` through `MessageChannel`.
+   Processors and exporters then consume that `pdata` through
+   `ProcessorMessageChannel` and `ExporterMessageChannel`.
 
 2. **Node-control delivery**
    Receivers consume node control in competition with external ingress. By
    contrast, processors and exporters consume node control and `pdata` through
-   the same `MessageChannel`, which gives control preferred but bounded-fair
-   treatment.
+   their role-specific message channels, which give control preferred but
+   bounded-fair treatment.
 
 3. **Runtime-control flow**
    Nodes send timer requests, delayed-data requests, `ReceiverDrained`, and
@@ -216,9 +225,11 @@ The runtime is organized around a small set of guarantees:
   progress under sustained control traffic.
 - **Explicit node-level admission control:** processors can temporarily pause
   `pdata` delivery through `accept_pdata()`, and exporters can apply the same
-  pattern in their run loops with `MessageChannel::recv_when(false)`. The
-  engine uses two entry points because processor receive loops are engine-owned
-  while exporter receive loops are node-owned.
+  pattern in their run loops with `ExporterMessageChannel::recv_when(false)`.
+  The engine uses two entry points because processor receive loops are
+  engine-owned while exporter receive loops are node-owned. During shutdown,
+  exporters still drain already buffered channel data, while processors keep
+  their current stricter admission semantics.
 - **Receiver-first graceful drain:** graceful shutdown drains ingress first,
   then shuts down downstream consumers after receivers report
   `ReceiverDrained`.
@@ -262,7 +273,7 @@ The codebase exposes two families of effect handlers:
 
 The important design point is that the effect handler is not just a message
 sender. It is the node's capability object for interacting with the engine's
-forward path, result path, runtime-control path, and listener setup.
+forward path, completion path, runtime-control path, and listener setup.
 
 ## Ack/Nack Delivery Mechanism
 
@@ -426,9 +437,13 @@ Once ingress is closed and receiver-local drain work is complete, the receiver
 reports `RuntimeControlMsg::ReceiverDrained`.
 
 After all receivers have reported `ReceiverDrained`, the control manager sends
-`NodeControlMsg::Shutdown` to processors and exporters. Their `MessageChannel`
-continues delivering control messages while draining any remaining `pdata`
-until inputs close or the shutdown deadline is reached.
+`NodeControlMsg::Shutdown` to processors and exporters. `ProcessorMessageChannel`
+continues delivering control messages while only draining `pdata` when the
+processor reopens admission. `ExporterMessageChannel` also continues delivering
+control messages, but it force-drains already buffered input-channel `pdata`
+even if the exporter has temporarily closed normal admission. In both cases,
+the channel returns final shutdown once inputs are drained or the shutdown
+deadline is reached.
 
 As receivers exit and drop their `pdata` senders, downstream channels drain and
 close progressively toward exporters. Once a downstream input is fully drained
@@ -478,24 +493,27 @@ The DST approach combines:
 
 This is important for the control plane because many of the interesting failure
 classes are about ordering and bounded progress, not only about local business
-logic. The DST harness therefore runs real `MessageChannel`,
-`RuntimeCtrlMsgManager`, and `PipelineCompletionMsgDispatcher` logic inside the
-engine's single-threaded runtime model.
+logic. The DST harness therefore runs real `ProcessorMessageChannel`,
+`ExporterMessageChannel`, `RuntimeCtrlMsgManager`, and
+`PipelineCompletionMsgDispatcher` logic inside the engine's single-threaded
+runtime model.
 
 The current DST scenarios cover five main families:
 
-- `MessageChannel` fairness and drain behavior: bounded-fair control vs
-  `pdata`, shutdown draining after admission reopens, and deadline-forced
-  shutdown when admission stays closed
+- role-specific channel fairness and drain behavior: bounded-fair control vs
+  `pdata`, processor shutdown draining after admission reopens, exporter
+  shutdown draining of buffered `pdata`, and deadline-forced shutdown when a
+  processor keeps admission closed
 - runtime-control vs pipeline-completion progress under load: timer and delayed
   data delivery, Ack/Nack unwinding, `RETURN_DATA`, and receiver-first shutdown
   ordering under mixed runtime noise
 - heavy ingress / backpressure / interblock scenarios: sustained receiver
   traffic, bounded `pdata` channels, processor admission gating and reopen,
   mixed Ack/Nack completions, and clean drain propagation
-- explicit known-limitation coverage for closed admission through the shutdown
-  deadline: the DST suite documents the current case where buffered `pdata`
-  remains stranded if admission never reopens before the deadline
+- explicit known-limitation coverage for processor closed admission through the
+  shutdown deadline: the DST suite documents the current case where buffered
+  `pdata` remains stranded if a processor never reopens admission before the
+  deadline
 - receiver `wait_for_result` behavior during drain and shutdown: the OTLP
   receiver DST suite exercises Ack, temporary Nack, permanent Nack, and
   shutdown/unavailable completion at the deadline

@@ -37,7 +37,7 @@ use crate::Interests;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::MessageChannel;
+use crate::message::ExporterMessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
@@ -69,7 +69,7 @@ pub trait Exporter<PData> {
     ///
     /// Exporters are expected to process both internal control messages and pipeline data messages,
     /// prioritizing control messages over data messages. This prioritization guarantee is ensured
-    /// by the `MessageChannel` implementation.
+    /// by the `ExporterMessageChannel` implementation.
     ///
     /// # Parameters
     ///
@@ -86,7 +86,7 @@ pub trait Exporter<PData> {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<PData>,
+        msg_chan: ExporterMessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
 }

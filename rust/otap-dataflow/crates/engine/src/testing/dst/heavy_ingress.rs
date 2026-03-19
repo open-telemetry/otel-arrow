@@ -8,7 +8,7 @@ use crate::control::{
     AckMsg, ControlSenders, NackMsg, NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg,
     pipeline_completion_msg_channel,
 };
-use crate::message::{Message, MessageChannel, Receiver};
+use crate::message::{ExporterMessageChannel, Message, ProcessorMessageChannel, Receiver};
 use crate::node::NodeType;
 use crate::pipeline_ctrl::PipelineCompletionMsgDispatcher;
 use crate::testing::dst::common::{
@@ -198,7 +198,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
         let processor_handle = tokio::task::spawn_local(async move {
             let mut inflight = 0usize;
             let mut was_paused = false;
-            let mut msg_channel = MessageChannel::new(
+            let mut msg_channel = ProcessorMessageChannel::new(
                 processor_control_rx.expect("processor control receiver"),
                 Receiver::Local(crate::local::message::LocalReceiver::mpsc(recv_to_proc_rx)),
                 processor_id.index,
@@ -262,7 +262,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                 nack: bool,
             }
 
-            let mut msg_channel = MessageChannel::new(
+            let mut msg_channel = ExporterMessageChannel::new(
                 exporter_control_rx.expect("exporter control receiver"),
                 Receiver::Local(crate::local::message::LocalReceiver::mpsc(proc_to_export_rx)),
                 exporter_id.index,
