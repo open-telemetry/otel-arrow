@@ -8,11 +8,11 @@
 
 mod config;
 mod metrics;
-mod policy;
+mod sample;
 
 use self::config::Config;
 use self::metrics::LogSubsamplingMetrics;
-use self::policy::SubsamplingPolicy;
+use self::sample::{Sampler, sampler_from_config};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -33,7 +33,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
@@ -60,12 +60,15 @@ static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapP
 /// Log subsampling processor.
 ///
 /// Reduces log volume by discarding a portion of incoming log records
-/// according to a configurable subsampling policy (zip or ratio).
+/// according to a configurable sampling strategy. Non-log signals
+/// (metrics and traces) pass through unchanged.
 struct LogSubsamplingProcessor {
-    /// Runtime subsampling policy state.
-    policy: SubsamplingPolicy,
+    /// The active sampler producing selection vectors.
+    sampler: Box<dyn Sampler>,
     /// Telemetry metrics.
     metrics: MetricSet<LogSubsamplingMetrics>,
+    /// Reusable bitmap pool for child batch filtering.
+    id_bitmap_pool: IdBitmapPool,
 }
 
 impl LogSubsamplingProcessor {
@@ -77,13 +80,17 @@ impl LogSubsamplingProcessor {
             })?;
         config.validate()?;
 
-        let policy = SubsamplingPolicy::from_config(&config.policy);
+        let sampler = sampler_from_config(&config.policy);
         let metrics = pipeline_ctx.register_metrics::<LogSubsamplingMetrics>();
 
-        Ok(Self { policy, metrics })
+        Ok(Self {
+            sampler,
+            metrics,
+            id_bitmap_pool: IdBitmapPool::new(),
+        })
     }
 
-    /// Processes a log payload: compute to_keep, slice or ack.
+    /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
         pdata: OtapPdata,
@@ -101,26 +108,9 @@ impl LogSubsamplingProcessor {
             return Ok(());
         }
 
-        let to_keep = self.policy.compute_to_keep(total);
-        let dropped = total - to_keep;
-        self.metrics.log_signals_dropped.add(dropped as u64);
-
-        if to_keep == 0 {
-            // All records dropped, ack immediately
-            self.metrics.batches_fully_dropped.inc();
-            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-            return Ok(());
-        }
-
-        if to_keep == total {
-            // All records kept, forward unchanged
-            effect_handler.send_message_with_source_node(pdata).await?;
-            return Ok(());
-        }
-
-        // Slice the root Logs record batch
+        // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
-        let mut records: OtapArrowRecords =
+        let records: OtapArrowRecords =
             payload
                 .try_into()
                 .map_err(|e: otap_df_pdata::encode::Error| {
@@ -133,25 +123,45 @@ impl LogSubsamplingProcessor {
                     }
                 })?;
 
-        slice_logs(&mut records, to_keep);
+        // Ask the sampler for a selection vector
+        let selection = self.sampler.sample_arrow_records(&records);
+        let kept = selection.true_count();
+        let dropped = total - kept;
+        self.metrics.log_signals_dropped.add(dropped as u64);
 
-        let sliced_pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+        if kept == 0 {
+            // All records dropped — ack immediately
+            self.metrics.batches_fully_dropped.inc();
+            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+            return Ok(());
+        }
+
+        if kept == total {
+            // All records kept — forward unchanged
+            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            effect_handler.send_message_with_source_node(pdata).await?;
+            return Ok(());
+        }
+
+        // Apply the filter to root + all child batches
+        let filtered =
+            filter_otap_batch(&selection, records, &mut self.id_bitmap_pool).map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: format!("failed to filter otap batch: {e}"),
+                    source_detail,
+                }
+            })?;
+
+        let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
         effect_handler
-            .send_message_with_source_node(sliced_pdata)
+            .send_message_with_source_node(pdata)
             .await?;
 
         Ok(())
-    }
-}
-
-/// Slices the root `Logs` record batch to keep only the first `to_keep` rows.
-///
-/// Child batches (ResourceAttrs, ScopeAttrs, LogAttrs) are left unchanged.
-/// This is a zero-copy operation (RecordBatch::slice adjusts buffer offsets).
-fn slice_logs(records: &mut OtapArrowRecords, to_keep: usize) {
-    if let Some(batch) = records.get(ArrowPayloadType::Logs) {
-        let sliced = batch.slice(0, to_keep);
-        let _ = records.set(ArrowPayloadType::Logs, sliced);
     }
 }
 
@@ -162,8 +172,8 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        // Let the policy perform any one-time initialization (e.g. start timer).
-        self.policy.ensure_init(effect_handler).await?;
+        // Let the sampler perform any one-time initialization (e.g. start timer).
+        self.sampler.ensure_init(effect_handler).await?;
 
         match msg {
             Message::PData(pdata) => {
@@ -178,7 +188,7 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    self.policy.notify_timer();
+                    self.sampler.notify_timer();
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {

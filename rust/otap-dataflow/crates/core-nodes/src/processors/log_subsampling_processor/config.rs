@@ -4,9 +4,9 @@
 //! - **Zip**: Emit at most N log records per time window
 //! - **Ratio**: Emit a fixed fraction of log records
 
+use super::sample::{RatioConfig, ZipConfig};
 use otap_df_config::error::Error as ConfigError;
 use serde::Deserialize;
-use std::time::Duration;
 
 /// Configuration for the log subsampling processor.
 #[derive(Debug, Clone, Deserialize)]
@@ -25,29 +25,6 @@ pub enum Policy {
     Zip(ZipConfig),
     /// Emit a fixed fraction of log records.
     Ratio(RatioConfig),
-}
-
-/// Configuration for zip sampling.
-///
-/// Emits at most `max_items` log records per `interval` time window.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ZipConfig {
-    /// Length of the sampling window (e.g., "60s", "1m").
-    #[serde(with = "humantime_serde")]
-    pub interval: Duration,
-    /// Maximum records to emit per window.
-    pub max_items: usize,
-}
-
-/// Configuration for ratio sampling.
-///
-/// Emits `emit` out of every `out_of` log records.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RatioConfig {
-    /// Numerator of the sampling fraction.
-    pub emit: usize,
-    /// Denominator of the sampling fraction.
-    pub out_of: usize,
 }
 
 impl Config {
@@ -95,6 +72,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_valid_zip_config() {
