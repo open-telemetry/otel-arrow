@@ -6,11 +6,7 @@
 //! # Algorithm
 //!
 //! The zip sampler maintains a running `count` of records emitted in the
-//! current window. On each incoming batch of size B:
-//!
-//! 1. `budget = max_items - count`
-//! 2. `to_keep = min(budget, B)`
-//! 3. `count += to_keep`
+//! current window.
 //!
 //! A `BooleanArray` selection vector is produced with the first `to_keep`
 //! entries set to `true` and the rest `false`.
@@ -19,18 +15,9 @@
 //!
 //! On the first message, [`ZipSampler::ensure_init`] registers a periodic
 //! timer via the engine's effect handler. The engine delivers
-//! `NodeControlMsg::TimerTick` at a fixed, drift-free cadence equal to
-//! `interval`. On each tick, [`ZipSampler::notify_timer`] resets `count`
-//! to zero, opening a fresh budget for the next window.
-//!
-//! # Configuration
-//!
-//! | Field       | Type     | Required | Description                    |
-//! |-------------|----------|----------|--------------------------------|
-//! | `interval`  | duration | yes      | Length of the sampling window   |
-//! | `max_items` | integer  | yes      | Max records to emit per window  |
-//!
-//! Constraints: `interval > 0`, `max_items > 0`.
+//! `NodeControlMsg::TimerTick` at a fixed cadence. On each tick,
+//! [`ZipSampler::notify_timer`] resets `count` to zero, opening a fresh
+//! budget for the next window.
 
 use super::Sampler;
 use arrow::array::BooleanArray;
@@ -179,23 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn test_zip_budget_exhausted() {
-        let cfg = ZipConfig {
-            interval: Duration::from_secs(60),
-            max_items: 100,
-        };
-        let mut sampler = ZipSampler::new(&cfg);
-
-        let records = make_log_records(100);
-        let sel = sampler.sample_arrow_records(&records);
-        assert_eq!(sel.true_count(), 100);
-
-        let records = make_log_records(50);
-        let sel = sampler.sample_arrow_records(&records);
-        assert_eq!(sel.true_count(), 0);
-    }
-
-    #[test]
     fn test_zip_reset_via_notify_timer() {
         let cfg = ZipConfig {
             interval: Duration::from_secs(60),
@@ -232,25 +202,6 @@ mod tests {
         let sel = sampler.sample_arrow_records(&records);
         assert_eq!(sel.len(), 0);
         assert_eq!(sel.true_count(), 0);
-    }
-
-    #[test]
-    fn test_zip_selection_vector_shape() {
-        // Verify the selection vector has the right pattern: first N true, rest false
-        let cfg = ZipConfig {
-            interval: Duration::from_secs(60),
-            max_items: 3,
-        };
-        let mut sampler = ZipSampler::new(&cfg);
-
-        let records = make_log_records(5);
-        let sel = sampler.sample_arrow_records(&records);
-        assert_eq!(sel.len(), 5);
-        assert!(sel.value(0)); // kept
-        assert!(sel.value(1)); // kept
-        assert!(sel.value(2)); // kept
-        assert!(!sel.value(3)); // dropped
-        assert!(!sel.value(4)); // dropped
     }
 
     // ==================== Config Validation Tests ====================

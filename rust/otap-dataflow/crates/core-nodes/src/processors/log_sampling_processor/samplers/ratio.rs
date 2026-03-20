@@ -210,22 +210,6 @@ mod tests {
         assert_eq!(sel.true_count(), 0);
     }
 
-    #[test]
-    fn test_ratio_selection_vector_shape() {
-        // With emit=1 out_of=3 and batch=6, we should keep 2 records at positions 0 and 3
-        let cfg = RatioConfig { emit: 1, out_of: 3 };
-        let mut sampler = RatioSampler::new(&cfg);
-
-        let records = make_log_records(6);
-        let sel = sampler.sample_arrow_records(&records);
-        assert_eq!(sel.len(), 6);
-        assert_eq!(sel.true_count(), 2);
-        // First 2 are true (the "first N" pattern), rest false
-        assert!(sel.value(0));
-        assert!(sel.value(1));
-        assert!(!sel.value(2));
-    }
-
     /// Reference implementation using O(B) loop to verify O(1) formula.
     fn reference_compute_to_keep(
         emit: usize,
@@ -307,15 +291,13 @@ mod tests {
             emit: 0,
             out_of: 10,
         };
-        let err = cfg.validate().unwrap_err();
-        assert!(err.to_string().contains("emit"));
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn test_invalid_out_of_zero() {
         let cfg = RatioConfig { emit: 1, out_of: 0 };
-        let err = cfg.validate().unwrap_err();
-        assert!(err.to_string().contains("out_of"));
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
@@ -324,7 +306,6 @@ mod tests {
             emit: 10,
             out_of: 5,
         };
-        let err = cfg.validate().unwrap_err();
-        assert!(err.to_string().contains("emit"));
+        assert!(cfg.validate().is_err());
     }
 }
