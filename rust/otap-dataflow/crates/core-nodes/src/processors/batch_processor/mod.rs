@@ -1365,7 +1365,9 @@ mod tests {
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{
+        AckMsg, NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+    };
     use otap_df_engine::message::Message;
     use otap_df_engine::node::Node;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -2490,5 +2492,124 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
             });
+    }
+
+    /// When inbound_request_limit is 1 and two subscribed requests arrive
+    /// before the batch flushes, the second request is nacked (not an engine error).
+    #[test]
+    fn test_inbound_slot_exhaustion_nacks() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 1000,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s",
+            "inbound_request_limit": 1,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let logs1 = datagen.generate_logs();
+                let logs2 = datagen.generate_logs();
+
+                let rec1 = encode_logs_otap_batch(&logs1).expect("encode");
+                let rec2 = encode_logs_otap_batch(&logs2).expect("encode");
+
+                // Both inputs subscribe for ack/nack.
+                let pdata1 = OtapPdata::new_default(rec1.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+                let pdata2 = OtapPdata::new_default(rec2.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    1,
+                );
+
+                // First request succeeds (takes the single inbound slot).
+                ctx.process(Message::PData(pdata1))
+                    .await
+                    .expect("first input succeeds");
+
+                // Second request also succeeds at the engine level (no EngineError),
+                // but the processor nacks it via the pipeline control channel.
+                ctx.process(Message::PData(pdata2))
+                    .await
+                    .expect("second input succeeds (nacked, not engine error)");
+
+                // Drain pipeline control messages and expect exactly one nack.
+                let mut nack_count = 0;
+                while let Ok(msg) = pipeline_rx.try_recv() {
+                    match msg {
+                        PipelineControlMsg::DeliverNack { .. } => nack_count += 1,
+                        PipelineControlMsg::DelayData { .. } => {} // timer setup
+                        _ => {}
+                    }
+                }
+                assert_eq!(nack_count, 1, "exactly one request should be nacked");
+            })
+            .validate(|_| async {});
+    }
+
+    /// When outbound_request_limit is 1 and a flush produces multiple outbound
+    /// batches (via splitting), inputs whose outbound slot couldn't be
+    /// allocated are nacked (not an engine error).
+    #[test]
+    fn test_outbound_slot_exhaustion_nacks() {
+        // max_size=1 forces each item into its own outbound batch,
+        // so a single input with multiple items needs multiple outbound slots.
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 1,
+                "max_size": 1,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s",
+            "outbound_request_limit": 1,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let logs1 = datagen.generate_logs();
+
+                let rec1 = encode_logs_otap_batch(&logs1).expect("encode");
+
+                // Subscribe for ack/nack.
+                let pdata1 = OtapPdata::new_default(rec1.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+
+                // Process triggers flush (min_size=1).
+                // With max_size=1, each item becomes a separate outbound batch.
+                // Only the first gets the outbound slot; the rest are nacked.
+                ctx.process(Message::PData(pdata1))
+                    .await
+                    .expect("process succeeds (nack, not engine error)");
+
+                // Drain all pipeline control messages.
+                let mut nack_count = 0;
+                while let Ok(msg) = pipeline_rx.try_recv() {
+                    if matches!(msg, PipelineControlMsg::DeliverNack { .. }) {
+                        nack_count += 1;
+                    }
+                }
+
+                assert!(
+                    nack_count >= 1,
+                    "at least one inbound request nacked due to outbound slot exhaustion"
+                );
+            })
+            .validate(|_| async {});
     }
 }
