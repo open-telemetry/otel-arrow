@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773960512704,
+  "lastUpdate": 1774017655491,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "pritishnahar@gmail.com",
-            "name": "Pritish Nahar",
-            "username": "pritishnahar95"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "00dae5b8f1d75035e7a920c38cc315f3a3dc1fcd",
-          "message": "Upgrade Collector dependencies to v0.147.0/v1.53.0 (#2171)\n\n# Change Summary\nUpgrade Collector dependencies to v0.147.0.\nAs a part of this, upgrade `go.opentelemetry.io/otel/sdk` from v1.39.0\nto v1.40.0 in `collector/cmd/otelarrowcol` to remediate [CWE-426:\nUntrusted Search Path](https://cwe.mitre.org/data/definitions/426.html)\nSee: [GHSA vulnerability in go.opentelemetry.io/otel/sdk\nv1.20.0–v1.39.0](https://github.com/open-telemetry/opentelemetry-go/security/advisories)\n\n## What issue does this PR close?\nN/A\n\n## How are these changes tested?\n\nDependency-only change — no new application code. Verified via `go mod\ntidy` that the module graph resolves cleanly.\n\n## Are there any user-facing changes?\n\nNo.",
-          "timestamp": "2026-03-04T00:35:48Z",
-          "tree_id": "a5ac0bc9571ced9b00589c9dcf1f5d23fffb631e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/00dae5b8f1d75035e7a920c38cc315f3a3dc1fcd"
-        },
-        "date": 1772595405019,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.8444460034370422,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.63172401828402,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.0229185849711,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.7265625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 58.0546875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 484996.16893891187,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 489091.6997276012,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006874,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11370304.423909035,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11304352.094807563,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 17075712.258629367,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63beda9b9efb2bcd5c9ca19ecafc1e66ba3d392f",
+          "message": "Batch processor: Nack when inbound or outbound slots are full (#2383)\n\n# Change Summary\n\nFixes engine-level error when the batch_processor inbound/outbound slots\nare full.\n\nFor inbound failures: Nack the message and do not admit.\nFor outbound failures: Nack the message but let the request fly.\n\nAdds two new metrics for these cases.\n\nAdds a simpler SlotMap allocator: allocate_with_data() makes the two\ncallsites in batch_processor easier to read.\n\nAdds several notes and TODOs:\n\n- It is easy for callers to mistakenly invoke route_ack() and\nroute_nack(), but it breaks instrumentation b/c the timing measurement\nis not captured.\n- Failure to Ack/Nack are engine-level errors; we should have something\nconsistent for dealing with lost Ack/Nack messages.\n\n## What issue does this PR close?\n\nFixes #2194 \n\n## How are these changes tested?",
+          "timestamp": "2026-03-20T10:02:06Z",
+          "tree_id": "8d203dce7a73108a2bedd578ddfee8998f28aa28",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/63beda9b9efb2bcd5c9ca19ecafc1e66ba3d392f"
+        },
+        "date": 1774017654612,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.394378125667572,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.06733888621045,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.31743842364531,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 25.371354166666666,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 27.73046875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 644771.8982654942,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 647314.7375985334,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002218,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16914609.884075284,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16933773.168789282,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
