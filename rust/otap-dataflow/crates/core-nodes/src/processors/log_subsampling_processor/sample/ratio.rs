@@ -1,7 +1,70 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Ratio sampler — emit a fixed fraction of log records.
+//! Ratio sampler -- emit a fixed fraction of log records.
+//!
+//! # Algorithm
+//!
+//! The ratio sampler keeps `emit` out of every `out_of` records.
+//! Conceptually, for each record: increment `seen`, and if
+//! `emitted < emit` then keep the record and increment `emitted`. When
+//! `seen` reaches `out_of`, reset both counters to zero.
+//!
+//! At the batch level, the number of records to keep is computed in O(1)
+//! using a closed-form formula rather than iterating per record. Given
+//! state `(emitted, seen)`, config `(emit, out_of)`, and batch size `B`:
+//!
+//! ```text
+//! remaining_in_cycle = out_of - seen
+//! from_current       = min(B, remaining_in_cycle)
+//! keep_from_current  = min(max(emit - emitted, 0), from_current)
+//!
+//! after_current = B - from_current
+//! full_cycles   = after_current / out_of
+//! leftover      = after_current % out_of
+//!
+//! to_keep = keep_from_current + (full_cycles * emit) + min(emit, leftover)
+//! ```
+//!
+//! After processing, update state:
+//!
+//! ```text
+//! new_seen    = (seen + B) % out_of
+//! new_emitted = min(emit, new_seen)
+//! ```
+//!
+//! A `BooleanArray` selection vector is produced with the first `to_keep`
+//! entries set to `true` and the rest `false`. This does not correspond
+//! to the exact row positions the per-record logic would select -- only
+//! the count matches.
+//!
+//! The O(1) formula is tested against an O(B) per-record reference
+//! implementation; see `test_ratio_matches_reference_impl`.
+//!
+//! ## Example
+//!
+//! With `emit: 2, out_of: 5`:
+//!
+//! | Batch | Size | State before      | to_keep | State after       |
+//! |-------|------|-------------------|---------|-------------------|
+//! | 1     | 12   | emitted=0, seen=0 | 6       | emitted=2, seen=2 |
+//! | 2     | 4    | emitted=2, seen=2 | 1       | emitted=1, seen=1 |
+//! | 3     | 5    | emitted=1, seen=1 | 2       | emitted=1, seen=1 |
+//! | 4     | 4    | emitted=1, seen=1 | 1       | emitted=2, seen=4 |
+//!
+//! Total in: 25, total kept: 10 (exactly 2 out of 5).
+//!
+//! # Configuration
+//!
+//! | Field    | Type    | Required | Description                          |
+//! |----------|---------|----------|--------------------------------------|
+//! | `emit`   | integer | yes      | Numerator of the sampling fraction   |
+//! | `out_of` | integer | yes      | Denominator of the sampling fraction |
+//!
+//! Constraints: `emit > 0`, `out_of > 0`, `emit <= out_of`.
+//!
+//! The ratio `emit / out_of` determines the fraction of records to keep.
+//! For example, `emit: 1, out_of: 10` keeps approximately 10% of records.
 
 use super::Sampler;
 use arrow::array::BooleanArray;

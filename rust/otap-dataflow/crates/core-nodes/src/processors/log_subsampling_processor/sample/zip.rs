@@ -1,7 +1,36 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Zip sampler — emit at most N log records per time window.
+//! Zip sampler -- emit at most N log records per time window.
+//!
+//! # Algorithm
+//!
+//! The zip sampler maintains a running `count` of records emitted in the
+//! current window. On each incoming batch of size B:
+//!
+//! 1. `budget = max_items - count`
+//! 2. `to_keep = min(budget, B)`
+//! 3. `count += to_keep`
+//!
+//! A `BooleanArray` selection vector is produced with the first `to_keep`
+//! entries set to `true` and the rest `false`.
+//!
+//! # Timer lifecycle
+//!
+//! On the first message, [`ZipSampler::ensure_init`] registers a periodic
+//! timer via the engine's effect handler. The engine delivers
+//! `NodeControlMsg::TimerTick` at a fixed, drift-free cadence equal to
+//! `interval`. On each tick, [`ZipSampler::notify_timer`] resets `count`
+//! to zero, opening a fresh budget for the next window.
+//!
+//! # Configuration
+//!
+//! | Field       | Type     | Required | Description                    |
+//! |-------------|----------|----------|--------------------------------|
+//! | `interval`  | duration | yes      | Length of the sampling window   |
+//! | `max_items` | integer  | yes      | Max records to emit per window  |
+//!
+//! Constraints: `interval > 0`, `max_items > 0`.
 
 use super::Sampler;
 use arrow::array::BooleanArray;
@@ -71,10 +100,7 @@ impl Sampler for ZipSampler {
     fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray {
         let total = records.root_record_batch().map_or(0, |rb| rb.num_rows());
         let to_keep = self.compute_to_keep(total);
-        BooleanArray::new(
-            BooleanBuffer::collect_bool(total, |i| i < to_keep),
-            None,
-        )
+        BooleanArray::new(BooleanBuffer::collect_bool(total, |i| i < to_keep), None)
     }
 
     async fn ensure_init(
