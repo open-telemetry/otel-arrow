@@ -173,38 +173,38 @@ mod tests {
             .expect("filter processor validation failed");
     }
 
-    // #[test]
-    // fn multiple_input_output() {
-    //     Scenario::new()
-    //         .pipeline(
-    //             Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
-    //                 .expect("failed to read in pipeline yaml"),
-    //         )
-    //         .add_generator(
-    //             "traffic_gen1",
-    //             Generator::logs()
-    //                 .fixed_count(500)
-    //                 .otlp_grpc("receiver1")
-    //                 .static_signals(),
-    //         )
-    //         .add_generator(
-    //             "traffic_gen2",
-    //             Generator::logs()
-    //                 .fixed_count(500)
-    //                 .otlp_grpc("receiver2")
-    //                 .static_signals(),
-    //         )
-    //         .add_capture(
-    //             "validate1",
-    //             Capture::default()
-    //                 .otlp_grpc("exporter1")
-    //                 .validate(vec![ValidationInstructions::Equivalence])
-    //                 .control_streams(["traffic_gen1", "traffic_gen2"]),
-    //         )
-    //         .expect_within(30)
-    //         .run()
-    //         .expect("validation scenario failed");
-    // }
+    #[test]
+    fn multiple_input_output() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen1",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver1")
+                    .static_signals(),
+            )
+            .add_generator(
+                "traffic_gen2",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver2")
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate1",
+                Capture::default()
+                    .otlp_grpc("exporter1")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen1", "traffic_gen2"]),
+            )
+            .expect_within(30)
+            .run()
+            .expect("validation scenario failed");
+    }
 }
 
 #[cfg(test)]
@@ -219,7 +219,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline.
     #[test]
     fn tls_no_processor() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
@@ -271,7 +271,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
     fn mtls_no_processor() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
