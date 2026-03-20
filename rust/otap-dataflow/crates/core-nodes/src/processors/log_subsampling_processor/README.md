@@ -8,24 +8,14 @@ The Log Subsampling processor reduces log volume by discarding a portion of
 incoming log records according to a configurable sampling strategy. Non-log
 signals (metrics and traces) pass through unchanged.
 
-The processor treats all incoming log records as equal and makes no attempt
-to classify them further. Pipeline administrators are expected to configure
-their pipeline such that all logs reaching a processor instance can be
-considered equivalent. In a typical deployment, a Router Processor using
-OPL-based classification sits upstream and directs logs to the appropriate
-subsampling instance.
-
 ## Architecture
 
 Sampling logic is encapsulated behind the `Sampler` trait (defined in
-`sample/mod.rs`). Each sampler implementation:
+`sample/mod.rs`). Each sampler implementation produces a `BooleanArray` 
+selection vector via `sample_arrow_records()`, where `true` = keep and `false` = drop.
 
-- Produces a `BooleanArray` selection vector via `sample_arrow_records()`,
-  where `true` = keep and `false` = drop.
-- Manages its own lifecycle state via `ensure_init()` and `notify_timer()`.
-
-The processor applies the selection vector to the full OTAP batch (root and
-all child record batches) using `filter_otap_batch` from the pdata crate.
+The processor applies the selection vector to the full OTAP batch and records
+metrics accordingly.
 
 Currently implemented samplers:
 
@@ -88,14 +78,3 @@ empty, the processor immediately acks the inbound request via
 | `log_signals_consumed`  | `{log}`   | Total log records received         |
 | `log_signals_dropped`   | `{log}`   | Log records dropped by subsampling |
 | `batches_fully_dropped` | `{batch}` | Batches where all records dropped  |
-
-## Control Messages
-
-| Message            | Behavior                               |
-|--------------------|----------------------------------------|
-| `CollectTelemetry` | Report metrics                         |
-| `TimerTick`        | Delegated to `sampler.notify_timer()`  |
-| `Shutdown`         | No-op                                  |
-| `Ack`              | No-op                                  |
-| `Nack`             | No-op                                  |
-| `Config`           | No-op                                  |
