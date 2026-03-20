@@ -16,8 +16,6 @@ use self::policy::SubsamplingPolicy;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -31,16 +29,33 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// URN for the log subsampling processor.
-const LOG_SUBSAMPLING_PROCESSOR_URN: &str = "urn:otel:log_subsampling:processor";
+const LOG_SUBSAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_subsampling";
+
+/// Register the log subsampling processor as an OTAP processor factory.
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
+static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
+    otap_df_engine::ProcessorFactory {
+        name: LOG_SUBSAMPLING_PROCESSOR_URN,
+        create: |pipeline_ctx: PipelineContext,
+                 node: NodeId,
+                 node_config: Arc<NodeUserConfig>,
+                 proc_cfg: &ProcessorConfig| {
+            create_log_subsampling_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    };
 
 /// Log subsampling processor.
 ///
@@ -51,10 +66,6 @@ struct LogSubsamplingProcessor {
     policy: SubsamplingPolicy,
     /// Telemetry metrics.
     metrics: MetricSet<LogSubsamplingMetrics>,
-    /// Timer interval for zip sampling (None for ratio).
-    timer_interval: Option<Duration>,
-    /// Whether the periodic timer has been started.
-    timer_started: bool,
 }
 
 impl LogSubsamplingProcessor {
@@ -66,34 +77,10 @@ impl LogSubsamplingProcessor {
             })?;
         config.validate()?;
 
-        let timer_interval = match &config.policy {
-            config::Policy::Zip(zip) => Some(zip.interval),
-            config::Policy::Ratio(_) => None,
-        };
         let policy = SubsamplingPolicy::from_config(&config.policy);
         let metrics = pipeline_ctx.register_metrics::<LogSubsamplingMetrics>();
 
-        Ok(Self {
-            policy,
-            metrics,
-            timer_interval,
-            timer_started: false,
-        })
-    }
-
-    /// Ensures the periodic timer is started for zip sampling.
-    async fn ensure_timer(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError> {
-        if self.timer_started {
-            return Ok(());
-        }
-        if let Some(interval) = self.timer_interval {
-            let _handle = effect_handler.start_periodic_timer(interval).await?;
-            self.timer_started = true;
-        }
-        Ok(())
+        Ok(Self { policy, metrics })
     }
 
     /// Processes a log payload: compute to_keep, slice or ack.
@@ -175,8 +162,8 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        // Ensure timer is started on first message (for zip sampling)
-        self.ensure_timer(effect_handler).await?;
+        // Let the policy perform any one-time initialization (e.g. start timer).
+        self.policy.ensure_init(effect_handler).await?;
 
         match msg {
             Message::PData(pdata) => {
@@ -191,7 +178,7 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    self.policy.reset();
+                    self.policy.notify_timer();
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
@@ -210,8 +197,6 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
     }
 }
 
-// ==================== Factory Registration ====================
-
 /// Creates a new [`LogSubsamplingProcessor`] from pipeline configuration.
 fn create_log_subsampling_processor(
     pipeline_ctx: PipelineContext,
@@ -227,36 +212,23 @@ fn create_log_subsampling_processor(
     ))
 }
 
-/// Register the log subsampling processor as an OTAP processor factory.
-#[allow(unsafe_code)]
-#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: LOG_SUBSAMPLING_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_log_subsampling_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    };
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_otap::pdata::Context;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::{TestContext, TestRuntime};
     use otap_df_engine::testing::test_node;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::encode::encode_logs_otap_batch;
-    use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+    use otap_df_otap::pdata::Context;
+    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::testing::fixtures::{
+        logs_with_varying_attributes_and_properties, metrics_sum_with_full_resource_and_scope,
+        traces_with_full_resource_and_scope,
+    };
+    use otap_df_pdata::testing::round_trip::otlp_message_to_bytes;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use prost::Message as _;
     use std::future::Future;
 
     /// Helper: create a processor wrapped in TestRuntime, run a scenario, validate.
@@ -288,65 +260,32 @@ mod tests {
             .validate(|_ctx| async {});
     }
 
-    /// Helper: create OtapPdata with N log records (Arrow format).
+    /// Helper: create OtapPdata with N log records (OTAP Arrow format).
     fn make_log_pdata_arrow(n: usize) -> OtapPdata {
         let logs_data = logs_with_varying_attributes_and_properties(n);
         let records = encode_logs_otap_batch(&logs_data).expect("encode");
         OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
     }
 
-    /// Helper: create OtapPdata with traces (OTLP bytes).
-    fn make_trace_pdata() -> OtapPdata {
-        use otap_df_pdata::proto::opentelemetry::trace::v1::{
-            ResourceSpans, ScopeSpans, Span, TracesData,
-        };
-        let traces_data = TracesData {
-            resource_spans: vec![ResourceSpans {
-                scope_spans: vec![ScopeSpans {
-                    spans: vec![Span::default()],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let mut bytes = vec![];
-        traces_data.encode(&mut bytes).expect("encode");
-        OtapPdata::new(
-            Context::default(),
-            OtlpProtoBytes::ExportTracesRequest(bytes.into()).into(),
-        )
+    /// Helper: create OtapPdata with traces (OTAP Arrow format).
+    fn make_trace_pdata_arrow() -> OtapPdata {
+        let traces_data = traces_with_full_resource_and_scope();
+        let records = encode_spans_otap_batch(&traces_data).expect("encode");
+        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
     }
 
-    /// Helper: create OtapPdata with metrics (OTLP bytes).
-    fn make_metrics_pdata() -> OtapPdata {
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-            Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        };
-        let metrics_data = MetricsData {
-            resource_metrics: vec![ResourceMetrics {
-                scope_metrics: vec![ScopeMetrics {
-                    metrics: vec![Metric {
-                        name: "test".to_string(),
-                        data: Some(
-                            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(
-                                Gauge {
-                                    data_points: vec![NumberDataPoint::default()],
-                                },
-                            ),
-                        ),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let mut bytes = vec![];
-        metrics_data.encode(&mut bytes).expect("encode");
-        OtapPdata::new(
-            Context::default(),
-            OtlpProtoBytes::ExportMetricsRequest(bytes.into()).into(),
-        )
+    /// Helper: create OtapPdata with traces (OTLP proto bytes).
+    fn make_trace_pdata_otlp() -> OtapPdata {
+        let traces_data = traces_with_full_resource_and_scope();
+        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Traces(traces_data));
+        OtapPdata::new(Context::default(), otlp_bytes.into())
+    }
+
+    /// Helper: create OtapPdata with metrics (OTLP proto bytes).
+    fn make_metrics_pdata_otlp() -> OtapPdata {
+        let metrics_data = metrics_sum_with_full_resource_and_scope();
+        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Metrics(metrics_data));
+        OtapPdata::new(Context::default(), otlp_bytes.into())
     }
 
     // ==================== Integration Tests ====================
@@ -423,11 +362,34 @@ mod tests {
 
         run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let pdata = make_trace_pdata();
+                let pdata = make_trace_pdata_arrow();
                 let original_items = pdata.num_items();
                 ctx.process(Message::PData(pdata)).await.expect("process");
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "traces should pass through");
+                assert_eq!(msgs[0].num_items(), original_items);
+            })
+        });
+    }
+
+    #[test]
+    fn test_pass_through_traces_otlp() {
+        let config = serde_json::json!({
+            "policy": {
+                "ratio": {
+                    "emit": 1,
+                    "out_of": 10
+                }
+            }
+        });
+
+        run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = make_trace_pdata_otlp();
+                let original_items = pdata.num_items();
+                ctx.process(Message::PData(pdata)).await.expect("process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1, "traces (OTLP bytes) should pass through");
                 assert_eq!(msgs[0].num_items(), original_items);
             })
         });
@@ -446,7 +408,7 @@ mod tests {
 
         run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let pdata = make_metrics_pdata();
+                let pdata = make_metrics_pdata_otlp();
                 let original_items = pdata.num_items();
                 ctx.process(Message::PData(pdata)).await.expect("process");
                 let msgs = ctx.drain_pdata().await;

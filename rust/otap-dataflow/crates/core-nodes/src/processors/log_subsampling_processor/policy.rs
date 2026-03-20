@@ -4,6 +4,10 @@
 //! zip sampling and ratio sampling policies.
 
 use crate::processors::log_subsampling_processor::config::{Policy, RatioConfig, ZipConfig};
+use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::local::processor as local;
+use otap_df_otap::pdata::OtapPdata;
+use std::time::Duration;
 
 /// Runtime state for a subsampling policy.
 #[derive(Debug)]
@@ -21,6 +25,10 @@ pub struct ZipState {
     max_items: usize,
     /// Count of items emitted in the current window.
     count: usize,
+    /// Timer interval for the sampling window.
+    timer_interval: Duration,
+    /// Whether the periodic timer has been started.
+    timer_started: bool,
 }
 
 /// Runtime state for ratio sampling.
@@ -30,9 +38,12 @@ pub struct RatioState {
     emit: usize,
     /// Denominator: cycle length.
     out_of: usize,
-    /// Records emitted in current cycle.
+
+    /// This is the state of the current cycle. We don't exactly sample the
+    /// first M of every N records, we optimize to reduce slicing. If the
+    /// RecordBatch is bigger than N, we can sample multiple M out of it with
+    /// one slice and then determine what the ending cycle state should be.
     emitted: usize,
-    /// Records seen in current cycle.
     seen: usize,
 }
 
@@ -46,8 +57,6 @@ impl SubsamplingPolicy {
     }
 
     /// Computes how many records to keep from a batch of the given size.
-    ///
-    /// Updates internal state to account for the batch.
     pub fn compute_to_keep(&mut self, batch_size: usize) -> usize {
         match self {
             Self::Zip(state) => state.compute_to_keep(batch_size),
@@ -55,13 +64,23 @@ impl SubsamplingPolicy {
         }
     }
 
-    /// Resets the policy state (called on timer tick for zip sampling).
-    pub fn reset(&mut self) {
+    /// Performs any one-time initialization the policy requires. Implementations
+    /// should be idempotent since this is called for every message.
+    pub async fn ensure_init(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        match self {
+            Self::Zip(state) => state.ensure_init(effect_handler).await,
+            Self::Ratio(_) => Ok(()),
+        }
+    }
+
+    /// Notifies the policy that a timer tick has occurred.
+    pub fn notify_timer(&mut self) {
         match self {
             Self::Zip(state) => state.reset(),
-            Self::Ratio(_) => {
-                // Ratio sampling has no reset; state evolves continuously
-            }
+            Self::Ratio(_) => {}
         }
     }
 }
@@ -72,15 +91,25 @@ impl ZipState {
         Self {
             max_items: cfg.max_items,
             count: 0,
+            timer_interval: cfg.interval,
+            timer_started: false,
         }
     }
 
-    /// Computes how many records to keep from a batch.
-    ///
-    /// Algorithm:
-    /// 1. budget = max_items - count
-    /// 2. to_keep = min(budget, batch_size)
-    /// 3. count += to_keep
+    /// Starts the periodic timer if it hasn't been started yet.
+    async fn ensure_init(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        if !self.timer_started {
+            let _handle = effect_handler
+                .start_periodic_timer(self.timer_interval)
+                .await?;
+            self.timer_started = true;
+        }
+        Ok(())
+    }
+
     fn compute_to_keep(&mut self, batch_size: usize) -> usize {
         let budget = self.max_items.saturating_sub(self.count);
         let to_keep = budget.min(batch_size);
@@ -105,33 +134,23 @@ impl RatioState {
         }
     }
 
-    /// Computes how many records to keep from a batch using O(1) formula.
-    ///
-    /// Algorithm from the README:
-    /// ```text
-    /// remaining_in_cycle = out_of - seen
-    /// from_current       = min(B, remaining_in_cycle)
-    /// keep_from_current  = min(max(emit - emitted, 0), from_current)
-    ///
-    /// after_current = B - from_current
-    /// full_cycles   = after_current / out_of
-    /// leftover      = after_current % out_of
-    ///
-    /// to_keep = keep_from_current + (full_cycles * emit) + min(emit, leftover)
-    /// ```
     fn compute_to_keep(&mut self, batch_size: usize) -> usize {
         if batch_size == 0 {
             return 0;
         }
 
+        // Finish the current cycle
         let remaining_in_cycle = self.out_of - self.seen;
         let from_current = batch_size.min(remaining_in_cycle);
         let keep_from_current = (self.emit.saturating_sub(self.emitted)).min(from_current);
 
+        // Determine the number of whole cycles remaining in this batch and how
+        // what is left over.
         let after_current = batch_size - from_current;
         let full_cycles = after_current / self.out_of;
         let leftover = after_current % self.out_of;
 
+        // Determine the total number to keep from this batch
         let to_keep = keep_from_current + (full_cycles * self.emit) + self.emit.min(leftover);
 
         // Update state
@@ -147,8 +166,6 @@ impl RatioState {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    // ==================== Zip Policy Tests ====================
 
     #[test]
     fn test_zip_within_budget() {
@@ -219,8 +236,6 @@ mod tests {
         assert_eq!(state.compute_to_keep(50), 50);
     }
 
-    // ==================== Ratio Policy Tests ====================
-
     #[test]
     fn test_ratio_basic_1_10() {
         let cfg = RatioConfig {
@@ -244,7 +259,6 @@ mod tests {
 
     #[test]
     fn test_ratio_across_batches() {
-        // Example from README: emit=2, out_of=5, batches [12, 4, 5, 4] -> [6, 1, 2, 1]
         let cfg = RatioConfig { emit: 2, out_of: 5 };
         let mut state = RatioState::new(&cfg);
 
@@ -252,8 +266,6 @@ mod tests {
         assert_eq!(state.compute_to_keep(4), 1);
         assert_eq!(state.compute_to_keep(5), 2);
         assert_eq!(state.compute_to_keep(4), 1);
-
-        // Total: 12 + 4 + 5 + 4 = 25 in, 6 + 1 + 2 + 1 = 10 out (2/5 ratio)
     }
 
     #[test]
