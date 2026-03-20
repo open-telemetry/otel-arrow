@@ -1175,9 +1175,45 @@ mod test {
     }
 
     #[test]
+    fn test_combines_set_expressions_for_root_when_source_is_not_reassigned_self() {
+        let pipeline_expr =
+            OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=event_name")
+                .unwrap()
+                .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 1)
+    }
+
+    #[test]
     fn test_does_not_combine_set_expressions_for_attributes_when_source_reassigned() {
         let pipeline_expr = OplParser::parse(
             "logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = attributes[\"x\"]",
+        )
+        .unwrap()
+        .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
+
+    #[test]
+    fn test_does_not_combine_set_expressions_for_attributes_when_source_reassigned_in_nested_expr()
+    {
+        let pipeline_expr = OplParser::parse(
+            "logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = attributes[\"z\"] * attributes[\"x\"]",
         )
         .unwrap()
         .pipeline;

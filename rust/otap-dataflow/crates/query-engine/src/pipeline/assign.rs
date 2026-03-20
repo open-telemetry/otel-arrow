@@ -549,7 +549,7 @@ impl AssignPipelineStage {
 
         // replace attributes batch
         let new_attrs = upsert_attributes(attrs_record_batch, &attrs_upserts)?;
-        otap_batch.set(attrs_payload_type, new_attrs);
+        otap_batch.set(attrs_payload_type, new_attrs)?;
 
         Ok(otap_batch)
     }
@@ -630,7 +630,7 @@ impl AssignPipelineStage {
         otap_batch.set(
             otap_batch.root_payload_type(),
             try_upsert_column(consts::ID, new_ids, root_record_batch)?,
-        );
+        )?;
 
         Ok(())
     }
