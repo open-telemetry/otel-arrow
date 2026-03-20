@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774032805941,
+  "lastUpdate": 1774044251420,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "66651184+utpilla@users.noreply.github.com",
-            "name": "Utkarsh Umesan Pillai",
-            "username": "utpilla"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "fbb70908dcaf24696d43ee838800b1d52732f39f",
-          "message": "[otap-df-otap] Update Syslog CEF receiver to add input format attribute (#2174)\n\n# Change Summary\n\nAdds an `input.format` log attribute to every log record emitted by the\nSyslog CEF Receiver. This attribute indicates which message format was\ndetected by the receiver's auto-detection logic, enabling downstream\nprocessors to filter, route, or transform records based on the\noriginating format.\n\n### Motivation\n\nThe receiver supports multiple input formats (RFC 5424, RFC 3164, CEF,\nand CEF over syslog) and auto-detects the format of each incoming\nmessage. Until now, there was no way for downstream pipeline components\nto know which format a given log record originated from. With\n`input.format`, users can build processor-based filtering rules (e.g.,\ndrop all RFC 3164 messages, or route CEF messages to a separate\nexporter) without needing receiver-level configuration options.\n\n### Changes\n\n**Core implementation** (`parsed_message.rs`):\n- Added `INPUT_FORMAT` constant (`\"input.format\"`)\n- Added `format()` method on `ParsedSyslogMessage` that returns the\ndetected format as a static string\n- Updated `add_attributes_to_arrow()` to emit `input.format` as an\nattribute on every log record\n\n## How are these changes tested?\nUnit tests\n\n## Are there any user-facing changes?\n\nYes, users would now find an additional attribute in the syslog log\nrecord messages.\n\n---------\n\nCo-authored-by: Cijo Thomas <cijo.thomas@gmail.com>",
-          "timestamp": "2026-03-04T03:58:35Z",
-          "tree_id": "9884d7f081203051f159e2c7df80bb687b488eea",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/fbb70908dcaf24696d43ee838800b1d52732f39f"
-        },
-        "date": 1772600716211,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.926383376121521,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.33649967455216,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.17482042711235,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 52.173177083333336,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 53.10546875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 483591.0563318006,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 488070.9635977202,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001242,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11403510.957616294,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11336982.78481567,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 17059981.69911303,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "129437996+c1ly@users.noreply.github.com",
+            "name": "c1ly",
+            "username": "c1ly"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "192b3ba8d8d496790ff1fc63db52c58e51b81fd3",
+          "message": "Fix flakey validation tests and improve runtime (#2345)\n\n# Change Summary\n\nFix validation tests, added a message received timeout in the validation\nexporter that will trigger the validation checks and report a finished\nsignal via the telemetry metrics, only runs the validation checks once\nvs every message received.\n\n## What issue does this PR close?\n\n* Closes #2184 and #2227\n\n## How are these changes tested?\n\nAdded unit tests and confirmed that validation tests consistently pass\nin cicd\n\n## Are there any user-facing changes?\n\nyes, changed expected_within() parameter type from duration to u64",
+          "timestamp": "2026-03-20T20:03:55Z",
+          "tree_id": "b40aab6ef6aabfdc799fcbbe435dd92a1414afac",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/192b3ba8d8d496790ff1fc63db52c58e51b81fd3"
+        },
+        "date": 1774044250940,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.8642315864562988,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 99.97843005328228,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.27773608215583,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 26.116015625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 27.1953125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 649677.3657655058,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 655292.0827450781,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002312,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16981791.908534262,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 17001681.185060453,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
