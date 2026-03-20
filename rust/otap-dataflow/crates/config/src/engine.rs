@@ -136,11 +136,11 @@ impl EngineObservabilityPipelineConfig {
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
     /// Channel capacity policy.
-    #[serde(default)]
-    pub channel_capacity: ChannelCapacityPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
-    #[serde(default)]
-    pub health: HealthPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryPolicy>,
@@ -344,10 +344,11 @@ groups:
     fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        assert_eq!(config.policies.channel_capacity.control.node, 256);
-        assert_eq!(config.policies.channel_capacity.control.pipeline, 256);
-        assert_eq!(config.policies.channel_capacity.pdata, 128);
-        assert_eq!(config.policies.health, HealthPolicy::default());
+        let channel_capacity = config.policies.effective_channel_capacity();
+        assert_eq!(channel_capacity.control.node, 256);
+        assert_eq!(channel_capacity.control.pipeline, 256);
+        assert_eq!(channel_capacity.pdata, 128);
+        assert_eq!(*config.policies.effective_health(), HealthPolicy::default());
         let telemetry = config.policies.effective_telemetry();
         assert!(telemetry.pipeline_metrics);
         assert!(telemetry.tokio_metrics);
@@ -474,15 +475,29 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p1")
             .expect("g1/p1 should be resolved");
-        assert_eq!(p1_resolved.policies.channel_capacity.control.node, 50);
-        assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
-        assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
+        assert_eq!(
+            p1_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .node,
+            50
+        );
+        assert_eq!(
+            p1_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .pipeline,
+            51
+        );
+        assert_eq!(p1_resolved.policies.effective_channel_capacity().pdata, 52);
         assert_eq!(
             p1_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
         );
         assert_eq!(
-            p1_resolved.policies.health.ready_if,
+            p1_resolved.policies.effective_health().ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
@@ -495,11 +510,25 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p2")
             .expect("g1/p2 should be resolved");
-        assert_eq!(p2_resolved.policies.channel_capacity.control.node, 150);
-        assert_eq!(p2_resolved.policies.channel_capacity.control.pipeline, 151);
-        assert_eq!(p2_resolved.policies.channel_capacity.pdata, 152);
         assert_eq!(
-            p2_resolved.policies.health.ready_if,
+            p2_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .node,
+            150
+        );
+        assert_eq!(
+            p2_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .pipeline,
+            151
+        );
+        assert_eq!(p2_resolved.policies.effective_channel_capacity().pdata, 152);
+        assert_eq!(
+            p2_resolved.policies.effective_health().ready_if,
             vec![
                 crate::health::PhaseKind::Running,
                 crate::health::PhaseKind::Updating,
@@ -519,11 +548,25 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g2" && p.pipeline_id.as_ref() == "p3")
             .expect("g2/p3 should be resolved");
-        assert_eq!(p3_resolved.policies.channel_capacity.control.node, 200);
-        assert_eq!(p3_resolved.policies.channel_capacity.control.pipeline, 201);
-        assert_eq!(p3_resolved.policies.channel_capacity.pdata, 202);
         assert_eq!(
-            p3_resolved.policies.health.ready_if,
+            p3_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .node,
+            200
+        );
+        assert_eq!(
+            p3_resolved
+                .policies
+                .effective_channel_capacity()
+                .control
+                .pipeline,
+            201
+        );
+        assert_eq!(p3_resolved.policies.effective_channel_capacity().pdata, 202);
+        assert_eq!(
+            p3_resolved.policies.effective_health().ready_if,
             vec![crate::health::PhaseKind::Running]
         );
         assert_eq!(
@@ -630,6 +673,139 @@ groups:
         assert_eq!(
             no_policies.policies.effective_telemetry().channel_metrics,
             crate::policy::MetricLevel::Detailed
+        );
+    }
+
+    /// When a pipeline has a `policies:` block that specifies only `telemetry`
+    /// (and not `channel_capacity` or `health`), the effective channel_capacity
+    /// and health policies must be inherited from the parent scope — not
+    /// silently reset to the built-in defaults.
+    #[test]
+    fn resolve_channel_capacity_and_health_inherit_from_parent_scope() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+      control:
+        node: 500
+        pipeline: 501
+      pdata: 502
+  health:
+    ready_if: [Running, Updating]
+engine: {}
+groups:
+  default:
+    pipelines:
+      inheriting:
+        policies:
+          telemetry:
+            channel_metrics: detailed
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      explicit:
+        policies:
+          channel_capacity:
+              control:
+                node: 10
+                pipeline: 11
+              pdata: 12
+          health:
+            ready_if: [Failed]
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      no_policies:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        // Pipeline with policies block that only sets telemetry
+        // should inherit channel_capacity and health from the top-level scope.
+        let inheriting = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "inheriting")
+            .expect("inheriting pipeline should be resolved");
+        assert_eq!(
+            inheriting
+                .policies
+                .effective_channel_capacity()
+                .control
+                .node,
+            500,
+            "pipeline with telemetry-only policies should inherit channel_capacity from top level"
+        );
+        assert_eq!(inheriting.policies.effective_channel_capacity().pdata, 502,);
+        assert_eq!(
+            inheriting.policies.effective_health().ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ],
+            "pipeline with telemetry-only policies should inherit health from top level"
+        );
+
+        // Pipeline with explicit channel_capacity and health should use those.
+        let explicit = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "explicit")
+            .expect("explicit pipeline should be resolved");
+        assert_eq!(
+            explicit.policies.effective_channel_capacity().control.node,
+            10,
+        );
+        assert_eq!(
+            explicit.policies.effective_health().ready_if,
+            vec![crate::health::PhaseKind::Failed]
+        );
+
+        // Pipeline with no policies should inherit from top-level scope.
+        let no_policies = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "no_policies")
+            .expect("no_policies pipeline should be resolved");
+        assert_eq!(
+            no_policies
+                .policies
+                .effective_channel_capacity()
+                .control
+                .node,
+            500,
+        );
+        assert_eq!(
+            no_policies.policies.effective_health().ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ],
         );
     }
 
@@ -984,11 +1160,14 @@ groups:
             .expect("observability pipeline should be resolved");
         assert_eq!(obs.pipeline_group_id.as_ref(), "system");
         assert_eq!(obs.pipeline_id.as_ref(), "observability");
-        assert_eq!(obs.policies.channel_capacity.control.node, 10);
-        assert_eq!(obs.policies.channel_capacity.control.pipeline, 11);
-        assert_eq!(obs.policies.channel_capacity.pdata, 12);
+        assert_eq!(obs.policies.effective_channel_capacity().control.node, 10);
         assert_eq!(
-            obs.policies.health.ready_if,
+            obs.policies.effective_channel_capacity().control.pipeline,
+            11
+        );
+        assert_eq!(obs.policies.effective_channel_capacity().pdata, 12);
+        assert_eq!(
+            obs.policies.effective_health().ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(

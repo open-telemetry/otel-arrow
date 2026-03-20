@@ -13,11 +13,23 @@ use std::fmt::Display;
 #[serde(deny_unknown_fields)]
 pub struct Policies {
     /// Channel capacity policy.
-    #[serde(default)]
-    pub channel_capacity: ChannelCapacityPolicy,
+    ///
+    /// When absent, the parent scope's channel capacity policy or the built-in
+    /// default applies.  Serde leaves this `None` when the key is omitted from
+    /// the YAML/JSON, so a `policies:` block that only sets (e.g.) `telemetry`
+    /// does **not** implicitly reset channel capacities and shadow a top-level
+    /// override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
-    #[serde(default)]
-    pub health: HealthPolicy,
+    ///
+    /// When absent, the parent scope's health policy or the built-in default
+    /// applies.  Serde leaves this `None` when the key is omitted from the
+    /// YAML/JSON, so a `policies:` block that only sets (e.g.) `telemetry`
+    /// does **not** implicitly reset health criteria and shadow a top-level
+    /// override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
     ///
     /// When absent, the parent scope's telemetry policy or the built-in default
@@ -52,6 +64,32 @@ impl Policies {
             .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
     }
 
+    /// Returns the effective channel capacity policy.
+    ///
+    /// When `channel_capacity` is `None` (not explicitly configured), the
+    /// built-in default [`ChannelCapacityPolicy`] is returned as an owned
+    /// value.  When it is `Some`, a reference to the stored value is returned.
+    #[must_use]
+    pub fn effective_channel_capacity(&self) -> std::borrow::Cow<'_, ChannelCapacityPolicy> {
+        self.channel_capacity
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(ChannelCapacityPolicy::default()))
+    }
+
+    /// Returns the effective health policy.
+    ///
+    /// When `health` is `None` (not explicitly configured), the built-in
+    /// default [`HealthPolicy`] is returned as an owned value.  When it is
+    /// `Some`, a reference to the stored value is returned.
+    #[must_use]
+    pub fn effective_health(&self) -> std::borrow::Cow<'_, HealthPolicy> {
+        self.health
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(HealthPolicy::default()))
+    }
+
     /// Returns the effective telemetry policy.
     ///
     /// When `telemetry` is `None` (not explicitly configured), the built-in
@@ -69,7 +107,7 @@ impl Policies {
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        let channel_capacity = &self.channel_capacity;
+        let channel_capacity = self.effective_channel_capacity();
         if channel_capacity.control.node == 0 {
             errors.push(format!(
                 "{path_prefix}.channel_capacity.control.node must be greater than 0"
@@ -271,9 +309,10 @@ mod tests {
     #[test]
     fn defaults_match_expected_values() {
         let policies = Policies::default();
-        assert_eq!(policies.channel_capacity.control.node, 256);
-        assert_eq!(policies.channel_capacity.control.pipeline, 256);
-        assert_eq!(policies.channel_capacity.pdata, 128);
+        let channel_capacity = policies.effective_channel_capacity();
+        assert_eq!(channel_capacity.control.node, 256);
+        assert_eq!(channel_capacity.control.pipeline, 256);
+        assert_eq!(channel_capacity.pdata, 128);
         let telemetry = policies.effective_telemetry();
         assert!(telemetry.pipeline_metrics);
         assert!(telemetry.tokio_metrics);
@@ -282,14 +321,24 @@ mod tests {
             policies.effective_resources().core_allocation,
             super::CoreAllocation::AllCores
         );
+        assert_eq!(
+            *policies.effective_health(),
+            crate::health::HealthPolicy::default()
+        );
     }
 
     #[test]
     fn validates_non_zero_capacities() {
-        let mut policies = Policies::default();
-        policies.channel_capacity.control.node = 0;
-        policies.channel_capacity.control.pipeline = 0;
-        policies.channel_capacity.pdata = 0;
+        let policies = Policies {
+            channel_capacity: Some(super::ChannelCapacityPolicy {
+                control: super::ControlChannelCapacityPolicy {
+                    node: 0,
+                    pipeline: 0,
+                },
+                pdata: 0,
+            }),
+            ..Default::default()
+        };
 
         let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 3);

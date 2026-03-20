@@ -125,8 +125,8 @@ impl OtelDataflowSpec {
                     pipeline_id,
                     pipeline,
                     policies: Policies {
-                        channel_capacity: channel_capacity_policy,
-                        health: health_policy,
+                        channel_capacity: Some(channel_capacity_policy),
+                        health: Some(health_policy),
                         telemetry: Some(telemetry_policy),
                         resources: Some(resources_policy),
                     },
@@ -144,8 +144,8 @@ impl OtelDataflowSpec {
                 pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
                 pipeline: pipeline.into_pipeline_config(),
                 policies: Policies {
-                    channel_capacity: channel_capacity_policy,
-                    health: health_policy,
+                    channel_capacity: Some(channel_capacity_policy),
+                    health: Some(health_policy),
                     telemetry: Some(telemetry_policy),
                     resources: Some(ResourcesPolicy::default()),
                 },
@@ -197,14 +197,15 @@ impl OtelDataflowSpec {
 
         pipeline
             .policies()
-            .map(|p| p.channel_capacity.clone())
+            .and_then(|p| p.channel_capacity.clone())
             .or_else(|| {
                 pipeline_group
                     .policies
                     .as_ref()
-                    .map(|p| p.channel_capacity.clone())
+                    .and_then(|p| p.channel_capacity.clone())
             })
-            .or_else(|| Some(self.policies.channel_capacity.clone()))
+            .or_else(|| self.policies.channel_capacity.clone())
+            .or_else(|| Some(ChannelCapacityPolicy::default()))
     }
 
     /// Resolves the effective health policy for a pipeline.
@@ -224,9 +225,15 @@ impl OtelDataflowSpec {
 
         pipeline
             .policies()
-            .map(|p| p.health.clone())
-            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.health.clone()))
-            .or_else(|| Some(self.policies.health.clone()))
+            .and_then(|p| p.health.clone())
+            .or_else(|| {
+                pipeline_group
+                    .policies
+                    .as_ref()
+                    .and_then(|p| p.health.clone())
+            })
+            .or_else(|| self.policies.health.clone())
+            .or_else(|| Some(HealthPolicy::default()))
     }
 
     /// Resolves the effective runtime telemetry policy for a pipeline.
@@ -308,10 +315,9 @@ impl OtelDataflowSpec {
             .pipeline
             .as_ref()
             .and_then(|p| p.policies.as_ref())
-            .map_or_else(
-                || self.policies.channel_capacity.clone(),
-                |p| p.channel_capacity.clone(),
-            )
+            .and_then(|p| p.channel_capacity.clone())
+            .or_else(|| self.policies.channel_capacity.clone())
+            .unwrap_or_default()
     }
 
     /// Resolves the effective health policy for the engine observability pipeline.
@@ -326,7 +332,9 @@ impl OtelDataflowSpec {
             .pipeline
             .as_ref()
             .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.health.clone(), |p| p.health.clone())
+            .and_then(|p| p.health.clone())
+            .or_else(|| self.policies.health.clone())
+            .unwrap_or_default()
     }
 
     /// Resolves the effective runtime telemetry policy for the engine observability pipeline.

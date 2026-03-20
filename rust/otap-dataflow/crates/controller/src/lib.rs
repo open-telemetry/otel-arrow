@@ -1017,7 +1017,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             );
             obs_state_store.register_pipeline_health_policy(
                 pipeline_key,
-                pipeline_entry.policies.health.clone(),
+                pipeline_entry.policies.health.clone().unwrap_or_default(),
             );
         }
 
@@ -1032,7 +1032,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     its_key.pipeline_group_id.clone(),
                     its_key.pipeline_id.clone(),
                 ),
-                pipeline.policies.health.clone(),
+                pipeline.policies.health.clone().unwrap_or_default(),
             );
         }
         let available_core_ids = if pipeline_count == 0 {
@@ -1169,7 +1169,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .effective_resources()
                 .core_allocation
                 .to_string();
-            let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
+            let channel_capacity_policy =
+                pipeline_entry.policies.channel_capacity.unwrap_or_default();
             let telemetry_policy = pipeline_entry.policies.telemetry.unwrap_or_default();
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
@@ -1505,7 +1506,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             TelemetryPolicy,
         ) = match observability_pipeline {
             Some(config) if config.role == ResolvedPipelineRole::ObservabilityInternal => {
-                let channel_capacity_policy = config.policies.channel_capacity;
+                let channel_capacity_policy = config.policies.channel_capacity.unwrap_or_default();
                 let telemetry_policy = config.policies.telemetry.unwrap_or_default();
                 (config.pipeline, channel_capacity_policy, telemetry_policy)
             }
