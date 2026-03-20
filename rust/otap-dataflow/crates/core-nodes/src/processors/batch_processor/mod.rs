@@ -2521,8 +2521,8 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+                let (_pipeline_tx, mut pipeline_rx) = pipeline_return_msg_channel(10);
+                ctx.set_pipeline_return_sender(_pipeline_tx);
 
                 let mut datagen = DataGenerator::new(1);
                 let logs1 = datagen.generate_logs();
@@ -2555,7 +2555,7 @@ mod tests {
 
                 let mut nack_count = 0;
                 while let Ok(msg) = pipeline_rx.try_recv() {
-                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                    if let PipelineReturnMsg::DeliverNack { nack } = msg {
                         assert!(nack.reason.contains("inbound routes exhausted"));
                         nack_count += 1;
                     }
@@ -2583,8 +2583,8 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+                let (_pipeline_tx, mut pipeline_rx) = pipeline_return_msg_channel(10);
+                ctx.set_pipeline_return_sender(_pipeline_tx);
 
                 let mut datagen = DataGenerator::new(1);
                 let logs1 = datagen.generate_logs();
@@ -2605,7 +2605,7 @@ mod tests {
 
                 let mut nack_count = 0;
                 while let Ok(msg) = pipeline_rx.try_recv() {
-                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                    if let PipelineReturnMsg::DeliverNack { nack } = msg {
                         assert!(nack.reason.contains("outbound routes exhausted"));
                         nack_count += 1;
                     }

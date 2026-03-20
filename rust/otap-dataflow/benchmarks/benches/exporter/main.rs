@@ -61,7 +61,7 @@ use tonic::{Request, Response, Status};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
-    Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    Controllable, NodeControlMsg, pipeline_ctrl_msg_channel, pipeline_return_msg_channel,
 };
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_telemetry::InternalTelemetrySystem;
