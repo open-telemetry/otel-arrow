@@ -2210,8 +2210,8 @@ mod tests {
     }
 
     // Subscribed requests consume bounded inbound slots until downstream outcomes
-    // release them. Hitting the slot cap should surface an explicit processor error
-    // instead of silently stalling the event loop.
+    // release them. Hitting the slot cap should return an explicit Nack instead
+    // of stalling the event loop or surfacing as an engine error.
     #[test]
     fn test_inbound_slot_exhaustion_surfaces_error() {
         let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
@@ -2227,7 +2227,10 @@ mod tests {
         phase
             .run_test(move |mut ctx| async move {
                 let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
                 ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut datagen = DataGenerator::new(1);
                 for request_index in 0..2 {
@@ -2243,12 +2246,26 @@ mod tests {
                     if request_index == 0 {
                         result.expect("first subscribed request should be accepted");
                     } else {
-                        let err =
-                            result.expect_err("second request should fail when slots are full");
+                        result.expect("second request should be nacked, not fail the processor");
+                    }
+                }
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_millis(50),
+                    "expected completion nack",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         assert!(
-                            err.to_string().contains("inbound slots not available"),
-                            "unexpected error: {err}"
+                            nack.reason.contains("inbound routes exhausted"),
+                            "unexpected nack reason: {}",
+                            nack.reason
                         );
+                    }
+                    PipelineCompletionMsg::DeliverAck { .. } => {
+                        panic!("expected nack when inbound slots are exhausted")
                     }
                 }
             })

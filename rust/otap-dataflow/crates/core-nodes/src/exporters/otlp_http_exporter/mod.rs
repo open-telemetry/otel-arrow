@@ -713,6 +713,9 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
+    use arrow::array::Int32Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -725,7 +728,9 @@ mod test {
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
+    use otap_df_pdata::OtapArrowRecords;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
@@ -1619,17 +1624,8 @@ mod test {
 
     #[test]
     fn test_handles_invalid_otap_payloads() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        // this is something we won't be able to serialize into a valid OTLP payload.
-        // it would expect "resource" to be a struct column
+        // Malformed structured OTAP payloads are rejected when inserted into `OtapArrowRecords`,
+        // so the exporter never receives this invalid batch shape.
         let invalid_record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 "resource",
@@ -1640,71 +1636,18 @@ mod test {
         )
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
+        let err = otap_batch
+            .set(ArrowPayloadType::Logs, invalid_record_batch)
+            .expect_err("invalid OTAP batch should be rejected before export");
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otap_batch,
-        ))];
-
-        let pdatas = subscribe_pdatas(pdatas, false);
-
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| {
-                Box::pin(async move {
-                    for pdata in pdatas {
-                        ctx.send_pdata(pdata).await.unwrap();
-                    }
-
-                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
-                        .await
-                        .unwrap();
-                })
-            })
-            .run_validation(|mut ctx, result| {
-                Box::pin(async move {
-                    // ensure exit success
-                    result.unwrap();
-
-                    let mut ack_count = 0;
-                    let num_expected_nacks = 1;
-                    let mut pipeline_completion_rx =
-                        ctx.take_pipeline_completion_receiver().unwrap();
-                    loop {
-                        let msg = match pipeline_completion_rx.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break, // channel closed, no more messages will be received
-                        };
-
-                        match msg {
-                            PipelineCompletionMsg::DeliverNack { nack } => {
-                                ack_count += 1;
-
-                                assert!(
-                                    nack.reason.contains("Column `resource` data type mismatch"),
-                                    "unexpected error message in Nack: {}",
-                                    nack.reason
-                                );
-
-                                assert!(
-                                    nack.permanent,
-                                    "expected malformed OTAP batch to be permanent nack"
-                                );
-
-                                if ack_count >= num_expected_nacks {
-                                    break;
-                                }
-                            }
-                            PipelineCompletionMsg::DeliverAck { .. } => {
-                                panic!("unexpected Nack message")
-                            }
-                        }
-                    }
-                    assert_eq!(ack_count, num_expected_nacks);
-                })
-            })
+        assert!(
+            err.to_string().contains("Invalid schema for payload Logs")
+                && err.to_string().contains("Column `resource`"),
+            "unexpected validation error: {err}"
+        );
     }
 
+    #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
         let port = pick_unused_port().unwrap();
         let endpoint_addr = format!("127.0.0.1:{}", port);
