@@ -219,7 +219,7 @@ impl AssignPipelineStage {
         otap_batch.set(
             root_payload_type,
             try_upsert_column(dest_column_name, values, root_batch)?,
-        );
+        )?;
 
         Ok(otap_batch)
     }
@@ -248,7 +248,7 @@ impl AssignPipelineStage {
             if field.is_nullable() {
                 let mut new_root_batch = root_batch.clone();
                 _ = new_root_batch.remove_column(column_index);
-                otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
+                otap_batch.set(otap_batch.root_payload_type(), new_root_batch)?;
             } else {
                 return Err(Error::ExecutionError {
                     cause: format!(
@@ -1418,7 +1418,9 @@ mod test {
             log_attrs,
         )
         .unwrap();
-        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, log_attrs)
+            .unwrap();
 
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
@@ -1459,7 +1461,9 @@ mod test {
             log_attrs,
         )
         .unwrap();
-        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, log_attrs)
+            .unwrap();
 
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()

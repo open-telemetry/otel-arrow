@@ -55,15 +55,6 @@ pub fn get(typ: ArrowPayloadType) -> &'static Schema {
     }
 }
 
-/// Validate that a RecordBatch conforms to the schema definition for the given
-/// payload type.
-pub fn validate(
-    payload_type: ArrowPayloadType,
-    record_batch: &arrow::array::RecordBatch,
-) -> crate::error::Result<()> {
-    get(payload_type).check_match(payload_type, record_batch)
-}
-
 use SimpleType::*;
 
 static RESOURCE_SCHEMA: Schema = Schema {
@@ -1742,7 +1733,9 @@ mod tests {
                 Some(b) => b,
                 None => continue,
             };
-            validate(pt, &batch).unwrap_or_else(|e| panic!("validate failed for {pt:?}: {e:?}"));
+            get(pt)
+                .check_match(&batch)
+                .unwrap_or_else(|e| panic!("check_match failed for {pt:?}: {e:?}"));
         }
     }
 
@@ -1761,9 +1754,9 @@ mod tests {
             let array = Arc::new(Int32Array::from(vec![0]));
             let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
 
-            match validate(pt, &batch) {
-                Err(crate::error::Error::ExtraneousField { .. }) => {}
-                other => panic!("expected ExtraneousColumn for {pt:?}, got {other:?}"),
+            match get(pt).check_match(&batch) {
+                Err(crate::schema::error::Error::ExtraneousField { .. }) => {}
+                other => panic!("expected ExtraneousField for {pt:?}, got {other:?}"),
             }
         }
     }
@@ -1781,15 +1774,15 @@ mod tests {
             }
             for &req_col in &required {
                 let batch = build_batch_omitting(pt, req_col);
-                match validate(pt, &batch) {
-                    Err(crate::error::Error::MissingRequiredFields { names, .. }) => {
+                match get(pt).check_match(&batch) {
+                    Err(crate::schema::error::Error::MissingRequiredFields { names, .. }) => {
                         assert!(
                             names.contains(&req_col.to_string()),
                             "{pt:?}: missing column {req_col} not in names {names:?}",
                         );
                     }
                     other => panic!(
-                        "{pt:?}: expected MissingRequiredColumns when omitting {req_col}, got {other:?}",
+                        "{pt:?}: expected MissingRequiredFields when omitting {req_col}, got {other:?}",
                     ),
                 }
             }
@@ -1836,10 +1829,10 @@ mod tests {
 
                 let schema = Arc::new(ArrowSchema::new(fields));
                 let batch = RecordBatch::try_new(schema, arrays).unwrap();
-                match validate(pt, &batch) {
-                    Err(crate::error::Error::FieldTypeMismatch { .. }) => {}
+                match get(pt).check_match(&batch) {
+                    Err(crate::schema::error::Error::FieldTypeMismatch { .. }) => {}
                     other => panic!(
-                        "{pt:?}: expected SchemaValidationTypeMismatch for column {}, got {other:?}",
+                        "{pt:?}: expected FieldTypeMismatch for column {}, got {other:?}",
                         field_def.name,
                     ),
                 }
@@ -1892,11 +1885,12 @@ mod tests {
                     RecordBatch::try_new(schema, arrays).unwrap()
                 };
 
+                let schema_def_for_pt = get(pt);
                 match field_def.data_type.min_dict_key_size() {
                     Some(DictKeySize::U8) => {
                         // U8 key at min -> Ok
                         let batch = build_batch_with_dict_col(ArrowDT::UInt8);
-                        validate(pt, &batch).unwrap_or_else(|e| {
+                        schema_def_for_pt.check_match(&batch).unwrap_or_else(|e| {
                             panic!(
                                 "{pt:?}.{}: dict U8 key should be accepted (min=U8): {e:?}",
                                 field_def.name,
@@ -1904,7 +1898,7 @@ mod tests {
                         });
                         // U16 key above min -> Ok
                         let batch = build_batch_with_dict_col(ArrowDT::UInt16);
-                        validate(pt, &batch).unwrap_or_else(|e| {
+                        schema_def_for_pt.check_match(&batch).unwrap_or_else(|e| {
                             panic!(
                                 "{pt:?}.{}: dict U16 key should be accepted (min=U8): {e:?}",
                                 field_def.name,
@@ -1914,7 +1908,7 @@ mod tests {
                     Some(DictKeySize::U16) => {
                         // U16 key at min -> Ok
                         let batch = build_batch_with_dict_col(ArrowDT::UInt16);
-                        validate(pt, &batch).unwrap_or_else(|e| {
+                        schema_def_for_pt.check_match(&batch).unwrap_or_else(|e| {
                             panic!(
                                 "{pt:?}.{}: dict U16 key should be accepted (min=U16): {e:?}",
                                 field_def.name,
@@ -1922,8 +1916,8 @@ mod tests {
                         });
                         // U8 key below min -> TypeMismatch
                         let batch = build_batch_with_dict_col(ArrowDT::UInt8);
-                        match validate(pt, &batch) {
-                            Err(crate::error::Error::FieldTypeMismatch { .. }) => {}
+                        match schema_def_for_pt.check_match(&batch) {
+                            Err(crate::schema::error::Error::FieldTypeMismatch { .. }) => {}
                             other => panic!(
                                 "{pt:?}.{}: dict U8 key should be rejected (min=U16), got {other:?}",
                                 field_def.name,
@@ -1933,8 +1927,8 @@ mod tests {
                     None => {
                         // Dict encoding not allowed -> TypeMismatch
                         let batch = build_batch_with_dict_col(ArrowDT::UInt8);
-                        match validate(pt, &batch) {
-                            Err(crate::error::Error::FieldTypeMismatch { .. }) => {}
+                        match schema_def_for_pt.check_match(&batch) {
+                            Err(crate::schema::error::Error::FieldTypeMismatch { .. }) => {}
                             other => panic!(
                                 "{pt:?}.{}: dict should be rejected (no dict allowed), got {other:?}",
                                 field_def.name,
@@ -1964,8 +1958,8 @@ mod tests {
                 }
 
                 let batch = build_batch_with_null_column(pt, req_col);
-                match validate(pt, &batch) {
-                    Err(crate::error::Error::MissingRequiredFields { names, .. }) => {
+                match get(pt).check_match(&batch) {
+                    Err(crate::schema::error::Error::MissingRequiredFields { names, .. }) => {
                         assert!(
                             names.contains(&req_col.to_string()),
                             "{pt:?}: expected null error for {req_col}, got names {names:?}",

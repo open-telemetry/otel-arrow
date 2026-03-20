@@ -11,12 +11,12 @@ use arrow::compute::kernels::cast;
 use arrow::compute::kernels::numeric::add;
 use arrow::compute::max;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
-use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{consts, update_schema_metadata};
 use uuid::Uuid;
 
 use super::error::ParquetExporterError;
+use super::records::OtapParquetRecords;
 
 /// This is an ID generator that converts the batch IDs (which are only unique within a given
 /// OTAP Batch) into IDs that can be treated as unique.
@@ -59,17 +59,8 @@ impl PartitionSequenceIdGenerator {
 
     pub fn generate_unique_ids(
         &mut self,
-        otap_batch: &mut OtapArrowRecords,
+        otap_batch: &mut OtapParquetRecords,
     ) -> Result<(), ParquetExporterError> {
-        // decode the transport optimized IDs if they are not already decoded. This is needed
-        // to ensure that we are not computing the sequence of IDs based on delta-encoded IDs.
-        // If the IDs are already decoded, this is a no-op.
-        otap_batch.decode_transport_optimized_ids().map_err(|e| {
-            ParquetExporterError::InvalidRecordBatch {
-                error: format!("failed to decode transport optimized IDs: {e}"),
-            }
-        })?;
-
         let payload_types = otap_batch.allowed_payload_types();
 
         // find the max ID in any of the record batches. We'll use this later on to increment
@@ -227,7 +218,7 @@ pub mod test {
 
     use arrow::array::new_empty_array;
     use otap_df_pdata::Consumer;
-    use otap_df_pdata::otap::{Metrics, Traces, from_record_messages};
+    use otap_df_pdata::otap::{Metrics, OtapArrowRecords, Traces, from_record_messages};
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::consts::metadata;
     use otap_df_pdata::schema::get_schema_metadata;
@@ -249,7 +240,8 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch1 = OtapArrowRecords::Logs(from_record_messages(record_messages));
+        let mut otap_batch1: OtapParquetRecords =
+            OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
         id_generator.generate_unique_ids(&mut otap_batch1).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![0, 1]);
 
@@ -290,7 +282,8 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(record_messages));
+        let mut otap_batch2: OtapParquetRecords =
+            OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
         id_generator.generate_unique_ids(&mut otap_batch2).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![2, 3]);
 
@@ -334,7 +327,8 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
+        let mut otap_batch: OtapParquetRecords =
+            OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
 
         id_generator.generate_unique_ids(&mut otap_batch).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -366,7 +360,11 @@ pub mod test {
         });
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
-        let mut otap_batch1 = OtapArrowRecords::Logs(from_record_messages(record_messages));
+        let mut otap_records =
+            OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
+        // decode transport-optimized IDs before converting to parquet records
+        otap_records.decode_transport_optimized_ids().unwrap();
+        let mut otap_batch1: OtapParquetRecords = otap_records.into();
         id_generator.generate_unique_ids(&mut otap_batch1).unwrap();
         let expected_ids = UInt32Array::from_iter_values(vec![1, 2, 3]);
 
@@ -402,8 +400,16 @@ pub mod test {
 
     #[test]
     fn test_can_handle_u32_ids() {
+        use otap_df_pdata::otap::raw_batch_store::RawTracesStore;
+
         let span_events = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                    HashMap::from_iter(vec![(
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::PLAIN.into(),
+                    )]),
+                ),
                 Field::new(consts::ID, DataType::UInt32, true).with_metadata(HashMap::from_iter(
                     vec![(
                         metadata::COLUMN_ENCODING.into(),
@@ -411,7 +417,10 @@ pub mod test {
                     )],
                 )),
             ])),
-            vec![Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3]))],
+            vec![
+                Arc::new(arrow::array::UInt16Array::from_iter_values(vec![0, 0, 0])),
+                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
+            ],
         )
         .unwrap();
 
@@ -428,9 +437,11 @@ pub mod test {
         )
         .unwrap();
 
-        let mut traces_batch = OtapArrowRecords::Traces(Traces::default());
-        traces_batch.set(ArrowPayloadType::SpanEvents, span_events.clone());
-        traces_batch.set(ArrowPayloadType::SpanEventAttrs, span_event_attrs.clone());
+        // Use RawTracesStore directly since these batches have non-spec types
+        let mut raw_store = RawTracesStore::new();
+        raw_store.set(ArrowPayloadType::SpanEvents, span_events);
+        raw_store.set(ArrowPayloadType::SpanEventAttrs, span_event_attrs);
+        let mut traces_batch = OtapParquetRecords::Traces(raw_store);
 
         let mut id_generator = PartitionSequenceIdGenerator::new();
         id_generator.curr_max = 2;
@@ -470,8 +481,11 @@ pub mod test {
         )
         .unwrap();
 
-        let mut traces_batch = OtapArrowRecords::Traces(Traces::default());
-        traces_batch.set(ArrowPayloadType::Spans, root_batch.clone());
+        let mut traces_batch: OtapParquetRecords = {
+            let mut t = OtapArrowRecords::Traces(Traces::default());
+            t.set(ArrowPayloadType::Spans, root_batch.clone()).unwrap();
+            t.into()
+        };
         let mut id_generator = PartitionSequenceIdGenerator::new();
         id_generator.generate_unique_ids(&mut traces_batch).unwrap();
         let spans_batch = traces_batch.get(ArrowPayloadType::Spans).unwrap();
@@ -479,8 +493,12 @@ pub mod test {
             get_schema_metadata(spans_batch.schema_ref(), PARTITION_METADATA_KEY).unwrap();
         assert_eq!(partition_id, &format!("{}", id_generator.part_id));
 
-        let mut metrics_batch = OtapArrowRecords::Metrics(Metrics::default());
-        metrics_batch.set(ArrowPayloadType::UnivariateMetrics, root_batch.clone());
+        let mut metrics_batch: OtapParquetRecords = {
+            let mut m = OtapArrowRecords::Metrics(Metrics::default());
+            m.set(ArrowPayloadType::UnivariateMetrics, root_batch.clone())
+                .unwrap();
+            m.into()
+        };
         id_generator
             .generate_unique_ids(&mut metrics_batch)
             .unwrap();

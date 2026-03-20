@@ -585,3 +585,11 @@ impl From<otap_df_pdata::error::Error> for Error {
         }
     }
 }
+
+impl From<otap_df_pdata::encode::Error> for Error {
+    fn from(e: otap_df_pdata::encode::Error) -> Self {
+        Self::PDataError {
+            reason: e.to_string(),
+        }
+    }
+}

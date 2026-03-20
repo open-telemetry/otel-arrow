@@ -29,6 +29,7 @@ prost = { workspace = true }
 tokio = { workspace = true }
 
 otap-df-opl = { path = "../opl" }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
 [[bench]]
 name = "filter"

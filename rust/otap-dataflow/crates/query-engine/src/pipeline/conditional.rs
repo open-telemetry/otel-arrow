@@ -219,7 +219,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         .iter()
                         .filter_map(|branch_result| branch_result.get(*payload_type)),
                 )?;
-                result.set(*payload_type, record_batch);
+                result.set(*payload_type, record_batch)?;
             }
         }
 
