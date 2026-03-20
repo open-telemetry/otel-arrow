@@ -266,8 +266,7 @@ mod tests {
 
         let result = state.allocate_with_data("4");
 
-        assert!(result.is_err());
-        assert_eq!(result.err().expect("error"), "4");
+        assert_eq!(result.expect_err("is_err"), "4");
         assert_eq!(state.slots.len(), 3);
     }
 }

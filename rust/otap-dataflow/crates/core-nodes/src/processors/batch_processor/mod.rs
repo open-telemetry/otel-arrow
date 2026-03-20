@@ -645,7 +645,7 @@ impl BatchProcessor {
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
             // Note: Failure to Ack/Nack is an engine-level error.
-            let _ = effect.notify_ack(AckMsg::new(request)).await?;
+            effect.notify_ack(AckMsg::new(request)).await?;
             return Ok(());
         }
 
@@ -788,7 +788,7 @@ where
                     self.metrics.nacked_inbound_slots.inc();
                     let refused = OtapPdata::new(bctx.ctx, payload.into());
                     // Note: Failure to Ack/Nack is an engine-level error.
-                    let _ = effect
+                    effect
                         .notify_nack(NackMsg::new("inbound routes exhausted", refused))
                         .await?;
                     // Note: Inbound slot exhaustion leads to dropping
@@ -960,7 +960,7 @@ where
                             {
                                 self.metrics.nacked_outbound_slots.inc();
                                 // Note: Failure to Ack/Nack is an engine-level error.
-                                let _ = effect
+                                effect
                                     .notify_nack(NackMsg::new(
                                         "outbound routes exhausted",
                                         OtapPdata::new(
