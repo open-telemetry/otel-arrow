@@ -1371,7 +1371,7 @@ fn get_attr_filter(
 ///
 /// Generic over the ID column width (u16 or u32) used to relate parent and
 /// child `RecordBatch`es in OTAP.
-trait ChildIdResolver: ArrowPrimitiveType + Sized {
+pub trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
     /// Return the ID column on the parent batch that corresponds to the given
     /// child payload type.
     fn get_id_col_from_parent(
@@ -1384,7 +1384,7 @@ trait ChildIdResolver: ArrowPrimitiveType + Sized {
     fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray>;
 }
 
-impl ChildIdResolver for UInt16Type {
+impl ChildBatchFilterIdHelper for UInt16Type {
     fn get_id_col_from_parent(
         parent_rb: &RecordBatch,
         child_payload_type: ArrowPayloadType,
@@ -1430,7 +1430,7 @@ impl ChildIdResolver for UInt16Type {
     }
 }
 
-impl ChildIdResolver for UInt32Type {
+impl ChildBatchFilterIdHelper for UInt32Type {
     fn get_id_col_from_parent(
         parent_rb: &RecordBatch,
         _child_payload_type: ArrowPayloadType,
@@ -1475,7 +1475,7 @@ impl ChildIdResolver for UInt32Type {
 
 /// Filter child record batch rows whose `parent_id` references a parent that
 /// was removed by filtering the parent batch.
-fn filter_child_batch<T: ChildIdResolver>(
+fn filter_child_batch<T: ChildBatchFilterIdHelper>(
     otap_batch: &mut OtapArrowRecords,
     child_payload_type: ArrowPayloadType,
     id_bitmap: &mut IdBitmap,

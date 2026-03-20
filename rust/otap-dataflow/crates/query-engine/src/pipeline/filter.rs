@@ -12,10 +12,7 @@ use crate::pipeline::planner::{
 };
 use crate::pipeline::project::Projection;
 use crate::pipeline::state::ExecutionState;
-use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
-    RecordBatch, StructArray, UInt16Array,
-};
+use arrow::array::{Array, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
 use arrow::datatypes::UInt16Type;
@@ -36,7 +33,7 @@ use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
-use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool, build_native_selection_vec};
+use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -1258,63 +1255,7 @@ impl AdaptivePhysicalExprExec {
 // crate (e.g. conditional.rs).
 pub(crate) use otap_df_pdata::otap::filter::filter_otap_batch;
 
-/// Helper trait for resolving ID columns on parent batches, used by the
-/// attribute filter execution in this crate. The `filter_otap_batch` function
-/// has been moved to pdata with its own internal copy of this trait.
-#[allow(dead_code)]
-trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
-    fn get_id_col_from_parent(
-        root_rb: &RecordBatch,
-        child_payload_type: ArrowPayloadType,
-    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>>;
-
-    fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray>;
-}
-
-impl ChildBatchFilterIdHelper for UInt16Type {
-    fn get_id_col_from_parent(
-        root_rb: &RecordBatch,
-        child_payload_type: ArrowPayloadType,
-    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>> {
-        match child_payload_type {
-            ArrowPayloadType::ResourceAttrs => root_rb
-                .column_by_name(consts::RESOURCE)
-                .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-                .and_then(|arr| arr.column_by_name(consts::ID)),
-            ArrowPayloadType::ScopeAttrs => root_rb
-                .column_by_name(consts::SCOPE)
-                .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-                .and_then(|arr| arr.column_by_name(consts::ID)),
-            _ => root_rb.column_by_name(consts::ID),
-        }
-        .map(|id_col| {
-            id_col
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "unexpected type for ID column. Expected u16 found {}",
-                        id_col.data_type()
-                    ),
-                })
-                .map(MaybeDictArrayAccessor::Native)
-        })
-        .transpose()
-    }
-
-    fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray> {
-        let uint16_array = parent_ids
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: format!(
-                    "unexpected type for parent_id column. Expected u16 found {}",
-                    parent_ids.data_type()
-                ),
-            })?;
-        Ok(build_native_selection_vec(uint16_array, id_bitmap))
-    }
-}
+// ChildBatchFilterIdHelper trait and impls are provided by otap_df_pdata::otap::filter.
 
 fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
     // get the parent ID column
