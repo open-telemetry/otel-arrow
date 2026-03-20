@@ -40,12 +40,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::post;
-use axum::Router;
 use clap::Parser;
 use flate2::read::GzDecoder;
 use rand::RngExt;
@@ -124,10 +124,7 @@ async fn ingest_handler(
     let compressed_size = body.len() as u64;
 
     // Update request counters.
-    state
-        .stats
-        .total_requests
-        .fetch_add(1, Ordering::Relaxed);
+    state.stats.total_requests.fetch_add(1, Ordering::Relaxed);
     state
         .stats
         .interval_requests
@@ -303,11 +300,27 @@ async fn stats_reporter(state: AppState) {
         let elapsed = start.elapsed().as_secs_f64();
 
         let secs = interval.as_secs_f64();
-        let int_entries_per_sec = if secs > 0.0 { int_entries as f64 / secs } else { 0.0 };
-        let int_comp_per_sec = if secs > 0.0 { int_comp as f64 / secs } else { 0.0 };
+        let int_entries_per_sec = if secs > 0.0 {
+            int_entries as f64 / secs
+        } else {
+            0.0
+        };
+        let int_comp_per_sec = if secs > 0.0 {
+            int_comp as f64 / secs
+        } else {
+            0.0
+        };
 
-        let cum_entries_per_sec = if elapsed > 0.0 { total_entries as f64 / elapsed } else { 0.0 };
-        let cum_comp_per_sec = if elapsed > 0.0 { total_comp as f64 / elapsed } else { 0.0 };
+        let cum_entries_per_sec = if elapsed > 0.0 {
+            total_entries as f64 / elapsed
+        } else {
+            0.0
+        };
+        let cum_comp_per_sec = if elapsed > 0.0 {
+            total_comp as f64 / elapsed
+        } else {
+            0.0
+        };
 
         println!("[mock-la] --- Stats ---");
         println!(
@@ -394,7 +407,5 @@ async fn main() {
         .await
         .expect("failed to bind to port");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }

@@ -11,8 +11,8 @@
 #      cargo run --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml
 #
 # Error simulation examples:
-#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% → 500
-#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5  # 10% → 429
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% -> 500
+#   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5  # 10% -> 429
 #   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --latency 200ms                  # slow responses
 #   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-after 1000                # 503 after 1000 OK
 
