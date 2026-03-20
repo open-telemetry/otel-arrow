@@ -677,6 +677,10 @@ impl OTLPReceiver {
 
         loop {
             if let Some(deadline) = draining_deadline {
+                // DrainIngress is receiver-first shutdown: stop accepting new gRPC/HTTP
+                // requests immediately, but keep the receiver alive until both serving
+                // tasks have exited and all wait_for_result slots have been resolved or
+                // force-failed at the deadline.
                 grpc_shutdown.cancel();
                 http_shutdown.cancel();
 
@@ -720,6 +724,11 @@ impl OTLPReceiver {
                                 NodeControlMsg::DrainIngress { deadline, reason } => {
                                     if draining_deadline.is_none() {
                                         otap_df_telemetry::otel_info!("otlp.receiver.drain_ingress");
+                                        // Latch the first drain request and close both
+                                        // protocol listeners. We intentionally defer
+                                        // ReceiverDrained until in-flight wait_for_result
+                                        // requests have either completed naturally or
+                                        // been force-resolved at the deadline.
                                         draining_deadline = Some(deadline);
                                         draining_reason = Some(reason);
                                         grpc_shutdown.cancel();
@@ -791,6 +800,9 @@ impl OTLPReceiver {
 
                 _ = &mut drain_sleep => {
                     if let Some(reason) = draining_reason.as_deref() {
+                        // The graceful-drain deadline expired before every waiter
+                        // resolved naturally. Force-fail the remaining Ack/Nack slots
+                        // so the receiver can transition to ReceiverDrained.
                         ack_registry.force_shutdown(reason);
                     }
                     drain_deadline_sleep = None;
