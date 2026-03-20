@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, concat_batches, filter_record_batch, not, or};
+use arrow::compute::{and, filter_record_batch, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -17,8 +17,10 @@ use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::raw_batch_store::{
     LOGS_TYPE_MASK, METRICS_TYPE_MASK, RawBatchStore, TRACES_TYPE_MASK,
 };
-use otap_df_pdata::otap::transform::concatenate::concatenate;
+use otap_df_pdata::otap::transform::concatenate::{concatenate, concatenate_with_def};
 use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::schema::payloads;
 
 use otap_df_pdata::otap::filter::IdBitmapPool;
 
@@ -67,27 +69,6 @@ impl ConditionalPipelineStage {
             id_bitmap_pool: IdBitmapPool::new(),
         }
     }
-
-    fn concatenate_logs(
-        &mut self,
-        branch_results: &mut Vec<OtapArrowRecords>,
-    ) -> Result<OtapArrowRecords> {
-        concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
-    }
-
-    fn concatenate_metrics(
-        &mut self,
-        branch_results: &mut Vec<OtapArrowRecords>,
-    ) -> Result<OtapArrowRecords> {
-        concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
-    }
-
-    fn concatenate_traces(
-        &mut self,
-        branch_results: &mut Vec<OtapArrowRecords>,
-    ) -> Result<OtapArrowRecords> {
-        concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
-    }
 }
 
 fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
@@ -112,6 +93,36 @@ where
     Ok(OtapArrowRecords::from(result_store))
 }
 
+fn concatenate_logs(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
+}
+
+fn concatenate_metrics(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
+}
+
+fn concatenate_traces(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
+}
+
+fn concatenate_attrs_record_batches(branch_results: &mut Vec<RecordBatch>) -> Result<RecordBatch> {
+    let mut batches = branch_results
+        .drain(..)
+        .map(|batch| [Some(batch)])
+        .collect::<Vec<_>>();
+
+    let mut result =
+        concatenate_with_def(&mut batches, |_| payloads::get(ArrowPayloadType::LogAttrs))?;
+
+    // realistically this Error shouldn't occur. concatenate_with_def will return `None` in
+    // some position if all the batches are None but since we've explicitly passed `Some`,
+    // we can expect the result not to be `None`. We're just being defensive here:
+    let concatenated_batch = result[0].take().ok_or_else(|| Error::ExecutionError {
+        cause: format!("expected concatenate to produce non None batch"),
+    })?;
+
+    Ok(concatenated_batch)
+}
 /// A branch within a conditional pipeline stage
 pub struct ConditionalPipelineStageBranch {
     /// This condition will be evaluated to determine for which rows to execute the pipeline
@@ -242,9 +253,9 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // reconstruct the result with the results of each branch
         match otap_batch {
-            OtapArrowRecords::Logs(_) => self.concatenate_logs(&mut branch_results),
-            OtapArrowRecords::Metrics(_) => self.concatenate_metrics(&mut branch_results),
-            OtapArrowRecords::Traces(_) => self.concatenate_traces(&mut branch_results),
+            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
+            OtapArrowRecords::Metrics(_) => concatenate_metrics(&mut branch_results),
+            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results),
         }
     }
 
@@ -348,8 +359,7 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         // reconstruct the result by concatenating the record batches from all branches
-        let batch_refs = branch_results.iter().collect::<Vec<_>>();
-        let final_result = concat_batches(branch_results[0].schema_ref(), batch_refs)?;
+        let final_result = concatenate_attrs_record_batches(&mut branch_results)?;
 
         Ok(final_result)
     }

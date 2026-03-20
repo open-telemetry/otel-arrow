@@ -1241,6 +1241,47 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_pipeline_condition_can_concatenate_in_case_schema_changes() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        // attributes that take the first "if" branch will have the optional int column appended,
+        // and those which take the "else if" branch will have the optional double column appended.
+        // this
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1") {
+                    set value = 5
+                } else if (key == "k2") {
+                    set value = 14.0
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
     async fn test_pipeline_where_conditional_receives_empty_batch_works_correctly() {
         let input = to_logs_data(vec![
             LogRecord::build()
