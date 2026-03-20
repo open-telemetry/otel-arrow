@@ -125,7 +125,7 @@ opentelemetry-proto = { version = "0.31", default-features = false, features = [
 opentelemetry = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", default-features = false, features = ["metrics", "internal-logs"] }
 opentelemetry-stdout = { version = "0.31.0", default-features = false, features = ["metrics"] }
-opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "internal-logs"] }
+opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "internal-logs"] }
 opentelemetry-prometheus = { version = "0.31.0", default-features = false, features = ["internal-logs"] }
 parking_lot = "0.12.5"
 paste = "1"
