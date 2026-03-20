@@ -3,7 +3,7 @@
 //! This module contains the runtime state and algorithms for both
 //! zip sampling and ratio sampling policies.
 
-use crate::log_subsampling_processor::config::{Policy, RatioConfig, ZipConfig};
+use crate::processors::log_subsampling_processor::config::{Policy, RatioConfig, ZipConfig};
 
 /// Runtime state for a subsampling policy.
 #[derive(Debug)]

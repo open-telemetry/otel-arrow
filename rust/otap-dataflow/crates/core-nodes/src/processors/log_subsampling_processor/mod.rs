@@ -16,8 +16,8 @@ use self::policy::SubsamplingPolicy;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap::OTAP_PROCESSOR_FACTORIES;
-use otap::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -136,7 +136,7 @@ impl LogSubsamplingProcessor {
         let mut records: OtapArrowRecords =
             payload
                 .try_into()
-                .map_err(|e: otap_df_pdata::error::Error| {
+                .map_err(|e: otap_df_pdata::encode::Error| {
                     let source_detail = format_error_sources(&e);
                     EngineError::ProcessorError {
                         processor: effect_handler.processor_id(),
@@ -164,7 +164,7 @@ impl LogSubsamplingProcessor {
 fn slice_logs(records: &mut OtapArrowRecords, to_keep: usize) {
     if let Some(batch) = records.get(ArrowPayloadType::Logs) {
         let sliced = batch.slice(0, to_keep);
-        records.set(ArrowPayloadType::Logs, sliced);
+        let _ = records.set(ArrowPayloadType::Logs, sliced);
     }
 }
 
@@ -239,13 +239,14 @@ static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapP
                  proc_cfg: &ProcessorConfig| {
             create_log_subsampling_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap::pdata::Context;
+    use otap_df_otap::pdata::Context;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;

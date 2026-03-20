@@ -92,20 +92,6 @@ impl Config {
     }
 }
 
-/// Serde helper for human-readable durations.
-mod humantime_serde {
-    use serde::{Deserialize, Deserializer, de};
-    use std::time::Duration;
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        humantime::parse_duration(&s).map_err(de::Error::custom)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
