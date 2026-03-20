@@ -36,6 +36,7 @@ use super::Sampler;
 use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
 use async_trait::async_trait;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_otap::pdata::OtapPdata;
@@ -53,6 +54,23 @@ pub struct ZipConfig {
     pub interval: Duration,
     /// Maximum records to emit per window.
     pub max_items: usize,
+}
+
+impl ZipConfig {
+    /// Validates the zip sampling configuration.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.interval.is_zero() {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "zip.interval must be greater than 0".to_string(),
+            });
+        }
+        if self.max_items == 0 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "zip.max_items must be greater than 0".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Zip sampler state.
@@ -233,5 +251,36 @@ mod tests {
         assert!(sel.value(2)); // kept
         assert!(!sel.value(3)); // dropped
         assert!(!sel.value(4)); // dropped
+    }
+
+    // ==================== Config Validation Tests ====================
+
+    #[test]
+    fn test_valid_config() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_interval_zero() {
+        let cfg = ZipConfig {
+            interval: Duration::ZERO,
+            max_items: 100,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("interval"));
+    }
+
+    #[test]
+    fn test_invalid_max_items_zero() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 0,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("max_items"));
     }
 }

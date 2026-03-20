@@ -70,6 +70,7 @@ use super::Sampler;
 use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
 use async_trait::async_trait;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_otap::pdata::OtapPdata;
@@ -85,6 +86,28 @@ pub struct RatioConfig {
     pub emit: usize,
     /// Denominator of the sampling fraction.
     pub out_of: usize,
+}
+
+impl RatioConfig {
+    /// Validates the ratio sampling configuration.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.emit == 0 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "ratio.emit must be greater than 0".to_string(),
+            });
+        }
+        if self.out_of == 0 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "ratio.out_of must be greater than 0".to_string(),
+            });
+        }
+        if self.emit > self.out_of {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "ratio.emit must be less than or equal to ratio.out_of".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Ratio sampler state.
@@ -151,10 +174,7 @@ impl Sampler for RatioSampler {
     fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray {
         let total = records.root_record_batch().map_or(0, |rb| rb.num_rows());
         let to_keep = self.compute_to_keep(total);
-        BooleanArray::new(
-            BooleanBuffer::collect_bool(total, |i| i < to_keep),
-            None,
-        )
+        BooleanArray::new(BooleanBuffer::collect_bool(total, |i| i < to_keep), None)
     }
 
     async fn ensure_init(
@@ -302,5 +322,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ==================== Config Validation Tests ====================
+
+    #[test]
+    fn test_valid_config() {
+        let cfg = RatioConfig {
+            emit: 1,
+            out_of: 10,
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_valid_config_equal() {
+        let cfg = RatioConfig { emit: 1, out_of: 1 };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_emit_zero() {
+        let cfg = RatioConfig {
+            emit: 0,
+            out_of: 10,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("emit"));
+    }
+
+    #[test]
+    fn test_invalid_out_of_zero() {
+        let cfg = RatioConfig { emit: 1, out_of: 0 };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("out_of"));
+    }
+
+    #[test]
+    fn test_invalid_emit_greater_than_out_of() {
+        let cfg = RatioConfig {
+            emit: 10,
+            out_of: 5,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("emit"));
     }
 }

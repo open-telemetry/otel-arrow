@@ -157,9 +157,7 @@ impl LogSubsamplingProcessor {
             })?;
 
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
-        effect_handler
-            .send_message_with_source_node(pdata)
-            .await?;
+        effect_handler.send_message_with_source_node(pdata).await?;
 
         Ok(())
     }
