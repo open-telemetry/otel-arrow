@@ -294,6 +294,11 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(NodeControlMsg::DrainIngress { reason, .. }) => {
                                 if !drained_notified {
+                                    // TopicReceiver does not hold a separate wait_for_result
+                                    // backlog like OTLP/OTAP receivers. Once ingress is marked as
+                                    // draining, the runtime can consider the receiver drained
+                                    // immediately; later topic deliveries are rejected/nacked
+                                    // below instead of being admitted into the pipeline.
                                     draining_reason = Some(reason);
                                     effect_handler.notify_receiver_drained().await?;
                                     drained_notified = true;
@@ -350,6 +355,9 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                         match recv {
                             Ok(RecvItem::Message(env)) => {
                                 if let Some(reason) = draining_reason.as_deref() {
+                                    // DrainIngress was already acknowledged to the runtime, so any
+                                    // message delivered after that point must be bounced at the
+                                    // topic boundary rather than forwarded into the pipeline.
                                     if ack_propagation_mode == TopicAckPropagationMode::Auto
                                         && env.tracked
                                     {

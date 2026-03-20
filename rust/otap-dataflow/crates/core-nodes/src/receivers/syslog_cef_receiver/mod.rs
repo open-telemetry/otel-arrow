@@ -281,6 +281,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
                                 Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                                    // Receiver-first shutdown stops new accepts immediately, but
+                                    // for TCP we still wait for already accepted connection tasks
+                                    // to flush their per-connection buffers before reporting
+                                    // ReceiverDrained to the runtime.
                                     let _ = timer_cancel_handle.cancel().await;
                                     shutdown_flag.set(true);
 
@@ -300,6 +304,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         );
                                     }
 
+                                    // Once all connection tasks have either flushed or timed out,
+                                    // the runtime can safely advance to downstream shutdown.
                                     effect_handler.notify_receiver_drained().await?;
 
                                     let snapshot = self.metrics.borrow().snapshot();
@@ -673,6 +679,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
                                 Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                                    // UDP has no long-lived connection tasks, so receiver-first
+                                    // drain just means: stop ingesting new packets, flush the
+                                    // current batch buffer once, then report ReceiverDrained.
                                     let _ = timer_cancel_handle.cancel().await;
 
                                     if arrow_records_builder.len() > 0 {

@@ -293,6 +293,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     }
 
     /// Runs the runtime-control manager event loop.
+    ///
+    /// The loop has three important responsibilities:
+    ///
+    /// - schedule and fire timers / delayed-data wakeups
+    /// - orchestrate receiver-first shutdown by sending `DrainIngress` before
+    ///   downstream `Shutdown`
+    /// - keep the single-threaded runtime live by buffering control sends that
+    ///   would otherwise block on full node-control channels
     pub async fn run(mut self) -> Result<(), Error> {
         let internal_telemetry_enabled =
             self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
@@ -365,6 +373,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry)
             };
 
+            // Runtime-control traffic can burst during shutdown or completion
+            // churn. Force a due-event pass once the burst limit is reached so
+            // timer and delayed-data wakeups still make progress.
             if consecutive_runtime_ctrl >= RUNTIME_CTRL_BURST
                 && next_earliest.is_some_and(|when| when <= now)
             {
@@ -392,6 +403,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             shutdown_deadline = Some(deadline);
                             shutdown_reason = Some(reason.clone());
                             pending_receivers = self.control_senders.receiver_ids().into_iter().collect();
+                            // Receiver-first shutdown freezes timer-driven work
+                            // and flushes queued delayed data back to their
+                            // origin nodes before any downstream Shutdown is
+                            // sent. Receivers get DrainIngress first so they stop
+                            // admitting new work at the pipeline boundary.
                             self.tick_timers.cancel_all();
                             self.telemetry_timers.cancel_all();
                             self.flush_delayed_data_now(now);
@@ -407,6 +423,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             }
 
                             if pending_receivers.is_empty() {
+                                // Pipelines without receivers can skip the
+                                // receiver-drain phase and start downstream
+                                // shutdown immediately.
                                 for node_id in self.control_senders.non_receiver_ids() {
                                     self.send(
                                         node_id,
@@ -425,6 +444,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             }
                             let _ = pending_receivers.remove(&node_id);
                             if pending_receivers.is_empty() && !downstream_shutdown_sent {
+                                // The last ReceiverDrained is the handoff point
+                                // from "close ingress" to "let the rest of the
+                                // pipeline finish draining". Only now do we send
+                                // downstream Shutdown to processors/exporters.
                                 let deadline = shutdown_deadline.unwrap_or(now);
                                 let reason = shutdown_reason
                                     .clone()
@@ -474,6 +497,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
                             if is_draining_ingress {
+                                // Once drain has started, newly requested delayed
+                                // data must not stay queued behind the shutdown
+                                // boundary. Return it immediately so the owning
+                                // node can resolve or discard it inside its
+                                // shutdown path.
                                 self.send(
                                     node_id,
                                     NodeControlMsg::DelayedData {
@@ -533,6 +561,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         now: Instant,
         pipeline_metrics_monitor: &mut Option<PipelineMetricsMonitor>,
     ) {
+        // Collect all due wakeups first, then send them after metrics have been
+        // updated. This keeps the due-event accounting tied to one logical
+        // scheduler tick even if some individual node-control sends are
+        // deferred into `pending_sends`.
         let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
 
         self.tick_timers.fire_due(now, |node_id| {
@@ -769,6 +801,11 @@ impl<PData> PipelineReturnMsgDispatcher<PData> {
 
 impl<PData: Unwindable> PipelineReturnMsgDispatcher<PData> {
     /// Runs the return-path dispatcher until all return senders are dropped.
+    ///
+    /// This loop owns the shared return lane only. It never performs
+    /// timer/shutdown orchestration; its job is to unwind Ack/Nack frames,
+    /// translate them into the next interested upstream node, and retry any
+    /// backpressured node-control sends without blocking the runtime.
     pub async fn run(mut self) -> Result<(), Error> {
         let retry_delay = tokio::time::sleep(Duration::from_millis(5));
         tokio::pin!(retry_delay);
@@ -817,6 +854,10 @@ impl<PData: Unwindable> PipelineReturnMsgDispatcher<PData> {
             match pdata.pop_frame() {
                 None => return None,
                 Some(frame) => {
+                    // Every popped frame may still contribute produced/consumed
+                    // outcome metrics even if it is not the next Ack/Nack
+                    // subscriber. Unwinding therefore serves both routing and
+                    // per-node accounting.
                     if frame.interests.intersects(Interests::PIPELINE_METRICS) {
                         self.record_frame_metrics(
                             frame.node_id,
