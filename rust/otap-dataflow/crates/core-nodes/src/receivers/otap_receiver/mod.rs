@@ -380,6 +380,10 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
         loop {
             if let Some(deadline) = draining_deadline {
+                // DrainIngress is receiver-first shutdown: stop accepting new RPCs
+                // immediately, but keep the event loop alive until the serving task
+                // has exited and all in-flight wait_for_result state has been
+                // resolved or force-failed at the deadline.
                 grpc_shutdown.cancel();
 
                 if Instant::now() >= deadline {
@@ -420,6 +424,10 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         Ok(NodeControlMsg::DrainIngress { deadline, reason }) => {
                             if draining_deadline.is_none() {
                                 otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
+                                // Latch the first drain request and close ingress.
+                                // This stops new admissions, but does not yet report
+                                // ReceiverDrained because previously admitted batches
+                                // may still need to finish their wait_for_result path.
                                 draining_deadline = Some(deadline);
                                 draining_reason = Some(reason);
                                 grpc_shutdown.cancel();
@@ -480,6 +488,9 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
                 _ = &mut drain_sleep => {
                     if let Some(reason) = draining_reason.as_deref() {
+                        // The receiver missed the graceful-drain deadline. Force any
+                        // remaining in-flight wait_for_result subscriptions to fail so
+                        // the runtime can eventually observe ReceiverDrained.
                         states.force_shutdown(reason);
                     }
                     drain_deadline_sleep = None;
