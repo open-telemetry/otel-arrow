@@ -14,7 +14,12 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::{Logs, Metrics, Traces};
+use otap_df_pdata::otap::raw_batch_store::{
+    LOGS_TYPE_MASK, METRICS_TYPE_MASK, RawBatchStore, RawLogsStore, RawMetricsStore,
+    TRACES_TYPE_MASK,
+};
+use otap_df_pdata::otap::transform::concatenate::concatenate;
+use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 
 use otap_df_pdata::otap::filter::IdBitmapPool;
 
@@ -63,6 +68,49 @@ impl ConditionalPipelineStage {
             id_bitmap_pool: IdBitmapPool::new(),
         }
     }
+
+    fn concatenate_logs(
+        &mut self,
+        branch_results: &mut Vec<OtapArrowRecords>,
+    ) -> Result<OtapArrowRecords> {
+        concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
+    }
+
+    fn concatenate_metrics(
+        &mut self,
+        branch_results: &mut Vec<OtapArrowRecords>,
+    ) -> Result<OtapArrowRecords> {
+        concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
+    }
+
+    fn concatenate_traces(
+        &mut self,
+        branch_results: &mut Vec<OtapArrowRecords>,
+    ) -> Result<OtapArrowRecords> {
+        concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
+    }
+}
+
+fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
+    branch_results: &mut Vec<OtapArrowRecords>,
+) -> Result<OtapArrowRecords>
+where
+    T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
+        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otap_df_pdata::error::Error>
+        + TryFrom<OtapArrowRecords, Error = otap_df_pdata::error::Error>,
+    OtapArrowRecords: From<T>,
+{
+    let mut batches = Vec::new();
+    for branch_result in branch_results.drain(..) {
+        let batch_store: T = branch_result.try_into()?;
+        batches.push(batch_store.into_batches())
+    }
+
+    let concatenated_batches = concatenate(&mut batches)?;
+    let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
+    let result_store = T::try_from(raw_store)?;
+
+    Ok(OtapArrowRecords::from(result_store))
 }
 
 /// A branch within a conditional pipeline stage
@@ -194,36 +242,11 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         // reconstruct the result with the results of each branch
-        let mut result = match otap_batch {
-            OtapArrowRecords::Logs(_) => OtapArrowRecords::Logs(Logs::default()),
-            OtapArrowRecords::Traces(_) => OtapArrowRecords::Traces(Traces::default()),
-            OtapArrowRecords::Metrics(_) => OtapArrowRecords::Metrics(Metrics::default()),
-        };
-
-        // concat all the record batches for each payload type and set in the result
-        for payload_type in otap_batch.allowed_payload_types() {
-            // TODO - when we implement filter stages that can modify the schema, such as adding or
-            // deleting columns, we'll need extra logic here to combine project the record batches
-            // into a common schema containing a superset of all the fields.
-
-            let schema = branch_results
-                .iter()
-                .filter_map(|branch_result| branch_result.get(*payload_type))
-                .map(|record_batch| record_batch.schema())
-                .next();
-
-            if let Some(schema) = schema {
-                let record_batch = concat_batches(
-                    &schema,
-                    branch_results
-                        .iter()
-                        .filter_map(|branch_result| branch_result.get(*payload_type)),
-                )?;
-                result.set(*payload_type, record_batch)?;
-            }
+        match otap_batch {
+            OtapArrowRecords::Logs(_) => self.concatenate_logs(&mut branch_results),
+            OtapArrowRecords::Metrics(_) => self.concatenate_metrics(&mut branch_results),
+            OtapArrowRecords::Traces(_) => self.concatenate_traces(&mut branch_results),
         }
-
-        Ok(result)
     }
 
     async fn execute_on_attributes(
@@ -586,5 +609,34 @@ mod test {
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_batch() {
+        let log_records = vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("ERROR").finish(),
+        ];
+        let query = r#"logs |
+            if (severity_text == "INFO") {
+                set severity_number = 10
+            } else {
+                set event_name = "hello"
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .severity_number(10)
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("hello")
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
 }

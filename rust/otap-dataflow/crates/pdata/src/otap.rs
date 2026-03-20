@@ -199,6 +199,60 @@ impl From<Traces> for raw_batch_store::RawTracesStore {
     }
 }
 
+impl TryFrom<OtapArrowRecords> for Logs {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Logs(logs) => Ok(logs),
+            OtapArrowRecords::Traces(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Traces,
+                expected: SignalType::Logs,
+            }),
+            OtapArrowRecords::Metrics(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Metrics,
+                expected: SignalType::Logs,
+            }),
+        }
+    }
+}
+
+impl TryFrom<OtapArrowRecords> for Metrics {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Metrics(metrics) => Ok(metrics),
+            OtapArrowRecords::Logs(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Logs,
+                expected: SignalType::Metrics,
+            }),
+            OtapArrowRecords::Traces(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Traces,
+                expected: SignalType::Metrics,
+            }),
+        }
+    }
+}
+
+impl TryFrom<OtapArrowRecords> for Traces {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Traces(traces) => Ok(traces),
+            OtapArrowRecords::Logs(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Logs,
+                expected: SignalType::Traces,
+            }),
+            OtapArrowRecords::Metrics(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Metrics,
+                expected: SignalType::Traces,
+            }),
+        }
+    }
+}
+
 pub(crate) mod sealed {
     use arrow::array::RecordBatch;
 

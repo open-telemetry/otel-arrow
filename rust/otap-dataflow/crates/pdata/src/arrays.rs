@@ -333,6 +333,7 @@ where
 /// Wrapper around various arrays that may return a byte slice. Note that
 /// this delegates to the underlying NullableArrayAccessor implementation
 /// for the Arrow array which copies the bytes when value_at is called
+#[derive(Debug)]
 pub(crate) enum ByteArrayAccessor<'a> {
     Binary(MaybeDictArrayAccessor<'a, BinaryArray>),
     FixedSizeBinary(MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>),
@@ -409,6 +410,7 @@ impl<'a> ByteArrayAccessor<'a> {
 
 /// Wrapper around an array that might be a dictionary or it might just be an unencoded
 /// array of the base type
+#[derive(Debug)]
 pub enum MaybeDictArrayAccessor<'a, V> {
     /// the underlying array is the native (non dictionary encoded type)
     Native(&'a V),
@@ -690,6 +692,7 @@ where
 }
 
 /// generic adapter for accessing values of DictionaryArray
+#[derive(Debug)]
 pub struct DictionaryArrayAccessor<'a, K, V>
 where
     K: ArrowDictionaryKeyType,

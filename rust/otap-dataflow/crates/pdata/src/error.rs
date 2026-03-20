@@ -233,4 +233,10 @@ pub enum Error {
         signal: SignalType,
         payload_type: ArrowPayloadType,
     },
+
+    #[error("Invalid signal type found {found:?}, expected {expected:?}")]
+    UnexpectedSignalType {
+        found: SignalType,
+        expected: SignalType,
+    },
 }

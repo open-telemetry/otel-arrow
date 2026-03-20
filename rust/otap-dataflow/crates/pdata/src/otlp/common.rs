@@ -280,6 +280,7 @@ impl fmt::Display for AnyValue {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct AnyValueArrays<'a> {
     pub attr_type: &'a UInt8Array,
     pub attr_str: Option<StringArrayAccessor<'a>>,
