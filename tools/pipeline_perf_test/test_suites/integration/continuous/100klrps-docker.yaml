@@ -106,3 +106,19 @@ tests:
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
         max_batch_size: 1000
+  - name: OTLP-BATCH-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 1000
+  - name: OTAP-BATCH-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        max_batch_size: 1000
