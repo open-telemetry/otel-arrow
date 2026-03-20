@@ -566,6 +566,7 @@ mod tests {
                     metrics_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "metrics",
                 )
                 .await;
@@ -591,6 +592,7 @@ mod tests {
                     logs_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "logs",
                 )
                 .await;
@@ -617,6 +619,7 @@ mod tests {
                     traces_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "traces",
                 )
                 .await;
@@ -753,6 +756,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for metrics"
                     ),
+                    3,
                     "metrics",
                 )
                 .await;
@@ -784,6 +788,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for logs"
                     ),
+                    3,
                     "logs",
                 )
                 .await;
@@ -816,6 +821,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for traces"
                     ),
+                    3,
                     "traces",
                 )
                 .await;
@@ -886,6 +892,7 @@ mod tests {
         mut inbound_stream: S,
         expected_status_code: i32,
         expected_status_message: &str,
+        expected_batch_count: i64,
         signal_name: &str,
     ) where
         S: futures::Stream<
@@ -933,7 +940,7 @@ mod tests {
         // Verify we received all expected batch IDs
         assert_eq!(
             received_batch_ids,
-            (0..3).collect::<HashSet<_>>(),
+            (0..expected_batch_count).collect::<HashSet<_>>(),
             "Did not receive responses for all expected batch IDs in {}. Got: {:?}",
             signal_name,
             received_batch_ids
@@ -1153,5 +1160,111 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario(grpc_endpoint)) // Use NACK-specific scenario
             .run_validation_concurrent(nack_validation_procedure()); // Use NACK-specific validation
+    }
+
+    // When wait_for_result is enabled, shutdown must resolve every in-flight batch
+    // response stream to an explicit unavailable status instead of leaving the OTAP
+    // client hanging on the server-side wait path.
+    #[test]
+    fn test_otap_receiver_shutdown_completes_inflight_waits() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use serde_json::json;
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 100,
+            "wait_for_result": true
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let request_started = Arc::new(tokio::sync::Notify::new());
+        let scenario_started = request_started.clone();
+        let validation_started = request_started.clone();
+        let shutdown_reason = "shutdown while OTAP batches are waiting";
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            let request_started = scenario_started.clone();
+            Box::pin(async move {
+                let request_handle = tokio::spawn(async move {
+                    let mut client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("connect otap receiver");
+
+                    #[allow(tail_expr_drop_order)]
+                    let logs_stream = stream! {
+                        let mut producer = Producer::new();
+                        for batch_id in 0..1 {
+                            let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                            let bar = producer.produce_bar(&mut logs_records).unwrap();
+                            yield bar;
+                        }
+                    };
+
+                    let response = client
+                        .arrow_logs(logs_stream)
+                        .await
+                        .expect("arrow_logs request should succeed");
+
+                    validate_batch_responses(
+                        response.into_inner(),
+                        14,
+                        &format!("Pipeline processing failed: {shutdown_reason}"),
+                        1,
+                        "logs",
+                    )
+                    .await;
+                });
+
+                timeout(Duration::from_secs(3), request_started.notified())
+                    .await
+                    .expect("timed out waiting for OTAP request to reach the pipeline");
+
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), shutdown_reason)
+                    .await
+                    .expect("failed to send shutdown");
+
+                timeout(Duration::from_secs(3), request_handle)
+                    .await
+                    .expect("OTAP wait_for_result request should complete on shutdown")
+                    .unwrap();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            let request_started = validation_started.clone();
+            Box::pin(async move {
+                let _pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("timed out waiting for OTAP pdata")
+                    .expect("no OTAP pdata received");
+                request_started.notify_one();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
     }
 }

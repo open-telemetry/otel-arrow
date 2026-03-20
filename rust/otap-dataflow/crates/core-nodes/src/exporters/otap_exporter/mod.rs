@@ -403,7 +403,16 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             error = %e,
                             backoff = ?failed_request_backoff
                         );
-                        tokio::time::sleep(failed_request_backoff).await;
+                        // Shutdown must preempt reconnect backoff. Otherwise a
+                        // failed stream setup can keep the exporter alive until
+                        // the current backoff expires, delaying graceful drain
+                        // even though the runtime has already requested stop.
+                        tokio::select! {
+                            _ = tokio::time::sleep(failed_request_backoff) => {}
+                            _ = shutdown_rx.changed() => {
+                                shutdown = *shutdown_rx.borrow();
+                            }
+                        }
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
                 };
@@ -1127,6 +1136,63 @@ mod tests {
             matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, _)),
             "expected IncFailed, got something else"
         );
+    }
+
+    /// A stream-creation failure may leave the OTAP exporter in reconnect backoff.
+    /// Shutdown still needs to terminate that loop promptly instead of waiting for
+    /// the full backoff delay before the exporter can exit.
+    struct MockAlwaysFail;
+
+    #[async_trait::async_trait]
+    impl super::StreamingArrowService for MockAlwaysFail {
+        async fn handle_req_stream(
+            &mut self,
+            _req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+        ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+            Err(Status::unavailable("mock request creation failure"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_arrow_batches_shutdown_interrupts_retry_backoff() {
+        use super::{PDataMetricsUpdate, stream_arrow_batches};
+
+        let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(8);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(8);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        for batch_id in 0..5 {
+            let log_message = create_otap_batch(LOG_BATCH_ID + batch_id, ArrowPayloadType::Logs);
+            let pdata = OtapPdata::new_default(log_message.into());
+            let payload = pdata.clone();
+            batches_tx
+                .send((pdata, payload.payload().try_into().unwrap()))
+                .await
+                .unwrap();
+        }
+
+        let handle = tokio::spawn(stream_arrow_batches(
+            MockAlwaysFail,
+            SignalType::Logs,
+            None,
+            batches_rx,
+            metrics_tx,
+            shutdown_rx,
+        ));
+
+        for attempt in 0..4 {
+            let update = metrics_rx.recv().await.expect("metrics channel closed");
+            assert!(
+                matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, _)),
+                "expected IncFailed update for failed stream attempt #{attempt}"
+            );
+        }
+
+        _ = shutdown_tx.send_replace(true);
+        timeout(Duration::from_millis(40), handle)
+            .await
+            .expect("shutdown should interrupt reconnect backoff promptly")
+            .unwrap();
     }
 
     /// gRPC service mock that returns a gRPC error in the response stream
