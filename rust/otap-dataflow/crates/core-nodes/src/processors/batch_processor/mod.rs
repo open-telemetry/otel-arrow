@@ -1299,12 +1299,12 @@ where
                 if let Some(mut batch) = removed {
                     let rdata =
                         OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
-                    // Note: Failure to Ack/Nack is an engine-level error.
-                    let _ = if let Err(err) = res {
-                        effect.notify_nack(NackMsg::new(err, rdata)).await
+
+                    if let Err(err) = res {
+                        effect.notify_nack(NackMsg::new(err, rdata)).await?;
                     } else {
-                        effect.notify_ack(AckMsg::new(rdata)).await
-                    }?;
+                        effect.notify_ack(AckMsg::new(rdata)).await?;
+                    }
                 }
             }
         }
