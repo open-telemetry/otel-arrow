@@ -20,7 +20,7 @@ pub struct Policies {
     /// does **not** implicitly reset channel capacities and shadow a top-level
     /// override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel_capacity: Option<ChannelCapacityPolicy>,
+    pub(crate) channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
     ///
     /// When absent, the parent scope's health policy or the built-in default
@@ -29,7 +29,7 @@ pub struct Policies {
     /// does **not** implicitly reset health criteria and shadow a top-level
     /// override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub health: Option<HealthPolicy>,
+    pub(crate) health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
     ///
     /// When absent, the parent scope's telemetry policy or the built-in default
@@ -38,7 +38,7 @@ pub struct Policies {
     /// `channel_capacity` does **not** implicitly reset `channel_metrics`
     /// to `Basic` and shadow a top-level override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<TelemetryPolicy>,
+    pub(crate) telemetry: Option<TelemetryPolicy>,
     /// Resources policy controlling runtime core allocation.
     ///
     /// When absent, the parent scope's resources policy or the built-in default
@@ -47,67 +47,93 @@ pub struct Policies {
     /// sets (e.g.) `channel_capacity` does **not** implicitly pin `core_allocation`
     /// to `AllCores` and shadow a `--num-cores` / `--core-id-range` CLI flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resources: Option<ResourcesPolicy>,
+    pub(crate) resources: Option<ResourcesPolicy>,
 }
 
 impl Policies {
-    /// Returns the effective resources policy.
-    ///
-    /// When `resources` is `None` (not explicitly configured), the built-in
-    /// default [`ResourcesPolicy`] is returned as an owned value.  When it is
-    /// `Some`, a reference to the stored value is returned.
+    /// Returns the effective channel capacity policy, falling back to the
+    /// built-in default when not explicitly configured.
     #[must_use]
-    pub fn effective_resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
-        self.resources
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
-    }
-
-    /// Returns the effective channel capacity policy.
-    ///
-    /// When `channel_capacity` is `None` (not explicitly configured), the
-    /// built-in default [`ChannelCapacityPolicy`] is returned as an owned
-    /// value.  When it is `Some`, a reference to the stored value is returned.
-    #[must_use]
-    pub fn effective_channel_capacity(&self) -> std::borrow::Cow<'_, ChannelCapacityPolicy> {
+    pub fn channel_capacity(&self) -> std::borrow::Cow<'_, ChannelCapacityPolicy> {
         self.channel_capacity
             .as_ref()
             .map(std::borrow::Cow::Borrowed)
             .unwrap_or_else(|| std::borrow::Cow::Owned(ChannelCapacityPolicy::default()))
     }
 
-    /// Returns the effective health policy.
-    ///
-    /// When `health` is `None` (not explicitly configured), the built-in
-    /// default [`HealthPolicy`] is returned as an owned value.  When it is
-    /// `Some`, a reference to the stored value is returned.
+    /// Returns the effective health policy, falling back to the built-in
+    /// default when not explicitly configured.
     #[must_use]
-    pub fn effective_health(&self) -> std::borrow::Cow<'_, HealthPolicy> {
+    pub fn health(&self) -> std::borrow::Cow<'_, HealthPolicy> {
         self.health
             .as_ref()
             .map(std::borrow::Cow::Borrowed)
             .unwrap_or_else(|| std::borrow::Cow::Owned(HealthPolicy::default()))
     }
 
-    /// Returns the effective telemetry policy.
-    ///
-    /// When `telemetry` is `None` (not explicitly configured), the built-in
-    /// default [`TelemetryPolicy`] is returned as an owned value.  When it is
-    /// `Some`, a reference to the stored value is returned.
+    /// Returns the effective telemetry policy, falling back to the built-in
+    /// default when not explicitly configured.
     #[must_use]
-    pub fn effective_telemetry(&self) -> std::borrow::Cow<'_, TelemetryPolicy> {
+    pub fn telemetry(&self) -> std::borrow::Cow<'_, TelemetryPolicy> {
         self.telemetry
             .as_ref()
             .map(std::borrow::Cow::Borrowed)
             .unwrap_or_else(|| std::borrow::Cow::Owned(TelemetryPolicy::default()))
     }
 
+    /// Returns the effective resources policy, falling back to the built-in
+    /// default when not explicitly configured.
+    #[must_use]
+    pub fn resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
+        self.resources
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
+    }
+
+    /// Sets the resources policy (used by CLI overrides).
+    pub fn set_resources(&mut self, resources: ResourcesPolicy) {
+        self.resources = Some(resources);
+    }
+
+    /// Resolves a fully-populated policy set from scopes in precedence
+    /// order (most specific first).  For each field the first `Some`
+    /// value wins; fields absent at every level use built-in defaults.
+    #[must_use]
+    pub(crate) fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> Self {
+        let mut channel_capacity = None;
+        let mut health = None;
+        let mut telemetry = None;
+        let mut resources = None;
+        for scope in scopes {
+            if channel_capacity.is_none() {
+                channel_capacity = scope.channel_capacity.as_ref();
+            }
+            if health.is_none() {
+                health = scope.health.as_ref();
+            }
+            if telemetry.is_none() {
+                telemetry = scope.telemetry.as_ref();
+            }
+            if resources.is_none() {
+                resources = scope.resources.as_ref();
+            }
+        }
+        Self {
+            channel_capacity: channel_capacity
+                .cloned()
+                .or_else(|| Some(Default::default())),
+            health: health.cloned().or_else(|| Some(Default::default())),
+            telemetry: telemetry.cloned().or_else(|| Some(Default::default())),
+            resources: resources.cloned().or_else(|| Some(Default::default())),
+        }
+    }
+
     /// Returns validation errors for this policy set.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        let channel_capacity = self.effective_channel_capacity();
+        let channel_capacity = self.channel_capacity();
         if channel_capacity.control.node == 0 {
             errors.push(format!(
                 "{path_prefix}.channel_capacity.control.node must be greater than 0"
@@ -309,22 +335,19 @@ mod tests {
     #[test]
     fn defaults_match_expected_values() {
         let policies = Policies::default();
-        let channel_capacity = policies.effective_channel_capacity();
+        let channel_capacity = policies.channel_capacity();
         assert_eq!(channel_capacity.control.node, 256);
         assert_eq!(channel_capacity.control.pipeline, 256);
         assert_eq!(channel_capacity.pdata, 128);
-        let telemetry = policies.effective_telemetry();
+        let telemetry = policies.telemetry();
         assert!(telemetry.pipeline_metrics);
         assert!(telemetry.tokio_metrics);
         assert_eq!(telemetry.channel_metrics, super::MetricLevel::Basic);
         assert_eq!(
-            policies.effective_resources().core_allocation,
+            policies.resources().core_allocation,
             super::CoreAllocation::AllCores
         );
-        assert_eq!(
-            *policies.effective_health(),
-            crate::health::HealthPolicy::default()
-        );
+        assert_eq!(*policies.health(), crate::health::HealthPolicy::default());
     }
 
     #[test]

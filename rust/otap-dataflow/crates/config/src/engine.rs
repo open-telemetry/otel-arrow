@@ -148,7 +148,7 @@ pub struct EngineObservabilityPolicies {
 
 impl EngineObservabilityPolicies {
     #[must_use]
-    fn into_policies(self) -> Policies {
+    pub(crate) fn into_policies(self) -> Policies {
         Policies {
             channel_capacity: self.channel_capacity,
             health: self.health,
@@ -344,17 +344,17 @@ groups:
     fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        let channel_capacity = config.policies.effective_channel_capacity();
+        let channel_capacity = config.policies.channel_capacity();
         assert_eq!(channel_capacity.control.node, 256);
         assert_eq!(channel_capacity.control.pipeline, 256);
         assert_eq!(channel_capacity.pdata, 128);
-        assert_eq!(*config.policies.effective_health(), HealthPolicy::default());
-        let telemetry = config.policies.effective_telemetry();
+        assert_eq!(*config.policies.health(), HealthPolicy::default());
+        let telemetry = config.policies.telemetry();
         assert!(telemetry.pipeline_metrics);
         assert!(telemetry.tokio_metrics);
         assert_eq!(telemetry.channel_metrics, crate::policy::MetricLevel::Basic);
         assert_eq!(
-            config.policies.effective_resources().core_allocation,
+            config.policies.resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
     }
@@ -475,33 +475,19 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p1")
             .expect("g1/p1 should be resolved");
+        assert_eq!(p1_resolved.policies.channel_capacity().control.node, 50);
+        assert_eq!(p1_resolved.policies.channel_capacity().control.pipeline, 51);
+        assert_eq!(p1_resolved.policies.channel_capacity().pdata, 52);
         assert_eq!(
-            p1_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .node,
-            50
-        );
-        assert_eq!(
-            p1_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .pipeline,
-            51
-        );
-        assert_eq!(p1_resolved.policies.effective_channel_capacity().pdata, 52);
-        assert_eq!(
-            p1_resolved.policies.effective_resources().core_allocation,
+            p1_resolved.policies.resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
         );
         assert_eq!(
-            p1_resolved.policies.effective_health().ready_if,
+            p1_resolved.policies.health().ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            p1_resolved.policies.effective_telemetry().channel_metrics,
+            p1_resolved.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::None
         );
 
@@ -510,36 +496,25 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p2")
             .expect("g1/p2 should be resolved");
+        assert_eq!(p2_resolved.policies.channel_capacity().control.node, 150);
         assert_eq!(
-            p2_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .node,
-            150
-        );
-        assert_eq!(
-            p2_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .pipeline,
+            p2_resolved.policies.channel_capacity().control.pipeline,
             151
         );
-        assert_eq!(p2_resolved.policies.effective_channel_capacity().pdata, 152);
+        assert_eq!(p2_resolved.policies.channel_capacity().pdata, 152);
         assert_eq!(
-            p2_resolved.policies.effective_health().ready_if,
+            p2_resolved.policies.health().ready_if,
             vec![
                 crate::health::PhaseKind::Running,
                 crate::health::PhaseKind::Updating,
             ]
         );
         assert_eq!(
-            p2_resolved.policies.effective_telemetry().channel_metrics,
+            p2_resolved.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
-            p2_resolved.policies.effective_resources().core_allocation,
+            p2_resolved.policies.resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
         );
 
@@ -548,33 +523,22 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g2" && p.pipeline_id.as_ref() == "p3")
             .expect("g2/p3 should be resolved");
+        assert_eq!(p3_resolved.policies.channel_capacity().control.node, 200);
         assert_eq!(
-            p3_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .node,
-            200
-        );
-        assert_eq!(
-            p3_resolved
-                .policies
-                .effective_channel_capacity()
-                .control
-                .pipeline,
+            p3_resolved.policies.channel_capacity().control.pipeline,
             201
         );
-        assert_eq!(p3_resolved.policies.effective_channel_capacity().pdata, 202);
+        assert_eq!(p3_resolved.policies.channel_capacity().pdata, 202);
         assert_eq!(
-            p3_resolved.policies.effective_health().ready_if,
+            p3_resolved.policies.health().ready_if,
             vec![crate::health::PhaseKind::Running]
         );
         assert_eq!(
-            p3_resolved.policies.effective_telemetry().channel_metrics,
+            p3_resolved.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::None
         );
         assert_eq!(
-            p3_resolved.policies.effective_resources().core_allocation,
+            p3_resolved.policies.resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
     }
@@ -648,7 +612,7 @@ groups:
             .find(|p| p.pipeline_id.as_ref() == "inheriting")
             .expect("inheriting pipeline should be resolved");
         assert_eq!(
-            inheriting.policies.effective_telemetry().channel_metrics,
+            inheriting.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::Detailed,
             "pipeline with channel_capacity-only policies should inherit telemetry from top level"
         );
@@ -660,7 +624,7 @@ groups:
             .find(|p| p.pipeline_id.as_ref() == "explicit")
             .expect("explicit pipeline should be resolved");
         assert_eq!(
-            explicit.policies.effective_telemetry().channel_metrics,
+            explicit.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::None
         );
 
@@ -671,7 +635,7 @@ groups:
             .find(|p| p.pipeline_id.as_ref() == "no_policies")
             .expect("no_policies pipeline should be resolved");
         assert_eq!(
-            no_policies.policies.effective_telemetry().channel_metrics,
+            no_policies.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::Detailed
         );
     }
@@ -753,17 +717,13 @@ groups:
             .find(|p| p.pipeline_id.as_ref() == "inheriting")
             .expect("inheriting pipeline should be resolved");
         assert_eq!(
-            inheriting
-                .policies
-                .effective_channel_capacity()
-                .control
-                .node,
+            inheriting.policies.channel_capacity().control.node,
             500,
             "pipeline with telemetry-only policies should inherit channel_capacity from top level"
         );
-        assert_eq!(inheriting.policies.effective_channel_capacity().pdata, 502,);
+        assert_eq!(inheriting.policies.channel_capacity().pdata, 502,);
         assert_eq!(
-            inheriting.policies.effective_health().ready_if,
+            inheriting.policies.health().ready_if,
             vec![
                 crate::health::PhaseKind::Running,
                 crate::health::PhaseKind::Updating,
@@ -777,12 +737,9 @@ groups:
             .iter()
             .find(|p| p.pipeline_id.as_ref() == "explicit")
             .expect("explicit pipeline should be resolved");
+        assert_eq!(explicit.policies.channel_capacity().control.node, 10,);
         assert_eq!(
-            explicit.policies.effective_channel_capacity().control.node,
-            10,
-        );
-        assert_eq!(
-            explicit.policies.effective_health().ready_if,
+            explicit.policies.health().ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
 
@@ -792,16 +749,9 @@ groups:
             .iter()
             .find(|p| p.pipeline_id.as_ref() == "no_policies")
             .expect("no_policies pipeline should be resolved");
+        assert_eq!(no_policies.policies.channel_capacity().control.node, 500,);
         assert_eq!(
-            no_policies
-                .policies
-                .effective_channel_capacity()
-                .control
-                .node,
-            500,
-        );
-        assert_eq!(
-            no_policies.policies.effective_health().ready_if,
+            no_policies.policies.health().ready_if,
             vec![
                 crate::health::PhaseKind::Running,
                 crate::health::PhaseKind::Updating,
@@ -1160,22 +1110,19 @@ groups:
             .expect("observability pipeline should be resolved");
         assert_eq!(obs.pipeline_group_id.as_ref(), "system");
         assert_eq!(obs.pipeline_id.as_ref(), "observability");
-        assert_eq!(obs.policies.effective_channel_capacity().control.node, 10);
+        assert_eq!(obs.policies.channel_capacity().control.node, 10);
+        assert_eq!(obs.policies.channel_capacity().control.pipeline, 11);
+        assert_eq!(obs.policies.channel_capacity().pdata, 12);
         assert_eq!(
-            obs.policies.effective_channel_capacity().control.pipeline,
-            11
-        );
-        assert_eq!(obs.policies.effective_channel_capacity().pdata, 12);
-        assert_eq!(
-            obs.policies.effective_health().ready_if,
+            obs.policies.health().ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            obs.policies.effective_telemetry().channel_metrics,
+            obs.policies.telemetry().channel_metrics,
             crate::policy::MetricLevel::Normal
         );
         assert_eq!(
-            obs.policies.effective_resources().core_allocation,
+            obs.policies.resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
         assert_eq!(
