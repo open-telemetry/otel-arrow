@@ -453,12 +453,9 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        println!("log_data_arrays = {:?}", log_arrays);
-
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             if let Some(id_array) = log_arrays.id {
                 if let Some(id) = id_array.value_at(index) {
-                    println!("initializing child iter for ID {id}");
                     let attrs_index_iter =
                         ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
                     for attr_index in attrs_index_iter {
