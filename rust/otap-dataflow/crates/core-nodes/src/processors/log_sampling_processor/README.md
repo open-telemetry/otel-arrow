@@ -73,8 +73,8 @@ empty, the processor immediately acks the inbound request via
 
 ## Telemetry
 
-| Metric                  | Unit      | Description                        |
-|-------------------------|-----------|------------------------------------|
-| `log_signals_consumed`  | `{log}`   | Total log records received         |
-| `log_signals_dropped`   | `{log}`   | Log records dropped by sampling    |
-| `batches_fully_dropped` | `{batch}` | Batches where all records dropped  |
+| Metric                 | Unit      | Description                                |
+|------------------------|-----------|--------------------------------------------|
+| `log_signals_consumed` | `{log}`   | Total log records received                 |
+| `log_signals_dropped`  | `{log}`   | Log records dropped by sampling            |
+| `filtering_errors`     | `{error}` | Errors encountered while filtering batches |

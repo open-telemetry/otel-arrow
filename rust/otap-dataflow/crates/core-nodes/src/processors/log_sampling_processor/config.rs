@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration for the log sampling processor.
 
 use super::samplers::{RatioConfig, ZipConfig};

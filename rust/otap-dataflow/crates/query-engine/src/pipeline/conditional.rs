@@ -149,7 +149,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // been evaluated.
             let mut branch_otap_batch = filter_otap_batch(
                 &branch_selection_vec,
-                otap_batch.clone(),
+                &otap_batch,
                 &mut self.id_bitmap_pool,
             )?;
 
@@ -173,7 +173,7 @@ impl PipelineStage for ConditionalPipelineStage {
         if already_selected_vec.true_count() != root_batch.num_rows() {
             let mut default_branch_batch = filter_otap_batch(
                 &not(&already_selected_vec)?,
-                otap_batch.clone(),
+                &otap_batch,
                 &mut self.id_bitmap_pool,
             )?;
 

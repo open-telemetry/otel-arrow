@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Log sampling processor.
 //!
 //! Reduces log volume by discarding a portion of incoming log records
@@ -23,7 +26,7 @@ use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -83,22 +86,14 @@ impl LogSamplingProcessor {
         })
     }
 
+    /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
         pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let total = pdata.num_items();
-
-        // Update consumed metric
         self.metrics.log_signals_consumed.add(total as u64);
-
-        // Handle empty batch
-        if total == 0 {
-            self.metrics.batches_fully_dropped.inc();
-            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-            return Ok(());
-        }
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
@@ -115,41 +110,35 @@ impl LogSamplingProcessor {
                     }
                 })?;
 
-        // Ask the sampler for a selection vector
         let selection = self.sampler.sample_arrow_records(&records);
-        let kept = selection.true_count();
+
+        // Apply the filter to root + all child batches.
+        let filtered = match filter_otap_batch(&selection, &records, &mut self.id_bitmap_pool) {
+            Ok(filtered) => filtered,
+            Err(e) => {
+                self.metrics.filtering_errors.inc();
+                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("failed to filter otap batch: {e}"),
+                        pdata,
+                    ))
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        // Compute dropped count from the difference in item counts.
+        let kept = filtered.num_items();
         let dropped = total - kept;
         self.metrics.log_signals_dropped.add(dropped as u64);
 
-        if kept == 0 {
-            // All records dropped — ack immediately
-            self.metrics.batches_fully_dropped.inc();
-            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
-            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-            return Ok(());
-        }
-
-        if kept == total {
-            // All records kept — forward unchanged
-            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
-            effect_handler.send_message_with_source_node(pdata).await?;
-            return Ok(());
-        }
-
-        // Apply the filter to root + all child batches
-        let filtered =
-            filter_otap_batch(&selection, records, &mut self.id_bitmap_pool).map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                EngineError::ProcessorError {
-                    processor: effect_handler.processor_id(),
-                    kind: ProcessorErrorKind::Other,
-                    error: format!("failed to filter otap batch: {e}"),
-                    source_detail,
-                }
-            })?;
-
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
-        effect_handler.send_message_with_source_node(pdata).await?;
+        if kept == 0 {
+            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+        } else {
+            effect_handler.send_message_with_source_node(pdata).await?;
+        }
 
         Ok(())
     }

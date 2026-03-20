@@ -1312,7 +1312,7 @@ impl PipelineStage for FilterPipelineStage {
         let selection_vec =
             self.filter_exec
                 .execute(&otap_batch, session_context, &mut self.id_bitmap_pool)?;
-        let otap_batch = filter_otap_batch(&selection_vec, otap_batch, &mut self.id_bitmap_pool)?;
+        let otap_batch = filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
         Ok(otap_batch)
     }
