@@ -118,7 +118,7 @@ fn concatenate_attrs_record_batches(branch_results: &mut Vec<RecordBatch>) -> Re
     // some position if all the batches are None but since we've explicitly passed `Some`,
     // we can expect the result not to be `None`. We're just being defensive here:
     let concatenated_batch = result[0].take().ok_or_else(|| Error::ExecutionError {
-        cause: format!("expected concatenate to produce non None batch"),
+        cause: "expected concatenate to produce non 'None' batch".into(),
     })?;
 
     Ok(concatenated_batch)
