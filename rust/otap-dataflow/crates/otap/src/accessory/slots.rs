@@ -81,6 +81,17 @@ impl<UData> State<UData> {
         Some((key, ures))
     }
 
+    /// Like allocate(), however takes UData directly instead of a
+    /// function returning an optional value of type R.  In case the
+    /// map is full, the UData is returned.
+    pub fn allocate_with_data(&mut self, data: UData) -> Result<Key, UData> {
+        if self.slots.len() >= self.max_size {
+            return Err(data);
+        }
+
+        Ok(self.slots.insert(data))
+    }
+
     /// Get immutable reference to user data in a slot (if key is valid).
     #[must_use]
     pub fn get(&self, key: Key) -> Option<&UData> {
@@ -240,5 +251,22 @@ mod tests {
         state.cancel(key5);
 
         assert_eq!(state.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_allocate_data() {
+        let mut state: State<&'static str> = State::new(3);
+
+        let _ = state.allocate_with_data("1").unwrap();
+        let _ = state.allocate_with_data("2").unwrap();
+        let _ = state.allocate_with_data("3").unwrap();
+
+        assert_eq!(state.slots.len(), 3);
+        assert_eq!(state.slots.capacity(), 3);
+
+        let result = state.allocate_with_data("4");
+
+        assert_eq!(result.expect_err("is_err"), "4");
+        assert_eq!(state.slots.len(), 3);
     }
 }
