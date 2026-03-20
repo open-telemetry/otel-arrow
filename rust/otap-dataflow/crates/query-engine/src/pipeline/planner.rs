@@ -98,20 +98,15 @@ impl PipelinePlanner {
             let data_expr = &data_exprs[i];
 
             // coalesce consecutive SET expressions
-            if let Some(first_set) = Self::as_set_exp(data_expr) {
+            let mut expr_results = if let Some(first_set) = Self::as_set_exp(data_expr) {
                 let set_exprs = Self::collect_consecutive_sets(&data_exprs[i..], first_set);
                 let count = set_exprs.len();
-
-                let mut expr_results =
-                    self.plan_sets(&set_exprs, functions, session_ctx, otap_batch)?;
-                results.append(&mut expr_results);
-
                 i += count;
-                continue;
-            }
-
-            let mut expr_results =
-                self.plan_data_expr(data_expr, functions, session_ctx, otap_batch)?;
+                self.plan_sets(&set_exprs, functions, session_ctx, otap_batch)?
+            } else {
+                i += 1;
+                self.plan_data_expr(data_expr, functions, session_ctx, otap_batch)?
+            };
 
             // validate the pipeline stages are valid for attributes if planning pipeline to apply
             // to attrs batches only
@@ -128,7 +123,6 @@ impl PipelinePlanner {
                 }
             }
             results.append(&mut expr_results);
-            i += 1;
         }
 
         Ok(results)
