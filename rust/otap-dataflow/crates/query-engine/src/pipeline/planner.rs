@@ -569,6 +569,16 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let logical_planner = ExprLogicalPlanner::default();
 
+        // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
+        // as it could be. The strategy currently employed is just to look at adjacent set
+        // expressions and combine them if they have the same destination & unambiguous keys/cols
+        // (see note below about ambiguity). we could be more intelligent, for example:
+        // - `attributes["x"] = "5"`
+        // - `severity_number = 10`
+        // - `attributes["y"] = "14"`
+        // the first and third statement are currently are not combined, although they could be
+        // for best performance.
+
         // When doing multiple assignments in bulk, the underlying Assignment pipeline stage makes
         // no guarantees about the logical order in which the assignments are executed. This can
         // lead to ambiguity about the final result if the same column or attribute key is used
