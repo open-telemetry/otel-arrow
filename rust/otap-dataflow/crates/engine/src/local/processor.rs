@@ -318,16 +318,82 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
+    use crate::completion_emission_metrics::make_completion_emission_metrics;
+    use crate::context::ControllerContext;
+    use crate::control::{
+        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, pipeline_completion_msg_channel,
+    };
+    use crate::entity_context::NodeTelemetryHandle;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
+    use crate::{Interests, Unwindable};
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
+    use otap_df_config::{MetricLevel, node::NodeKind};
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
     use tokio::time::{Duration, timeout};
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestPData {
+        frames: Vec<Frame>,
+    }
+
+    impl TestPData {
+        fn with_ack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::ACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+
+        fn with_nack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::NACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+    }
+
+    impl Unwindable for TestPData {
+        fn has_frames(&self) -> bool {
+            !self.frames.is_empty()
+        }
+
+        fn pop_frame(&mut self) -> Option<Frame> {
+            self.frames.pop()
+        }
+
+        fn drop_payload(&mut self) {}
+    }
+
+    fn test_node_telemetry() -> (TelemetryRegistryHandle, NodeTelemetryHandle) {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller
+            .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+            .with_node_context(
+                "test_node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+        let entity_key = pipeline_ctx.register_node_entity();
+        (
+            registry,
+            NodeTelemetryHandle::new(pipeline_ctx.metrics_registry(), entity_key),
+        )
     }
 
     #[tokio::test]
@@ -550,5 +616,105 @@ mod tests {
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);
         assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData::with_ack_frame(1)))
+            .await
+            .expect("route_ack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (1, 0));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_nack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_nack(NackMsg::new("test nack", TestPData::with_nack_frame(1)))
+            .await
+            .expect("route_nack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverNack { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 1));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_without_frames_does_not_record_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel::<TestPData>(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData { frames: Vec::new() }))
+            .await
+            .expect("route_ack without frames should be a no-op");
+
+        assert!(
+            timeout(Duration::from_millis(50), completion_rx.recv())
+                .await
+                .is_err()
+        );
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 0));
     }
 }

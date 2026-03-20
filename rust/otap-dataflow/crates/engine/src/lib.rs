@@ -58,6 +58,7 @@ pub mod receiver;
 mod attributes;
 mod channel_metrics;
 mod channel_mode;
+mod completion_emission_metrics;
 pub mod config;
 pub mod context;
 pub mod control;

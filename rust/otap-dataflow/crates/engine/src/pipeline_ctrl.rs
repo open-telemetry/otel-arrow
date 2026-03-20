@@ -13,6 +13,7 @@
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::clock;
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::RouteData;
 use crate::control::UnwindData;
@@ -194,6 +195,8 @@ pub(crate) struct NodeMetricHandles {
     pub(crate) input: Option<MetricSet<ConsumedMetrics>>,
     /// Produced-request metrics indexed by output port.
     pub(crate) outputs: Vec<MetricSet<ProducedMetrics>>,
+    /// Completion-emission metrics for completions routed by the node.
+    pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
 
 pub(crate) fn report_node_metrics_with_handles(
@@ -207,6 +210,12 @@ pub(crate) fn report_node_metrics_with_handles(
         }
         for output in &mut handles.outputs {
             metrics_reporter.report(output)?;
+        }
+        if let Some(completion_emission) = &handles.completion_emission {
+            let mut completion_emission = completion_emission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            completion_emission.report(metrics_reporter)?;
         }
     }
     Ok(())
@@ -827,9 +836,17 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
     }
 
     fn send(&mut self, node_id: usize, msg: NodeControlMsg<PData>) {
+        let is_ack = matches!(msg, NodeControlMsg::Ack(_));
+        let is_nack = matches!(msg, NodeControlMsg::Nack(_));
         if let Some(sender) = self.control_senders.get(node_id) {
             match sender.try_send(msg) {
-                Ok(()) => {}
+                Ok(()) => {
+                    if is_ack {
+                        self.completion_metrics.record_ack_delivered();
+                    } else if is_nack {
+                        self.completion_metrics.record_nack_delivered();
+                    }
+                }
                 Err(otap_df_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
                     self.completion_metrics
@@ -853,9 +870,17 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
             let Some((node_id, msg)) = self.pending_sends.pop_front() else {
                 break;
             };
+            let is_ack = matches!(msg, NodeControlMsg::Ack(_));
+            let is_nack = matches!(msg, NodeControlMsg::Nack(_));
             if let Some(sender) = self.control_senders.get(node_id) {
                 match sender.try_send(msg) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if is_ack {
+                            self.completion_metrics.record_ack_delivered();
+                        } else if is_nack {
+                            self.completion_metrics.record_nack_delivered();
+                        }
+                    }
                     Err(otap_df_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
@@ -863,6 +888,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                 }
             }
         }
+        self.completion_metrics
+            .set_pending_sends_buffered(self.pending_sends.len());
     }
 
     fn record_frame_metrics(
@@ -1000,8 +1027,8 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         );
         if let Some((node_id, route)) = next {
             ack.unwind = UnwindData::new(route, now_ns);
+            self.completion_metrics.record_ack_attempted(unwind_depth);
             self.send(node_id, NodeControlMsg::Ack(ack));
-            self.completion_metrics.record_ack_sent(unwind_depth);
         } else {
             self.completion_metrics
                 .record_ack_dropped_no_interest(unwind_depth);
@@ -1019,8 +1046,8 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
             self.unwind_frames(&mut nack.refused, now_ns, outcome, Interests::NACKS);
         if let Some((node_id, route)) = next {
             nack.unwind = UnwindData::new(route, now_ns);
+            self.completion_metrics.record_nack_attempted(unwind_depth);
             self.send(node_id, NodeControlMsg::Nack(nack));
-            self.completion_metrics.record_nack_sent(unwind_depth);
         } else {
             self.completion_metrics
                 .record_nack_dropped_no_interest(unwind_depth);
@@ -2989,16 +3016,19 @@ mod tests {
             registry: registry.clone(),
             input: None,
             outputs: vec![recv_produced],
+            completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
             outputs: vec![proc_produced],
+            completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
             outputs: Vec::new(),
+            completion_emission: None,
         });
 
         let telemetry_policy = TelemetryPolicy {
@@ -3117,11 +3147,13 @@ mod tests {
     const COMPLETION_PENDING_SENDS_BUFFERED: usize = 0;
     const COMPLETION_DELIVER_ACK_RECEIVED: usize = 1;
     const COMPLETION_DELIVER_NACK_RECEIVED: usize = 2;
-    const COMPLETION_ACK_SENT: usize = 3;
-    const COMPLETION_NACK_SENT: usize = 4;
-    const COMPLETION_ACK_DROPPED_NO_INTEREST: usize = 5;
-    const COMPLETION_NACK_DROPPED_NO_INTEREST: usize = 6;
-    const COMPLETION_UNWIND_DEPTH: usize = 7;
+    const COMPLETION_ACK_ATTEMPTED: usize = 3;
+    const COMPLETION_NACK_ATTEMPTED: usize = 4;
+    const COMPLETION_ACK_DELIVERED: usize = 5;
+    const COMPLETION_NACK_DELIVERED: usize = 6;
+    const COMPLETION_ACK_DROPPED_NO_INTEREST: usize = 7;
+    const COMPLETION_NACK_DROPPED_NO_INTEREST: usize = 8;
+    const COMPLETION_UNWIND_DEPTH: usize = 9;
 
     fn merge_metric_snapshots(
         snapshots: Vec<Vec<MetricValue>>,
@@ -3259,6 +3291,13 @@ mod tests {
     }
 
     fn setup_completion_telemetry_harness(metric_level: MetricLevel) -> CompletionTelemetryHarness {
+        setup_completion_telemetry_harness_with_capacity(metric_level, 16)
+    }
+
+    fn setup_completion_telemetry_harness_with_capacity(
+        metric_level: MetricLevel,
+        control_capacity: usize,
+    ) -> CompletionTelemetryHarness {
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
@@ -3285,7 +3324,7 @@ mod tests {
             (&nodes[1], NodeType::Processor),
             (&nodes[2], NodeType::Exporter),
         ] {
-            let (sender, receiver) = create_mock_control_sender_with_capacity(16);
+            let (sender, receiver) = create_mock_control_sender_with_capacity(control_capacity);
             control_senders.register(node.clone(), node_type, sender);
             let _ = control_receivers.insert(node.index, receiver);
         }
@@ -4601,8 +4640,8 @@ mod tests {
     }
 
     // Ack delivery with an interested upstream frame should increment the
-    // completion receive/send counters and record how many frames were unwound
-    // before delivery.
+    // completion receive/attempted/delivered counters and record how many
+    // frames were unwound before the dispatcher found the upstream target.
     #[tokio::test]
     async fn test_completion_metrics_track_ack_delivery_and_unwind_depth() {
         let local = LocalSet::new();
@@ -4656,9 +4695,15 @@ mod tests {
                 );
                 assert_u64(
                     &metrics,
-                    COMPLETION_ACK_SENT,
+                    COMPLETION_ACK_ATTEMPTED,
                     1,
-                    "ack.sent should increment once",
+                    "ack.attempted should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    1,
+                    "ack.delivered should increment once for immediate delivery",
                 );
                 assert_u64(
                     &metrics,
@@ -4678,8 +4723,8 @@ mod tests {
             .await;
     }
 
-    // Nack delivery should report the receive/send counters on the completion
-    // path in the same way as Ack delivery.
+    // Nack delivery should report the receive/attempted/delivered counters on
+    // the completion path in the same way as Ack delivery.
     #[tokio::test]
     async fn test_completion_metrics_track_nack_delivery() {
         let local = LocalSet::new();
@@ -4733,9 +4778,15 @@ mod tests {
                 );
                 assert_u64(
                     &metrics,
-                    COMPLETION_NACK_SENT,
+                    COMPLETION_NACK_ATTEMPTED,
                     1,
-                    "nack.sent should increment once",
+                    "nack.attempted should increment once",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_NACK_DELIVERED,
+                    1,
+                    "nack.delivered should increment once for immediate delivery",
                 );
                 assert_u64(
                     &metrics,
@@ -4751,6 +4802,95 @@ mod tests {
                 assert_eq!(
                     unwind.count, 0,
                     "normal should suppress detailed unwind depth"
+                );
+            })
+            .await;
+    }
+
+    // If an upstream node-control inbox is temporarily full, the dispatcher
+    // should count the completion as attempted immediately, keep it buffered,
+    // then count it as delivered once the retry loop succeeds and clear the
+    // pending-sends gauge back to zero.
+    #[tokio::test]
+    async fn test_completion_metrics_track_buffered_retry_delivery() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    _guard: _,
+                } = setup_completion_telemetry_harness_with_capacity(MetricLevel::Normal, 1);
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive the first Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
+
+                let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("buffered Ack should be retried and eventually delivered")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("completion metrics should be exported");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    2,
+                    "two Ack completions should be received",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_ATTEMPTED,
+                    2,
+                    "both Ack completions should be counted as attempted",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    2,
+                    "both Ack completions should be counted as delivered once the retry succeeds",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_PENDING_SENDS_BUFFERED,
+                    0,
+                    "pending_sends.buffered should return to zero after retry delivery",
                 );
             })
             .await;
@@ -4803,9 +4943,15 @@ mod tests {
                 );
                 assert_u64(
                     &metrics,
-                    COMPLETION_ACK_SENT,
+                    COMPLETION_ACK_ATTEMPTED,
                     0,
-                    "ack.sent should stay at zero when no frame is interested",
+                    "ack.attempted should stay at zero when no frame is interested",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    0,
+                    "ack.delivered should stay at zero when no frame is interested",
                 );
                 assert_u64(
                     &metrics,
@@ -5006,9 +5152,15 @@ mod tests {
                 );
                 assert_u64(
                     &metrics,
-                    COMPLETION_ACK_SENT,
+                    COMPLETION_ACK_ATTEMPTED,
                     1,
-                    "normal should export completion send counters",
+                    "normal should export completion attempted counters",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    1,
+                    "normal should export completion delivered counters",
                 );
                 let unwind = assert_mmsc(
                     &metrics,

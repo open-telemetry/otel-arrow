@@ -260,24 +260,42 @@ pub(crate) struct PipelineCompletionMetrics {
     /// Level: `normal`.
     #[metric(name = "deliver_nack.received", unit = "{message}")]
     pub deliver_nack_received: Counter<u64>,
-    /// Count of Ack control messages successfully sent to interested upstream nodes.
+    /// Count of Ack completions routed toward an interested upstream node.
     ///
-    /// This confirms that successful completions are not just arriving at the
-    /// dispatcher but are actually making progress toward the closest interested
-    /// upstream frame.
-    ///
-    /// Level: `normal`.
-    #[metric(name = "ack.sent", unit = "{message}")]
-    pub ack_sent: Counter<u64>,
-    /// Count of Nack control messages successfully sent to interested upstream nodes.
-    ///
-    /// This shows refusal propagation progress through the completion path and
-    /// is important when verifying that transient or permanent failures are not
-    /// getting stranded under load.
+    /// This increments once the dispatcher finds the closest interested frame
+    /// and attempts delivery, even if the node-control channel is temporarily
+    /// full and the send must be retried later.
     ///
     /// Level: `normal`.
-    #[metric(name = "nack.sent", unit = "{message}")]
-    pub nack_sent: Counter<u64>,
+    #[metric(name = "ack.attempted", unit = "{message}")]
+    pub ack_attempted: Counter<u64>,
+    /// Count of Nack completions routed toward an interested upstream node.
+    ///
+    /// This is the failure-side counterpart to attempted Acks and captures how
+    /// many downstream refusals found an upstream subscriber and entered the
+    /// delivery path.
+    ///
+    /// Level: `normal`.
+    #[metric(name = "nack.attempted", unit = "{message}")]
+    pub nack_attempted: Counter<u64>,
+    /// Count of Ack control messages actually delivered to upstream nodes.
+    ///
+    /// This increments only when the node-control send succeeds, either
+    /// immediately or later via the completion dispatcher's pending-send retry
+    /// loop.
+    ///
+    /// Level: `normal`.
+    #[metric(name = "ack.delivered", unit = "{message}")]
+    pub ack_delivered: Counter<u64>,
+    /// Count of Nack control messages actually delivered to upstream nodes.
+    ///
+    /// This is the delivery-side counterpart to attempted Nacks and helps
+    /// distinguish routing intent from successful node-control delivery under
+    /// backpressure.
+    ///
+    /// Level: `normal`.
+    #[metric(name = "nack.delivered", unit = "{message}")]
+    pub nack_delivered: Counter<u64>,
     /// Count of Ack completions dropped because no upstream frame was interested.
     ///
     /// This distinguishes "successful unwind with no listener" from send
@@ -693,8 +711,10 @@ pub(crate) struct PipelineCompletionMetricsState {
     pending_sends_buffered: u64,
     deliver_ack_received: u64,
     deliver_nack_received: u64,
-    ack_sent: u64,
-    nack_sent: u64,
+    ack_attempted: u64,
+    nack_attempted: u64,
+    ack_delivered: u64,
+    nack_delivered: u64,
     ack_dropped_no_interest: u64,
     nack_dropped_no_interest: u64,
     unwind_depth: Mmsc,
@@ -714,8 +734,10 @@ impl PipelineCompletionMetricsState {
             pending_sends_buffered: 0,
             deliver_ack_received: 0,
             deliver_nack_received: 0,
-            ack_sent: 0,
-            nack_sent: 0,
+            ack_attempted: 0,
+            nack_attempted: 0,
+            ack_delivered: 0,
+            nack_delivered: 0,
             ack_dropped_no_interest: 0,
             nack_dropped_no_interest: 0,
             unwind_depth: Mmsc::default(),
@@ -751,9 +773,9 @@ impl PipelineCompletionMetricsState {
         }
     }
 
-    pub(crate) fn record_ack_sent(&mut self, unwind_depth: usize) {
+    pub(crate) fn record_ack_attempted(&mut self, unwind_depth: usize) {
         if self.level >= MetricLevel::Normal {
-            self.ack_sent += 1;
+            self.ack_attempted += 1;
             self.dirty = true;
         }
         if self.level >= MetricLevel::Detailed {
@@ -762,9 +784,9 @@ impl PipelineCompletionMetricsState {
         }
     }
 
-    pub(crate) fn record_nack_sent(&mut self, unwind_depth: usize) {
+    pub(crate) fn record_nack_attempted(&mut self, unwind_depth: usize) {
         if self.level >= MetricLevel::Normal {
-            self.nack_sent += 1;
+            self.nack_attempted += 1;
             self.dirty = true;
         }
         if self.level >= MetricLevel::Detailed {
@@ -795,6 +817,20 @@ impl PipelineCompletionMetricsState {
         }
     }
 
+    pub(crate) fn record_ack_delivered(&mut self) {
+        if self.level >= MetricLevel::Normal {
+            self.ack_delivered += 1;
+            self.dirty = true;
+        }
+    }
+
+    pub(crate) fn record_nack_delivered(&mut self) {
+        if self.level >= MetricLevel::Normal {
+            self.nack_delivered += 1;
+            self.dirty = true;
+        }
+    }
+
     pub(crate) fn report_if_needed(&mut self) -> Result<(), TelemetryError> {
         if !self.dirty {
             return Ok(());
@@ -811,15 +847,19 @@ impl PipelineCompletionMetricsState {
         if self.level >= MetricLevel::Normal {
             registered.metrics.deliver_ack_received = self.deliver_ack_received.into();
             registered.metrics.deliver_nack_received = self.deliver_nack_received.into();
-            registered.metrics.ack_sent = self.ack_sent.into();
-            registered.metrics.nack_sent = self.nack_sent.into();
+            registered.metrics.ack_attempted = self.ack_attempted.into();
+            registered.metrics.nack_attempted = self.nack_attempted.into();
+            registered.metrics.ack_delivered = self.ack_delivered.into();
+            registered.metrics.nack_delivered = self.nack_delivered.into();
             registered.metrics.ack_dropped_no_interest = self.ack_dropped_no_interest.into();
             registered.metrics.nack_dropped_no_interest = self.nack_dropped_no_interest.into();
         } else {
             registered.metrics.deliver_ack_received = Counter::default();
             registered.metrics.deliver_nack_received = Counter::default();
-            registered.metrics.ack_sent = Counter::default();
-            registered.metrics.nack_sent = Counter::default();
+            registered.metrics.ack_attempted = Counter::default();
+            registered.metrics.nack_attempted = Counter::default();
+            registered.metrics.ack_delivered = Counter::default();
+            registered.metrics.nack_delivered = Counter::default();
             registered.metrics.ack_dropped_no_interest = Counter::default();
             registered.metrics.nack_dropped_no_interest = Counter::default();
         }
@@ -838,8 +878,10 @@ impl PipelineCompletionMetricsState {
                 if self.level >= MetricLevel::Normal {
                     self.deliver_ack_received = 0;
                     self.deliver_nack_received = 0;
-                    self.ack_sent = 0;
-                    self.nack_sent = 0;
+                    self.ack_attempted = 0;
+                    self.nack_attempted = 0;
+                    self.ack_delivered = 0;
+                    self.nack_delivered = 0;
                     self.ack_dropped_no_interest = 0;
                     self.nack_dropped_no_interest = 0;
                 }

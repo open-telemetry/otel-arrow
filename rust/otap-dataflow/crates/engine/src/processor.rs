@@ -11,6 +11,7 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{
@@ -406,6 +407,27 @@ impl<PData> ProcessorWrapper<PData> {
     where
         PData: ReceivedAtNode,
     {
+        self.start_with_completion_metrics(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_completion_metrics(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+    ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
+    {
         let runtime = self
             .prepare_runtime(metrics_reporter.clone(), node_interests)
             .await?;
@@ -423,6 +445,9 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics.clone());
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -454,6 +479,9 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler

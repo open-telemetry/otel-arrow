@@ -7,6 +7,9 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
 use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::completion_emission_metrics::{
+    CompletionEmissionMetricsHandle, make_completion_emission_metrics,
+};
 use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCompletionMsgReceiver,
@@ -62,6 +65,7 @@ fn make_node_metric_handles(
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
         telemetry_handle
@@ -80,6 +84,7 @@ fn make_node_metric_handles(
         registry: pipeline_context.metrics_registry(),
         input: consumed,
         outputs: produced,
+        completion_emission,
     }
 }
 
@@ -216,10 +221,18 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let completion_emission_metrics =
+                make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller (exporters have no output channels).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    true,
+                    false,
+                    completion_emission_metrics.clone(),
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
@@ -227,11 +240,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
-                    .start(
+                    .start_with_completion_metrics(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
+                        completion_emission_metrics,
                     )
                     .await
                     .map(|terminal_state| {
@@ -264,21 +278,30 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let completion_emission_metrics =
+                make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller.
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    true,
+                    true,
+                    completion_emission_metrics.clone(),
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = processor
-                    .start(
+                    .start_with_completion_metrics(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         metrics_reporter,
                         node_interests,
+                        completion_emission_metrics,
                     )
                     .await;
                 drop(telemetry_guard);
@@ -311,7 +334,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();

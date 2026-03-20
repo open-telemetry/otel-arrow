@@ -4,6 +4,7 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
     RuntimeCtrlMsgSender,
@@ -51,6 +52,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// Optional node-scoped metrics for completions routed by this effect handler.
+    pub(crate) completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     /// The outgoing message source tagging mode.
     pub(crate) source_tag: SourceTagging,
     /// Precomputed node interests derived from metric level.
@@ -65,6 +68,7 @@ impl<PData> EffectHandlerCore<PData> {
             runtime_ctrl_msg_sender: None,
             pipeline_completion_msg_sender: None,
             metrics_reporter,
+            completion_emission_metrics: None,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
         }
@@ -89,6 +93,14 @@ impl<PData> EffectHandlerCore<PData> {
     /// Sets whether outgoing messages need source node tagging.
     pub fn set_source_tagging(&mut self, value: SourceTagging) {
         self.source_tag = value;
+    }
+
+    /// Sets the optional node-scoped completion-emission metrics handle.
+    pub fn set_completion_emission_metrics(
+        &mut self,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+    ) {
+        self.completion_emission_metrics = completion_emission_metrics;
     }
 
     /// Returns outgoing messages source tagging mode.
@@ -320,7 +332,14 @@ impl<PData> EffectHandlerCore<PData> {
         if ack.accepted.has_frames() {
             self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverAck { ack })
                 .await
-                .map(|_| ())
+                .map(|_| {
+                    if let Some(metrics) = &self.completion_emission_metrics {
+                        let mut metrics = metrics
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        metrics.record_notify_ack_routed();
+                    }
+                })
                 .map_err(|e| Error::RuntimeMsgError {
                     error: e.to_string(),
                 })
@@ -338,7 +357,14 @@ impl<PData> EffectHandlerCore<PData> {
         if nack.refused.has_frames() {
             self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverNack { nack })
                 .await
-                .map(|_| ())
+                .map(|_| {
+                    if let Some(metrics) = &self.completion_emission_metrics {
+                        let mut metrics = metrics
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        metrics.record_notify_nack_routed();
+                    }
+                })
                 .map_err(|e| Error::RuntimeMsgError {
                     error: e.to_string(),
                 })

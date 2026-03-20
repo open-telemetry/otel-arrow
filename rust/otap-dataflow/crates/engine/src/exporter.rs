@@ -10,6 +10,7 @@
 use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{
@@ -275,6 +276,24 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
+        self.start_with_completion_metrics(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_completion_metrics(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ExporterWrapper::Local {
@@ -301,6 +320,9 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics.clone());
                 let message_channel = ExporterMessageChannel::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
@@ -334,6 +356,9 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics);
                 let message_channel = shared::ExporterMessageChannel::new(
                     control_receiver,
                     pdata_rx,
