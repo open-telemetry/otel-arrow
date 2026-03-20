@@ -692,7 +692,8 @@ impl PipelinePlanner {
                 if !assignments.is_empty() {
                     let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
                     results.push(Box::new(pipeline_stage));
-                    assignments.clear()
+                    assignments.clear();
+                    cols_or_keys_referenced.clear();
                 }
 
                 let function_id = func.get_function_id();
@@ -778,6 +779,7 @@ impl PipelinePlanner {
                 let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
                 results.push(Box::new(pipeline_stage));
                 assignments.clear();
+                cols_or_keys_referenced.clear();
             }
 
             // assignment will be combined with previous assignments
@@ -1214,6 +1216,24 @@ mod test {
     {
         let pipeline_expr = OplParser::parse(
             "logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = attributes[\"z\"] * attributes[\"x\"]",
+        )
+        .unwrap()
+        .pipeline;
+        let planner = PipelinePlanner::new();
+        let stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
+            )
+            .unwrap();
+        assert_eq!(stages.len(), 2)
+    }
+
+    #[test]
+    fn test_combine_key_state_reset_between_combinations() {
+        let pipeline_expr = OplParser::parse(
+            "logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = 5 | set attributes[\"x\"] = 6 | set attributes[\"y\"] = 7",
         )
         .unwrap()
         .pipeline;
