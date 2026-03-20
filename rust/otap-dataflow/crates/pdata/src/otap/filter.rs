@@ -1416,16 +1416,15 @@ impl ChildBatchFilterIdHelper for UInt16Type {
     }
 
     fn build_selection_vec(parent_ids: &ArrayRef, id_bitmap: &IdBitmap) -> Result<BooleanArray> {
-        let uint16_array =
-            parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::Format {
-                    error: format!(
-                        "unexpected type for parent_id column: expected u16, found {}",
-                        parent_ids.data_type()
-                    ),
-                })?;
+        let uint16_array = parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::Format {
+                error: format!(
+                    "unexpected type for parent_id column: expected u16, found {}",
+                    parent_ids.data_type()
+                ),
+            })?;
         Ok(build_native_selection_vec(uint16_array, id_bitmap))
     }
 }
@@ -1458,11 +1457,10 @@ impl ChildBatchFilterIdHelper for UInt32Type {
                     })?;
                 Ok(build_native_selection_vec(uint32_array, id_bitmap))
             }
-            DataType::Dictionary(_, _) => {
-                build_dict_u32_selection_vec(parent_ids, id_bitmap).map_err(|e| Error::Format {
+            DataType::Dictionary(_, _) => build_dict_u32_selection_vec(parent_ids, id_bitmap)
+                .map_err(|e| Error::Format {
                     error: format!("error building dict selection vec: {e}"),
-                })
-            }
+                }),
             _ => Err(Error::Format {
                 error: format!(
                     "unexpected type for parent_id column: expected u32 or dictionary-encoded u32, found {}",
@@ -1508,12 +1506,11 @@ where
         None => return Ok(()),
     };
 
-    let id_col =
-        T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(|| {
-            Error::ColumnNotFound {
-                name: format!("id (for child {:?})", child_payload_type),
-            }
-        })?;
+    let id_col = T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(|| {
+        Error::ColumnNotFound {
+            name: format!("id (for child {:?})", child_payload_type),
+        }
+    })?;
 
     id_bitmap.populate(id_col.iter().flatten().map(|i| i.into()));
     let child_parent_ids =
@@ -1528,10 +1525,8 @@ where
     if child_selection_vec.true_count() == 0 {
         otap_batch.remove(child_payload_type);
     } else {
-        let new_child_rb =
-            filter_record_batch(child_rb, &child_selection_vec).map_err(|source| {
-                Error::ColumnLengthMismatch { source }
-            })?;
+        let new_child_rb = filter_record_batch(child_rb, &child_selection_vec)
+            .map_err(|source| Error::ColumnLengthMismatch { source })?;
         otap_batch.set(child_payload_type, new_child_rb)?;
     }
 
