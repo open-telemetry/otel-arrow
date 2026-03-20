@@ -1254,7 +1254,7 @@ mod test {
 
         // attributes that take the first "if" branch will have the optional int column appended,
         // and those which take the "else if" branch will have the optional double column appended.
-        // this
+        // this is checking that we can still concat the batches despite the schema mismatch
         let query = r#"
             logs | apply attributes {
                 if (key == "k1") {

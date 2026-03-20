@@ -113,10 +113,6 @@ fn concatenate_attrs_record_batches(branch_results: &mut Vec<RecordBatch>) -> Re
 
     let mut result =
         concatenate_with_def(&mut batches, |_| payloads::get(ArrowPayloadType::LogAttrs))?;
-
-    // realistically this Error shouldn't occur. concatenate_with_def will return `None` in
-    // some position if all the batches are None but since we've explicitly passed `Some`,
-    // we can expect the result not to be `None`. We're just being defensive here:
     let concatenated_batch = result[0].take().ok_or_else(|| Error::ExecutionError {
         cause: "expected concatenate to produce non 'None' batch".into(),
     })?;

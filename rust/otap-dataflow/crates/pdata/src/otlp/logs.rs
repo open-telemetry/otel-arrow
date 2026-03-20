@@ -32,7 +32,6 @@ use crate::schema::consts;
 
 use super::attributes::AttributeValueType;
 
-#[derive(Debug)]
 pub(crate) struct LogsArrays<'a> {
     pub(crate) id: Option<&'a UInt16Array>,
     pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
@@ -117,7 +116,6 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct LogBodyArrays<'a> {
     body: &'a StructArray,
     pub(crate) anyval_arrays: AnyValueArrays<'a>,
