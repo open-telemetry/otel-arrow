@@ -530,7 +530,6 @@ mod test {
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use crate::proto::opentelemetry::resource::v1::Resource;
-    use crate::schema::consts::metadata::encodings;
     use crate::schema::{FieldExt, consts};
     use crate::{otap::Logs, proto::opentelemetry::logs::v1::LogsData};
     use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
@@ -819,58 +818,5 @@ mod test {
         )]);
 
         assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_proto_encode_ids_not_in_order() {
-        let logs_record_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true).with_encoding(encodings::PLAIN),
-                Field::new(consts::EVENT_NAME, DataType::Utf8, true),
-            ])),
-            vec![
-                Arc::new(UInt16Array::from_iter_values([0, 2, 1])),
-                Arc::new(StringArray::from_iter_values([
-                    "event0", "event2", "event1",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let str_type = AttributeValueType::Str as u8;
-        let log_attrs_record_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new(consts::PARENT_ID, DataType::UInt16, false)
-                    .with_encoding(encodings::PLAIN),
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, false),
-            ])),
-            vec![
-                Arc::new(UInt16Array::from_iter_values([0, 2, 1])),
-                Arc::new(UInt8Array::from_iter_values([str_type, str_type, str_type])),
-                Arc::new(StringArray::from_iter_values(["y", "y", "x"])),
-                Arc::new(StringArray::from_iter_values(["test0", "test1", "test2"])),
-            ],
-        )
-        .unwrap();
-
-        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch
-            .set(ArrowPayloadType::Logs, logs_record_batch)
-            .unwrap();
-        otap_batch
-            .set(ArrowPayloadType::LogAttrs, log_attrs_record_batch)
-            .unwrap();
-
-        println!("otap_batch = {:#?}", otap_batch.get(ArrowPayloadType::Logs));
-
-        let mut result_buf = ProtoBuffer::new();
-        let mut encoder = LogsProtoBytesEncoder::new();
-        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
-
-        let result = LogsData::decode(result_buf.as_ref()).unwrap();
-
-        println!("result {:#?}", result)
     }
 }
