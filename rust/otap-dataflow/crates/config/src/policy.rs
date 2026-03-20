@@ -14,51 +14,37 @@ use std::fmt::Display;
 pub struct Policies {
     /// Channel capacity policy.
     ///
-    /// When absent, the parent scope's channel capacity policy or the built-in
-    /// default applies.  Serde leaves this `None` when the key is omitted from
-    /// the YAML/JSON, so a `policies:` block that only sets (e.g.) `telemetry`
-    /// does **not** implicitly reset channel capacities and shadow a top-level
-    /// override.
+    /// When absent, a parent scope's channel capacity policy or the built-in
+    /// default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
     ///
-    /// When absent, the parent scope's health policy or the built-in default
-    /// applies.  Serde leaves this `None` when the key is omitted from the
-    /// YAML/JSON, so a `policies:` block that only sets (e.g.) `telemetry`
-    /// does **not** implicitly reset health criteria and shadow a top-level
-    /// override.
+    /// When absent, a parent scope's health policy or the built-in default
+    /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
     ///
-    /// When absent, the parent scope's telemetry policy or the built-in default
-    /// applies.  Serde leaves this `None` when the key is omitted from the
-    /// YAML/JSON, so a `policies:` block that only sets (e.g.)
-    /// `channel_capacity` does **not** implicitly reset `channel_metrics`
-    /// to `Basic` and shadow a top-level override.
+    /// When absent, a parent scope's telemetry policy or the built-in default
+    /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) telemetry: Option<TelemetryPolicy>,
     /// Resources policy controlling runtime core allocation.
     ///
-    /// When absent, the parent scope's resources policy or the built-in default
-    /// (`core_allocation: all_cores`) applies.  Serde leaves this `None` when
-    /// the key is omitted from the YAML/JSON, so a `policies:` block that only
-    /// sets (e.g.) `channel_capacity` does **not** implicitly pin `core_allocation`
-    /// to `AllCores` and shadow a `--num-cores` / `--core-id-range` CLI flag.
+    /// When absent, a parent scope's resources policy or the built-in default
+    /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resources: Option<ResourcesPolicy>,
 }
 
 impl Policies {
-    /// Sets the resources policy (used by CLI overrides).
+    /// Override the resources policy.
     pub fn set_resources(&mut self, resources: ResourcesPolicy) {
         self.resources = Some(resources);
     }
 
-    /// Resolves a fully-populated policy set from scopes in precedence
-    /// order (most specific first).  For each field the first `Some`
-    /// value wins; fields absent at every level use built-in defaults.
+    /// Resolves a fully-populated policy set from scopes ordered by precedence.
     #[must_use]
     pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
         let mut channel_capacity = None;
@@ -82,6 +68,7 @@ impl Policies {
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
             health: health.cloned().unwrap_or_default(),
+
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: resources.cloned().unwrap_or_default(),
         }
@@ -113,11 +100,6 @@ impl Policies {
 }
 
 /// Fully-resolved policy snapshot where every field is populated.
-///
-/// Produced by [`Policies::resolve`] after walking the scope hierarchy
-/// (pipeline → group → top-level → built-in defaults).  All `Option`
-/// fields from [`Policies`] are collapsed to concrete values, so
-/// consumers can access fields directly without fallback logic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedPolicies {
     /// Channel capacity policy.

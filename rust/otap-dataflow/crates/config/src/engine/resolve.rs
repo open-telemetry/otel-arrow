@@ -81,10 +81,6 @@ impl OtelDataflowSpec {
     ///
     /// The returned snapshot is deterministic: pipelines are ordered by
     /// `(group_id, pipeline_id)` lexicographically.
-    ///
-    /// Policy resolution walks scopes from most-specific to least-specific
-    /// (pipeline → group → top-level).  For each field, the first `Some`
-    /// value wins; fields absent at every level use built-in defaults.
     #[must_use]
     pub fn resolve(&self) -> ResolvedOtelDataflowSpec {
         let mut pipeline_keys = Vec::new();

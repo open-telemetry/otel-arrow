@@ -539,15 +539,8 @@ groups:
         );
     }
 
-    /// When a pipeline's `policies:` block specifies only a subset of fields,
-    /// the remaining fields must be inherited from the parent scope — not
-    /// silently reset to built-in defaults.
     #[test]
     fn resolve_policies_inherit_from_parent_scope() {
-        // Top-level sets all four policy fields.  Three pipelines test:
-        //   - "partial": sets only channel_capacity → inherits the rest
-        //   - "explicit": overrides telemetry, channel_capacity, and health
-        //   - "no_policies": no policies block → inherits everything
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
@@ -626,7 +619,7 @@ groups:
                 .unwrap_or_else(|| panic!("{name} pipeline should be resolved"))
         };
 
-        // Pipeline with only channel_capacity set inherits telemetry and health.
+        // Pipeline with only channel_capacity inherits telemetry and health.
         let partial = find("partial");
         assert_eq!(partial.policies.channel_capacity.control.node, 100);
         assert_eq!(
@@ -643,7 +636,7 @@ groups:
             "should inherit health from top level"
         );
 
-        // Pipeline with explicit overrides uses those values.
+        // Pipeline with explicit overrides.
         let explicit = find("explicit");
         assert_eq!(
             explicit.policies.telemetry.channel_metrics,
@@ -655,7 +648,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
 
-        // Pipeline with no policies block inherits everything.
+        // Pipeline with no policies inherits everything.
         let no_policies = find("no_policies");
         assert_eq!(
             no_policies.policies.telemetry.channel_metrics,
