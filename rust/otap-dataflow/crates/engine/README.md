@@ -524,6 +524,10 @@ This keeps runtime behavior testable at the level where bugs usually occur:
 channel interaction, Ack/Nack unwinding, runtime-control handling, and
 component-local state transitions.
 
+For a contributor-facing overview of when to use unit tests, node harnesses,
+small pipeline liveness tests, validation scenarios, or DST, see the
+[Testing Guide](../../docs/testing-guide.md).
+
 ## Deterministic Simulation Testing
 
 In addition to ordinary unit and integration tests, the engine includes a
