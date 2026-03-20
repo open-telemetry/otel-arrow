@@ -1,18 +1,18 @@
-# Log Subsampling Processor
+# Log Sampling Processor
 
-URN: `urn:otel:processor:log_subsampling`
+URN: `urn:otel:processor:log_sampling`
 
 ## Overview
 
-The Log Subsampling processor reduces log volume by discarding a portion of
+The Log Sampling processor reduces log volume by discarding a portion of
 incoming log records according to a configurable sampling strategy. Non-log
 signals (metrics and traces) pass through unchanged.
 
 ## Architecture
 
 Sampling logic is encapsulated behind the `Sampler` trait (defined in
-`sample/mod.rs`). Each sampler implementation produces a `BooleanArray` 
-selection vector via `sample_arrow_records()`, where `true` = keep and `false` = drop.
+`sample/mod.rs`). Each sampler produces a `BooleanArray` selection vector via
+`sample_arrow_records()`, where `true` = keep and `false` = drop.
 
 The processor applies the selection vector to the full OTAP batch and records
 metrics accordingly.
@@ -28,7 +28,7 @@ See the module-level documentation in each sampler file for algorithm details.
 
 | Signal  | Behavior               |
 |---------|------------------------|
-| Logs    | Apply subsampling      |
+| Logs    | Apply sampling         |
 | Metrics | Pass through unchanged |
 | Traces  | Pass through unchanged |
 
@@ -76,5 +76,5 @@ empty, the processor immediately acks the inbound request via
 | Metric                  | Unit      | Description                        |
 |-------------------------|-----------|------------------------------------|
 | `log_signals_consumed`  | `{log}`   | Total log records received         |
-| `log_signals_dropped`   | `{log}`   | Log records dropped by subsampling |
+| `log_signals_dropped`   | `{log}`   | Log records dropped by sampling    |
 | `batches_fully_dropped` | `{batch}` | Batches where all records dropped  |

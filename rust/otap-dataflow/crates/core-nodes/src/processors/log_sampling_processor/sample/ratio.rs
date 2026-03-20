@@ -153,7 +153,7 @@ impl Sampler for RatioSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processors::log_subsampling_processor::sample::testing::make_log_records;
+    use crate::processors::log_sampling_processor::sample::testing::make_log_records;
 
     #[test]
     fn test_ratio_basic_1_10() {

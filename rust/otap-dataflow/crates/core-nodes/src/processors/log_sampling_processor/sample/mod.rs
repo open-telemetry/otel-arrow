@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sampler trait and implementations for log subsampling.
+//! Sampler trait and implementations for log sampling.
 
 mod ratio;
 mod zip;
@@ -12,7 +12,7 @@ pub(crate) mod testing;
 pub use ratio::{RatioConfig, RatioSampler};
 pub use zip::{ZipConfig, ZipSampler};
 
-use crate::processors::log_subsampling_processor::config::Policy;
+use crate::processors::log_sampling_processor::config::Policy;
 use arrow::array::BooleanArray;
 use async_trait::async_trait;
 use otap_df_engine::error::Error as EngineError;
@@ -20,7 +20,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otap::OtapArrowRecords;
 
-/// Trait for log subsampling strategies.
+/// Trait for log sampling strategies.
 #[async_trait(?Send)]
 pub trait Sampler: std::fmt::Debug {
     /// Produce a selection vector for the given OTAP Arrow records.

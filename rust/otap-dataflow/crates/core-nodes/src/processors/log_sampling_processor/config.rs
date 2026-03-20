@@ -1,17 +1,17 @@
-//! Configuration for the log subsampling processor.
+//! Configuration for the log sampling processor.
 
 use super::sample::{RatioConfig, ZipConfig};
 use otap_df_config::error::Error as ConfigError;
 use serde::Deserialize;
 
-/// Configuration for the log subsampling processor.
+/// Configuration for the log sampling processor.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// The subsampling policy to apply.
+    /// The sampling policy to apply.
     pub policy: Policy,
 }
 
-/// Subsampling policy configuration.
+/// Sampling policy configuration.
 ///
 /// Exactly one policy must be specified (externally tagged enum).
 #[derive(Debug, Clone, Deserialize)]

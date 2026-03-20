@@ -34,5 +34,5 @@ pub mod filter_processor;
 /// Signal type router processor.
 pub mod signal_type_router;
 
-/// Log subsampling processor.
-pub mod log_subsampling_processor;
+/// Log sampling processor.
+pub mod log_sampling_processor;

@@ -1,7 +1,7 @@
-//! Log subsampling processor.
+//! Log sampling processor.
 //!
 //! Reduces log volume by discarding a portion of incoming log records
-//! according to a configurable subsampling policy. Non-log signals
+//! according to a configurable sampling strategy. Non-log signals
 //! (metrics and traces) pass through unchanged.
 //!
 //! See `README.md` in this module for full design documentation.
@@ -11,7 +11,7 @@ mod metrics;
 mod sample;
 
 use self::config::Config;
-use self::metrics::LogSubsamplingMetrics;
+use self::metrics::LogSamplingMetrics;
 use self::sample::{Sampler, sampler_from_config};
 
 use async_trait::async_trait;
@@ -38,34 +38,34 @@ use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
-const LOG_SUBSAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_subsampling";
+const LOG_SAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_sampling";
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
+static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
-        name: LOG_SUBSAMPLING_PROCESSOR_URN,
+        name: LOG_SAMPLING_PROCESSOR_URN,
         create: |pipeline_ctx: PipelineContext,
                  node: NodeId,
                  node_config: Arc<NodeUserConfig>,
                  proc_cfg: &ProcessorConfig| {
-            create_log_subsampling_processor(pipeline_ctx, node, node_config, proc_cfg)
+            create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
-/// Log subsampling processor.
-struct LogSubsamplingProcessor {
+/// Log sampling processor.
+struct LogSamplingProcessor {
     /// The chosen sampler
     sampler: Box<dyn Sampler>,
     /// Telemetry metrics.
-    metrics: MetricSet<LogSubsamplingMetrics>,
+    metrics: MetricSet<LogSamplingMetrics>,
     /// Reusable bitmap pool for child batch filtering.
     id_bitmap_pool: IdBitmapPool,
 }
 
-impl LogSubsamplingProcessor {
+impl LogSamplingProcessor {
     fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -74,7 +74,7 @@ impl LogSubsamplingProcessor {
         config.validate()?;
 
         let sampler = sampler_from_config(&config.policy);
-        let metrics = pipeline_ctx.register_metrics::<LogSubsamplingMetrics>();
+        let metrics = pipeline_ctx.register_metrics::<LogSamplingMetrics>();
 
         Ok(Self {
             sampler,
@@ -156,7 +156,7 @@ impl LogSubsamplingProcessor {
 }
 
 #[async_trait(?Send)]
-impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
+impl local::Processor<OtapPdata> for LogSamplingProcessor {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -197,15 +197,15 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
     }
 }
 
-/// Creates a new [`LogSubsamplingProcessor`] from pipeline configuration.
-fn create_log_subsampling_processor(
+/// Creates a new [`LogSamplingProcessor`] from pipeline configuration.
+fn create_log_sampling_processor(
     pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     Ok(ProcessorWrapper::local(
-        LogSubsamplingProcessor::from_config(pipeline_ctx, &node_config.config)?,
+        LogSamplingProcessor::from_config(pipeline_ctx, &node_config.config)?,
         node,
         node_config,
         processor_config,
@@ -239,7 +239,7 @@ mod tests {
     {
         let test_runtime = TestRuntime::new();
         let user_config = Arc::new(NodeUserConfig::new_processor_config(
-            LOG_SUBSAMPLING_PROCESSOR_URN,
+            LOG_SAMPLING_PROCESSOR_URN,
         ));
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -248,7 +248,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let processor = ProcessorWrapper::local(
-            LogSubsamplingProcessor::from_config(pipeline_ctx, &config_json).expect("valid config"),
+            LogSamplingProcessor::from_config(pipeline_ctx, &config_json).expect("valid config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
