@@ -563,7 +563,7 @@ mod tests {
                 let metrics_stream = stream! {
                     let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                         let bar = producer.produce_bar(&mut metrics_records).unwrap();
                         yield bar
                     }
@@ -667,7 +667,7 @@ mod tests {
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
-                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                     assert!(matches!(metrics_records, _expected_metrics_message));
 
                     // Send ACK if wait_for_result is enabled
@@ -749,7 +749,7 @@ mod tests {
                 let metrics_stream = stream! {
                     let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                         let bar = producer.produce_bar(&mut metrics_records).unwrap();
                         yield bar
                     }

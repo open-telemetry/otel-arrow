@@ -713,8 +713,6 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
-    use arrow::array::{Int32Array, RecordBatch};
-    use arrow::datatypes::{DataType, Field, Schema};
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -727,7 +725,7 @@ mod test {
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
-    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
@@ -739,7 +737,6 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
@@ -1708,7 +1705,6 @@ mod test {
             })
     }
 
-    #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
         let port = pick_unused_port().unwrap();
         let endpoint_addr = format!("127.0.0.1:{}", port);

@@ -28,6 +28,7 @@ mod fixtures;
 pub mod idgen;
 pub mod metrics;
 pub mod partition;
+pub mod records;
 pub mod schema;
 pub mod writer;
 
@@ -289,6 +290,24 @@ impl Exporter<OtapPdata> for ParquetExporter {
                             }
                         })?;
 
+                    // decode the transport optimized IDs before converting
+                    // to unvalidated parquet records
+                    otap_batch.decode_transport_optimized_ids().map_err(|e| {
+                        if let Some(metrics) = self.pdata_metrics.as_mut() {
+                            metrics.inc_failed(signal_type);
+                        }
+                        let source_detail = format_error_sources(&e);
+                        Error::ExporterError {
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
+                            error: format!("Failed to decode transport optimized IDs: {e}"),
+                            source_detail,
+                        }
+                    })?;
+
+                    // convert to parquet-local records for unvalidated access
+                    let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
+
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
                     if let Err(e) = id_gen_result {
@@ -327,7 +346,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
                     // compute any partitions
                     let partitions = match self.config.partitioning_strategies.as_ref() {
-                        Some(strategies) => partition(&otap_batch, strategies),
+                        Some(strategies) => partition(otap_batch, strategies),
                         None => vec![Partition {
                             otap_batch,
                             attributes: None,
@@ -471,7 +490,7 @@ mod test {
                     .unwrap();
 
                 ctx.send_pdata(OtapPdata::new_default(
-                    OtapArrowRecords::Logs(from_record_messages(otap_batch)).into(),
+                    OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap()).into(),
                 ))
                 .await
                 .expect("Failed to send  logs message");
@@ -572,10 +591,12 @@ mod test {
                         DataType::Utf8,
                         true,
                     )));
-                    otap_batch.set(
-                        ArrowPayloadType::LogAttrs,
-                        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
-                    );
+                    otap_batch
+                        .set(
+                            ArrowPayloadType::LogAttrs,
+                            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
+                        )
+                        .unwrap();
                     ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
@@ -958,7 +979,8 @@ mod test {
                 ))
                 .unwrap();
 
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
+            let otap_batch =
+                OtapArrowRecords::Logs(from_record_messages(logs_data).unwrap()).into();
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch))
                 .await
@@ -972,15 +994,17 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data));
+            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data).unwrap());
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
-            otap_batch2.set(
-                ArrowPayloadType::LogAttrs,
-                concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
-                    .unwrap(),
-            );
+            otap_batch2
+                .set(
+                    ArrowPayloadType::LogAttrs,
+                    concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
+                        .unwrap(),
+                )
+                .unwrap();
 
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch2.into()))
@@ -1131,7 +1155,7 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap());
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch.into()))
                 .await
@@ -1313,7 +1337,7 @@ mod test {
                 },
             ))
             .unwrap();
-        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
+        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch).unwrap());
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1383,7 +1407,7 @@ mod test {
                 },
             ))
             .unwrap();
-        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
+        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch).unwrap());
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1518,7 +1542,7 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs)).into();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs).unwrap()).into();
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch))
                 .await
@@ -1622,15 +1646,17 @@ mod test {
                 },
             ))
             .unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap());
         // replace the logs ID column with nulls
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let (schema, mut columns, _) = logs.clone().into_parts();
         columns[schema.index_of(consts::ID).unwrap()] = Arc::new(UInt16Array::new_null(num_rows));
-        otap_batch.set(
-            ArrowPayloadType::Logs,
-            RecordBatch::try_new(schema, columns).unwrap(),
-        );
+        otap_batch
+            .set(
+                ArrowPayloadType::Logs,
+                RecordBatch::try_new(schema, columns).unwrap(),
+            )
+            .unwrap();
 
         test_runtime
             .set_exporter(exporter)

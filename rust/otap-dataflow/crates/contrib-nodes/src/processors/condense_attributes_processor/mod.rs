@@ -539,7 +539,7 @@ impl CondenseAttributesProcessor {
             ))
         })?;
 
-        records.set(ArrowPayloadType::LogAttrs, new_batch);
+        records.set(ArrowPayloadType::LogAttrs, new_batch)?;
 
         Ok(condensed_count)
     }

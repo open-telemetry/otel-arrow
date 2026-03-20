@@ -133,7 +133,7 @@ pub fn create_single_logs_pdata_with_attrs(attributes: Vec<KeyValue>) -> OtapPda
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let logs_batch = create_main_record_batch(&options);
+    let logs_batch = create_main_record_batch(&options, true);
     arrow_payloads.push(ArrowPayload {
         schema_id: "logs_schema_1".to_string(),
         r#type: ArrowPayloadType::Logs as i32,
@@ -181,7 +181,7 @@ pub fn create_simple_trace_arrow_record_batches(
 ) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let spans_batch = create_main_record_batch(&options);
+    let spans_batch = create_main_record_batch(&options, false);
     arrow_payloads.push(ArrowPayload {
         schema_id: "spans_schema_1".to_string(),
         r#type: ArrowPayloadType::Spans as i32,
@@ -308,7 +308,7 @@ pub fn create_simple_metrics_arrow_record_batches(
 ) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let metrics_batch = create_main_record_batch(&options);
+    let metrics_batch = create_main_record_batch(&options, false);
     arrow_payloads.push(ArrowPayload {
         schema_id: "metrics_schema_1".to_string(),
         r#type: ArrowPayloadType::UnivariateMetrics as i32,
@@ -493,24 +493,27 @@ pub fn create_timestamp_ns_array(options: &SimpleDataGenOptions) -> Arc<Timestam
     ))
 }
 
-pub fn create_main_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![
+pub fn create_main_record_batch(
+    options: &SimpleDataGenOptions,
+    include_time_unix_nano: bool,
+) -> RecordBatch {
+    let mut fields = vec![
         Field::new(consts::ID, DataType::UInt16, true).with_metadata(create_ids_metadata(options)),
-        Field::new(
+    ];
+    let mut columns: Vec<Arc<dyn arrow::array::Array>> =
+        vec![create_ids_array::<UInt16Type>(options)];
+
+    if include_time_unix_nano {
+        fields.push(Field::new(
             consts::TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
             true,
-        ),
-    ]));
+        ));
+        columns.push(create_timestamp_ns_array(options));
+    }
 
-    RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            create_ids_array::<UInt16Type>(options),
-            create_timestamp_ns_array(options),
-        ],
-    )
-    .unwrap()
+    let schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(schema, columns).unwrap()
 }
 
 pub fn create_attributes_records_batch<ParentIdType>(options: &SimpleDataGenOptions) -> RecordBatch

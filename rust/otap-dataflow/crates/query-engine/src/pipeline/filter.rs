@@ -1429,7 +1429,11 @@ pub(crate) fn filter_otap_batch(
     let new_root_batch = filter_record_batch(root_batch, selection_vec)?;
 
     // replace the root batch
-    otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
+    // safety: Filtering a valid payload should produce a valid payload of the
+    // same type.
+    otap_batch
+        .set(otap_batch.root_payload_type(), new_root_batch)
+        .expect("valid otap batch");
 
     // Acquire a reusable bitmap from the pool for child batch filtering. The closure ensures
     // the bitmap is always returned to the pool, even if a filter_child_batch call returns an
@@ -1671,7 +1675,7 @@ where
                 cause: format!("error filtering child batch {:?}", e),
             }
         })?;
-        otap_batch.set(child_payload_type, new_child_rb);
+        otap_batch.set(child_payload_type, new_child_rb)?;
     }
 
     Ok(())
@@ -1744,7 +1748,7 @@ mod test {
 
     use arrow::array::{
         DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
-        StringArray, UInt8Array,
+        StringArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -4525,7 +4529,9 @@ mod test {
         )
         .unwrap();
 
-        otap_batch.set(ArrowPayloadType::LogAttrs, attrs_rb);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, attrs_rb)
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4908,23 +4914,31 @@ mod test {
     #[test]
     fn test_composite_filter_exec_and_takes_short_circuit() {
         let mut filter_exec = Composite::and(
-            FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("y"))).unwrap()),
+            FilterExec::from(
+                AdaptivePhysicalExprExec::try_new(col("severity_text").eq(lit("y"))).unwrap(),
+            ),
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: Projection::from(vec!["x".into()]),
+                projection: Projection::from(vec!["severity_text".into()]),
                 missing_data_passes: false,
             }),
         );
 
         let input = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
+            Arc::new(Schema::new(vec![Field::new(
+                "severity_text",
+                DataType::Utf8,
+                false,
+            )])),
             vec![Arc::new(StringArray::from_iter_values(["a", "b", "c"]))],
         )
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::Logs, input.clone())
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4938,23 +4952,31 @@ mod test {
     #[test]
     fn test_composite_filter_exec_or_takes_short_circuit() {
         let mut filter_exec = Composite::or(
-            FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("a"))).unwrap()),
+            FilterExec::from(
+                AdaptivePhysicalExprExec::try_new(col("severity_text").eq(lit("a"))).unwrap(),
+            ),
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: Projection::from(vec!["x".into()]),
+                projection: Projection::from(vec!["severity_text".into()]),
                 missing_data_passes: false,
             }),
         );
 
         let input = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
+            Arc::new(Schema::new(vec![Field::new(
+                "severity_text",
+                DataType::Utf8,
+                false,
+            )])),
             vec![Arc::new(StringArray::from_iter_values(["a", "a", "a"]))],
         )
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::Logs, input.clone())
+            .unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -4970,27 +4992,35 @@ mod test {
         let mut attr_exec = Composite::and(
             AttributeFilterExec {
                 payload_type: ArrowPayloadType::LogAttrs,
-                filter: AdaptivePhysicalExprExec::try_new(col("x").eq(lit("y"))).unwrap(),
+                filter: AdaptivePhysicalExprExec::try_new(col("key").eq(lit("y"))).unwrap(),
             },
             AttributeFilterExec {
                 payload_type: ArrowPayloadType::LogAttrs,
                 filter: AdaptivePhysicalExprExec {
                     logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                     physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                    projection: Projection::from(vec!["x".into()]),
+                    projection: Projection::from(vec!["key".into()]),
                     missing_data_passes: false,
                 },
             },
         );
 
         let input = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
-            vec![Arc::new(StringArray::from_iter_values(["a", "b", "c"]))],
+            Arc::new(Schema::new(vec![
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("key", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![0u16, 1, 2])),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
+            ],
         )
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, input.clone())
+            .unwrap();
         let session_ctx = Pipeline::create_session_context();
 
         let mut pool = IdBitmapPool::new();

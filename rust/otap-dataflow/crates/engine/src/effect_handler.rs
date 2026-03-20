@@ -325,6 +325,10 @@ impl<PData> EffectHandlerCore<PData> {
 
     /// Send an AckMsg to the runtime control manager for context unwinding.
     /// This will skip if there are no frames.
+    ///
+    /// TODO: Note that callers are able to directly invoke route_ack() and route_nack()
+    /// but it means skipping certain frame-related business and they have the same
+    /// signature, so it is easy for callers to do. Find something safer.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,

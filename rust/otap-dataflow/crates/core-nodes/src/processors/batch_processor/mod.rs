@@ -152,7 +152,7 @@ trait Batcher<T: OtapPayloadHelpers> {
     /// We are using an empty DelayData request as a one-shot
     /// timer. This returns the appropriate empty request.
     /// TODO: Add proper one-shot timer and cancellation, see #1472.
-    fn wakeup(signal: SignalType) -> T;
+    fn empty(signal: SignalType) -> T;
 }
 
 /// Batch processor configuration.
@@ -514,6 +514,12 @@ pub struct BatchProcessorMetrics {
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
     dropped_empty_records: Counter<u64>,
+    /// Number of requests nacked due to inbound slot exhaustion
+    #[metric(unit = "{msg}")]
+    nacked_inbound_slots: Counter<u64>,
+    /// Number of requests nacked due to inbound slot exhaustion
+    #[metric(unit = "{msg}")]
+    nacked_outbound_slots: Counter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
@@ -638,6 +644,7 @@ impl BatchProcessor {
 
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
+            // Note: Failure to Ack/Nack is an engine-level error.
             effect.notify_ack(AckMsg::new(request)).await?;
             return Ok(());
         }
@@ -727,7 +734,7 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
         make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
-    fn wakeup(signal: SignalType) -> OtapArrowRecords {
+    fn empty(signal: SignalType) -> OtapArrowRecords {
         match signal {
             SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
             SignalType::Metrics => {
@@ -749,7 +756,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
         make_bytes_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
-    fn wakeup(signal: SignalType) -> OtlpProtoBytes {
+    fn empty(signal: SignalType) -> OtlpProtoBytes {
         match signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
@@ -770,26 +777,30 @@ where
         items: usize,
     ) -> Result<(), EngineError> {
         // If there are subscribers, calculate an inbound slot key.
-        let inkey = ctx
-            .has_subscribers()
-            .then(|| {
-                self.buffer
-                    .inbound
-                    .allocate(|| {
-                        (
-                            BatchContext { ctx, outbound: 0 },
-                            (), // not used
-                        )
-                    })
-                    .ok_or_else(|| EngineError::ProcessorError {
-                        processor: effect.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "inbound slots not available".into(),
-                        source_detail: "".into(),
-                    })
-            })
-            .transpose()?
-            .map(|(bc, _)| bc);
+        let inkey = if ctx.has_subscribers() {
+            let slot = self
+                .buffer
+                .inbound
+                .allocate_with_data(BatchContext { ctx, outbound: 0 });
+
+            match slot {
+                Err(bctx) => {
+                    self.metrics.nacked_inbound_slots.inc();
+                    let refused = OtapPdata::new(bctx.ctx, payload.into());
+                    // Note: Failure to Ack/Nack is an engine-level error.
+                    effect
+                        .notify_nack(NackMsg::new("inbound routes exhausted", refused))
+                        .await?;
+                    // Note: Inbound slot exhaustion leads to dropping
+                    // the request. This is by choice, and we expect
+                    // the caller to retry.
+                    return Ok(());
+                }
+                Ok(bc) => Some(bc),
+            }
+        } else {
+            None
+        };
 
         // Set the arrival time when the current input is empty.
         let timeout = self.config.max_batch_duration;
@@ -941,23 +952,39 @@ where
 
             // If any items require notification, get an outbound slot and subscribe.
             if let Some(ctxs) = self.buffer.drain_context(items, &mut input_context) {
-                let (outkey, _notused) =
-                    self.buffer
-                        .outbound
-                        .allocate(|| (ctxs, ()))
-                        .ok_or_else(|| EngineError::ProcessorError {
-                            processor: effect.processor_id(),
-                            kind: ProcessorErrorKind::Other,
-                            error: "outbound slots not available".into(),
-                            source_detail: "".into(),
-                        })?;
-
-                effect.subscribe_to(
-                    Interests::NACKS | Interests::ACKS,
-                    outkey.into(),
-                    &mut pdata,
-                );
+                match self.buffer.outbound.allocate_with_data(ctxs) {
+                    Err(ctxs) => {
+                        for bp in ctxs {
+                            if let Some(inkey) = bp.inkey
+                                && let Some(batch) = self.buffer.inbound.take(inkey)
+                            {
+                                self.metrics.nacked_outbound_slots.inc();
+                                // Note: Failure to Ack/Nack is an engine-level error.
+                                effect
+                                    .notify_nack(NackMsg::new(
+                                        "outbound routes exhausted",
+                                        OtapPdata::new(
+                                            batch.ctx,
+                                            SignalBuffer::empty(self.signal).into(),
+                                        ),
+                                    ))
+                                    .await?;
+                                // Note: failure to get an outbound slot does not
+                                // stop the outbound request, since it can contain data
+                                // that did not request Ack/Nack.
+                            }
+                        }
+                    }
+                    Ok(outkey) => {
+                        effect.subscribe_to(
+                            Interests::NACKS | Interests::ACKS,
+                            outkey.into(),
+                            &mut pdata,
+                        );
+                    }
+                };
             }
+
             effect.send_message_with_source_node(pdata).await?;
         }
 
@@ -1273,6 +1300,7 @@ where
                 if let Some(mut batch) = removed {
                     let rdata =
                         OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
+
                     if let Err(err) = res {
                         effect.notify_nack(NackMsg::new(err, rdata)).await?;
                     } else {
@@ -1302,7 +1330,7 @@ where
                 now + timeout,
                 Box::new(OtapPdata::new(
                     Context::default(),
-                    Self::wakeup(signal).into(),
+                    Self::empty(signal).into(),
                 )),
             )
             .await
@@ -2723,5 +2751,117 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
             });
+    }
+
+    /// When inbound_request_limit is 1 and two subscribed requests
+    /// arrive before the batch flushes, the second request is Nacked.
+    #[test]
+    fn test_inbound_slot_exhaustion_nacks() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 1000,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s",
+            "inbound_request_limit": 1,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let logs1 = datagen.generate_logs();
+                let logs2 = datagen.generate_logs();
+
+                let rec1 = encode_logs_otap_batch(&logs1).expect("encode");
+                let rec2 = encode_logs_otap_batch(&logs2).expect("encode");
+
+                // Both inputs subscribe for ack/nack.
+                let pdata1 = OtapPdata::new_default(rec1.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+                let pdata2 = OtapPdata::new_default(rec2.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    1,
+                );
+
+                // First request succeeds.
+                ctx.process(Message::PData(pdata1))
+                    .await
+                    .expect("first input succeeds");
+
+                // Second request is not an engine error.
+                ctx.process(Message::PData(pdata2))
+                    .await
+                    .expect("second input succeeds (nacked, not engine error)");
+
+                let mut nack_count = 0;
+                while let Ok(msg) = pipeline_completion_rx.try_recv() {
+                    if let PipelineCompletionMsg::DeliverNack { nack } = msg {
+                        assert!(nack.reason.contains("inbound routes exhausted"));
+                        nack_count += 1;
+                    }
+                }
+                assert_eq!(nack_count, 1, "exactly one request should be nacked");
+            })
+            .validate(|_| async {});
+    }
+
+    /// When outbound_request_limit is 1 and a flush produces multiple
+    /// outbound batches, failure to allocate the outbound slot is Nacked.
+    #[test]
+    fn test_outbound_slot_exhaustion_nacks() {
+        // max_size=1 forces each item into its own outbound batch,
+        // so a single input with multiple items needs multiple outbound slots.
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 1,
+                "max_size": 1,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s",
+            "outbound_request_limit": 1,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let logs1 = datagen.generate_logs();
+
+                let rec1 = encode_logs_otap_batch(&logs1).expect("encode");
+
+                // Subscribe for ack/nack.
+                let pdata1 = OtapPdata::new_default(rec1.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+
+                // Process triggers flush.
+                ctx.process(Message::PData(pdata1))
+                    .await
+                    .expect("process succeeds (nack, not engine error)");
+
+                let mut nack_count = 0;
+                while let Ok(msg) = pipeline_completion_rx.try_recv() {
+                    if let PipelineCompletionMsg::DeliverNack { nack } = msg {
+                        assert!(nack.reason.contains("outbound routes exhausted"));
+                        nack_count += 1;
+                    }
+                }
+
+                assert_eq!(nack_count, 1);
+            })
+            .validate(|_| async {});
     }
 }

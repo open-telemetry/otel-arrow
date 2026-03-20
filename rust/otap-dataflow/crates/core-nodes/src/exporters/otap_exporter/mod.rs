@@ -574,7 +574,7 @@ mod tests {
             Box::pin(async move {
                 // Send a data message
                 let metric_message =
-                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
+                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::UnivariateMetrics);
                 ctx.send_pdata(OtapPdata::new_default(metric_message.into()))
                     .await
                     .expect("Failed to send metric message");
@@ -625,7 +625,7 @@ mod tests {
 
                 // Assert that the message received is what the exporter sent
                 let _expected_metrics_message =
-                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::MultivariateMetrics);
+                    create_otap_batch(METRIC_BATCH_ID, ArrowPayloadType::UnivariateMetrics);
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
                 let logs_received: OtapArrowRecords =
