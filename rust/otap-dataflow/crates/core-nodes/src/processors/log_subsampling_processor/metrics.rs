@@ -1,14 +1,9 @@
 //! Telemetry metrics for the log subsampling processor.
-//!
-//! These metrics track the volume of logs consumed, dropped, and batches
-//! that were fully dropped (all records discarded).
 
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the log subsampling processor.
-///
-/// Metric set name: `log_subsampling.processor.pdata.metrics`
 #[metric_set(name = "log_subsampling.processor.pdata.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct LogSubsamplingMetrics {

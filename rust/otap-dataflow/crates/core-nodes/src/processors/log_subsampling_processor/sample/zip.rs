@@ -134,7 +134,7 @@ impl Sampler for ZipSampler {
         Ok(())
     }
 
-    fn notify_timer(&mut self) {
+    fn notify_timer_tick(&mut self) {
         self.reset();
     }
 }
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(sel.true_count(), 0);
 
         // Timer resets the budget
-        sampler.notify_timer();
+        sampler.notify_timer_tick();
 
         let records = make_log_records(50);
         let sel = sampler.sample_arrow_records(&records);

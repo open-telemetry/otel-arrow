@@ -2,10 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Sampler trait and implementations for log subsampling.
-//!
-//! Each sampler produces a `BooleanArray` selection vector over the root
-//! record batch of an OTAP Arrow payload, where `true` means keep and
-//! `false` means drop.
 
 mod ratio;
 mod zip;
@@ -25,9 +21,6 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otap::OtapArrowRecords;
 
 /// Trait for log subsampling strategies.
-///
-/// Implementations produce a boolean selection vector over the root record
-/// batch of an OTAP Arrow payload.
 #[async_trait(?Send)]
 pub trait Sampler: std::fmt::Debug {
     /// Produce a selection vector for the given OTAP Arrow records.
@@ -37,18 +30,16 @@ pub trait Sampler: std::fmt::Debug {
     /// `true` = keep, `false` = drop.
     fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray;
 
-    /// One-time initialization (must be idempotent).
-    ///
-    /// Called on every incoming message. Implementations that need setup
-    /// (e.g. starting a periodic timer) should perform it here and no-op on
-    /// subsequent calls.
+    /// One-time initialization. Called on every incoming message.
+    /// Implementations that need setup (e.g. starting a periodic timer) should
+    /// perform it here and no-op on subsequent calls.
     async fn ensure_init(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError>;
 
     /// Handle a timer tick control message.
-    fn notify_timer(&mut self);
+    fn notify_timer_tick(&mut self);
 }
 
 /// Create a boxed [`Sampler`] from a policy configuration.

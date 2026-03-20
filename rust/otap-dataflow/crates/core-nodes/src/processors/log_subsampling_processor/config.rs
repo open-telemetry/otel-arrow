@@ -1,8 +1,4 @@
 //! Configuration for the log subsampling processor.
-//!
-//! Supports two subsampling policies:
-//! - **Zip**: Emit at most N log records per time window
-//! - **Ratio**: Emit a fixed fraction of log records
 
 use super::sample::{RatioConfig, ZipConfig};
 use otap_df_config::error::Error as ConfigError;

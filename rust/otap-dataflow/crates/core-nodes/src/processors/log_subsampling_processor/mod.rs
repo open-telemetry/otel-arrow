@@ -38,10 +38,8 @@ use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
-/// URN for the log subsampling processor.
 const LOG_SUBSAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_subsampling";
 
-/// Register the log subsampling processor as an OTAP processor factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
@@ -58,12 +56,8 @@ static LOG_SUBSAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapP
     };
 
 /// Log subsampling processor.
-///
-/// Reduces log volume by discarding a portion of incoming log records
-/// according to a configurable sampling strategy. Non-log signals
-/// (metrics and traces) pass through unchanged.
 struct LogSubsamplingProcessor {
-    /// The active sampler producing selection vectors.
+    /// The chosen sampler
     sampler: Box<dyn Sampler>,
     /// Telemetry metrics.
     metrics: MetricSet<LogSubsamplingMetrics>,
@@ -72,7 +66,6 @@ struct LogSubsamplingProcessor {
 }
 
 impl LogSubsamplingProcessor {
-    /// Creates a new processor from configuration.
     fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -90,7 +83,6 @@ impl LogSubsamplingProcessor {
         })
     }
 
-    /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
         pdata: OtapPdata,
@@ -186,7 +178,7 @@ impl local::Processor<OtapPdata> for LogSubsamplingProcessor {
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    self.sampler.notify_timer();
+                    self.sampler.notify_timer_tick();
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
