@@ -5,7 +5,7 @@
 
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
-use crate::policy::Policies;
+use crate::policy::{Policies, ResolvedPolicies, ResourcesPolicy};
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
@@ -71,7 +71,7 @@ pub struct ResolvedPipelineConfig {
     /// Pipeline definition.
     pub pipeline: PipelineConfig,
     /// Resolved policies after hierarchy resolution.
-    pub policies: Policies,
+    pub policies: ResolvedPolicies,
     /// Pipeline role.
     pub role: ResolvedPipelineRole,
 }
@@ -136,7 +136,10 @@ impl OtelDataflowSpec {
                 .as_ref()
                 .map(|p| p.clone().into_policies())
                 .unwrap_or_default();
-            let policies = Policies::resolve([&obs_as_policies, &self.policies]);
+            let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
+            // Observability pipelines always use default resources
+            // (custom core allocation is not supported).
+            policies.resources = ResourcesPolicy::default();
             pipelines.push(ResolvedPipelineConfig {
                 pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
                 pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),

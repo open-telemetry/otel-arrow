@@ -1017,7 +1017,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             );
             obs_state_store.register_pipeline_health_policy(
                 pipeline_key,
-                pipeline_entry.policies.health().into_owned(),
+                pipeline_entry.policies.health.clone(),
             );
         }
 
@@ -1032,7 +1032,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     its_key.pipeline_group_id.clone(),
                     its_key.pipeline_id.clone(),
                 ),
-                pipeline.policies.health().into_owned(),
+                pipeline.policies.health.clone(),
             );
         }
         let available_core_ids = if pipeline_count == 0 {
@@ -1166,11 +1166,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         {
             let core_allocation = pipeline_entry
                 .policies
-                .resources()
+                .resources
                 .core_allocation
                 .to_string();
-            let channel_capacity_policy = pipeline_entry.policies.channel_capacity().into_owned();
-            let telemetry_policy = pipeline_entry.policies.telemetry().into_owned();
+            let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
+            let telemetry_policy = pipeline_entry.policies.telemetry;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
             let pipeline = pipeline_entry.pipeline;
@@ -1464,7 +1464,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources().core_allocation,
+                    &pipeline_entry.policies.resources.core_allocation,
                 )
             })
             .collect()
@@ -1502,8 +1502,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             TelemetryPolicy,
         ) = match observability_pipeline {
             Some(config) if config.role == ResolvedPipelineRole::ObservabilityInternal => {
-                let channel_capacity_policy = config.policies.channel_capacity().into_owned();
-                let telemetry_policy = config.policies.telemetry().into_owned();
+                let channel_capacity_policy = config.policies.channel_capacity;
+                let telemetry_policy = config.policies.telemetry;
                 (config.pipeline, channel_capacity_policy, telemetry_policy)
             }
             Some(_) => {
@@ -1742,7 +1742,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
@@ -1787,13 +1787,14 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let mut policies = Policies::default();
-        policies.set_resources(ResourcesPolicy { core_allocation });
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
-            policies,
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy { core_allocation },
+                ..Default::default()
+            },
             role: ResolvedPipelineRole::Regular,
         }
     }

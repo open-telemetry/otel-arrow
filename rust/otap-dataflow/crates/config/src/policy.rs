@@ -100,7 +100,7 @@ impl Policies {
     /// order (most specific first).  For each field the first `Some`
     /// value wins; fields absent at every level use built-in defaults.
     #[must_use]
-    pub(crate) fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> Self {
+    pub(crate) fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
         let mut channel_capacity = None;
         let mut health = None;
         let mut telemetry = None;
@@ -119,13 +119,11 @@ impl Policies {
                 resources = scope.resources.as_ref();
             }
         }
-        Self {
-            channel_capacity: channel_capacity
-                .cloned()
-                .or_else(|| Some(Default::default())),
-            health: health.cloned().or_else(|| Some(Default::default())),
-            telemetry: telemetry.cloned().or_else(|| Some(Default::default())),
-            resources: resources.cloned().or_else(|| Some(Default::default())),
+        ResolvedPolicies {
+            channel_capacity: channel_capacity.cloned().unwrap_or_default(),
+            health: health.cloned().unwrap_or_default(),
+            telemetry: telemetry.cloned().unwrap_or_default(),
+            resources: resources.cloned().unwrap_or_default(),
         }
     }
 
@@ -151,6 +149,24 @@ impl Policies {
         }
         errors
     }
+}
+
+/// Fully-resolved policy snapshot where every field is populated.
+///
+/// Produced by [`Policies::resolve`] after walking the scope hierarchy
+/// (pipeline → group → top-level → built-in defaults).  All `Option`
+/// fields from [`Policies`] are collapsed to concrete values, so
+/// consumers can access fields directly without fallback logic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedPolicies {
+    /// Channel capacity policy.
+    pub channel_capacity: ChannelCapacityPolicy,
+    /// Health policy.
+    pub health: HealthPolicy,
+    /// Runtime telemetry policy.
+    pub telemetry: TelemetryPolicy,
+    /// Resources policy.
+    pub resources: ResourcesPolicy,
 }
 
 /// Engine-wide metric level controlling per-channel and per-node

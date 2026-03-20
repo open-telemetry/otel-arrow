@@ -668,7 +668,7 @@ connections:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
     }
@@ -720,7 +720,7 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 5 }
         );
     }
@@ -765,7 +765,7 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 4 },
             "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
