@@ -60,6 +60,11 @@ pub use tracing_init::TracingSetup;
 
 #[cfg(test)]
 #[allow(unsafe_code)] // std::env mutation is synchronized and restored for test isolation.
+/// Runs a test closure with `RUST_LOG` temporarily cleared so tracing setup tests
+/// are not influenced by the developer's ambient shell configuration.
+///
+/// The helper serializes access because `RUST_LOG` is process-global and restores
+/// the previous value even if the closure panics.
 pub(crate) fn with_cleared_rust_log<F, R>(f: F) -> R
 where
     F: FnOnce() -> R + std::panic::UnwindSafe,
