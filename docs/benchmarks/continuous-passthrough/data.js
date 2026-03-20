@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774018821151,
+  "lastUpdate": 1774032805941,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "7aed512ee2de348b2d44bdc63fb13f63f613ccb7",
-          "message": "Columnar query engine support assigning to root batch fields (#2159)\n\n# Change Summary\n\nAdds support to the columnar query engine to assign values to columns on\nthe root OTAP batch.\n\nFor example:\n```kql\nlogs | set severity_text = \"INFO\"\n```\n\nThrough this work, I wanted to validate that it's possible to bridge the\nexpression evaluation code that was added in\nhttps://github.com/open-telemetry/otel-arrow/pull/2126 with a\nPipelineStage implementation. In doing so, many things that were\nprivate/dead-code in the `expr` module are now marked public.\n\nThis also means that we support assigning values from various types of\nexpressions, not simply literals. For example:\n```kql\nlogs | set event_name = attributes[\"event_name\"] // assign from attribute\nlogs | set severity_number = severity_number * 5 + 1 // assign from arithmetic\n```\n\nThis code handles:\n- type checking the result when doing the assignment, at planning time\nif possible and otherwise at runtime\n- converting the expression eval result back into a dictionary if the\ncolumn supports it\n- removing the column if the expression evaluated to null (and returning\nan error if the column is not nullable)\n- not assigning nulls to non-null columns (returning error if this would\nhappen)\n\nTo make it easier to take the results of the evaluated expression, I\nalso modified the JoinExec trait that is used to expression evaluation\nexpose a method to return the rows to take from the values being joined.\nThis helps to align the rows produced by the expression evaluation to\nthe order of the destination record batch.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Related to #2036 \n\n## How are these changes tested?\n\nExisting unit tests ensure we didn't break the planner.\n\nThere are over 30 new unit tests for the assignment pipeline stage.\n\n## Are there any user-facing changes?\n\nI suppose the ability for the transform processor to evaluate these new\ntypes of expressions could be considered user facing.\n\n\n## Near-term followups:\n\nIn followup PRs, I'll add support to assign values attributes. We\nalready support assigning literals to values (added here\nhttps://github.com/open-telemetry/otel-arrow/pull/1885), but this only\nsupports literals.\n\nWe'll also now need to fix this TODO (in fact, we should have done after\n#1885, but the code in this PR could also cause the concatenation we're\ndoing here to fail).\n\nhttps://github.com/open-telemetry/otel-arrow/blob/63a23cf282c43a3dceb453f6fd17c794a4e9bb70/rust/otap-dataflow/crates/query-engine/src/pipeline/conditional.rs#L190-L207\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
-          "timestamp": "2026-03-04T02:44:26Z",
-          "tree_id": "c3117a6a2c4138325b9e435ad2a0aa6ea99fc7ff",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/7aed512ee2de348b2d44bdc63fb13f63f613ccb7"
-        },
-        "date": 1772598942699,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.7776729464530945,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.46848388829554,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.06014744563956,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 55.553515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 57.8828125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 488281.5337815848,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 492078.76705782133,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001581,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11268219.705016859,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11210187.524176376,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16929879.377755176,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eaa4103326057ef68125244171801bc010cb3571",
+          "message": "Add mock LA server for local Azure Monitor Exporter testing (#2381)\n\nAdds a lightweight mock Azure Monitor Logs Ingestion API server and a\nlocal test config for performance testing the Azure Monitor Exporter\nwithout incurring Log Analytics costs.\n\n## New files\n\n- `crates/mock-la-server/` - Standalone Axum-based mock server that\naccepts gzip-compressed JSON POSTs, decompresses/counts log entries,\nprints periodic throughput stats, and supports error simulation flags\n(--fail-rate, --retry-after, --latency, --unauthorized-rate,\n--payload-too-large, --fail-after)\n- `fakegen-ame-local.yaml` - Pipeline config pointing the exporter at\nhttp://localhost:9999 with auth.method: dev\n\n## Usage\n\n```\n# Terminal 1: start mock server\ncargo run -p mock-la-server -- --port 9999\n\n# Terminal 2: run pipeline\ncargo run --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml --num-cores 1\n```",
+          "timestamp": "2026-03-20T16:26:07Z",
+          "tree_id": "5b29432284b38da718e93799fc9a0c0aaafc489c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/eaa4103326057ef68125244171801bc010cb3571"
+        },
+        "date": 1774032805036,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.313641905784607,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 99.97573030883983,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.38515764195523,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 25.554947916666666,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 27.59375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 648266.7838350086,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 656782.6877241696,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002556,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 17040822.5351836,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 17059981.69911303,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
