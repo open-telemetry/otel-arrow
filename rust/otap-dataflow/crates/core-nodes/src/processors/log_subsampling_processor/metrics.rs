@@ -1,0 +1,51 @@
+//! Telemetry metrics for the log subsampling processor.
+//!
+//! These metrics track the volume of logs consumed, dropped, and batches
+//! that were fully dropped (all records discarded).
+
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry_macros::metric_set;
+
+/// Metrics for the log subsampling processor.
+///
+/// Metric set name: `log_subsampling.processor.pdata.metrics`
+#[metric_set(name = "log_subsampling.processor.pdata.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct LogSubsamplingMetrics {
+    /// Total log records received by the processor.
+    #[metric(unit = "{log}")]
+    pub log_signals_consumed: Counter<u64>,
+
+    /// Log records dropped by subsampling.
+    #[metric(unit = "{log}")]
+    pub log_signals_dropped: Counter<u64>,
+
+    /// Batches where all records were dropped (acked immediately).
+    #[metric(unit = "{batch}")]
+    pub batches_fully_dropped: Counter<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_default() {
+        let m = LogSubsamplingMetrics::default();
+        assert_eq!(m.log_signals_consumed.get(), 0);
+        assert_eq!(m.log_signals_dropped.get(), 0);
+        assert_eq!(m.batches_fully_dropped.get(), 0);
+    }
+
+    #[test]
+    fn test_metrics_add() {
+        let mut m = LogSubsamplingMetrics::default();
+        m.log_signals_consumed.add(100);
+        m.log_signals_dropped.add(90);
+        m.batches_fully_dropped.inc();
+
+        assert_eq!(m.log_signals_consumed.get(), 100);
+        assert_eq!(m.log_signals_dropped.get(), 90);
+        assert_eq!(m.batches_fully_dropped.get(), 1);
+    }
+}
