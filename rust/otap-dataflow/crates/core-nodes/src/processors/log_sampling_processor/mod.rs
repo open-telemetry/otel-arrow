@@ -8,11 +8,11 @@
 
 mod config;
 mod metrics;
-mod sample;
+mod samplers;
 
 use self::config::Config;
 use self::metrics::LogSamplingMetrics;
-use self::sample::{Sampler, sampler_from_config};
+use self::samplers::{Sampler, sampler_from_config};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;

@@ -142,7 +142,7 @@ impl Sampler for ZipSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processors::log_sampling_processor::sample::testing::make_log_records;
+    use crate::processors::log_sampling_processor::samplers::testing::make_log_records;
 
     #[test]
     fn test_zip_within_budget() {

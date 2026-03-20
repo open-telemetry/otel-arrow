@@ -1,6 +1,6 @@
 //! Configuration for the log sampling processor.
 
-use super::sample::{RatioConfig, ZipConfig};
+use super::samplers::{RatioConfig, ZipConfig};
 use otap_df_config::error::Error as ConfigError;
 use serde::Deserialize;
 
