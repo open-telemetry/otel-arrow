@@ -231,63 +231,6 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
 
-    /// Helper: create a processor wrapped in TestRuntime, run a scenario, validate.
-    fn run_processor_test<F, Fut>(config_json: Value, scenario: F)
-    where
-        F: FnOnce(TestContext<OtapPdata>) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let test_runtime = TestRuntime::new();
-        let user_config = Arc::new(NodeUserConfig::new_processor_config(
-            LOG_SAMPLING_PROCESSOR_URN,
-        ));
-
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-
-        let processor = ProcessorWrapper::local(
-            LogSamplingProcessor::from_config(pipeline_ctx, &config_json).expect("valid config"),
-            test_node(test_runtime.config().name.clone()),
-            user_config,
-            test_runtime.config(),
-        );
-
-        test_runtime
-            .set_processor(processor)
-            .run_test(scenario)
-            .validate(|_ctx| async {});
-    }
-
-    /// Helper: create OtapPdata with N log records (OTAP Arrow format).
-    fn make_log_pdata_arrow(n: usize) -> OtapPdata {
-        let logs_data = logs_with_varying_attributes_and_properties(n);
-        let records = encode_logs_otap_batch(&logs_data).expect("encode");
-        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
-    }
-
-    /// Helper: create OtapPdata with traces (OTAP Arrow format).
-    fn make_trace_pdata_arrow() -> OtapPdata {
-        let traces_data = traces_with_full_resource_and_scope();
-        let records = encode_spans_otap_batch(&traces_data).expect("encode");
-        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
-    }
-
-    /// Helper: create OtapPdata with traces (OTLP proto bytes).
-    fn make_trace_pdata_otlp() -> OtapPdata {
-        let traces_data = traces_with_full_resource_and_scope();
-        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Traces(traces_data));
-        OtapPdata::new(Context::default(), otlp_bytes.into())
-    }
-
-    /// Helper: create OtapPdata with metrics (OTLP proto bytes).
-    fn make_metrics_pdata_otlp() -> OtapPdata {
-        let metrics_data = metrics_sum_with_full_resource_and_scope();
-        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Metrics(metrics_data));
-        OtapPdata::new(Context::default(), otlp_bytes.into())
-    }
-
     // ==================== Integration Tests ====================
 
     #[test]
@@ -457,5 +400,60 @@ mod tests {
                 assert_eq!(msgs[0].num_items(), 5);
             })
         });
+    }
+
+    // ==================== Helpers ====================
+
+    /// Create a processor wrapped in TestRuntime, run a scenario, validate.
+    fn run_processor_test<F, Fut>(config_json: Value, scenario: F)
+    where
+        F: FnOnce(TestContext<OtapPdata>) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(
+            LOG_SAMPLING_PROCESSOR_URN,
+        ));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let processor = ProcessorWrapper::local(
+            LogSamplingProcessor::from_config(pipeline_ctx, &config_json).expect("valid config"),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario)
+            .validate(|_ctx| async {});
+    }
+
+    fn make_log_pdata_arrow(n: usize) -> OtapPdata {
+        let logs_data = logs_with_varying_attributes_and_properties(n);
+        let records = encode_logs_otap_batch(&logs_data).expect("encode");
+        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
+    }
+
+    fn make_trace_pdata_arrow() -> OtapPdata {
+        let traces_data = traces_with_full_resource_and_scope();
+        let records = encode_spans_otap_batch(&traces_data).expect("encode");
+        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
+    }
+
+    fn make_trace_pdata_otlp() -> OtapPdata {
+        let traces_data = traces_with_full_resource_and_scope();
+        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Traces(traces_data));
+        OtapPdata::new(Context::default(), otlp_bytes.into())
+    }
+
+    fn make_metrics_pdata_otlp() -> OtapPdata {
+        let metrics_data = metrics_sum_with_full_resource_and_scope();
+        let otlp_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Metrics(metrics_data));
+        OtapPdata::new(Context::default(), otlp_bytes.into())
     }
 }

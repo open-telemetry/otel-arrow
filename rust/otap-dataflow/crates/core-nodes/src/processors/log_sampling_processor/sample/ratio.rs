@@ -226,29 +226,6 @@ mod tests {
         assert!(!sel.value(2));
     }
 
-    /// Reference implementation using O(B) loop to verify O(1) formula.
-    fn reference_compute_to_keep(
-        emit: usize,
-        out_of: usize,
-        emitted: &mut usize,
-        seen: &mut usize,
-        batch_size: usize,
-    ) -> usize {
-        let mut to_keep = 0;
-        for _ in 0..batch_size {
-            *seen += 1;
-            if *emitted < emit {
-                *emitted += 1;
-                to_keep += 1;
-            }
-            if *seen == out_of {
-                *seen = 0;
-                *emitted = 0;
-            }
-        }
-        to_keep
-    }
-
     #[test]
     fn test_ratio_matches_reference_impl() {
         let test_cases: Vec<(usize, usize, Vec<usize>)> = vec![
@@ -282,6 +259,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Reference implementation using O(B) loop to verify O(1) formula.
+    fn reference_compute_to_keep(
+        emit: usize,
+        out_of: usize,
+        emitted: &mut usize,
+        seen: &mut usize,
+        batch_size: usize,
+    ) -> usize {
+        let mut to_keep = 0;
+        for _ in 0..batch_size {
+            *seen += 1;
+            if *emitted < emit {
+                *emitted += 1;
+                to_keep += 1;
+            }
+            if *seen == out_of {
+                *seen = 0;
+                *emitted = 0;
+            }
+        }
+        to_keep
     }
 
     // ==================== Config Validation Tests ====================
