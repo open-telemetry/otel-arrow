@@ -84,7 +84,6 @@ impl<UData> State<UData> {
     /// Like allocate(), however takes UData directly instead of a
     /// function returning an optional value of type R.  In case the
     /// map is full, the UData is returned.
-    #[must_use]
     pub fn allocate_with_data(&mut self, data: UData) -> Result<Key, UData> {
         if self.slots.len() >= self.max_size {
             return Err(data);
