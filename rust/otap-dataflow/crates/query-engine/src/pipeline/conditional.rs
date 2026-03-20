@@ -15,8 +15,7 @@ use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::raw_batch_store::{
-    LOGS_TYPE_MASK, METRICS_TYPE_MASK, RawBatchStore, RawLogsStore, RawMetricsStore,
-    TRACES_TYPE_MASK,
+    LOGS_TYPE_MASK, METRICS_TYPE_MASK, RawBatchStore, TRACES_TYPE_MASK,
 };
 use otap_df_pdata::otap::transform::concatenate::concatenate;
 use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
@@ -362,14 +361,27 @@ impl PipelineStage for ConditionalPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
+    use crate::pipeline::{
+        Pipeline,
+        test::{exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline},
+    };
     use data_engine_parser_abstractions::Parser;
     use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::proto::opentelemetry::{
-        common::v1::{AnyValue, KeyValue},
-        logs::v1::LogRecord,
+    use otap_df_pdata::{
+        proto::opentelemetry::{
+            common::v1::{AnyValue, KeyValue},
+            logs::v1::LogRecord,
+            trace::v1::Span,
+        },
+        testing::round_trip::{to_metrics_data, to_traces_data},
     };
-    use otap_df_pdata::testing::round_trip::to_logs_data;
+    use otap_df_pdata::{
+        proto::opentelemetry::{
+            metrics::v1::Metric,
+            trace::v1::{Status, span::SpanKind},
+        },
+        testing::round_trip::to_logs_data,
+    };
 
     use super::*;
 
@@ -612,11 +624,15 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_conditional_concat_handles_stages_that_modified_batch() {
+    async fn test_conditional_concat_handles_stages_that_modified_logs_batch() {
         let log_records = vec![
             LogRecord::build().severity_text("INFO").finish(),
             LogRecord::build().severity_text("ERROR").finish(),
         ];
+
+        // the logs that take the "if" branch will get the optional severity_number column added
+        // whereas the logs that take the "else" branch will get the optional event_name column
+        // added. This test ensures we still concatenate them correctly despite the schema mismatch
         let query = r#"logs |
             if (severity_text == "INFO") {
                 set severity_number = 10
@@ -638,5 +654,83 @@ mod test {
         ];
 
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_traces_batch() {
+        let spans = vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+        ];
+        // the spans that take the "if" branch will get the optional kind column added whereas the
+        // spans that take the "else" branch wont. This test ensures we still concatenate them
+        // correctly despite the schema mismatch
+        let query = r#"traces |
+            if (attributes["x"] == "a") {
+                set kind = 1
+            }
+        "#;
+        let result = exec_traces_pipeline::<OplParser>(query, to_traces_data(spans)).await;
+
+        let expected = vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .kind(SpanKind::Internal)
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_spans[0].scope_spans[0].spans, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_metric_batch() {
+        let metrics = vec![
+            Metric::build().name("metric1").finish(),
+            Metric::build().name("metric2").finish(),
+        ];
+
+        // the metrics that take the "if" branch will get the optional description column added
+        // whereas the logs that take the "else" branch will get the optional unit column
+        // added. This test ensures we still concatenate them correctly despite the schema mismatch
+        let query = r#"metrics |
+            if (name == "metric1") {
+                set description = "description"
+            } else {
+                set unit = "centimeters"
+            }
+        "#;
+        let result = exec_metrics_pipeline::<OplParser>(query, to_metrics_data(metrics)).await;
+
+        let expected = vec![
+            Metric::build()
+                .name("metric1")
+                .description("description")
+                .finish(),
+            Metric::build().name("metric2").unit("centimeters").finish(),
+        ];
+
+        pretty_assertions::assert_eq!(
+            result.resource_metrics[0].scope_metrics[0].metrics,
+            expected
+        )
     }
 }

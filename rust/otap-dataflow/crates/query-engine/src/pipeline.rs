@@ -369,6 +369,28 @@ mod test {
         otap_to_logs_data(result)
     }
 
+    pub async fn exec_metrics_pipeline<P: Parser>(
+        query: &str,
+        metrics_data: MetricsData,
+    ) -> MetricsData {
+        let parser_result = P::parse(query).unwrap();
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        otap_to_metrics_data(result)
+    }
+
+    pub async fn exec_traces_pipeline<P: Parser>(
+        query: &str,
+        traces_data: TracesData,
+    ) -> TracesData {
+        let parser_result = P::parse(query).unwrap();
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        otap_to_traces_data(result)
+    }
+
     #[tokio::test]
     async fn test_pipeline_execute_multi_batch() {
         // TODO eventually we might want to drive this test from a pipeline expression, which we
