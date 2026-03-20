@@ -48,7 +48,7 @@ pub(crate) async fn run_pipelines_with_timeout(
         .await?;
         sleep(propagation_delay).await;
         let result = ensure_validation_passed(&admin_client, &admin_base).await;
-        shutdown_pipeline(&admin_client, &admin_base).await?;
+        shutdown_pipeline(&admin_client, &admin_base, timeout).await?;
         result
     })
     .await
@@ -148,15 +148,31 @@ async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), Val
 }
 
 /// shutdown pipeline after running
-async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
+async fn shutdown_pipeline(
+    client: &Client,
+    base: &str,
+    scenario_timeout: Duration,
+) -> Result<(), ValidationError> {
+    let timeout_secs = shutdown_timeout_secs(scenario_timeout);
     let _ = client
-        .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
+        .post(format!(
+            "{base}/pipeline-groups/shutdown?wait=true&timeout_secs={timeout_secs}"
+        ))
         .send()
         .await
         .map_err(|e| ValidationError::Http(e.to_string()))?
         .error_for_status()
         .map_err(|e| ValidationError::Http(e.to_string()))?;
     Ok(())
+}
+
+fn shutdown_timeout_secs(timeout: Duration) -> u64 {
+    let secs = timeout.as_secs();
+    if timeout.subsec_nanos() == 0 {
+        secs.max(1)
+    } else {
+        secs.saturating_add(1)
+    }
 }
 
 // get the value from a specific metric given the snapshot
@@ -285,5 +301,15 @@ mod tests {
         };
         let res = validation_from_metrics(&snap);
         assert_eq!(res, Err("cap2".to_string()));
+    }
+
+    #[test]
+    fn shutdown_timeout_secs_has_minimum_of_one_second() {
+        assert_eq!(shutdown_timeout_secs(Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn shutdown_timeout_secs_rounds_up_fractional_seconds() {
+        assert_eq!(shutdown_timeout_secs(Duration::from_millis(1500)), 2);
     }
 }
