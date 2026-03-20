@@ -369,7 +369,10 @@ where
                 let drain_accepts_pdata =
                     Self::shutdown_drain_accepts_pdata(accept_pdata, drain_policy);
 
-                // If shutdown pending and no pdata left, return Shutdown immediately
+                // Once shutdown has been latched, the stored Shutdown is released
+                // only after the bounded pdata backlog is empty. This keeps the
+                // channel-level drain contract explicit: upstream work that was
+                // already accepted into the channel gets a chance to run first.
                 if self
                     .pdata_rx
                     .as_ref()
@@ -389,6 +392,9 @@ where
                     sleep_until_deadline = Some(clock::sleep_until(dl));
                 }
 
+                // Even while draining we cap control preference. This prevents a
+                // sustained Ack/Nack or shutdown-control burst from starving the
+                // already buffered pdata that shutdown is trying to drain.
                 if drain_accepts_pdata && self.consecutive_control >= CONTROL_BURST_LIMIT {
                     match self
                         .pdata_rx
@@ -499,6 +505,11 @@ where
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            // The first Shutdown is latched instead of returned
+                            // immediately. That switches the channel into
+                            // shutdown-drain mode, where it keeps delivering
+                            // cleanup control and buffered pdata until either the
+                            // backlog empties or the deadline expires.
                             if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
@@ -517,6 +528,10 @@ where
 
                     ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            // Same shutdown latching as above, but in the
+                            // control-preferred branch used when pdata admission
+                            // is currently closed or control has not yet hit the
+                            // fairness limit.
                             if deadline <= clock::now() {
                                 self.shutdown();
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
