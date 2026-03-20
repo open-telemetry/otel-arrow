@@ -152,7 +152,7 @@ trait Batcher<T: OtapPayloadHelpers> {
     /// We are using an empty DelayData request as a one-shot
     /// timer. This returns the appropriate empty request.
     /// TODO: Add proper one-shot timer and cancellation, see #1472.
-    fn wakeup(signal: SignalType) -> T;
+    fn empty(signal: SignalType) -> T;
 }
 
 /// Batch processor configuration.
@@ -517,6 +517,9 @@ pub struct BatchProcessorMetrics {
     /// Number of requests nacked due to inbound slot exhaustion
     #[metric(unit = "{msg}")]
     nacked_inbound_slots: Counter<u64>,
+    /// Number of requests nacked due to inbound slot exhaustion
+    #[metric(unit = "{msg}")]
+    nacked_outbound_slots: Counter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
@@ -641,7 +644,8 @@ impl BatchProcessor {
 
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
-            effect.notify_ack(AckMsg::new(request)).await?;
+            // Note: Failure to Ack/Nack is an engine-level error.
+            let _ = effect.notify_ack(AckMsg::new(request)).await?;
             return Ok(());
         }
 
@@ -730,7 +734,7 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
         make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
-    fn wakeup(signal: SignalType) -> OtapArrowRecords {
+    fn empty(signal: SignalType) -> OtapArrowRecords {
         match signal {
             SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
             SignalType::Metrics => {
@@ -752,7 +756,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
         make_bytes_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
-    fn wakeup(signal: SignalType) -> OtlpProtoBytes {
+    fn empty(signal: SignalType) -> OtlpProtoBytes {
         match signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
@@ -783,9 +787,13 @@ where
                 Err(bctx) => {
                     self.metrics.nacked_inbound_slots.inc();
                     let refused = OtapPdata::new(bctx.ctx, payload.into());
+                    // Note: Failure to Ack/Nack is an engine-level error.
                     let _ = effect
-                        .route_nack(NackMsg::new("inbound routes exhausted", refused))
+                        .notify_nack(NackMsg::new("inbound routes exhausted", refused))
                         .await?;
+                    // Note: Inbound slot exhaustion leads to dropping
+                    // the request. This is by choice, and we expect
+                    // the caller to retry.
                     return Ok(());
                 }
                 Ok(bc) => Some(bc),
@@ -944,23 +952,39 @@ where
 
             // If any items require notification, get an outbound slot and subscribe.
             if let Some(ctxs) = self.buffer.drain_context(items, &mut input_context) {
-                let (outkey, _notused) =
-                    self.buffer
-                        .outbound
-                        .allocate(|| (ctxs, ()))
-                        .ok_or_else(|| EngineError::ProcessorError {
-                            processor: effect.processor_id(),
-                            kind: ProcessorErrorKind::Other,
-                            error: "outbound slots not available".into(),
-                            source_detail: "".into(),
-                        })?;
-
-                effect.subscribe_to(
-                    Interests::NACKS | Interests::ACKS,
-                    outkey.into(),
-                    &mut pdata,
-                );
+                match self.buffer.outbound.allocate_with_data(ctxs) {
+                    Err(ctxs) => {
+                        for bp in ctxs {
+                            if let Some(inkey) = bp.inkey
+                                && let Some(batch) = self.buffer.inbound.take(inkey)
+                            {
+                                self.metrics.nacked_outbound_slots.inc();
+                                // Note: Failure to Ack/Nack is an engine-level error.
+                                let _ = effect
+                                    .notify_nack(NackMsg::new(
+                                        "outbound routes exhausted",
+                                        OtapPdata::new(
+                                            batch.ctx,
+                                            SignalBuffer::empty(self.signal).into(),
+                                        ),
+                                    ))
+                                    .await?;
+                                // Note: failure to get an outbound slot does not
+                                // stop the outbound request, since it can contain data
+                                // that did not request Ack/Nack.
+                            }
+                        }
+                    }
+                    Ok(outkey) => {
+                        effect.subscribe_to(
+                            Interests::NACKS | Interests::ACKS,
+                            outkey.into(),
+                            &mut pdata,
+                        );
+                    }
+                };
             }
+
             effect.send_message_with_source_node(pdata).await?;
         }
 
@@ -1275,11 +1299,12 @@ where
                 if let Some(mut batch) = removed {
                     let rdata =
                         OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
-                    if let Err(err) = res {
-                        effect.notify_nack(NackMsg::new(err, rdata)).await?;
+                    // Note: Failure to Ack/Nack is an engine-level error.
+                    let _ = if let Err(err) = res {
+                        effect.notify_nack(NackMsg::new(err, rdata)).await
                     } else {
-                        effect.notify_ack(AckMsg::new(rdata)).await?;
-                    }
+                        effect.notify_ack(AckMsg::new(rdata)).await
+                    }?;
                 }
             }
         }
@@ -1304,7 +1329,7 @@ where
                 now + timeout,
                 Box::new(OtapPdata::new(
                     Context::default(),
-                    Self::wakeup(signal).into(),
+                    Self::empty(signal).into(),
                 )),
             )
             .await

@@ -258,14 +258,14 @@ mod tests {
     fn test_allocate_data() {
         let mut state: State<&'static str> = State::new(3);
 
-        let key1 = state.slots.allocate_with_data("1").unwrap();
-        let key2 = state.slots.allocate_with_data("2").unwrap();
-        let key3 = state.slots.allocate_with_data("3").unwrap();
+        let _ = state.allocate_with_data("1").unwrap();
+        let _ = state.allocate_with_data("2").unwrap();
+        let _ = state.allocate_with_data("3").unwrap();
 
         assert_eq!(state.slots.len(), 3);
         assert_eq!(state.slots.capacity(), 3);
 
-        let result = state.slots.allocate_with_data("4");
+        let result = state.allocate_with_data("4");
 
         assert!(result.is_err());
         assert_eq!(result.err().expect("error"), "4");
