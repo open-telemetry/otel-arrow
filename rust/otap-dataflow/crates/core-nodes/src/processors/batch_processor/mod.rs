@@ -2494,8 +2494,8 @@ mod tests {
             });
     }
 
-    /// When inbound_request_limit is 1 and two subscribed requests arrive
-    /// before the batch flushes, the second request is nacked (not an engine error).
+    /// When inbound_request_limit is 1 and two subscribed requests
+    /// arrive before the batch flushes, the second request is Nacked.
     #[test]
     fn test_inbound_slot_exhaustion_nacks() {
         let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
@@ -2531,24 +2531,21 @@ mod tests {
                     1,
                 );
 
-                // First request succeeds (takes the single inbound slot).
+                // First request succeeds.
                 ctx.process(Message::PData(pdata1))
                     .await
                     .expect("first input succeeds");
 
-                // Second request also succeeds at the engine level (no EngineError),
-                // but the processor nacks it via the pipeline control channel.
+                // Second request is not an engine error.
                 ctx.process(Message::PData(pdata2))
                     .await
                     .expect("second input succeeds (nacked, not engine error)");
 
-                // Drain pipeline control messages and expect exactly one nack.
                 let mut nack_count = 0;
                 while let Ok(msg) = pipeline_rx.try_recv() {
-                    match msg {
-                        PipelineControlMsg::DeliverNack { .. } => nack_count += 1,
-                        PipelineControlMsg::DelayData { .. } => {} // timer setup
-                        _ => {}
+                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                        assert!(nack.reason.contains("inbound routes exhausted"));
+                        nack_count += 1;
                     }
                 }
                 assert_eq!(nack_count, 1, "exactly one request should be nacked");
@@ -2556,9 +2553,8 @@ mod tests {
             .validate(|_| async {});
     }
 
-    /// When outbound_request_limit is 1 and a flush produces multiple outbound
-    /// batches (via splitting), inputs whose outbound slot couldn't be
-    /// allocated are nacked (not an engine error).
+    /// When outbound_request_limit is 1 and a flush produces multiple
+    /// outbound batches, failure to allocate the outbound slot is Nacked.
     #[test]
     fn test_outbound_slot_exhaustion_nacks() {
         // max_size=1 forces each item into its own outbound batch,
@@ -2590,25 +2586,20 @@ mod tests {
                     1,
                 );
 
-                // Process triggers flush (min_size=1).
-                // With max_size=1, each item becomes a separate outbound batch.
-                // Only the first gets the outbound slot; the rest are nacked.
+                // Process triggers flush.
                 ctx.process(Message::PData(pdata1))
                     .await
                     .expect("process succeeds (nack, not engine error)");
 
-                // Drain all pipeline control messages.
                 let mut nack_count = 0;
                 while let Ok(msg) = pipeline_rx.try_recv() {
-                    if matches!(msg, PipelineControlMsg::DeliverNack { .. }) {
+                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                        assert!(nack.reason.contains("outbound routes exhausted"));
                         nack_count += 1;
                     }
                 }
 
-                assert!(
-                    nack_count >= 1,
-                    "at least one inbound request nacked due to outbound slot exhaustion"
-                );
+                assert_eq!(nack_count, 1);
             })
             .validate(|_| async {});
     }
