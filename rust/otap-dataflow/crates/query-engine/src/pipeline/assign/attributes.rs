@@ -1338,13 +1338,7 @@ fn extract_dict_any_info<'a>(
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt8Type>>()
                 .expect("dict<u8>");
-            let keys: Vec<u16> = dict
-                .keys()
-                .values()
-                .iter()
-                .enumerate()
-                .map(|(i, &k)| if dict.is_null(i) { 0 } else { k as u16 })
-                .collect();
+            let keys: Vec<u16> = dict.keys().values().iter().map(|k| *k as u16).collect();
             Ok((Arc::clone(dict.values()), Cow::Owned(keys)))
         }
         DataType::UInt16 => {
