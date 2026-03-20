@@ -344,17 +344,19 @@ groups:
     fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        let channel_capacity = config.policies.channel_capacity();
-        assert_eq!(channel_capacity.control.node, 256);
-        assert_eq!(channel_capacity.control.pipeline, 256);
-        assert_eq!(channel_capacity.pdata, 128);
-        assert_eq!(*config.policies.health(), HealthPolicy::default());
-        let telemetry = config.policies.telemetry();
-        assert!(telemetry.pipeline_metrics);
-        assert!(telemetry.tokio_metrics);
-        assert_eq!(telemetry.channel_metrics, crate::policy::MetricLevel::Basic);
+        let defaults = Policies::resolve([&config.policies]);
+        assert_eq!(defaults.channel_capacity.control.node, 256);
+        assert_eq!(defaults.channel_capacity.control.pipeline, 256);
+        assert_eq!(defaults.channel_capacity.pdata, 128);
+        assert_eq!(defaults.health, HealthPolicy::default());
+        assert!(defaults.telemetry.pipeline_metrics);
+        assert!(defaults.telemetry.tokio_metrics);
         assert_eq!(
-            config.policies.resources().core_allocation,
+            defaults.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Basic
+        );
+        assert_eq!(
+            defaults.resources.core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
     }
@@ -537,21 +539,32 @@ groups:
         );
     }
 
-    /// When a pipeline has a `policies:` block that specifies only `channel_capacity`
-    /// (and not `telemetry`), the effective telemetry policy must be inherited from
-    /// the parent scope — not silently reset to the built-in default.
+    /// When a pipeline's `policies:` block specifies only a subset of fields,
+    /// the remaining fields must be inherited from the parent scope — not
+    /// silently reset to built-in defaults.
     #[test]
-    fn resolve_telemetry_policy_inherits_from_parent_scope() {
+    fn resolve_policies_inherit_from_parent_scope() {
+        // Top-level sets all four policy fields.  Three pipelines test:
+        //   - "partial": sets only channel_capacity → inherits the rest
+        //   - "explicit": overrides telemetry, channel_capacity, and health
+        //   - "no_policies": no policies block → inherits everything
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
   telemetry:
     channel_metrics: detailed
+  channel_capacity:
+      control:
+        node: 500
+        pipeline: 501
+      pdata: 502
+  health:
+    ready_if: [Running, Updating]
 engine: {}
 groups:
   default:
     pipelines:
-      inheriting:
+      partial:
         policies:
           channel_capacity:
               control:
@@ -572,104 +585,6 @@ groups:
         policies:
           telemetry:
             channel_metrics: none
-        nodes:
-          receiver:
-            type: "urn:test:receiver:example"
-            config: null
-          exporter:
-            type: "urn:test:exporter:example"
-            config: null
-        connections:
-          - from: receiver
-            to: exporter
-      no_policies:
-        nodes:
-          receiver:
-            type: "urn:test:receiver:example"
-            config: null
-          exporter:
-            type: "urn:test:exporter:example"
-            config: null
-        connections:
-          - from: receiver
-            to: exporter
-"#;
-
-        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
-        let resolved = config.resolve();
-
-        // Pipeline with policies block that only sets channel_capacity
-        // should inherit telemetry from the top-level scope.
-        let inheriting = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "inheriting")
-            .expect("inheriting pipeline should be resolved");
-        assert_eq!(
-            inheriting.policies.telemetry.channel_metrics,
-            crate::policy::MetricLevel::Detailed,
-            "pipeline with channel_capacity-only policies should inherit telemetry from top level"
-        );
-
-        // Pipeline with explicit telemetry: none should use that.
-        let explicit = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "explicit")
-            .expect("explicit pipeline should be resolved");
-        assert_eq!(
-            explicit.policies.telemetry.channel_metrics,
-            crate::policy::MetricLevel::None
-        );
-
-        // Pipeline with no policies should inherit from top-level scope.
-        let no_policies = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "no_policies")
-            .expect("no_policies pipeline should be resolved");
-        assert_eq!(
-            no_policies.policies.telemetry.channel_metrics,
-            crate::policy::MetricLevel::Detailed
-        );
-    }
-
-    /// When a pipeline has a `policies:` block that specifies only `telemetry`
-    /// (and not `channel_capacity` or `health`), the effective channel_capacity
-    /// and health policies must be inherited from the parent scope — not
-    /// silently reset to the built-in defaults.
-    #[test]
-    fn resolve_channel_capacity_and_health_inherit_from_parent_scope() {
-        let yaml = r#"
-version: otel_dataflow/v1
-policies:
-  channel_capacity:
-      control:
-        node: 500
-        pipeline: 501
-      pdata: 502
-  health:
-    ready_if: [Running, Updating]
-engine: {}
-groups:
-  default:
-    pipelines:
-      inheriting:
-        policies:
-          telemetry:
-            channel_metrics: detailed
-        nodes:
-          receiver:
-            type: "urn:test:receiver:example"
-            config: null
-          exporter:
-            type: "urn:test:exporter:example"
-            config: null
-        connections:
-          - from: receiver
-            to: exporter
-      explicit:
-        policies:
           channel_capacity:
               control:
                 node: 10
@@ -703,46 +618,51 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         let resolved = config.resolve();
 
-        // Pipeline with policies block that only sets telemetry
-        // should inherit channel_capacity and health from the top-level scope.
-        let inheriting = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "inheriting")
-            .expect("inheriting pipeline should be resolved");
+        let find = |name: &str| {
+            resolved
+                .pipelines
+                .iter()
+                .find(|p| p.pipeline_id.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} pipeline should be resolved"))
+        };
+
+        // Pipeline with only channel_capacity set inherits telemetry and health.
+        let partial = find("partial");
+        assert_eq!(partial.policies.channel_capacity.control.node, 100);
         assert_eq!(
-            inheriting.policies.channel_capacity.control.node, 500,
-            "pipeline with telemetry-only policies should inherit channel_capacity from top level"
+            partial.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Detailed,
+            "should inherit telemetry from top level"
         );
-        assert_eq!(inheriting.policies.channel_capacity.pdata, 502,);
         assert_eq!(
-            inheriting.policies.health.ready_if,
+            partial.policies.health.ready_if,
             vec![
                 crate::health::PhaseKind::Running,
                 crate::health::PhaseKind::Updating,
             ],
-            "pipeline with telemetry-only policies should inherit health from top level"
+            "should inherit health from top level"
         );
 
-        // Pipeline with explicit channel_capacity and health should use those.
-        let explicit = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "explicit")
-            .expect("explicit pipeline should be resolved");
-        assert_eq!(explicit.policies.channel_capacity.control.node, 10,);
+        // Pipeline with explicit overrides uses those values.
+        let explicit = find("explicit");
+        assert_eq!(
+            explicit.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::None
+        );
+        assert_eq!(explicit.policies.channel_capacity.control.node, 10);
         assert_eq!(
             explicit.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
 
-        // Pipeline with no policies should inherit from top-level scope.
-        let no_policies = resolved
-            .pipelines
-            .iter()
-            .find(|p| p.pipeline_id.as_ref() == "no_policies")
-            .expect("no_policies pipeline should be resolved");
-        assert_eq!(no_policies.policies.channel_capacity.control.node, 500,);
+        // Pipeline with no policies block inherits everything.
+        let no_policies = find("no_policies");
+        assert_eq!(
+            no_policies.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Detailed
+        );
+        assert_eq!(no_policies.policies.channel_capacity.control.node, 500);
+        assert_eq!(no_policies.policies.channel_capacity.pdata, 502);
         assert_eq!(
             no_policies.policies.health.ready_if,
             vec![

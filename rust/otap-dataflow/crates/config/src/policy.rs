@@ -51,46 +51,6 @@ pub struct Policies {
 }
 
 impl Policies {
-    /// Returns the effective channel capacity policy, falling back to the
-    /// built-in default when not explicitly configured.
-    #[must_use]
-    pub fn channel_capacity(&self) -> std::borrow::Cow<'_, ChannelCapacityPolicy> {
-        self.channel_capacity
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(ChannelCapacityPolicy::default()))
-    }
-
-    /// Returns the effective health policy, falling back to the built-in
-    /// default when not explicitly configured.
-    #[must_use]
-    pub fn health(&self) -> std::borrow::Cow<'_, HealthPolicy> {
-        self.health
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(HealthPolicy::default()))
-    }
-
-    /// Returns the effective telemetry policy, falling back to the built-in
-    /// default when not explicitly configured.
-    #[must_use]
-    pub fn telemetry(&self) -> std::borrow::Cow<'_, TelemetryPolicy> {
-        self.telemetry
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(TelemetryPolicy::default()))
-    }
-
-    /// Returns the effective resources policy, falling back to the built-in
-    /// default when not explicitly configured.
-    #[must_use]
-    pub fn resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
-        self.resources
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
-    }
-
     /// Sets the resources policy (used by CLI overrides).
     pub fn set_resources(&mut self, resources: ResourcesPolicy) {
         self.resources = Some(resources);
@@ -100,7 +60,7 @@ impl Policies {
     /// order (most specific first).  For each field the first `Some`
     /// value wins; fields absent at every level use built-in defaults.
     #[must_use]
-    pub(crate) fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
+    pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
         let mut channel_capacity = None;
         let mut health = None;
         let mut telemetry = None;
@@ -127,25 +87,26 @@ impl Policies {
         }
     }
 
-    /// Returns validation errors for this policy set.
+    /// Returns validation errors for explicitly configured fields.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        let channel_capacity = self.channel_capacity();
-        if channel_capacity.control.node == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.control.node must be greater than 0"
-            ));
-        }
-        if channel_capacity.control.pipeline == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
-            ));
-        }
-        if channel_capacity.pdata == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.pdata must be greater than 0"
-            ));
+        if let Some(channel_capacity) = &self.channel_capacity {
+            if channel_capacity.control.node == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.control.node must be greater than 0"
+                ));
+            }
+            if channel_capacity.control.pipeline == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
+                ));
+            }
+            if channel_capacity.pdata == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.pdata must be greater than 0"
+                ));
+            }
         }
         errors
     }
@@ -350,20 +311,21 @@ mod tests {
 
     #[test]
     fn defaults_match_expected_values() {
-        let policies = Policies::default();
-        let channel_capacity = policies.channel_capacity();
-        assert_eq!(channel_capacity.control.node, 256);
-        assert_eq!(channel_capacity.control.pipeline, 256);
-        assert_eq!(channel_capacity.pdata, 128);
-        let telemetry = policies.telemetry();
-        assert!(telemetry.pipeline_metrics);
-        assert!(telemetry.tokio_metrics);
-        assert_eq!(telemetry.channel_metrics, super::MetricLevel::Basic);
+        let defaults = Policies::resolve([&Policies::default()]);
+        assert_eq!(defaults.channel_capacity.control.node, 256);
+        assert_eq!(defaults.channel_capacity.control.pipeline, 256);
+        assert_eq!(defaults.channel_capacity.pdata, 128);
+        assert!(defaults.telemetry.pipeline_metrics);
+        assert!(defaults.telemetry.tokio_metrics);
         assert_eq!(
-            policies.resources().core_allocation,
+            defaults.telemetry.channel_metrics,
+            super::MetricLevel::Basic
+        );
+        assert_eq!(
+            defaults.resources.core_allocation,
             super::CoreAllocation::AllCores
         );
-        assert_eq!(*policies.health(), crate::health::HealthPolicy::default());
+        assert_eq!(defaults.health, crate::health::HealthPolicy::default());
     }
 
     #[test]

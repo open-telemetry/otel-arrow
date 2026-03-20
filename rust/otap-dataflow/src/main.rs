@@ -416,6 +416,7 @@ Example configuration files can be found in the configs/ directory.{}",
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use otap_df_config::policy::Policies;
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -650,7 +651,7 @@ connections:
         apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
 
         assert_eq!(
-            cfg.policies.resources().core_allocation,
+            Policies::resolve([&cfg.policies]).resources.core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
         assert_eq!(
@@ -708,7 +709,7 @@ groups:
 
         // CLI updates top-level/global policy.
         assert_eq!(
-            cfg.policies.resources().core_allocation,
+            Policies::resolve([&cfg.policies]).resources.core_allocation,
             CoreAllocation::CoreCount { count: 2 }
         );
 
