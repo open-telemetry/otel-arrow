@@ -19,8 +19,14 @@ pub struct Policies {
     #[serde(default)]
     pub health: HealthPolicy,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
-    #[serde(default)]
-    pub telemetry: TelemetryPolicy,
+    ///
+    /// When absent, the parent scope's telemetry policy or the built-in default
+    /// applies.  Serde leaves this `None` when the key is omitted from the
+    /// YAML/JSON, so a `policies:` block that only sets (e.g.)
+    /// `channel_capacity` does **not** implicitly reset `channel_metrics`
+    /// to `Basic` and shadow a top-level override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryPolicy>,
     /// Resources policy controlling runtime core allocation.
     ///
     /// When absent, the parent scope's resources policy or the built-in default
@@ -44,6 +50,19 @@ impl Policies {
             .as_ref()
             .map(std::borrow::Cow::Borrowed)
             .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
+    }
+
+    /// Returns the effective telemetry policy.
+    ///
+    /// When `telemetry` is `None` (not explicitly configured), the built-in
+    /// default [`TelemetryPolicy`] is returned as an owned value.  When it is
+    /// `Some`, a reference to the stored value is returned.
+    #[must_use]
+    pub fn effective_telemetry(&self) -> std::borrow::Cow<'_, TelemetryPolicy> {
+        self.telemetry
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(TelemetryPolicy::default()))
     }
 
     /// Returns validation errors for this policy set.
@@ -255,12 +274,10 @@ mod tests {
         assert_eq!(policies.channel_capacity.control.node, 256);
         assert_eq!(policies.channel_capacity.control.pipeline, 256);
         assert_eq!(policies.channel_capacity.pdata, 128);
-        assert!(policies.telemetry.pipeline_metrics);
-        assert!(policies.telemetry.tokio_metrics);
-        assert_eq!(
-            policies.telemetry.channel_metrics,
-            super::MetricLevel::Basic
-        );
+        let telemetry = policies.effective_telemetry();
+        assert!(telemetry.pipeline_metrics);
+        assert!(telemetry.tokio_metrics);
+        assert_eq!(telemetry.channel_metrics, super::MetricLevel::Basic);
         assert_eq!(
             policies.effective_resources().core_allocation,
             super::CoreAllocation::AllCores

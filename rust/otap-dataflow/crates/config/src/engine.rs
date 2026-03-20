@@ -142,8 +142,8 @@ pub struct EngineObservabilityPolicies {
     #[serde(default)]
     pub health: HealthPolicy,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
-    #[serde(default)]
-    pub telemetry: TelemetryPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryPolicy>,
 }
 
 impl EngineObservabilityPolicies {
@@ -348,12 +348,10 @@ groups:
         assert_eq!(config.policies.channel_capacity.control.pipeline, 256);
         assert_eq!(config.policies.channel_capacity.pdata, 128);
         assert_eq!(config.policies.health, HealthPolicy::default());
-        assert!(config.policies.telemetry.pipeline_metrics);
-        assert!(config.policies.telemetry.tokio_metrics);
-        assert_eq!(
-            config.policies.telemetry.channel_metrics,
-            crate::policy::MetricLevel::Basic
-        );
+        let telemetry = config.policies.effective_telemetry();
+        assert!(telemetry.pipeline_metrics);
+        assert!(telemetry.tokio_metrics);
+        assert_eq!(telemetry.channel_metrics, crate::policy::MetricLevel::Basic);
         assert_eq!(
             config.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::AllCores
@@ -488,7 +486,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            p1_resolved.policies.telemetry.channel_metrics,
+            p1_resolved.policies.effective_telemetry().channel_metrics,
             crate::policy::MetricLevel::None
         );
 
@@ -508,7 +506,7 @@ groups:
             ]
         );
         assert_eq!(
-            p2_resolved.policies.telemetry.channel_metrics,
+            p2_resolved.policies.effective_telemetry().channel_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
@@ -529,12 +527,109 @@ groups:
             vec![crate::health::PhaseKind::Running]
         );
         assert_eq!(
-            p3_resolved.policies.telemetry.channel_metrics,
+            p3_resolved.policies.effective_telemetry().channel_metrics,
             crate::policy::MetricLevel::None
         );
         assert_eq!(
             p3_resolved.policies.effective_resources().core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
+        );
+    }
+
+    /// When a pipeline has a `policies:` block that specifies only `channel_capacity`
+    /// (and not `telemetry`), the effective telemetry policy must be inherited from
+    /// the parent scope — not silently reset to the built-in default.
+    #[test]
+    fn resolve_telemetry_policy_inherits_from_parent_scope() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    channel_metrics: detailed
+engine: {}
+groups:
+  default:
+    pipelines:
+      inheriting:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      explicit:
+        policies:
+          telemetry:
+            channel_metrics: none
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      no_policies:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        // Pipeline with policies block that only sets channel_capacity
+        // should inherit telemetry from the top-level scope.
+        let inheriting = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "inheriting")
+            .expect("inheriting pipeline should be resolved");
+        assert_eq!(
+            inheriting.policies.effective_telemetry().channel_metrics,
+            crate::policy::MetricLevel::Detailed,
+            "pipeline with channel_capacity-only policies should inherit telemetry from top level"
+        );
+
+        // Pipeline with explicit telemetry: none should use that.
+        let explicit = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "explicit")
+            .expect("explicit pipeline should be resolved");
+        assert_eq!(
+            explicit.policies.effective_telemetry().channel_metrics,
+            crate::policy::MetricLevel::None
+        );
+
+        // Pipeline with no policies should inherit from top-level scope.
+        let no_policies = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "no_policies")
+            .expect("no_policies pipeline should be resolved");
+        assert_eq!(
+            no_policies.policies.effective_telemetry().channel_metrics,
+            crate::policy::MetricLevel::Detailed
         );
     }
 
@@ -897,7 +992,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            obs.policies.telemetry.channel_metrics,
+            obs.policies.effective_telemetry().channel_metrics,
             crate::policy::MetricLevel::Normal
         );
         assert_eq!(

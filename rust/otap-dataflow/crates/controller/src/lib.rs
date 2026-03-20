@@ -1170,7 +1170,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .core_allocation
                 .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
-            let telemetry_policy = pipeline_entry.policies.telemetry;
+            let telemetry_policy = pipeline_entry.policies.telemetry.unwrap_or_default();
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
             let pipeline = pipeline_entry.pipeline;
@@ -1506,7 +1506,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         ) = match observability_pipeline {
             Some(config) if config.role == ResolvedPipelineRole::ObservabilityInternal => {
                 let channel_capacity_policy = config.policies.channel_capacity;
-                let telemetry_policy = config.policies.telemetry;
+                let telemetry_policy = config.policies.telemetry.unwrap_or_default();
                 (config.pipeline, channel_capacity_policy, telemetry_policy)
             }
             Some(_) => {

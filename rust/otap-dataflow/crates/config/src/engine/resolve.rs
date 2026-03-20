@@ -127,7 +127,7 @@ impl OtelDataflowSpec {
                     policies: Policies {
                         channel_capacity: channel_capacity_policy,
                         health: health_policy,
-                        telemetry: telemetry_policy,
+                        telemetry: Some(telemetry_policy),
                         resources: Some(resources_policy),
                     },
                     role: ResolvedPipelineRole::Regular,
@@ -146,7 +146,7 @@ impl OtelDataflowSpec {
                 policies: Policies {
                     channel_capacity: channel_capacity_policy,
                     health: health_policy,
-                    telemetry: telemetry_policy,
+                    telemetry: Some(telemetry_policy),
                     resources: Some(ResourcesPolicy::default()),
                 },
                 role: ResolvedPipelineRole::ObservabilityInternal,
@@ -246,14 +246,15 @@ impl OtelDataflowSpec {
 
         pipeline
             .policies()
-            .map(|p| p.telemetry.clone())
+            .and_then(|p| p.telemetry.clone())
             .or_else(|| {
                 pipeline_group
                     .policies
                     .as_ref()
-                    .map(|p| p.telemetry.clone())
+                    .and_then(|p| p.telemetry.clone())
             })
-            .or_else(|| Some(self.policies.telemetry.clone()))
+            .or_else(|| self.policies.telemetry.clone())
+            .or_else(|| Some(TelemetryPolicy::default()))
     }
 
     /// Resolves the effective resources policy for a pipeline.
@@ -340,6 +341,8 @@ impl OtelDataflowSpec {
             .pipeline
             .as_ref()
             .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.telemetry.clone(), |p| p.telemetry.clone())
+            .and_then(|p| p.telemetry.clone())
+            .or_else(|| self.policies.telemetry.clone())
+            .unwrap_or_default()
     }
 }
