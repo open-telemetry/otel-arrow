@@ -513,10 +513,11 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::control::PipelineControlMsg;
-    use otap_df_engine::control::PipelineCtrlMsgReceiver;
     use otap_df_engine::control::PipelineCtrlMsgSender;
-    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::control::PipelineReturnMsg;
+    use otap_df_engine::control::PipelineReturnMsgReceiver;
+    use otap_df_engine::control::PipelineReturnMsgSender;
+    use otap_df_engine::control::{pipeline_ctrl_msg_channel, pipeline_return_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::LocalReceiver;
@@ -877,7 +878,8 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
+        let (pipeline_return_msg_tx, pipeline_return_msg_rx) = pipeline_return_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -890,10 +892,16 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            pipeline_return_msg_tx: PipelineReturnMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             _ = exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    pipeline_return_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await;
             Ok(())
         }
@@ -907,7 +915,7 @@ mod tests {
             mut req_receiver: tokio::sync::mpsc::Receiver<OtapPdata>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
             metrics_reporter: MetricsReporter,
-            mut pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<OtapPdata>,
+            mut pipeline_ctrl_msg_rx: PipelineReturnMsgReceiver<OtapPdata>,
         ) {
             // send a request while the server isn't running and check how we handle it
             let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -925,8 +933,8 @@ mod tests {
             timeout(Duration::from_secs(5), async {
                 loop {
                     match pipeline_ctrl_msg_rx.recv().await {
-                        Ok(PipelineControlMsg::DeliverNack { .. }) => break,
-                        Ok(_) => continue,
+                        Ok(PipelineReturnMsg::DeliverNack { .. }) => break,
+                        Ok(PipelineReturnMsg::DeliverAck { .. }) => continue,
                         Err(_) => panic!("pipeline ctrl channel closed"),
                     }
                 }
@@ -955,8 +963,8 @@ mod tests {
             timeout(Duration::from_secs(5), async {
                 loop {
                     match pipeline_ctrl_msg_rx.recv().await {
-                        Ok(PipelineControlMsg::DeliverAck { .. }) => break,
-                        Ok(_) => continue,
+                        Ok(PipelineReturnMsg::DeliverAck { .. }) => break,
+                        Ok(PipelineReturnMsg::DeliverNack { .. }) => continue,
                         Err(_) => panic!("pipeline ctrl channel closed"),
                     }
                 }
@@ -1032,6 +1040,7 @@ mod tests {
                 start_exporter(
                     exporter,
                     pipeline_ctrl_msg_tx,
+                    pipeline_return_msg_tx,
                     metrics_reporter_start_exporter,
                 )
                 .await
@@ -1047,7 +1056,7 @@ mod tests {
                     req_receiver,
                     metrics_rx,
                     metrics_reporter,
-                    pipeline_ctrl_msg_rx,
+                    pipeline_return_msg_rx,
                 )
             )
         });
@@ -1195,7 +1204,8 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-        let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
+        let (pipeline_return_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_return_msg_channel(16);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1228,7 +1238,12 @@ mod tests {
             let mr = metrics_reporter.clone();
             let _exporter_fut = local_set.spawn_local(async move {
                 let _ = exporter
-                    .start(pipeline_ctrl_msg_tx, mr, Interests::empty())
+                    .start(
+                        pipeline_ctrl_msg_tx,
+                        pipeline_return_msg_tx,
+                        mr,
+                        Interests::empty(),
+                    )
                     .await;
             });
 
@@ -1251,8 +1266,8 @@ mod tests {
                 timeout(Duration::from_secs(5), async {
                     loop {
                         match pipeline_ctrl_msg_rx.recv().await {
-                            Ok(PipelineControlMsg::DeliverNack { .. }) => break,
-                            Ok(_) => continue,
+                            Ok(PipelineReturnMsg::DeliverNack { .. }) => break,
+                            Ok(PipelineReturnMsg::DeliverAck { .. }) => continue,
                             Err(_) => panic!("pipeline ctrl channel closed"),
                         }
                     }

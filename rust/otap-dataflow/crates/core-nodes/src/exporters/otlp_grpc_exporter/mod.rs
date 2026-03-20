@@ -783,7 +783,10 @@ mod tests {
     // Imports only used by tests that are skipped on Windows
     #[cfg(not(windows))]
     use {
-        otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel},
+        otap_df_engine::control::{
+            Controllable, PipelineCtrlMsgSender, PipelineReturnMsg, PipelineReturnMsgSender,
+            pipeline_ctrl_msg_channel, pipeline_return_msg_channel,
+        },
         otap_df_engine::local::message::{LocalReceiver, LocalSender},
         otap_df_engine::message::{Receiver, Sender},
         otap_df_engine::node::NodeWithPDataReceiver,
@@ -794,45 +797,42 @@ mod tests {
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
-        pipeline_ctrl_rx: &mut otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
+        pipeline_ctrl_rx: &mut otap_df_engine::control::PipelineReturnMsgReceiver<OtapPdata>,
         expect_ack: bool,
         expected_node_id: usize,
         context: &str,
     ) -> Result<(), String> {
         let result = timeout(Duration::from_secs(1), async {
-            loop {
-                match pipeline_ctrl_rx.recv().await {
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverAck { ack }) => {
-                        if !expect_ack {
-                            return Err(format!("Got Ack but expected Nack {}", context));
-                        }
-                        let (node_id, _ack) = next_ack(ack)
-                            .ok_or_else(|| format!("No ack subscriber found {}", context))?;
-                        if node_id != expected_node_id {
-                            return Err(format!(
-                                "Expected node_id {} but got {} {}",
-                                expected_node_id, node_id, context
-                            ));
-                        }
-                        return Ok(());
+            match pipeline_ctrl_rx.recv().await {
+                Ok(PipelineReturnMsg::DeliverAck { ack }) => {
+                    if !expect_ack {
+                        return Err(format!("Got Ack but expected Nack {}", context));
                     }
-                    Ok(otap_df_engine::control::PipelineControlMsg::DeliverNack { nack }) => {
-                        if expect_ack {
-                            return Err(format!("Got Nack but expected Ack {}", context));
-                        }
-                        let (node_id, _nack) = next_nack(nack)
-                            .ok_or_else(|| format!("No nack subscriber found {}", context))?;
-                        if node_id != expected_node_id {
-                            return Err(format!(
-                                "Expected node_id {} but got {} {}",
-                                expected_node_id, node_id, context
-                            ));
-                        }
-                        return Ok(());
+                    let (node_id, _ack) = next_ack(ack)
+                        .ok_or_else(|| format!("No ack subscriber found {}", context))?;
+                    if node_id != expected_node_id {
+                        return Err(format!(
+                            "Expected node_id {} but got {} {}",
+                            expected_node_id, node_id, context
+                        ));
                     }
-                    Ok(_) => continue, // Skip non-Ack/Nack messages
-                    Err(_) => return Err(format!("Channel closed {}", context)),
+                    Ok(())
                 }
+                Ok(PipelineReturnMsg::DeliverNack { nack }) => {
+                    if expect_ack {
+                        return Err(format!("Got Nack but expected Ack {}", context));
+                    }
+                    let (node_id, _nack) = next_nack(nack)
+                        .ok_or_else(|| format!("No nack subscriber found {}", context))?;
+                    if node_id != expected_node_id {
+                        return Err(format!(
+                            "Expected node_id {} but got {} {}",
+                            expected_node_id, node_id, context
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(_) => Err(format!("Channel closed {}", context)),
             }
         })
         .await;
@@ -1009,7 +1009,7 @@ mod tests {
                 Box::pin(async move {
                     // Validate that we received 3 Acks
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
 
                     // Validate that we received 3 Acks with correct node_id
                     for i in 0..3 {
@@ -1075,7 +1075,8 @@ mod tests {
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
+        let (pipeline_return_msg_tx, pipeline_return_msg_rx) = pipeline_return_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1092,10 +1093,16 @@ mod tests {
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            pipeline_return_msg_tx: PipelineReturnMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    pipeline_return_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1108,7 +1115,7 @@ mod tests {
             server_shutdown_signal2: tokio::sync::oneshot::Sender<bool>,
             pdata_tx: Sender<OtapPdata>,
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
-            mut pipeline_ctrl_msg_rx: otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
+            mut pipeline_ctrl_msg_rx: otap_df_engine::control::PipelineReturnMsgReceiver<OtapPdata>,
             mut req_receiver: tokio::sync::mpsc::Receiver<OTLPData>,
             metrics_receiver: flume::Receiver<MetricSetSnapshot>,
             metrics_reporter: MetricsReporter,
@@ -1278,7 +1285,12 @@ mod tests {
 
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx, metrics_reporter.clone()),
+                start_exporter(
+                    exporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_return_msg_tx,
+                    metrics_reporter.clone(),
+                ),
                 drive_test(
                     server_startup_sender,
                     server_start_ack_receiver,
@@ -1287,7 +1299,7 @@ mod tests {
                     shutdown_sender2,
                     pdata_tx,
                     control_sender,
-                    pipeline_ctrl_msg_rx,
+                    pipeline_return_msg_rx,
                     req_receiver,
                     metrics_rx,
                     metrics_reporter

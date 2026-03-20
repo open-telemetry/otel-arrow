@@ -200,7 +200,7 @@ pub enum EventType {
 pub enum RequestEvent {
     /// A request to (re)start the pipeline lifecycle from a stopped state.
     StartRequested,
-    /// Begin graceful shutdown and quiesce existing work.
+    /// Begin graceful shutdown and drain existing work.
     ShutdownRequested,
     /// Request graceful deletion (drain if needed, then delete).
     DeleteRequested,

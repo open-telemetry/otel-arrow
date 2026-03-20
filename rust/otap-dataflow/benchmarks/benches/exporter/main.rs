@@ -60,7 +60,9 @@ use tonic::{Request, Response, Status};
 
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{
+    Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+};
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
@@ -454,6 +456,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
+                    let (pipeline_return_tx, _pipeline_return_rx) = pipeline_return_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(test_node("exporter"), pdata_receiver)
@@ -462,7 +465,12 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter, Interests::empty())
+                            .start(
+                                node_req_tx,
+                                pipeline_return_tx,
+                                metrics_reporter,
+                                Interests::empty(),
+                            )
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -519,6 +527,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
+                    let (pipeline_return_tx, _pipeline_return_rx) = pipeline_return_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(test_node("exporter"), pdata_receiver)
@@ -528,7 +537,12 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter, Interests::empty())
+                            .start(
+                                node_req_tx,
+                                pipeline_return_tx,
+                                metrics_reporter,
+                                Interests::empty(),
+                            )
                             .await
                             .expect("Exporter event loop failed")
                     });
@@ -590,6 +604,7 @@ fn bench_exporter(c: &mut Criterion) {
                     let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
                     let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
                     let (node_req_tx, _node_req_rx) = pipeline_ctrl_msg_channel(10);
+                    let (pipeline_return_tx, _pipeline_return_rx) = pipeline_return_msg_channel(10);
 
                     exporter
                         .set_pdata_receiver(test_node("exporter"), pdata_receiver)
@@ -599,7 +614,12 @@ fn bench_exporter(c: &mut Criterion) {
                     let local = LocalSet::new();
                     let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(node_req_tx, metrics_reporter, Interests::empty())
+                            .start(
+                                node_req_tx,
+                                pipeline_return_tx,
+                                metrics_reporter,
+                                Interests::empty(),
+                            )
                             .await
                             .expect("Exporter event loop failed")
                     });

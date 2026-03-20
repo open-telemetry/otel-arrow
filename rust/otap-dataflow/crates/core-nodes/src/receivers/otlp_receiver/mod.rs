@@ -51,6 +51,7 @@ use std::future::Future;
 use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -381,35 +382,26 @@ impl OTLPReceiver {
         &mut self,
         msg: NodeControlMsg<OtapPdata>,
         registry: &AckRegistry,
-        telemetry_cancel_handle: &mut Option<
+        _telemetry_cancel_handle: &mut Option<
             otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
         >,
-    ) -> Result<Option<TerminalState>, Error> {
+    ) -> Result<(), Error> {
         match msg {
-            NodeControlMsg::Shutdown { deadline, .. } => {
-                otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
-                let snapshot = self.metrics.lock().snapshot();
-                if let Some(handle) = telemetry_cancel_handle.take() {
-                    _ = handle.cancel().await;
-                }
-                Ok(Some(TerminalState::new(deadline, [snapshot])))
-            }
             NodeControlMsg::CollectTelemetry {
                 mut metrics_reporter,
             } => {
                 _ = metrics_reporter.report(&mut *self.metrics.lock());
-                Ok(None)
             }
             NodeControlMsg::Ack(ack) => {
                 self.handle_ack(registry, ack);
-                Ok(None)
             }
             NodeControlMsg::Nack(nack) => {
                 self.handle_nack(registry, nack);
-                Ok(None)
             }
-            _ => Ok(None),
+            NodeControlMsg::Shutdown { .. } | NodeControlMsg::DrainIngress { .. } => {}
+            _ => {}
         }
+        Ok(())
     }
 
     fn map_transport_error<E: std::error::Error + Send + Sync + 'static>(
@@ -511,52 +503,56 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let global_semaphore = (both_enabled && self.global_max_concurrent_requests.is_some())
             .then(|| Arc::new(Semaphore::new(global_max)));
 
+        let grpc_shutdown = CancellationToken::new();
+
         // Build gRPC server task if gRPC is enabled.
-        let grpc_task: Option<GrpcServerTask> =
-            if let Some(grpc_config) = &self.config.protocols.grpc {
-                let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
-                let incoming = grpc_config.build_tcp_incoming(listener);
+        let grpc_task: Option<GrpcServerTask> = if let Some(grpc_config) =
+            &self.config.protocols.grpc
+        {
+            let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
+            let incoming = grpc_config.build_tcp_incoming(listener);
 
-                // gRPC enforces its own per-protocol concurrency limit.
-                // When HTTP is also enabled, apply an additional global cap so the combined
-                // ingress cannot exceed downstream capacity.
-                //
-                // Important: `SharedConcurrencyLayer` acquires permits in `poll_ready` (not in
-                // `call`), so tonic will apply backpressure and stop accepting new HTTP/2
-                // streams when the shared pool is saturated. This avoids unbounded queuing of
-                // parked request futures holding decoded payloads in memory.
-                //
-                // TODO(optimization): When `grpc_max == global_max` (the default case after
-                // tuning), the per-protocol `GlobalConcurrencyLimitLayer` is redundant since
-                // both semaphores have the same capacity. We could skip it to save one
-                // semaphore acquire/release per request. However, the performance benefit is
-                // marginal (semaphore ops are ~nanoseconds), and keeping both layers preserves
-                // flexibility for users who explicitly set different per-protocol limits.
-                let limit_layer = if let Some(global) = global_semaphore.clone() {
-                    Either::Left(
-                        ServiceBuilder::new()
-                            .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
-                            .layer(SharedConcurrencyLayer::new(global)),
-                    )
-                } else {
-                    Either::Right(GlobalConcurrencyLimitLayer::new(grpc_max))
-                };
+            // gRPC enforces its own per-protocol concurrency limit.
+            // When HTTP is also enabled, apply an additional global cap so the combined
+            // ingress cannot exceed downstream capacity.
+            //
+            // Important: `SharedConcurrencyLayer` acquires permits in `poll_ready` (not in
+            // `call`), so tonic will apply backpressure and stop accepting new HTTP/2
+            // streams when the shared pool is saturated. This avoids unbounded queuing of
+            // parked request futures holding decoded payloads in memory.
+            //
+            // TODO(optimization): When `grpc_max == global_max` (the default case after
+            // tuning), the per-protocol `GlobalConcurrencyLimitLayer` is redundant since
+            // both semaphores have the same capacity. We could skip it to save one
+            // semaphore acquire/release per request. However, the performance benefit is
+            // marginal (semaphore ops are ~nanoseconds), and keeping both layers preserves
+            // flexibility for users who explicitly set different per-protocol limits.
+            let limit_layer = if let Some(global) = global_semaphore.clone() {
+                Either::Left(
+                    ServiceBuilder::new()
+                        .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
+                        .layer(SharedConcurrencyLayer::new(global)),
+                )
+            } else {
+                Either::Right(GlobalConcurrencyLimitLayer::new(grpc_max))
+            };
 
-                let mut server =
-                    common::apply_server_tuning(Server::builder(), grpc_config).layer(limit_layer);
+            let mut server =
+                common::apply_server_tuning(Server::builder(), grpc_config).layer(limit_layer);
 
-                if let Some(timeout) = grpc_config.timeout {
-                    server = server.timeout(timeout);
-                }
+            if let Some(timeout) = grpc_config.timeout {
+                server = server.timeout(timeout);
+            }
 
-                // Add the gRPC services.
-                let server = server
-                    .add_service(logs_server.expect("gRPC enabled but logs_server is None"))
-                    .add_service(metrics_server.expect("gRPC enabled but metrics_server is None"))
-                    .add_service(traces_server.expect("gRPC enabled but traces_server is None"));
+            // Add the gRPC services.
+            let server = server
+                .add_service(logs_server.expect("gRPC enabled but logs_server is None"))
+                .add_service(metrics_server.expect("gRPC enabled but metrics_server is None"))
+                .add_service(traces_server.expect("gRPC enabled but traces_server is None"));
 
-                #[cfg(feature = "experimental-tls")]
-                let maybe_tls_acceptor = build_tls_acceptor(grpc_config.tls.as_ref())
+            #[cfg(feature = "experimental-tls")]
+            let maybe_tls_acceptor =
+                build_tls_acceptor(grpc_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
@@ -565,31 +561,40 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         source_detail: format_error_sources(&e),
                     })?;
 
-                #[cfg(feature = "experimental-tls")]
-                let handshake_timeout = grpc_config.tls.as_ref().and_then(|t| t.handshake_timeout);
+            #[cfg(feature = "experimental-tls")]
+            let handshake_timeout = grpc_config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
-                let task: GrpcServerTask = {
-                    #[cfg(feature = "experimental-tls")]
-                    {
-                        match maybe_tls_acceptor {
-                            Some(tls_acceptor) => {
-                                let tls_stream =
-                                    create_tls_stream(incoming, tls_acceptor, handshake_timeout);
-                                Box::pin(server.serve_with_incoming(tls_stream))
-                            }
-                            None => Box::pin(server.serve_with_incoming(incoming)),
+            let task: GrpcServerTask = {
+                let grpc_shutdown = grpc_shutdown.clone();
+                #[cfg(feature = "experimental-tls")]
+                {
+                    match maybe_tls_acceptor {
+                        Some(tls_acceptor) => {
+                            let tls_stream =
+                                create_tls_stream(incoming, tls_acceptor, handshake_timeout);
+                            Box::pin(server.serve_with_incoming_shutdown(tls_stream, async move {
+                                grpc_shutdown.cancelled().await;
+                            }))
+                        }
+                        None => {
+                            Box::pin(server.serve_with_incoming_shutdown(incoming, async move {
+                                grpc_shutdown.cancelled().await;
+                            }))
                         }
                     }
-                    #[cfg(not(feature = "experimental-tls"))]
-                    {
-                        Box::pin(server.serve_with_incoming(incoming))
-                    }
-                };
-
-                Some(task)
-            } else {
-                None
+                }
+                #[cfg(not(feature = "experimental-tls"))]
+                {
+                    Box::pin(server.serve_with_incoming_shutdown(incoming, async move {
+                        grpc_shutdown.cancelled().await;
+                    }))
+                }
             };
+
+            Some(task)
+        } else {
+            None
+        };
 
         // Build HTTP server task if HTTP is enabled.
         let http_shutdown = CancellationToken::new();
@@ -621,6 +626,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 &ack_registry,
                 &mut telemetry_cancel_handle,
                 grpc_task,
+                grpc_shutdown,
                 http_task,
                 http_shutdown,
             )
@@ -647,6 +653,7 @@ impl OTLPReceiver {
             otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
         >,
         grpc_task: Option<GrpcServerTask>,
+        grpc_shutdown: CancellationToken,
         http_task: Option<HttpServerTask>,
         http_shutdown: CancellationToken,
     ) -> Result<TerminalState, Error> {
@@ -660,10 +667,48 @@ impl OTLPReceiver {
 
         let grpc_enabled = self.config.protocols.grpc.is_some();
         let http_enabled = self.config.protocols.http.is_some();
-        let mut http_task_done = false;
+        let mut grpc_task_done = !grpc_enabled;
+        let mut http_task_done = !http_enabled;
+        let mut draining_deadline: Option<Instant> = None;
+        let mut draining_reason: Option<String> = None;
+        let mut drain_deadline_sleep: Option<Pin<Box<tokio::time::Sleep>>> = None;
         let terminal_state: TerminalState;
 
         loop {
+            if let Some(deadline) = draining_deadline {
+                grpc_shutdown.cancel();
+                http_shutdown.cancel();
+
+                if Instant::now() >= deadline {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        ack_registry.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
+                } else if drain_deadline_sleep.is_none() {
+                    drain_deadline_sleep =
+                        Some(Box::pin(tokio::time::sleep_until(deadline.into())));
+                }
+
+                if grpc_task_done && http_task_done && ack_registry.is_empty() {
+                    if let Some(handle) = telemetry_cancel_handle.take() {
+                        _ = handle.cancel().await;
+                    }
+                    effect_handler.notify_receiver_drained().await?;
+                    terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
+                    break;
+                }
+            } else {
+                drain_deadline_sleep = None;
+            }
+
+            let mut drain_sleep = std::pin::pin!(std::future::poll_fn(|cx| {
+                if let Some(sleep) = drain_deadline_sleep.as_mut() {
+                    sleep.as_mut().poll(cx)
+                } else {
+                    Poll::Pending
+                }
+            }));
+
             tokio::select! {
                 biased;
 
@@ -671,13 +716,35 @@ impl OTLPReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(msg) => {
-                            if let Some(terminal) = self
-                                .handle_control_message(msg, ack_registry, telemetry_cancel_handle)
-                                .await?
-                            {
-                                http_shutdown.cancel();
-                                terminal_state = terminal;
-                                break;
+                            match msg {
+                                NodeControlMsg::DrainIngress { deadline, reason } => {
+                                    if draining_deadline.is_none() {
+                                        otap_df_telemetry::otel_info!("otlp.receiver.drain_ingress");
+                                        draining_deadline = Some(deadline);
+                                        draining_reason = Some(reason);
+                                        grpc_shutdown.cancel();
+                                        http_shutdown.cancel();
+                                    }
+                                }
+                                NodeControlMsg::Shutdown { deadline, reason } => {
+                                    otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
+                                    grpc_shutdown.cancel();
+                                    http_shutdown.cancel();
+                                    ack_registry.force_shutdown(&reason);
+                                    if let Some(handle) = telemetry_cancel_handle.take() {
+                                        _ = handle.cancel().await;
+                                    }
+                                    terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
+                                    break;
+                                }
+                                other => {
+                                    self.handle_control_message(
+                                        other,
+                                        ack_registry,
+                                        telemetry_cancel_handle,
+                                    )
+                                    .await?;
+                                }
                             }
                         }
                         Err(e) => {
@@ -690,43 +757,57 @@ impl OTLPReceiver {
                 },
 
                 // gRPC serving loop; exits on transport error or graceful stop.
-                result = &mut grpc_fut, if grpc_enabled => {
-                    if let Some(handle) = telemetry_cancel_handle.take() {
-                        _ = handle.cancel().await;
-                    }
+                result = &mut grpc_fut, if grpc_enabled && !grpc_task_done => {
+                    grpc_task_done = true;
                     if let Err(error) = result {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(effect_handler, error));
                     }
-                    terminal_state = TerminalState::new(
-                        Instant::now().add(Duration::from_secs(1)),
-                        [self.metrics.lock().snapshot()],
-                    );
-                    http_shutdown.cancel();
-                    break;
+                    if draining_deadline.is_none() {
+                        terminal_state = TerminalState::new(
+                            Instant::now().add(Duration::from_secs(1)),
+                            [self.metrics.lock().snapshot()],
+                        );
+                        http_shutdown.cancel();
+                        break;
+                    }
                 }
 
                 // HTTP serving loop; exits on IO error.
                 result = &mut http_fut, if http_enabled => {
-                    if let Some(handle) = telemetry_cancel_handle.take() {
-                        _ = handle.cancel().await;
-                    }
                     if let Err(error) = result {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(effect_handler, error));
                     }
                     http_task_done = true;
-                    terminal_state = TerminalState::new(
-                        Instant::now().add(Duration::from_secs(1)),
-                        [self.metrics.lock().snapshot()],
-                    );
-                    break;
+                    if draining_deadline.is_none() {
+                        terminal_state = TerminalState::new(
+                            Instant::now().add(Duration::from_secs(1)),
+                            [self.metrics.lock().snapshot()],
+                        );
+                        break;
+                    }
+                }
+
+                _ = &mut drain_sleep => {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        ack_registry.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
                 }
             }
         }
 
+        grpc_shutdown.cancel();
         // Ensure HTTP shutdown is triggered and wait for it to complete.
         http_shutdown.cancel();
+
+        if grpc_enabled && !grpc_task_done {
+            if let Err(error) = grpc_fut.await {
+                self.metrics.lock().transport_errors.inc();
+                return Err(self.map_transport_error(effect_handler, error));
+            }
+        }
 
         if http_enabled && !http_task_done {
             if let Err(error) = http_fut.await {
@@ -1416,8 +1497,19 @@ mod tests {
                     .await
                     .expect("Failed to send Shutdown");
 
-                let fail_client = LogsServiceClient::connect(grpc_endpoint.clone()).await;
-                assert!(fail_client.is_err(), "Server did not shutdown");
+                timeout(Duration::from_secs(1), async {
+                    loop {
+                        if LogsServiceClient::connect(grpc_endpoint.clone())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("Server did not shutdown");
             })
         }
     }

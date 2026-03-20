@@ -280,6 +280,31 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
+                                Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                                    let _ = timer_cancel_handle.cancel().await;
+                                    shutdown_flag.set(true);
+
+                                    let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
+                                    let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
+                                    let drain_result = tokio::time::timeout(drain_wait, async {
+                                        while active_task_count.get() > 0 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }).await;
+
+                                    if drain_result.is_err() {
+                                        otel_warn!(
+                                            "syslog_cef_receiver.drain_ingress.timeout",
+                                            active_tasks = active_task_count.get(),
+                                            message = "Ingress drain timeout expired with tasks still active"
+                                        );
+                                    }
+
+                                    effect_handler.notify_receiver_drained().await?;
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
+                                }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
                                     shutdown_flag.set(true); // Signal all connection tasks to flush and exit
@@ -647,6 +672,34 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
+                                Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                                    let _ = timer_cancel_handle.cancel().await;
+
+                                    if arrow_records_builder.len() > 0 {
+                                        let items = u64::from(arrow_records_builder.len());
+                                        match arrow_records_builder.build() {
+                                            Ok(arrow_records) => {
+                                                let res = effect_handler.try_send_message_with_source_node(
+                                                    OtapPdata::new_todo_context(arrow_records.into())
+                                                );
+                                                let mut m = self.metrics.borrow_mut();
+                                                match &res {
+                                                    Ok(_) => m.received_logs_forwarded.add(items),
+                                                    Err(_) => m.received_logs_forward_failed.add(items),
+                                                }
+                                            }
+                                            Err(e) => {
+                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
+                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
+                                            }
+                                        }
+                                    }
+
+                                    effect_handler.notify_receiver_drained().await?;
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
+                                }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
 

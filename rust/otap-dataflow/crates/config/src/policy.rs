@@ -61,6 +61,11 @@ impl Policies {
                 "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
             ));
         }
+        if channel_capacity.control.r#return == 0 {
+            errors.push(format!(
+                "{path_prefix}.channel_capacity.control.return must be greater than 0"
+            ));
+        }
         if channel_capacity.pdata == 0 {
             errors.push(format!(
                 "{path_prefix}.channel_capacity.pdata must be greater than 0"
@@ -222,6 +227,9 @@ pub struct ControlChannelCapacityPolicy {
     /// Capacity used for pipeline control channels.
     #[serde(default = "default_pipeline_control_channel_capacity")]
     pub pipeline: usize,
+    /// Capacity used for return-path Ack/Nack control channels.
+    #[serde(default = "default_return_control_channel_capacity", rename = "return")]
+    pub r#return: usize,
 }
 
 impl Default for ControlChannelCapacityPolicy {
@@ -229,6 +237,7 @@ impl Default for ControlChannelCapacityPolicy {
         Self {
             node: default_node_control_channel_capacity(),
             pipeline: default_pipeline_control_channel_capacity(),
+            r#return: default_return_control_channel_capacity(),
         }
     }
 }
@@ -239,6 +248,10 @@ const fn default_node_control_channel_capacity() -> usize {
 
 const fn default_pipeline_control_channel_capacity() -> usize {
     256
+}
+
+const fn default_return_control_channel_capacity() -> usize {
+    512
 }
 
 const fn default_pdata_channel_capacity() -> usize {

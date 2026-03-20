@@ -721,7 +721,7 @@ mod test {
     use otap_df_config::PortName;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{PipelineReturnMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
@@ -1241,7 +1241,7 @@ mod test {
                     }
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1249,17 +1249,14 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineReturnMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1311,7 +1308,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1319,7 +1316,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1338,11 +1335,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1400,7 +1394,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1408,7 +1402,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1426,11 +1420,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1496,7 +1487,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 3;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1504,7 +1495,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1522,11 +1513,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1586,7 +1574,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1594,7 +1582,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1612,17 +1600,101 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
                     assert_eq!(ack_count, num_expected_nacks);
 
                     server_cancellation_token.cancel();
+                })
+            })
+    }
+
+    #[test]
+    fn test_handles_invalid_otap_payloads() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = default_test_config(endpoint);
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        // this is something we won't be able to serialize into a valid OTLP payload.
+        // it would expect "resource" to be a struct column
+        let invalid_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "resource",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
+
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otap_batch,
+        ))];
+
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineReturnMsg::DeliverNack { nack } => {
+                                ack_count += 1;
+
+                                assert!(
+                                    nack.reason.contains("Column `resource` data type mismatch"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+
+                                assert!(
+                                    nack.permanent,
+                                    "expected malformed OTAP batch to be permanent nack"
+                                );
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineReturnMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
                 })
             })
     }
@@ -1670,7 +1742,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1678,7 +1750,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1701,11 +1773,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1760,7 +1829,7 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1768,7 +1837,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1790,11 +1859,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1893,7 +1959,7 @@ mod test {
                     }
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -1901,17 +1967,14 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineReturnMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -2086,7 +2149,7 @@ mod test {
                     );
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -2094,17 +2157,14 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineReturnMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -2169,7 +2229,7 @@ mod test {
 
                     let mut nack_count = 0;
                     let expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_return_receiver().unwrap();
                     loop {
                         let msg = match pipeline_ctrl_rx.recv().await {
                             Ok(msg) => msg,
@@ -2177,7 +2237,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineReturnMsg::DeliverNack { nack } => {
                                 nack_count += 1;
 
                                 assert!(
@@ -2192,11 +2252,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineReturnMsg::DeliverAck { .. } => {
                                 panic!("unexpected Ack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }

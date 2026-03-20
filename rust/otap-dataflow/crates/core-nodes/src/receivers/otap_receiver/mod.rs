@@ -48,7 +48,9 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::ops::Add;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
@@ -226,6 +228,26 @@ struct SharedStates {
     traces: Option<SharedState>,
 }
 
+impl SharedStates {
+    fn is_empty(&self) -> bool {
+        self.logs.as_ref().is_none_or(SharedState::is_empty)
+            && self.metrics.as_ref().is_none_or(SharedState::is_empty)
+            && self.traces.as_ref().is_none_or(SharedState::is_empty)
+    }
+
+    fn force_shutdown(&self, reason: &str) {
+        if let Some(state) = &self.logs {
+            state.force_shutdown(SignalType::Logs, reason);
+        }
+        if let Some(state) = &self.metrics {
+            state.force_shutdown(SignalType::Metrics, reason);
+        }
+        if let Some(state) = &self.traces {
+            state.force_shutdown(SignalType::Traces, reason);
+        }
+    }
+}
+
 // Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
 // The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
 //
@@ -309,80 +331,176 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             .add_service(traces_server);
 
         // Start periodic telemetry collection
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
+        let mut telemetry_cancel_handle = Some(
+            effect_handler
+                .start_periodic_telemetry(Duration::from_secs(1))
+                .await?,
+        );
 
-        tokio::select! {
-            biased; //prioritize ctrl_msg over all other blocks
-
-            // Process internal events
-            ctrl_msg_result = async {
-                loop {
-                    match ctrl_msg_recv.recv().await {
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
-                            let snapshot = self.metrics.snapshot();
-                            _ = telemetry_cancel_handle.cancel().await;
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
-                        },
-                        Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_ack_response(self.route_ack_response(&states, ack));
-                        },
-                        Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_nack_response(self.route_nack_response(&states, nack));
-                        },
-                        Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
-                        }
-                        _ => {
-                            // unknown control message do nothing
-                        }
-                    }
-                }
-            } => {
-                return ctrl_msg_result;
-            },
-
-            // Run server
-            // Note: Unlike otlp_receiver.rs, this uses an inline match because the server
-            // has a middleware layer applied which changes the Router type, making it
-            // incompatible with a shared helper function without complex generic bounds.
-            result = async {
+        let grpc_shutdown = CancellationToken::new();
+        let server_task = {
+            let grpc_shutdown = grpc_shutdown.clone();
+            async {
                 #[cfg(feature = "experimental-tls")]
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
-                        let tls_stream = create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
-                        server.serve_with_incoming(tls_stream).await
+                        let tls_stream =
+                            create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
+                        server
+                            .serve_with_incoming_shutdown(tls_stream, async move {
+                                grpc_shutdown.cancelled().await;
+                            })
+                            .await
                     }
-                    None => server.serve_with_incoming(listener_stream).await,
+                    None => {
+                        server
+                            .serve_with_incoming_shutdown(listener_stream, async move {
+                                grpc_shutdown.cancelled().await;
+                            })
+                            .await
+                    }
                 }
                 #[cfg(not(feature = "experimental-tls"))]
                 {
-                    server.serve_with_incoming(listener_stream).await
+                    server
+                        .serve_with_incoming_shutdown(listener_stream, async move {
+                            grpc_shutdown.cancelled().await;
+                        })
+                        .await
                 }
-            } => {
-                if let Err(error) = result {
-                    // Report receiver error
-                    let source_detail = format_error_sources(&error);
-                    return Err(Error::ReceiverError {
-                        receiver: effect_handler.receiver_id(),
-                        kind: ReceiverErrorKind::Transport,
-                        error: error.to_string(),
-                        source_detail,
-                    });
+            }
+        };
+        tokio::pin!(server_task);
+
+        let mut server_task_done = false;
+        let mut draining_deadline: Option<Instant> = None;
+        let mut draining_reason: Option<String> = None;
+        let mut drain_deadline_sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        let terminal_state: TerminalState;
+
+        loop {
+            if let Some(deadline) = draining_deadline {
+                grpc_shutdown.cancel();
+
+                if Instant::now() >= deadline {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        states.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
+                } else if drain_deadline_sleep.is_none() {
+                    drain_deadline_sleep =
+                        Some(Box::pin(tokio::time::sleep_until(deadline.into())));
+                }
+
+                if server_task_done && states.is_empty() {
+                    if let Some(handle) = telemetry_cancel_handle.take() {
+                        _ = handle.cancel().await;
+                    }
+                    effect_handler.notify_receiver_drained().await?;
+                    terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                    break;
+                }
+            } else {
+                drain_deadline_sleep = None;
+            }
+
+            let mut drain_sleep = std::pin::pin!(std::future::poll_fn(|cx| {
+                if let Some(sleep) = drain_deadline_sleep.as_mut() {
+                    sleep.as_mut().poll(cx)
+                } else {
+                    Poll::Pending
+                }
+            }));
+
+            tokio::select! {
+                biased;
+
+                ctrl_msg = ctrl_msg_recv.recv() => {
+                    match ctrl_msg {
+                        Ok(NodeControlMsg::DrainIngress { deadline, reason }) => {
+                            if draining_deadline.is_none() {
+                                otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
+                                draining_deadline = Some(deadline);
+                                draining_reason = Some(reason);
+                                grpc_shutdown.cancel();
+                            }
+                        }
+                        Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
+                            grpc_shutdown.cancel();
+                            states.force_shutdown(&reason);
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
+                            terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                            break;
+                        }
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            _ = metrics_reporter.report(&mut self.metrics);
+                        }
+                        Ok(NodeControlMsg::Ack(ack)) => {
+                            self.handle_ack_response(self.route_ack_response(&states, ack));
+                        }
+                        Ok(NodeControlMsg::Nack(nack)) => {
+                            self.handle_nack_response(self.route_nack_response(&states, nack));
+                        }
+                        Err(e) => {
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
+                            return Err(Error::ChannelRecvError(e));
+                        }
+                        _ => {}
+                    }
+                }
+
+                result = &mut server_task, if !server_task_done => {
+                    server_task_done = true;
+                    if let Err(error) = result {
+                        let source_detail = format_error_sources(&error);
+                        return Err(Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Transport,
+                            error: error.to_string(),
+                            source_detail,
+                        });
+                    }
+
+                    if draining_deadline.is_none() {
+                        if let Some(handle) = telemetry_cancel_handle.take() {
+                            _ = handle.cancel().await;
+                        }
+                        terminal_state = TerminalState::new(
+                            Instant::now().add(Duration::from_secs(1)),
+                            [self.metrics.snapshot()],
+                        );
+                        break;
+                    }
+                }
+
+                _ = &mut drain_sleep => {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        states.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
                 }
             }
         }
 
-        Ok(TerminalState::new(
-            Instant::now().add(Duration::from_secs(1)),
-            [self.metrics],
-        ))
+        grpc_shutdown.cancel();
+        if !server_task_done {
+            if let Err(error) = server_task.await {
+                let source_detail = format_error_sources(&error);
+                return Err(Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Transport,
+                    error: error.to_string(),
+                    source_detail,
+                });
+            }
+        }
+
+        Ok(terminal_state)
     }
 }
 

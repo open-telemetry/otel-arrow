@@ -50,6 +50,10 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 use tokio::time::{Sleep, sleep_until};
 
+/// Maximum number of consecutive control messages delivered before the channel
+/// forces one pdata attempt.
+const CONTROL_BURST_LIMIT: usize = 32;
+
 /// A trait for egress exporters (Send definition).
 #[async_trait]
 pub trait Exporter<PData> {
@@ -81,6 +85,8 @@ pub struct MessageChannel<PData> {
     node_id: usize,
     /// Node interests for entry-frame stamping via `ReceivedAtNode`.
     interests: Interests,
+    /// Number of consecutive control messages delivered without a pdata message.
+    consecutive_control: usize,
 }
 
 impl<PData> MessageChannel<PData> {
@@ -99,11 +105,23 @@ impl<PData> MessageChannel<PData> {
             pending_shutdown: None,
             node_id,
             interests,
+            consecutive_control: 0,
         }
     }
 }
 
 impl<PData: ReceivedAtNode> MessageChannel<PData> {
+    fn control_message(&mut self, msg: NodeControlMsg<PData>) -> Message<PData> {
+        self.consecutive_control = self.consecutive_control.saturating_add(1);
+        Message::Control(msg)
+    }
+
+    fn pdata_message(&mut self, mut pdata: PData) -> Message<PData> {
+        self.consecutive_control = 0;
+        pdata.received_at_node(self.node_id, self.interests);
+        Message::PData(pdata)
+    }
+
     /// Asynchronously receives the next message to process.
     ///
     /// Order of precedence:
@@ -111,7 +129,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
     /// 1. Before a `Shutdown` is seen: control messages are always
     ///    returned ahead of pdata.
     /// 2. After the first `Shutdown` is received:
-    ///    - All further control messages are silently discarded.
+    ///    - Control messages continue to be delivered while pdata drains.
     ///    - Pending pdata are drained until the shutdown deadline.
     /// 3. When the deadline expires (or was `0`): the stored `Shutdown` is returned.
     ///    Subsequent calls return `RecvError::Closed`.
@@ -146,70 +164,146 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
                     sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
                 }
 
-                // Drain pdata first, then timer, then other control msgs
-                tokio::select! {
-                    biased;
-
-                    // 1) Any pdata?
-                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
-                        Ok(mut pdata) => {
-                            pdata.received_at_node(self.node_id, self.interests);
-                            return Ok(Message::PData(pdata));
-                        }
-                        Err(_) => {
-                            // pdata channel closed → emit Shutdown
-                            let shutdown = self.pending_shutdown
+                if self.consecutive_control >= CONTROL_BURST_LIMIT {
+                    match self
+                        .pdata_rx
+                        .as_mut()
+                        .expect("pdata_rx must exist")
+                        .try_recv()
+                    {
+                        Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                        Err(RecvError::Closed) => {
+                            let shutdown = self
+                                .pending_shutdown
                                 .take()
                                 .expect("pending_shutdown must exist");
                             self.shutdown();
                             return Ok(Message::Control(shutdown));
                         }
-                    },
+                        Err(RecvError::Empty) => {}
+                    }
+                }
 
-                    // 2) Deadline hit?
-                    _ = sleep_until_deadline.as_mut().expect("sleep_until_deadline must exist") => {
-                        let shutdown = self.pending_shutdown
-                            .take()
-                            .expect("pending_shutdown must exist");
-                        self.shutdown();
-                        return Ok(Message::Control(shutdown));
+                if self.consecutive_control >= CONTROL_BURST_LIMIT {
+                    tokio::select! {
+                        biased;
+
+                        pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
+                            Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                            Err(_) => {
+                                let shutdown = self.pending_shutdown
+                                    .take()
+                                    .expect("pending_shutdown must exist");
+                                self.shutdown();
+                                return Ok(Message::Control(shutdown));
+                            }
+                        },
+
+                        _ = sleep_until_deadline.as_mut().expect("sleep_until_deadline must exist") => {
+                            let shutdown = self.pending_shutdown
+                                .take()
+                                .expect("pending_shutdown must exist");
+                            self.shutdown();
+                            return Ok(Message::Control(shutdown));
+                        },
+
+                        ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
+                            Ok(msg) => return Ok(self.control_message(msg)),
+                            Err(e) => return Err(e),
+                        },
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+
+                        _ = sleep_until_deadline.as_mut().expect("sleep_until_deadline must exist") => {
+                            let shutdown = self.pending_shutdown
+                                .take()
+                                .expect("pending_shutdown must exist");
+                            self.shutdown();
+                            return Ok(Message::Control(shutdown));
+                        },
+
+                        ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
+                            Ok(msg) => return Ok(self.control_message(msg)),
+                            Err(e) => return Err(e),
+                        },
+
+                        pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
+                            Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                            Err(_) => {
+                                let shutdown = self.pending_shutdown
+                                    .take()
+                                    .expect("pending_shutdown must exist");
+                                self.shutdown();
+                                return Ok(Message::Control(shutdown));
+                            }
+                        },
                     }
                 }
             }
 
             // Normal mode: no shutdown yet
-            tokio::select! {
-                biased;
+            if self.consecutive_control >= CONTROL_BURST_LIMIT {
+                match self
+                    .pdata_rx
+                    .as_mut()
+                    .expect("pdata_rx must exist")
+                    .try_recv()
+                {
+                    Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                    Err(RecvError::Closed) => return Err(RecvError::Closed),
+                    Err(RecvError::Empty) => {}
+                }
+            }
 
-                // A) Control first
-                ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
-                    Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                        if deadline.duration_since(Instant::now()).is_zero() {
-                            // Immediate shutdown, no draining
-                            self.shutdown();
-                            return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
-                        }
-                        // Begin draining mode, but don’t return Shutdown yet
-                        let when = deadline;
-                        self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
-                        continue; // re-enter the loop into draining mode
-                    }
-                    Ok(msg) => {
-                        return Ok(Message::Control(msg));
-                    }
-                    Err(e)  => return Err(e),
-                },
+            if self.consecutive_control >= CONTROL_BURST_LIMIT {
+                tokio::select! {
+                    biased;
 
-                // B) Then pdata
-                pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
-                    match pdata {
-                        Ok(mut pdata) => {
-                            pdata.received_at_node(self.node_id, self.interests);
-                            return Ok(Message::PData(pdata));
+                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
+                        match pdata {
+                            Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                            Err(e) => return Err(e),
                         }
-                        Err(e) => {
-                            return Err(e);
+                    }
+
+                    ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
+                        Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            if deadline.duration_since(Instant::now()).is_zero() {
+                                self.shutdown();
+                                return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
+                            }
+                            self.shutting_down_deadline = Some(deadline);
+                            self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
+                            continue;
+                        }
+                        Ok(msg) => return Ok(self.control_message(msg)),
+                        Err(e)  => return Err(e),
+                    },
+                }
+            } else {
+                tokio::select! {
+                    biased;
+
+                    ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
+                        Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            if deadline.duration_since(Instant::now()).is_zero() {
+                                self.shutdown();
+                                return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
+                            }
+                            self.shutting_down_deadline = Some(deadline);
+                            self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
+                            continue;
+                        }
+                        Ok(msg) => return Ok(self.control_message(msg)),
+                        Err(e)  => return Err(e),
+                    },
+
+                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
+                        match pdata {
+                            Ok(pdata) => return Ok(self.pdata_message(pdata)),
+                            Err(e) => return Err(e),
                         }
                     }
                 }
@@ -219,6 +313,7 @@ impl<PData: ReceivedAtNode> MessageChannel<PData> {
 
     fn shutdown(&mut self) {
         self.shutting_down_deadline = None;
+        self.consecutive_control = 0;
         drop(self.control_rx.take().expect("control_rx must exist"));
         drop(self.pdata_rx.take().expect("pdata_rx must exist"));
     }

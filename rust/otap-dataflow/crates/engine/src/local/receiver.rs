@@ -293,6 +293,11 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
+    /// Notifies the pipeline runtime that this receiver has completed ingress drain.
+    pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
+        self.core.notify_receiver_drained().await
+    }
+
     /// Reports metrics collected by the receiver.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(

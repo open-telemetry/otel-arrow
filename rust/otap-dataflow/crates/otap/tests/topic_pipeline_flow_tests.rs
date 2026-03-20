@@ -10,7 +10,9 @@ use otap_df_core_nodes::exporters::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORT
 use otap_df_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
 use otap_df_engine::Interests;
 use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
-use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{
+    Controllable, NodeControlMsg, pipeline_ctrl_msg_channel, pipeline_return_msg_channel,
+};
 use otap_df_engine::effect_handler::SourceTagging;
 use otap_df_engine::local::message::{LocalReceiver, LocalSender};
 use otap_df_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
@@ -113,20 +115,34 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let exporter_ctrl = exporter.control_sender();
         let receiver_ctrl = receiver.control_sender();
         let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+        let (pipeline_return_tx, _pipeline_return_rx) =
+            pipeline_return_msg_channel::<OtapPdata>(32);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let exporter_metrics = metrics_reporter.clone();
         let receiver_metrics = metrics_reporter.clone();
         let exporter_ctrl_tx = pipeline_ctrl_tx.clone();
         let receiver_ctrl_tx = pipeline_ctrl_tx.clone();
+        let exporter_return_tx = pipeline_return_tx.clone();
+        let receiver_return_tx = pipeline_return_tx.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
-                .start(exporter_ctrl_tx, exporter_metrics, Interests::empty())
+                .start(
+                    exporter_ctrl_tx,
+                    exporter_return_tx,
+                    exporter_metrics,
+                    Interests::empty(),
+                )
                 .await
         });
         let receiver_task = tokio::task::spawn_local(async move {
             receiver
-                .start(receiver_ctrl_tx, receiver_metrics, Interests::empty())
+                .start(
+                    receiver_ctrl_tx,
+                    receiver_return_tx,
+                    receiver_metrics,
+                    Interests::empty(),
+                )
                 .await
         });
 
@@ -249,20 +265,34 @@ fn topic_receiver_applies_source_tag_when_enabled() {
         let exporter_ctrl = exporter.control_sender();
         let receiver_ctrl = receiver.control_sender();
         let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+        let (pipeline_return_tx, _pipeline_return_rx) =
+            pipeline_return_msg_channel::<OtapPdata>(32);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let exporter_metrics = metrics_reporter.clone();
         let receiver_metrics = metrics_reporter.clone();
         let exporter_ctrl_tx = pipeline_ctrl_tx.clone();
         let receiver_ctrl_tx = pipeline_ctrl_tx.clone();
+        let exporter_return_tx = pipeline_return_tx.clone();
+        let receiver_return_tx = pipeline_return_tx.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
-                .start(exporter_ctrl_tx, exporter_metrics, Interests::empty())
+                .start(
+                    exporter_ctrl_tx,
+                    exporter_return_tx,
+                    exporter_metrics,
+                    Interests::empty(),
+                )
                 .await
         });
         let receiver_task = tokio::task::spawn_local(async move {
             receiver
-                .start(receiver_ctrl_tx, receiver_metrics, Interests::empty())
+                .start(
+                    receiver_ctrl_tx,
+                    receiver_return_tx,
+                    receiver_metrics,
+                    Interests::empty(),
+                )
                 .await
         });
 

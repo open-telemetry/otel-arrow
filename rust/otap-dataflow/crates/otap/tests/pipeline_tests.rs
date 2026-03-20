@@ -21,7 +21,9 @@ use otap_df_core_nodes::receivers::fake_data_generator::config::{
 };
 use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{
+    PipelineControlMsg, pipeline_ctrl_msg_channel, pipeline_return_msg_channel,
+};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_state::store::ObservedStateStore;
@@ -74,6 +76,8 @@ fn test_telemetry_registries_cleanup() {
 
     let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
         pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_return_tx, pipeline_return_rx) =
+        pipeline_return_msg_channel(channel_capacity_policy.control.r#return);
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -107,6 +111,8 @@ fn test_telemetry_registries_cleanup() {
             metrics_reporter,
             pipeline_ctrl_tx,
             pipeline_ctrl_rx,
+            pipeline_return_tx,
+            pipeline_return_rx,
         )
     };
     let _ = shutdown_handle.join();

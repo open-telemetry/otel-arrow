@@ -299,6 +299,18 @@ impl<PData> EffectHandler<PData> {
             .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
     }
 
+    /// Sets the pipeline return message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_pipeline_return_msg_sender(
+        &mut self,
+        pipeline_return_msg_sender: crate::control::PipelineReturnMsgSender<PData>,
+    ) {
+        self.core
+            .set_pipeline_return_msg_sender(pipeline_return_msg_sender);
+    }
+
     // More methods will be added in the future as needed.
 }
 
