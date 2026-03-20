@@ -883,13 +883,6 @@ fn merge_value_column(
         );
     }
 
-    // Batched path: one or more active upserts.
-    //
-    // Strategy: if dictionary encoding supported for the column, try to merge everything via
-    // a unified dictionary first (merging u16 keys without decoding to plain). If dict encoding
-    // not supported or the dict would overflow fall back to the primitive path using
-    // MutableArrayData with decoded-to-plain sources.
-
     // try to merge into a dict column if supported and new values will fit
     let dict_encoding_supported = values_column_supports_dictionary_encoding(col_name);
     if dict_encoding_supported
@@ -904,6 +897,8 @@ fn merge_value_column(
         );
     }
 
+    // dict encoding is either not supported, or the new column has too high cardinality so
+    // fallback to plain encoded column
     let existing_plain = decode_to_plain(existing_col)?;
     let mut source_arrays: SmallVec<[ArrayRef; SMALLVEC_SIZE]> =
         SmallVec::with_capacity(1 + active_indices.len());
@@ -1022,7 +1017,7 @@ enum ActiveKeys {
 /// Identifier of a upsert that is being used to merge new values to some particular
 /// values column. Used internally when merging new values into existing values column
 /// or when creating a new values column.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ActiveSource {
     source_idx: usize,
     is_scalar: bool,
@@ -1610,11 +1605,11 @@ fn merge_passthrough_column(
     }
 
     let result = make_array(mutable.freeze());
-    let new_field = if !field.is_nullable() && result.null_count() > 0 {
-        field.as_ref().clone().with_nullable(true)
-    } else {
-        field.as_ref().clone()
-    };
+    let new_field = field
+        .as_ref()
+        .clone()
+        .with_data_type(result.data_type().clone())
+        .with_nullable(true);
     Ok((new_field, result))
 }
 
@@ -1905,11 +1900,11 @@ mod tests {
 
     #[test]
     fn test_merge_plain_utf8_with_plain_utf8() {
-        // Existing: plain Utf8 ["a", "b", "c"]
+        // Existing: plain Utf8 ["a", "b", "c", "c"]
         // New: plain Utf8 ["d", "e"] (1 update + 1 insert)
-        // Mask: [true, false, false] — row 0 updated
-        // Expected output: ["d", "b", "c", "e"] (dict-encoded since Utf8 is dict-eligible)
-        let existing = Arc::new(StringArray::from_iter_values(["a", "b", "c"])) as ArrayRef;
+        // Mask: [true, false, false, false] — row 0 updated
+        // Expected output: ["d", "b", "c", "c", "e"] (dict-encoded since Utf8 is dict-eligible)
+        let existing = Arc::new(StringArray::from_iter_values(["a", "b", "c", "c"])) as ArrayRef;
         let new_arr = Arc::new(StringArray::from_iter_values(["d", "e"])) as ArrayRef;
         let field = Field::new("str", DataType::Utf8, true);
         let mask = BooleanArray::from(vec![true, false, false]);
@@ -1923,7 +1918,7 @@ mod tests {
             consts::ATTRIBUTE_STR,
             1,
             1,
-            4,
+            5,
         )
         .unwrap();
 
@@ -1936,11 +1931,12 @@ mod tests {
 
         let plain = cast(&result_col, &DataType::Utf8).unwrap();
         let strs = plain.as_any().downcast_ref::<StringArray>().unwrap();
-        assert_eq!(strs.len(), 4);
+        assert_eq!(strs.len(), 5);
         assert_eq!(strs.value(0), "d"); // update
         assert_eq!(strs.value(1), "b"); // passthrough
         assert_eq!(strs.value(2), "c"); // passthrough
-        assert_eq!(strs.value(3), "e"); // insert
+        assert_eq!(strs.value(3), "c"); // passthrough
+        assert_eq!(strs.value(4), "e"); // insert
     }
 
     #[test]

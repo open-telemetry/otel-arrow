@@ -1360,12 +1360,15 @@ mod test {
                 arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::Metric,
                 resource::v1::Resource,
                 trace::v1::Span,
             },
         },
         schema::consts,
-        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data, to_traces_data},
+        testing::round_trip::{
+            otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
+        },
     };
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
@@ -2211,6 +2214,94 @@ mod test {
         test_upserts_attribute_computed_from_self::<KqlParser>().await
     }
 
+    async fn test_set_attributes_on_spans<P: Parser>() {
+        let traces_data = to_traces_data(vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("coffee"))])
+                .finish(),
+            Span::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("arrow"))])
+                .finish(),
+        ]);
+        let query = "traces | extend attributes[\"x\"] = \"hello\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Traces(result_spans_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let span_0 = &result_spans_data.resource_spans[0].scope_spans[0].spans[0];
+        assert_eq!(
+            span_0.attributes,
+            vec![KeyValue::new("x", AnyValue::new_string("hello")),]
+        );
+        let span_1 = &result_spans_data.resource_spans[0].scope_spans[0].spans[1];
+        assert_eq!(
+            span_1.attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("arrow")),
+                KeyValue::new("x", AnyValue::new_string("hello")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_attributes_on_spans_opl_parser() {
+        test_set_attributes_on_spans::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_attributes_on_spans_kql_parser() {
+        test_set_attributes_on_spans::<KqlParser>().await
+    }
+
+    async fn test_set_attributes_on_metrics<P: Parser>() {
+        let metrics_data = to_metrics_data(vec![
+            Metric::build()
+                .metadata(vec![KeyValue::new("x", AnyValue::new_string("coffee"))])
+                .finish(),
+            Metric::build()
+                .metadata(vec![KeyValue::new("y", AnyValue::new_string("arrow"))])
+                .finish(),
+        ]);
+        let query = "metrics | extend attributes[\"x\"] = \"hello\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Metrics(resource_metric_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let metric_0 = &resource_metric_data.resource_metrics[0].scope_metrics[0].metrics[0];
+        assert_eq!(
+            metric_0.metadata,
+            vec![KeyValue::new("x", AnyValue::new_string("hello")),]
+        );
+        let metric_1 = &resource_metric_data.resource_metrics[0].scope_metrics[0].metrics[1];
+        assert_eq!(
+            metric_1.metadata,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("arrow")),
+                KeyValue::new("x", AnyValue::new_string("hello")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_attributes_on_metrics_opl_parser() {
+        test_set_attributes_on_metrics::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_attributes_on_metrics_kql_parser() {
+        test_set_attributes_on_metrics::<KqlParser>().await
+    }
+
     #[tokio::test]
     async fn test_inserts_attributes_when_eval_result_null() {
         let logs_data = to_logs_data(vec![
@@ -2294,10 +2385,13 @@ mod test {
                 .attributes(vec![KeyValue::new("z", AnyValue::new_int(14))])
                 .event_name("event2")
                 .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(514))])
+                .event_name("event2")
+                .finish(),
             LogRecord::build().event_name("event3").finish(),
         ]);
 
-        // there is no attribute z
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"] * 2";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -2329,6 +2423,15 @@ mod test {
         let log_2 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[2];
         assert_eq!(
             log_2.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(514)),
+                KeyValue::new("y", AnyValue::new_int(1028)),
+            ]
+        );
+
+        let log_3 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[3];
+        assert_eq!(
+            log_3.attributes,
             vec![KeyValue::new("y", AnyValue { value: None }),]
         );
     }
@@ -2350,6 +2453,13 @@ mod test {
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
                 .event_name("event3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_int(5)),
+                    KeyValue::new("z", AnyValue::new_int(514)),
+                ])
+                .event_name("event4")
                 .finish(),
         ]);
 
@@ -2383,6 +2493,14 @@ mod test {
         assert_eq!(
             log_2.attributes,
             vec![KeyValue::new("x", AnyValue { value: None }),]
+        );
+        let log_3 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[3];
+        assert_eq!(
+            log_3.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(514)),
+                KeyValue::new("z", AnyValue::new_int(514)),
+            ]
         );
     }
 
@@ -2457,7 +2575,7 @@ mod test {
 
     /// this test is different than the insert test above because we're inserting into new
     /// values columns instead of creating new ones
-    async fn test_upserts_attribute_non_string_types<P: Parser>() {
+    async fn test_upserts_attribute_non_string_types_from_static<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
@@ -2528,12 +2646,91 @@ mod test {
 
     #[tokio::test]
     async fn test_upserts_attribute_non_string_types_opl_parser() {
-        test_upserts_attribute_non_string_types::<OplParser>().await
+        test_upserts_attribute_non_string_types_from_static::<OplParser>().await
     }
 
     #[tokio::test]
     async fn test_upsert_attribute_non_string_types_kql_parser() {
-        test_upserts_attribute_non_string_types::<KqlParser>().await
+        test_upserts_attribute_non_string_types_from_static::<KqlParser>().await
+    }
+
+    async fn test_upserts_attribute_non_string_types_from_expr<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("k_int", AnyValue::new_int(9)),
+                    KeyValue::new("k_int2", AnyValue::new_int(10)),
+                    KeyValue::new("k_bool", AnyValue::new_bool(false)),
+                    KeyValue::new("k_double", AnyValue::new_double(2)),
+                    KeyValue::new("k_double2", AnyValue::new_double(4)),
+                ])
+                .event_name("event1")
+                .finish(),
+        ]);
+        let query = "logs | 
+            extend
+                attributes[\"k_int2\"] = attributes[\"k_int\"],
+                attributes[\"k_bool2\"] = attributes[\"k_bool\"], 
+                attributes[\"k_double2\"] = attributes[\"k_double\"]
+        ";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // double check the columns that were inserted have the correct types
+        // (here we're concerned mostly about whether they're dict encoded or not)
+        let attrs_rb = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .unwrap()
+                .data_type(),
+            &DataType::Boolean
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .unwrap()
+                .data_type(),
+            &DataType::Float64
+        );
+        assert_eq!(
+            attrs_rb
+                .column_by_name(consts::ATTRIBUTE_INT)
+                .unwrap()
+                .data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64))
+        );
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("a")),
+                KeyValue::new("k_int", AnyValue::new_int(9)),
+                KeyValue::new("k_int2", AnyValue::new_int(9)),
+                KeyValue::new("k_bool", AnyValue::new_bool(false)),
+                KeyValue::new("k_double", AnyValue::new_double(2.0)),
+                KeyValue::new("k_double2", AnyValue::new_double(2.0)),
+                KeyValue::new("k_bool2", AnyValue::new_bool(false)),
+            ]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_upserts_attribute_non_string_types_from_expr_opl_parser() {
+        test_upserts_attribute_non_string_types_from_expr::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_upserts_attribute_non_string_types_from_expr_kql_parser() {
+        test_upserts_attribute_non_string_types_from_expr::<KqlParser>().await
     }
 
     async fn test_upserts_attribute_computed_from_existing_non_root_attr<P: Parser>() {
@@ -2813,6 +3010,67 @@ mod test {
             resource.attributes,
             vec![
                 KeyValue::new("y", AnyValue::new_string("b2")),
+                KeyValue::new("x", AnyValue::new_string("b2")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_can_assign_scope_attribute_from_resource_attribute() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![
+                        KeyValue::new("x", AnyValue::new_string("a")),
+                        KeyValue::new("y", AnyValue::new_string("b1")),
+                    ])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("s"))])
+                        .finish(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("b2"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("z", AnyValue::new_string("s"))])
+                        .finish(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query =
+            "logs | extend instrumentation_scope.attributes[\"x\"] = resource.attributes[\"y\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let scope_0 = &result_logs_data.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            scope_0.attributes,
+            vec![KeyValue::new("x", AnyValue::new_string("b1")),]
+        );
+        let scope_1 = &result_logs_data.resource_logs[1].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            scope_1.attributes,
+            vec![
+                KeyValue::new("z", AnyValue::new_string("s")),
                 KeyValue::new("x", AnyValue::new_string("b2")),
             ]
         );
@@ -3241,6 +3499,19 @@ mod test {
         let err_msg = err.to_string();
         assert!(
             err_msg.contains("cannot assign data scope Attributes(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            "unexpected error message {}",
+            err_msg
+        );
+
+        // ensure we detect invalid assignments if the assignment is somehow deeply nested in some
+        // expression requiring join
+        let query = "logs | extend resource.attributes[\"y\"] = resource.attributes[\"x\"] * attributes[\"y\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input.clone()).await.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cannot assign data scope Attributes(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );

@@ -569,15 +569,15 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let logical_planner = ExprLogicalPlanner::default();
 
-        // when doing multiple assignments in bulk, the underlying Assignment pipeline stage makes
+        // When doing multiple assignments in bulk, the underlying Assignment pipeline stage makes
         // no guarantees about the logical order in which the assignments are executed. This can
         // lead to ambiguity about the final result if the same column or attribute key is used
-        // in multiple expressions.For example, if we combine two expressions like:
-        // `attributes["x"] = "y"` and `attributes["x"] = "z"` the order result would be different
+        // in multiple expressions. For example, if we combine two expressions like:
+        // `attributes["x"] = "y"` and `attributes["x"] = "z"` the end result would be different
         // depending on which executed "first". Similar situation exist for cases like:
         // `attributes["x"] = "A"` and `attributes["y"] = attributes["x"]`.
         //
-        // to avoid the ambiguity, we keep track of which keys or columns used in the combined
+        // To avoid the ambiguity, we keep track of which keys or columns used in the combined
         // expressions in this set..
         let mut cols_or_keys_referenced = HashSet::new();
 
