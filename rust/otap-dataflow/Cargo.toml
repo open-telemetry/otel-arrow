@@ -41,6 +41,9 @@ serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 sysinfo.workspace = true
+dhat = "0.3.3"
+ctrlc = "3"
+once_cell = "1"
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -217,6 +220,9 @@ aws = ["otap-df-otap/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+dhat-heap = []    # if you are doing heap profiling
+dhat-ad-hoc = []  # if you are doing ad hoc profiling
+
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
@@ -299,6 +305,10 @@ missing_crate_level_docs = "deny"
 
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
+
+[profile.profiling]
+inherits = "release"
+debug = 2
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
 #[profile.release]

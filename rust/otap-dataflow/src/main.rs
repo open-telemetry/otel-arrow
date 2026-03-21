@@ -23,6 +23,13 @@ use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
+use ctrlc;
+#[cfg(feature = "dhat-heap")]
+use once_cell::sync::Lazy;
+#[cfg(feature = "dhat-heap")]
+use std::sync::Mutex;
+#[cfg(feature = "dhat-heap")]
+use dhat::Profiler;
 
 #[cfg(all(
     not(windows),
@@ -288,7 +295,25 @@ fn validate_engine_components(
     Ok(())
 }
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc; // 1. The actual allocator
+#[cfg(feature = "dhat-heap")]
+static DHAT_PROFILER: Lazy<Mutex<Option<Profiler>>> = Lazy::new(|| Mutex::new(None));
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "dhat-heap")]
+    ctrlc::set_handler(|| {
+        if let Ok(mut guard) = DHAT_PROFILER.lock() {
+            // This triggers the drop and the file write
+            guard.take(); 
+        }
+        std::process::exit(130);
+    })?;
+    #[cfg(feature = "dhat-heap")]
+    {
+        let mut profiler = DHAT_PROFILER.lock().unwrap();
+        *profiler = Some(dhat::Profiler::new_heap());
+    }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()
