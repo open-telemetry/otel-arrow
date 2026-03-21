@@ -80,23 +80,17 @@ fn bench_fill_batch(c: &mut Criterion) {
                     .collect();
                 let (rows_per_batch, compressed_size) = {
                     let mut batcher = GzipBatcher::new(level);
-                    let mut count = 0usize;
                     for entry in &pool {
-                        count += 1;
                         match batcher.push(entry.clone()).expect("push failed") {
                             PushResult::Ok(_) => continue,
                             PushResult::BatchReady(_) => break,
                             PushResult::TooLarge => panic!("entry should fit"),
                         }
                     }
-                    assert!(
-                        count < pool.len(),
-                        "need more pre-generated entries for {kind}/{entry_size}/level_{level}"
-                    );
                     let batch = batcher
                         .take_pending_batch()
                         .expect("no batch after dry-run");
-                    (count, batch.compressed_data.len())
+                    (batch.row_count as usize, batch.compressed_data.len())
                 };
 
                 // Pre-generate exactly the right amount of unique entries
@@ -118,25 +112,28 @@ fn bench_fill_batch(c: &mut Criterion) {
                     BenchmarkId::new(format!("{kind}/level_{level}"), entry_size),
                     &entries,
                     |b, entries| {
-                        b.iter(|| {
-                            let mut batcher = GzipBatcher::new(level);
-                            for entry in entries {
-                                match batcher.push(entry.clone()).expect("push failed") {
-                                    PushResult::Ok(_) => continue,
-                                    PushResult::BatchReady(_) => {
-                                        let batch =
-                                            batcher.take_pending_batch().expect("no pending batch");
-                                        assert!(batch.row_count > 0);
-                                        return;
+                        b.iter_with_setup(
+                            || GzipBatcher::new(level),
+                            |mut batcher| {
+                                for entry in entries {
+                                    match batcher.push(entry.clone()).expect("push failed") {
+                                        PushResult::Ok(_) => continue,
+                                        PushResult::BatchReady(_) => {
+                                            let batch = batcher
+                                                .take_pending_batch()
+                                                .expect("no pending batch");
+                                            assert!(batch.row_count > 0);
+                                            return;
+                                        }
+                                        PushResult::TooLarge => panic!("entry should fit"),
                                     }
-                                    PushResult::TooLarge => panic!("entry should fit"),
                                 }
-                            }
-                            // If we didn't hit BatchReady, finalize what we have
-                            batcher.finalize().expect("finalize failed");
-                            let batch = batcher.take_pending_batch().expect("no pending batch");
-                            assert!(batch.row_count > 0);
-                        });
+                                // If we didn't hit BatchReady, finalize what we have
+                                batcher.finalize().expect("finalize failed");
+                                let batch = batcher.take_pending_batch().expect("no pending batch");
+                                assert!(batch.row_count > 0);
+                            },
+                        );
                     },
                 );
             }

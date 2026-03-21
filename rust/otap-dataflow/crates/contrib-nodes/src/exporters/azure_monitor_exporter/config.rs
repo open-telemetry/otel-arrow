@@ -80,6 +80,20 @@ fn default_scope() -> String {
     "https://monitor.azure.com/.default".to_string()
 }
 
+/// Default compression level. Level 6 provides a good starting point for most workloads.
+/// Tuning is recommended based on whether the pipeline is more CPU-bound (lower levels)
+/// or network-bound (higher levels), and the typical payload size.
+///
+/// On a basic pipeline (otlp recv -> azure_monitor exp), with wait_for_result: true enabled,
+/// on a Mac with M4Pro and 1KB random (highly incompressible) payloads, these throughput
+/// numbers were observed:
+/// level 1: ~20k/s
+/// level 6: ~23k/s
+/// level 9: ~25k/s
+///
+/// Default is chosen as 6 due to that being the default prior to adding this configuration option,
+/// and could be changed based on observed performance characteristics in production, and performance
+/// tests with realistic payloads representative of production workloads.
 fn default_gzip_compression_level() -> u32 {
     6
 }
@@ -103,7 +117,11 @@ pub struct ApiConfig {
     /// Arm Resource ID header for the logs exported to Azure Monitor (optional)
     pub azure_monitor_source_resourceid: Option<String>,
 
-    /// Gzip compression level (0-9) for batch payloads. Defaults to 6.
+    /// Gzip compression level for batch payloads. Defaults to 6.
+    /// - 0: no compression (lowest CPU, largest payloads)
+    /// - 1: fast compression (low CPU, slightly larger payloads)
+    /// - 6: balanced (default, good ratio at moderate CPU)
+    /// - 9: maximum compression (highest CPU, marginal size reduction over 6)
     #[serde(default = "default_gzip_compression_level")]
     pub gzip_compression_level: u32,
 }
@@ -554,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gzip_compression_level_10_rejected() {
+    fn test_gzip_compression_level_60_rejected() {
         let config = Config {
             api: ApiConfig {
                 gzip_compression_level: 60,

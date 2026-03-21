@@ -7,11 +7,19 @@ use flate2::write::GzEncoder;
 use std::io::Write;
 
 use super::error::Error;
-
-// const TARGET_LIMIT: usize = 1024 * 1024 - 30; // Uncomment this to run test_replay_seed_89 to reproduce gzip framing overhead issue.
-
 // Conservative target to stay under 1MB after gzip overhead and compression variability.
 // Leaves sufficient headroom for gzip overhead and compression variability.
+//
+// Original headroom was 30 bytes and would in rare cases seem to be insufficient.
+// After benchmarking and analysis of gzip compression overhead with various, mixed and static
+// data profiles with different levels of entropy and compression levels, and the theoretical gzip
+// framing overhead, combined with the limited flush count set via MAX_GZIP_FLUSH_COUNT
+// (which adds to the overhead) setting the headroom to 4KB seemed to leave a very comfortable margin,
+// with observed headroom of at least 4000 bytes in worst-case scenarios in testing.
+//
+// This can be adjusted to squeeze in more data based on the `batch_size` metric peaks observed in production workloads.
+
+// const TARGET_LIMIT: usize = 1024 * 1024 - 30; // Uncomment this to run test_replay_seed_89 to reproduce gzip framing overhead issue.
 const TARGET_LIMIT: usize = 1020 * 1024;
 const MAX_GZIP_FLUSH_COUNT: usize = 100;
 
@@ -714,7 +722,11 @@ mod tests {
         format!("{base}{val}{closing}").into_bytes()
     }
 
-    /// Replay seed 89 to inspect the batch that came closest to 1MB.
+    /// Replay seed 89: verifies the batch stays under 1 MiB with
+    /// highly incompressible data near the limit boundary. This is
+    /// also a reproduction test for the gzip framing overhead issue
+    /// that was observed in rare cases in early testing when the
+    /// headroom for gzip overhead was set to 30 bytes.
     #[test]
     fn test_replay_seed_89() {
         use rand::SeedableRng;
@@ -779,6 +791,11 @@ mod tests {
                     eprintln!(
                         "Gap to ONE_MB: {} bytes",
                         ONE_MB.saturating_sub(batch.compressed_data.len())
+                    );
+                    assert!(
+                        batch.compressed_data.len() <= ONE_MB,
+                        "Batch {} exceeds 1 MiB",
+                        batch.compressed_data.len()
                     );
                     break;
                 }
