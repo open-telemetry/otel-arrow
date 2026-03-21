@@ -89,11 +89,15 @@ tests:
         collector_config_template: test_suites/integration/templates/configs/otelcol/otlp-filter-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
-  - name: OTAP-FILTER-OTAP (Go Collector)
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-otel.yaml
-      variables:
-        result_dir: "otelcol_filter"
-        collector_config_template: test_suites/integration/templates/configs/otelcol/otap-filter-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
+
+  # Disabled because we need this fix to be released and to bump versions after:
+  #   https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/46879
+  #
+  # - name: OTAP-FILTER-OTAP (Go Collector)
+  #   from_template:
+  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-otel.yaml
+  #     variables:
+  #       result_dir: "otelcol_filter"
+  #       collector_config_template: test_suites/integration/templates/configs/otelcol/otap-filter-otap.yaml
+  #       loadgen_exporter_type: otap
+  #       backend_receiver_type: otap
