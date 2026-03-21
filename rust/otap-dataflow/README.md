@@ -386,6 +386,49 @@ cargo run --example <example_name>
 docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 ```
 
+## Profiling
+
+This section covers Memory & CPU Profiling for df_engine using dhat-rs and samply profilers respectively.
+
+**Requirements**:
+
+- dhat-rs (https://docs.rs/dhat/latest/dhat/)
+- samply (https://github.com/mstange/samply)
+
+**Installation**
+
+cargo install --locked samply
+
+Note: dhat-rs is a library crate designed for heap profiling in Rust programs.
+      Hence it does not require explicit installation.
+
+**Build**:
+
+**Build for both CPU & Memory profiling**:
+cargo build --profile profiling --features dhat-heap --workspace
+
+**Build for only CPU profiling**:
+cargo build --profile profiling --workspace
+
+**Run**:
+
+**Run with both Memory & CPU profiling enabled**:
+samply record ./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
+
+**Run with only Memory profiling enabled**:
+./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
+
+**Result**
+
+On successful termination of df_engine.exe, it will generate dhat-heap.json file
+for Memory profiling that need to be rendered by uploading it to:
+https://nnethercote.github.io/dh_view/.
+
+CPU profiling output will be automatically renderd on browser.
+
+Note: dhat needs a clean shutdown to generate dhat-heap.json file. In df_engine 
+      this can be done manually with Ctrl-C.
+
 ## Contributing
 
 - [Contribution Guidelines](CONTRIBUTING.md)
