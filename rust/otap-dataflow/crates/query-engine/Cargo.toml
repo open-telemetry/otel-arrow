@@ -15,10 +15,11 @@ datafusion = { workspace = true }
 futures-core = { workspace = true }
 parking_lot = { workspace = true }
 roaring = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 
-otap-df-pdata = { path = "../pdata" }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
@@ -31,8 +32,15 @@ tokio = { workspace = true }
 otap-df-opl = { path = "../opl" }
 otap-df-pdata = { path = "../pdata", features = ["testing"] }
 
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
+
 [[bench]]
 name = "filter"
+harness = false
+
+[[bench]]
+name = "assign_attributes"
 harness = false
 
 [lints]

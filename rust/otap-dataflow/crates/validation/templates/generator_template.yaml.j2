@@ -53,7 +53,11 @@
     suv_exporter:
       type: {{ suv_exporter_plugin_urn }}
       config:
+{% if tls_enabled %}
+        grpc_endpoint: https://127.0.0.1:{{ suv_port }}
+{% else %}
         grpc_endpoint: http://127.0.0.1:{{ suv_port }}
+{% endif %}
 {% if suv_exporter_type == "otap" -%}
         compression_method: none
         arrow:

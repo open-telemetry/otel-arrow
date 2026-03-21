@@ -8,8 +8,6 @@ use std::io::Write;
 
 use super::error::Error;
 
-const ONE_MB: usize = 1024 * 1024; // 1 MiB (1,048,576 bytes) -- hard limit
-
 // const TARGET_LIMIT: usize = 1024 * 1024 - 30; // Uncomment this to run test_replay_seed_89 to reproduce gzip framing overhead issue.
 
 // Conservative target to stay under 1MB after gzip overhead and compression variability.
@@ -77,7 +75,7 @@ impl GzipBatcher {
     }
 
     fn new_encoder(compression: Compression) -> GzEncoder<Vec<u8>> {
-        GzEncoder::new(Vec::with_capacity(ONE_MB), compression)
+        GzEncoder::new(Vec::with_capacity(TARGET_LIMIT), compression)
     }
 
     /// Returns `true` if the encoder buffer contains uncommitted data.
@@ -210,6 +208,8 @@ mod tests {
     use flate2::read::GzDecoder;
     use rand::RngExt;
     use std::io::Read;
+
+    const ONE_MB: usize = 1024 * 1024;
 
     // ==================== Test Helpers ====================
 
@@ -555,12 +555,9 @@ mod tests {
         }
     }
 
-    /// Maximum allowed waste relative to TARGET_LIMIT.
-    /// 64KB entries with coarse finalization granularity can reach ~5%.
-    /// Waste scales with entry size: ~0.1% at 1KB, ~1.5% at 16KB, ~4.5% at 64KB sized entries.
-    const MAX_WASTED_SPACE_PERCENT: f64 = 5.0;
-
-    fn assert_batch_utilization(stats: &BatchStats, label: &str) {
+    /// Waste threshold is computed relative to the entry size being tested:
+    /// the maximum waste is one full entry that didn't fit.
+    fn assert_batch_utilization(stats: &BatchStats, entry_size: usize, label: &str) {
         // Hard limit: must never exceed ONE_MB.
         assert!(
             stats.size <= ONE_MB,
@@ -568,16 +565,18 @@ mod tests {
             stats.size
         );
         // Utilization: should be close to TARGET_LIMIT.
-        let utilization = stats.size as f64 / TARGET_LIMIT as f64 * 100.0;
+        let target_limit_f64 = TARGET_LIMIT as f64;
+        let utilization = stats.size as f64 / target_limit_f64 * 100.0;
         let waste = 100.0 - utilization;
+        let max_waste = entry_size as f64 / target_limit_f64 * 100.0;
         eprintln!(
-            "{label}: size={} utilization={utilization:.2}% waste={waste:.2}% flush_count={}",
+            "{label}: size={} utilization={utilization:.2}% waste={waste:.2}% max_waste={max_waste:.2}% flush_count={}",
             stats.size, stats.flush_count
         );
         assert!(
-            waste <= MAX_WASTED_SPACE_PERCENT,
+            waste <= max_waste,
             "{label}: batch size {} ({utilization:.1}% utilization, \
-             {waste:.1}% waste) exceeds {MAX_WASTED_SPACE_PERCENT}% waste threshold",
+             {waste:.1}% waste) exceeds {max_waste:.1}% waste threshold for {entry_size}B entries",
             stats.size
         );
         assert!(
@@ -618,7 +617,11 @@ mod tests {
         for level in [1u32, 6, 9] {
             for entry_size in [256, 1024, 2048, 16384, 65536] {
                 let stats = fill_to_batch_ready(level, &|| generate_data(entry_size));
-                assert_batch_utilization(&stats, &format!("json_log/{entry_size}B/level_{level}"));
+                assert_batch_utilization(
+                    &stats,
+                    entry_size,
+                    &format!("json_log/{entry_size}B/level_{level}"),
+                );
             }
         }
     }
@@ -629,7 +632,11 @@ mod tests {
         for level in [1u32, 6, 9] {
             for entry_size in [10, 256, 1024, 16384, 65536] {
                 let stats = fill_to_batch_ready(level, &|| generate_hex_json(entry_size));
-                assert_batch_utilization(&stats, &format!("hex_json/{entry_size}B/level_{level}"));
+                assert_batch_utilization(
+                    &stats,
+                    entry_size,
+                    &format!("hex_json/{entry_size}B/level_{level}"),
+                );
             }
         }
     }
@@ -643,7 +650,7 @@ mod tests {
                 let mut rng = rand::rng();
                 vec![rng.random_range(b'0'..=b'9')]
             });
-            assert_batch_utilization(&stats, &format!("tiny_json/level_{level}"));
+            assert_batch_utilization(&stats, 1, &format!("tiny_json/level_{level}"));
         }
     }
 
@@ -660,7 +667,7 @@ mod tests {
                 counter.set(i + 1);
                 generate_data(sizes[i % sizes.len()])
             });
-            assert_batch_utilization(&stats, &format!("mixed_json/level_{level}"));
+            assert_batch_utilization(&stats, 16384, &format!("mixed_json/level_{level}"));
         }
     }
 
