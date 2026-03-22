@@ -10,7 +10,9 @@
 
 pub(crate) mod common;
 pub(crate) mod logs;
+pub(crate) mod metrics;
 pub(crate) mod traces;
 
 pub use logs::OtapLogsView;
+pub use metrics::OtapMetricsView;
 pub use traces::OtapTracesView;
