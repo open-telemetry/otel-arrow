@@ -335,8 +335,9 @@
     "#97dbfc", "#006174", "#00b6b6", "#854200", "#f3c8ad", "#410472",
   ];
 
-  // Registry of all charts and their dataset tags for filtering
+  // Registry of aggregated charts and their dataset tags for filtering
   const chartRegistry = [];
+  var registerCharts = false;
 
   function parseTestNameTags(testName) {
     // testName examples: "Logs-OTAP-BATCH-OTAP", "Metrics-OTLP-OTLP", "Traces-OTAP-OTAP"
@@ -576,7 +577,9 @@
       };
 
       const chart = new Chart(canvas, { type: 'line', data, options });
-      chartRegistry.push({ chart, datasetTags });
+      if (registerCharts) {
+        chartRegistry.push({ chart, datasetTags });
+      }
     }
 
     function renderAggregatedCharts(aggregatedSet, main) {
@@ -635,10 +638,12 @@
     summaryDetails.appendChild(summarySummary);
     main.appendChild(summaryDetails);
 
-    // Add summary content
+    // Add summary content (filterable)
+    registerCharts = true;
     for (const { aggregatedSet } of dataSets) {
       renderAggregatedCharts(aggregatedSet, summaryDetails);
     }
+    registerCharts = false;
 
     // Detail section (collapsible)
     const detailDetails = document.createElement('details');
