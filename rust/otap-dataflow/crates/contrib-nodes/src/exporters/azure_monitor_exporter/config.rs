@@ -92,7 +92,8 @@ fn default_scope() -> String {
 /// level 9: ~25k/s
 ///
 /// Default is chosen as 6 due to that being the default prior to adding this configuration option,
-/// and could be changed based on observed performance characteristics in production, and performance
+/// as well as based on the observed throughput changes in local testing with different compression levels.
+/// This default could be changed based on observed performance characteristics in production, and performance
 /// tests with realistic payloads representative of production workloads.
 fn default_gzip_compression_level() -> u32 {
     6
