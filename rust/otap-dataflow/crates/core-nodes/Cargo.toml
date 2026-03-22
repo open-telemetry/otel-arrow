@@ -69,11 +69,13 @@ dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schem
 
 [dev-dependencies]
 arrow-ipc.workspace = true
+arrow-schema.workspace = true
 fluke-hpack.workspace = true
 flume.workspace = true
 otap-df-channel = { path = "../channel" }
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils", "crypto-ring"] }
+otap-df-pdata = { path = "../pdata", features = ["testing"] }
 otap-df-telemetry = { path = "../telemetry" }
 flate2.workspace = true
 http-body-util.workspace = true

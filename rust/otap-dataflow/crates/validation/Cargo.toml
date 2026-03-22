@@ -39,7 +39,7 @@ otap-df-controller = { path = "../controller" }
 prost = { workspace = true }
 
 [features]
-experimental-tls = ["otap-df-otap/experimental-tls"]
+experimental-tls = ["otap-df-otap/experimental-tls", "otap-df-core-nodes/experimental-tls"]
 crypto-ring = ["otap-df-otap/crypto-ring"]
 crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
@@ -47,8 +47,8 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 [dev-dependencies]
 tempfile = "3"
 otap-test-tls-certs = { workspace = true }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
+weaver_common = { workspace = true }
+weaver_forge = { workspace = true }
+weaver_resolved_schema = { workspace = true }
+weaver_resolver = { workspace = true }
+weaver_semconv = { workspace = true }

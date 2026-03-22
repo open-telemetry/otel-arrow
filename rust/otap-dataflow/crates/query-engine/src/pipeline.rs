@@ -172,11 +172,11 @@ impl PipelineStage for DataFusionPipelineStage {
             }
             1 => {
                 let new_rb = batches.into_iter().next().expect("batches not empty");
-                otap_batch.set(self.payload_type, new_rb)
+                otap_batch.set(self.payload_type, new_rb)?;
             }
             _ => {
                 let new_rb = concat_batches(batches[0].schema_ref(), &batches)?;
-                otap_batch.set(self.payload_type, new_rb)
+                otap_batch.set(self.payload_type, new_rb)?;
             }
         };
 

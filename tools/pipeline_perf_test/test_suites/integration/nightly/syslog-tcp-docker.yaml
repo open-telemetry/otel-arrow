@@ -80,6 +80,7 @@ tests:
         syslog_transport: tcp
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
         observation_interval: 60
   - name: SYSLOG-TCP-3164-ATTR-OTLP
     from_template:
@@ -92,6 +93,7 @@ tests:
         syslog_transport: tcp
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
         observation_interval: 60
   - name: SYSLOG-TCP-3164-CEF-ATTR-OTLP
     from_template:
@@ -103,6 +105,7 @@ tests:
         exporter: otlp
         syslog_transport: tcp
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
         observation_interval: 60
   - name: SYSLOG-TCP-3164-CEF-ATTR-OTAP
     from_template:
@@ -114,4 +117,5 @@ tests:
         exporter: otap
         syslog_transport: tcp
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
         observation_interval: 60

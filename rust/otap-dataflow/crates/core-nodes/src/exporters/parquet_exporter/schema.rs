@@ -28,15 +28,15 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
 
 use super::error::ParquetExporterError;
+use super::records::OtapParquetRecords;
 
 /// Transform any record batch in this otap batch into a schema that the parquet writer expects.
 pub fn transform_to_known_schema(
-    otap_batch: &mut OtapArrowRecords,
+    otap_batch: &mut OtapParquetRecords,
 ) -> Result<(), ParquetExporterError> {
     for payload_type in otap_batch.allowed_payload_types() {
         if let Some(rb) = otap_batch.get(*payload_type) {

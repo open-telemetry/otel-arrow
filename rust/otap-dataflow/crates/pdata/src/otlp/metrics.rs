@@ -1435,38 +1435,72 @@ mod test {
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
-        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_record_batch);
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs);
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
-        otap_batch.set(ArrowPayloadType::NumberDataPoints, numbers_data_points);
-        otap_batch.set(ArrowPayloadType::NumberDpAttrs, number_dp_attrs);
-        otap_batch.set(ArrowPayloadType::NumberDpExemplars, number_dp_exemplars);
-        otap_batch.set(
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            number_dp_exemplar_attrs,
-        );
-        otap_batch.set(ArrowPayloadType::SummaryDataPoints, summary_data_points);
-        otap_batch.set(ArrowPayloadType::SummaryDpAttrs, summary_dp_attrs);
-        otap_batch.set(ArrowPayloadType::HistogramDataPoints, histogram_data_points);
-        otap_batch.set(ArrowPayloadType::HistogramDpAttrs, hist_dp_attrs);
-        otap_batch.set(ArrowPayloadType::HistogramDpExemplars, hist_dp_exemplars);
-        otap_batch.set(
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            hist_exemplar_attrs,
-        );
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDataPoints,
-            exp_hist_data_points,
-        );
-        otap_batch.set(ArrowPayloadType::ExpHistogramDpAttrs, exp_hist_dp_attrs);
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            exp_hist_dp_exemplars,
-        );
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            exp_hist_exemplar_attrs,
-        );
+        otap_batch
+            .set(ArrowPayloadType::UnivariateMetrics, metrics_record_batch)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ResourceAttrs, resource_attrs)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDataPoints, numbers_data_points)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDpAttrs, number_dp_attrs)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDpExemplars, number_dp_exemplars)
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::NumberDpExemplarAttrs,
+                number_dp_exemplar_attrs,
+            )
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SummaryDataPoints, summary_data_points)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SummaryDpAttrs, summary_dp_attrs)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::HistogramDataPoints, histogram_data_points)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::HistogramDpAttrs, hist_dp_attrs)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::HistogramDpExemplars, hist_dp_exemplars)
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::HistogramDpExemplarAttrs,
+                hist_exemplar_attrs,
+            )
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDataPoints,
+                exp_hist_data_points,
+            )
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ExpHistogramDpAttrs, exp_hist_dp_attrs)
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDpExemplars,
+                exp_hist_dp_exemplars,
+            )
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                exp_hist_exemplar_attrs,
+            )
+            .unwrap();
 
         let mut encoder = MetricsProtoBytesEncoder::new();
         let mut result_buf = ProtoBuffer::new();

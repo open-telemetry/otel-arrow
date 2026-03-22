@@ -69,13 +69,12 @@ e.g. `receiver`, `exporter`.
 
    ```rust
    use otap_df_validation::scenario::Scenario;
-   use std::time::Duration;
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
        .add_generator("traffic_gen", generator)       // add your configured generator pipeline
        .add_capture("validate", capture)          // add your configured capture pipeline
-       .expect_within(Duration::from_secs(200)) // optional timeout; default 140
+       .expect_within(30) // optional timeout; default 25
        .run()
        .expect("validation scenario failed");
    ```
@@ -86,13 +85,12 @@ e.g. `receiver`, `exporter`.
 
   ```rust
   use otap_df_validation::scenario::Scenario;
-  use std::time::Duration;
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
       .add_generator("traffic_gen", generator)                 // required: Generator config
       .add_capture("validate", capture)                 // required: Capture config
-      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .expect_within(30) // optional; default 25s
       .run()
       .expect("validation scenario failed");
   ```
@@ -110,8 +108,8 @@ e.g. `receiver`, `exporter`.
   - optional; used for test container scenarios
   - the label is referenced by `ContainerConnection` and `PipelineContainerConnection`
   - see [Test Containers](#test-containers) for details
-- `expect_within(Duration)` - set max runtime
-  - optional; default: 140s
+- `expect_within(u64)` - set max runtime in seconds
+  - optional; default: 25s
 - `run()` - renders template, launches pipelines, waits for readiness
   - required to run the validation stage
   - when containers are configured, they are started before the pipeline
@@ -249,7 +247,6 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -279,7 +276,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("TLS validation scenario failed");
 ```
@@ -290,7 +287,6 @@ Scenario::new()
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -323,7 +319,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("mTLS validation scenario failed");
 ```
@@ -332,24 +328,25 @@ Scenario::new()
 
 - **Capture example (with validations)**
 
-  ```rust
-  use otap_df_validation::traffic::Capture;
-  use otap_df_validation::ValidationInstructions;
-  use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   ```rust
+   use otap_df_validation::traffic::Capture;
+   use otap_df_validation::ValidationInstructions;
+   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
-  let capture = Capture::default()
-      .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
-      .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
-      .core_range(3, 5)    // optional; default 1-1
-      .validate(vec![           // required; define your validation instructions
-          ValidationInstructions::Equivalence,
-          ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
-          ValidationInstructions::AttributeRequireKeyValue {
-              domains: vec![AttributeDomain::Signal],
-              pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
-          },
-      ]);
-  ```
+   let capture = Capture::default()
+       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+       .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
+       .core_range(3, 5)    // optional; default 1-1
+       .idle_timeout(5)     // optional; seconds to wait for messages before validating; default 3
+       .validate(vec![           // required; define your validation instructions
+           ValidationInstructions::Equivalence,
+           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
+           ValidationInstructions::AttributeRequireKeyValue {
+               domains: vec![AttributeDomain::Signal],
+               pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
+           },
+       ]);
+   ```
 
 - `Capture::default()` - create a Capture
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
@@ -368,6 +365,10 @@ should receive control signals from
   - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
+- `idle_timeout(u8)` - set how long (in seconds) the validation exporter
+  waits without receiving any messages before declaring the data stream
+  settled and performing the final validation
+  - default: 3 seconds
 - `from_container(ContainerConnection)` - use a custom receiver that reads from
   a test container instead of directly from the SUV pipeline exporter
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -375,6 +376,19 @@ should receive control signals from
 
 > NOTE: When using `otlp_grpc()` / `otap_grpc()`, the node names must match
 the keys under `nodes:` in your pipeline YAML.
+
+### How `idle_timeout` works
+
+The validation exporter tracks the timestamp of the last received message.
+On each periodic telemetry tick (every 1 second), it checks whether the
+elapsed time since the last message exceeds the configured idle timeout. If
+so, it considers the data stream settled, performs the final validation, and
+signals completion.
+
+A shorter timeout makes tests complete faster but may trigger validation
+prematurely if there are natural pauses in message delivery. A longer
+timeout is safer for pipelines with bursty or delayed output but increases
+overall test runtime.
 
 ### Validation instructions (used with `Capture::validate`)
 
@@ -636,7 +650,6 @@ use otap_df_validation::ValidationInstructions;
 use otap_df_validation::pipeline::{Pipeline, PipelineContainerConnection};
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, ContainerConnection, Generator};
-use std::time::Duration;
 
 Scenario::new()
     .pipeline(
@@ -668,6 +681,6 @@ Scenario::new()
             .validate(vec![ValidationInstructions::Equivalence])
             .control_streams(["gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()?;
 ```

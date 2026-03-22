@@ -229,7 +229,7 @@ where
     ];
     for (rb, payload_type) in pairs {
         if rb.num_rows() > 0 {
-            otap_batch.set(payload_type, rb);
+            otap_batch.set(payload_type, rb)?;
         }
     }
 
@@ -507,22 +507,22 @@ where
     let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
 
     // append logs record
-    otap_batch.set(ArrowPayloadType::Logs, logs.finish()?);
+    otap_batch.set(ArrowPayloadType::Logs, logs.finish()?)?;
 
     // append log attrs record batch if there is one
     let log_attrs_rb = log_attrs.finish()?;
     if log_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb);
+        otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb)?;
     }
 
     let resource_attrs_rb = resource_attrs.finish()?;
     if resource_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+        otap_batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb)?;
     }
 
     let scope_attrs_rb = scope_attrs.finish()?;
     if scope_attrs_rb.num_rows() > 0 {
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
+        otap_batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb)?;
     }
 
     Ok(otap_batch)
@@ -995,7 +995,7 @@ where
     ];
     for (rb, payload_type) in pairs {
         if rb.num_rows() > 0 {
-            otap_batch.set(payload_type, rb);
+            otap_batch.set(payload_type, rb)?;
         }
     }
 
