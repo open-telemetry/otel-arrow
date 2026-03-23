@@ -599,7 +599,6 @@ impl AssignPipelineStage {
                     })?;
 
                 // assign new IDs
-                // let mut max_id = max(id_col).unwrap_or(0);
                 let mut new_ids = id_col.values().to_vec();
                 for (i, new_id) in new_ids.iter_mut().enumerate().take(id_col.len()) {
                     if id_col.is_null(i) {
@@ -612,16 +611,6 @@ impl AssignPipelineStage {
                                         Please try a smaller batch size"
                                         .into(),
                                 })?;
-
-                        // if max_id == u16::MAX {
-                        //     return Err(Error::ExecutionError {
-                        //         cause: "ID space saturated when assigning attributes. \
-                        //                 Please try a smaller batch size"
-                        //             .into(),
-                        //     });
-                        // }
-                        // // max_id += 1;
-                        // *new_id = max_id
                     }
                 }
 
