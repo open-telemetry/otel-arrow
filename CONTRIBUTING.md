@@ -3,7 +3,7 @@
 ## Introduction
 
 Welcome to the OpenTelemetry Protocol with Apache Arrow project! :tada:
-This repository defines and supports Golang libraries for producing and
+This repository defines and supports Golang and Rust libraries for producing and
 consuming telemetry data streams using the OpenTelemetry Protocol with Apache
 Arrow.
 
@@ -123,6 +123,40 @@ Instructions for signing the CLA:
 Visit [OpenTelemetry CLA
 Portal](https://docs.linuxfoundation.org/lfx/easycla/contributors) and follow
 the steps to sign electronically.
+
+## Project Roles
+
+### Maintainers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Quérel](https://github.com/lquerel), F5
+
+For more information about the maintainer role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
+
+### Approvers
+
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
+
+### Emeritus Approvers
+
+- [Alex Boten](https://github.com/codeboten)
+- [Moh Osman](https://github.com/moh-osman3)
+
+### Triagers
+
+- [Tom Tan](https://github.com/ThomsonTan), Microsoft
+
+For more information about the triager role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 ## Further Help
 
