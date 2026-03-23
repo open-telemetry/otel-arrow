@@ -32,7 +32,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::get_required_array;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
@@ -1050,23 +1049,18 @@ struct NextIdTracker {
 
 impl NextIdTracker {
     fn try_new(otap_batch: &OtapArrowRecords) -> Result<Self> {
-        let curr_max = match otap_batch.root_record_batch() {
-            Some(root_rb) => {
-                let id_col = get_required_array(root_rb, consts::ID)?;
-                let id_col = id_col
-                    .as_any()
-                    .downcast_ref::<UInt16Array>()
-                    .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                        name: consts::ID.into(),
-                        expect: DataType::UInt16,
-                        actual: id_col.data_type().clone(),
-                    })?;
-                max(id_col)
-            }
-            None => None,
-        };
+        Ok(Self {
+            curr_max: Self::curr_max_id(otap_batch),
+        })
+    }
 
-        Ok(Self { curr_max })
+    fn curr_max_id(otap_batch: &OtapArrowRecords) -> Option<u16> {
+        let root_rb = otap_batch.root_record_batch()?;
+        let id_column = root_rb
+            .column_by_name(consts::ID)?
+            .as_any()
+            .downcast_ref::<UInt16Array>()?;
+        max(id_column)
     }
 
     fn next_id(&mut self) -> Option<u16> {
