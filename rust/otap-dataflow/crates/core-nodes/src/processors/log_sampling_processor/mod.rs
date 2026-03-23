@@ -97,18 +97,8 @@ impl LogSamplingProcessor {
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
-        let records: OtapArrowRecords =
-            payload
-                .try_into()
-                .map_err(|e: otap_df_pdata::encode::Error| {
-                    let source_detail = format_error_sources(&e);
-                    EngineError::ProcessorError {
-                        processor: effect_handler.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: format!("failed to convert payload to arrow records: {e}"),
-                        source_detail,
-                    }
-                })?;
+        let mut records: OtapArrowRecords = payload.try_into()?;
+        records.decode_transport_optimized_ids()?;
 
         let selection = self.sampler.sample_arrow_records(&records);
 
