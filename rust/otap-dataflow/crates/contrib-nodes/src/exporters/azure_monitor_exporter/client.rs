@@ -347,6 +347,7 @@ mod tests {
             stream_name: "test-stream".to_string(),
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         }
     }
 
@@ -368,6 +369,7 @@ mod tests {
             stream_name: "test-stream".to_string(),
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         };
 
         let http_client = create_test_http_client();
@@ -389,6 +391,7 @@ mod tests {
             stream_name: "Custom-Stream_Name".to_string(),
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         };
 
         let http_client = create_test_http_client();
