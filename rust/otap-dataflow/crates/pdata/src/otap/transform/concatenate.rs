@@ -113,7 +113,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     })
 }
 
-pub fn concatenate_with_def<const N: usize>(
+fn concatenate_with_def<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     get_def: impl Fn(usize) -> &'static PayloadSchema,
 ) -> Result<[Option<RecordBatch>; N]> {

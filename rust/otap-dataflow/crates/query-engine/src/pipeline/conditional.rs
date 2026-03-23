@@ -15,12 +15,11 @@ use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::raw_batch_store::{
-    LOGS_TYPE_MASK, METRICS_TYPE_MASK, RawBatchStore, TRACES_TYPE_MASK,
+    LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
 };
-use otap_df_pdata::otap::transform::concatenate::{concatenate, concatenate_with_def};
+use otap_df_pdata::otap::transform::concatenate::concatenate;
 use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::payloads;
 
 use otap_df_pdata::otap::filter::IdBitmapPool;
 
@@ -106,18 +105,28 @@ fn concatenate_traces(branch_results: &mut Vec<OtapArrowRecords>) -> Result<Otap
 }
 
 fn concatenate_attrs_record_batches(branch_results: &mut Vec<RecordBatch>) -> Result<RecordBatch> {
-    let mut batches = branch_results
+    // to call schema aware `concatenate` on just the attributes record batch, we stick it in
+    // a Logs OTAP batch and treat it as log attributes. This is a bit of a hack until we have
+    // a better top-level interface for calling concatenate.
+
+    let mut otap_batches = branch_results
         .drain(..)
-        .map(|batch| [Some(batch)])
-        .collect::<Vec<_>>();
+        .map(|attrs_record_batch| {
+            let mut logs_record_batches = Logs::default();
+            logs_record_batches.set(ArrowPayloadType::LogAttrs, attrs_record_batch)?;
+            Ok(OtapArrowRecords::from(logs_record_batches))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let concatenated_logs = concatenate_logs(&mut otap_batches)?;
+    let mut concatenated_logs_batches = Logs::try_from(concatenated_logs)?.into_batches();
+    let concatenated_attrs_batch = concatenated_logs_batches
+        [POSITION_LOOKUP[ArrowPayloadType::LogAttrs as usize]]
+        .take()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "expected concatenate to produce non 'None' batch".into(),
+        })?;
 
-    let mut result =
-        concatenate_with_def(&mut batches, |_| payloads::get(ArrowPayloadType::LogAttrs))?;
-    let concatenated_batch = result[0].take().ok_or_else(|| Error::ExecutionError {
-        cause: "expected concatenate to produce non 'None' batch".into(),
-    })?;
-
-    Ok(concatenated_batch)
+    Ok(concatenated_attrs_batch)
 }
 /// A branch within a conditional pipeline stage
 pub struct ConditionalPipelineStageBranch {
