@@ -151,6 +151,19 @@ impl PipelineStage for ConditionalPipelineStage {
         task_context: Arc<TaskContext>,
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
+        // give the pipeline stages within each branch the opportunity to initialize any
+        // necessary state:
+        for branch in &mut self.branches {
+            for stage in &mut branch.pipeline_stages {
+                stage.init_state_for_conditional_branch(&otap_batch, exec_state)?;
+            }
+        }
+        if let Some(branch) = self.default_branch.as_mut() {
+            for stage in branch {
+                stage.init_state_for_conditional_branch(&otap_batch, exec_state)?;
+            }
+        }
+
         let root_batch = match otap_batch.root_record_batch() {
             Some(root_batch) => root_batch,
             None => {
@@ -656,6 +669,48 @@ mod test {
             LogRecord::build()
                 .severity_text("ERROR")
                 .event_name("hello")
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_id_remapping() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("ERROR").finish(),
+        ];
+
+        // some logs will not have the 'id' column set, because they do not have attributes.
+        // when the attribute is assigned, the id column will be set, but since this is happening
+        // inside each branch, the assigned ids may conflict. When the batches from each branch are
+        // concatenated, the conflicting IDs must be reconciled, and what we're testing here is
+        // that this reconciliation actually happens.
+        let query = r#"logs |
+            if (severity_text == "INFO") {
+                set attributes["x"] = "hello"
+            } else {
+                set attributes["x"] = "world"
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("world"))])
                 .finish(),
         ];
 

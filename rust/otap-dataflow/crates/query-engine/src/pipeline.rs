@@ -93,6 +93,20 @@ pub trait PipelineStage {
     fn supports_exec_on_attributes(&self) -> bool {
         false
     }
+
+    /// When pipeline stages execute within the context of a conditional branch, they will only see
+    /// the batch that is local to that branch. However, there may be cases where some global state
+    /// may need to be maintained across branches. This method provides an opportunity to
+    /// initialize the state. It will be called with the OTAP batch that is the input to the
+    /// conditional pipeline stage.
+    fn init_state_for_conditional_branch(
+        &mut self,
+        _otap_batch: &OtapArrowRecords,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // default is to do nothing
+        Ok(())
+    }
 }
 
 type BoxedPipelineStage = Box<dyn PipelineStage>;

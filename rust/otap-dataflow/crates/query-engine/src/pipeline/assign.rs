@@ -32,6 +32,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::get_required_array;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
@@ -564,13 +565,22 @@ impl AssignPipelineStage {
     /// this for scope/resource attributes because a null in these positions means there is no
     /// scope/resource associated with the record, meaning there is nothing for which to assign the
     /// attribute.
-    fn fill_root_id_column_nulls(&self, otap_batch: &mut OtapArrowRecords) -> Result<()> {
+    fn fill_root_id_column_nulls(
+        &self,
+        otap_batch: &mut OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
         let root_record_batch = match otap_batch.root_record_batch() {
             Some(rb) => rb,
             None => {
                 // nothing to do
                 return Ok(());
             }
+        };
+
+        let next_id_tracker = match exec_state.get_extension_mut::<NextIdTracker>() {
+            Some(n) => n,
+            None => &mut NextIdTracker::try_new(otap_batch)?,
         };
 
         let new_ids = match root_record_batch.column_by_name(consts::ID) {
@@ -590,20 +600,29 @@ impl AssignPipelineStage {
                     })?;
 
                 // assign new IDs
-                let mut max_id = max(id_col).unwrap_or(0);
+                // let mut max_id = max(id_col).unwrap_or(0);
                 let mut new_ids = id_col.values().to_vec();
                 for (i, new_id) in new_ids.iter_mut().enumerate().take(id_col.len()) {
                     if id_col.is_null(i) {
                         // unfortunate error, but nothing we can really do here
-                        if max_id == u16::MAX {
-                            return Err(Error::ExecutionError {
-                                cause: "ID space saturated when assigning attributes. \
+                        *new_id =
+                            next_id_tracker
+                                .next_id()
+                                .ok_or_else(|| Error::ExecutionError {
+                                    cause: "ID space saturated when assigning attributes. \
                                         Please try a smaller batch size"
-                                    .into(),
-                            });
-                        }
-                        max_id += 1;
-                        *new_id = max_id
+                                        .into(),
+                                })?;
+
+                        // if max_id == u16::MAX {
+                        //     return Err(Error::ExecutionError {
+                        //         cause: "ID space saturated when assigning attributes. \
+                        //                 Please try a smaller batch size"
+                        //             .into(),
+                        //     });
+                        // }
+                        // // max_id += 1;
+                        // *new_id = max_id
                     }
                 }
 
@@ -644,12 +663,12 @@ impl PipelineStage for AssignPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
             if *attrs_id == AttributesIdentifier::Root {
-                self.fill_root_id_column_nulls(&mut otap_batch)?;
+                self.fill_root_id_column_nulls(&mut otap_batch, exec_state)?;
             }
 
             let mut eval_results = Vec::new();
@@ -999,6 +1018,65 @@ impl PipelineStage for AssignPipelineStage {
     fn supports_exec_on_attributes(&self) -> bool {
         true
     }
+
+    fn init_state_for_conditional_branch(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // If this instance is assigning attributes to the root record batch, the procedure
+        // involves filling in any nulls that may be present in the ID column. Each instance of
+        // this pipeline stage may be seeing a different subset of the overall batch, but we need
+        // to ensure the IDs that are assigned are not duplicated across branches. That is why we
+        // add this extension.
+        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
+            if *attrs_id == AttributesIdentifier::Root
+                && exec_state.get_extension::<NextIdTracker>().is_none()
+            {
+                let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
+                exec_state.set_extension(next_id_tracker);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Extension implementation used to keep track of the next max ID when the ID column
+/// nulls are filled in when assigning attributes.
+struct NextIdTracker {
+    curr_max: Option<u16>,
+}
+
+impl NextIdTracker {
+    fn try_new(otap_batch: &OtapArrowRecords) -> Result<Self> {
+        let curr_max = match otap_batch.root_record_batch() {
+            Some(root_rb) => {
+                let id_col = get_required_array(root_rb, consts::ID)?;
+                let id_col = id_col
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        expect: DataType::UInt16,
+                        actual: id_col.data_type().clone(),
+                    })?;
+                max(id_col)
+            }
+            None => None,
+        };
+
+        Ok(Self { curr_max })
+    }
+
+    fn next_id(&mut self) -> Option<u16> {
+        let next_id = match self.curr_max {
+            Some(max) => max.checked_add(1)?,
+            None => 0,
+        };
+        self.curr_max = Some(next_id);
+        Some(next_id)
+    }
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
@@ -1339,6 +1417,7 @@ fn try_upsert_column(
         columns,
     )?)
 }
+
 #[cfg(test)]
 mod test {
     use arrow::{
