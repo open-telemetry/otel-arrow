@@ -25,6 +25,17 @@ elements in the OpenTelemetry data model, by signal. The OTAP pipeline
 also supports passing through OTLP bytes as literal data, with
 **direct conversion** between the OTAP records and OTLP bytes models.
 
+## Beaubourg (retired)
+
+The Beaubourg library — named after the Parisian building famous for
+its assembly of interconnected pipes — was the original Rust prototype
+for building generic data pipelines with receivers, processors, and
+exporters. Its ideas and lessons directly shaped the design of the OTAP
+Dataflow engine that succeeded it. Beaubourg was removed from this
+repository after serving as a reference implementation; we are grateful
+for the foundation it provided. Its final form is preserved
+[here](https://github.com/open-telemetry/otel-arrow/tree/7c80ef943e417c5671b6dcb028cccc8d89935525/rust/beaubourg).
+
 ## Experimental
 
 Here, find our experimental projects. As part of the OTel-Arrow Phase

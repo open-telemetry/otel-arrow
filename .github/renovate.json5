@@ -15,9 +15,7 @@
   ],
   "ignorePaths": [
     // this directory has generated code, don't send updates to it
-    "collector/cmd/otelarrowcol/**",
-    // this reference implementation has been removed from our build pipelines
-    "rust/beaubourg/**"
+    "collector/cmd/otelarrowcol/**"
   ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
