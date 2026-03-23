@@ -101,7 +101,7 @@ impl RatioSampler {
     /// | 1     | 12   | emitted=0, seen=0 | 6       | emitted=2, seen=2 |
     /// | 2     | 4    | emitted=2, seen=2 | 1       | emitted=1, seen=1 |
     /// | 3     | 5    | emitted=1, seen=1 | 2       | emitted=1, seen=1 |
-    /// | 4     | 4    | emitted=1, seen=1 | 1       | emitted=2, seen=4 |
+    /// | 4     | 4    | emitted=1, seen=1 | 1       | emitted=0, seen=0 |
     ///
     /// Total in: 25, total kept: 10 (exactly 2 out of 5).
     fn compute_to_keep(&mut self, batch_size: usize) -> usize {
