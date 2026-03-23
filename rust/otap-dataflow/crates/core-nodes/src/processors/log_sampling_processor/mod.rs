@@ -27,7 +27,7 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind, format_error_sources};
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -194,6 +194,7 @@ fn create_log_sampling_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::AsArray;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
@@ -201,16 +202,83 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::Context;
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otap_df_pdata::otap::OtapBatchStore;
     use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::testing::fixtures::{
         logs_with_varying_attributes_and_properties, metrics_sum_with_full_resource_and_scope,
         traces_with_full_resource_and_scope,
     };
     use otap_df_pdata::testing::round_trip::otlp_message_to_bytes;
+    use otap_df_pdata::{logs, record_batch};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
 
     // ==================== Integration Tests ====================
+
+    #[test]
+    fn test_transport_optimized_encoding_removed() {
+        let config = serde_json::json!({
+            "policy": {
+                "ratio": {
+                    "emit": 2,
+                    "out_of": 3
+                }
+            }
+        });
+
+        run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Three log records each identified by a letter and with a matching
+                // "name" attribute.
+                //
+                // The ids will get delta encoded to [0, 1, 1]. If the delta encoding
+                // is not removed then we'll keep attribute `name: "c"` in the final
+                // output
+                #[rustfmt::skip]
+                let input_logs = logs!(
+                    (Logs,
+                        ("id", UInt16, vec![1, 2, 3]),
+                        ("body.type", UInt8, vec![2, 2, 2]),
+                        ("body.str", Utf8, vec!["a", "b", "c"])),
+                    (LogAttrs,
+                        ("parent_id", UInt16, vec![1, 2, 3]),
+                        ("key", Utf8, vec!["name", "name", "name"]),
+                        ("type", UInt8, vec![2, 2, 2]),
+                        ("str", Utf8, vec!["a", "b", "c"])),
+                );
+
+                let mut records = OtapArrowRecords::Logs(input_logs);
+                records.encode_transport_optimized().unwrap();
+                let pdata =
+                    OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records));
+
+                ctx.process(Message::PData(pdata)).await.expect("process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                assert_eq!(msgs[0].num_items(), 2);
+
+                let output_payload = msgs[0].clone().into_parts().1.take_payload();
+                let output_otap = match output_payload {
+                    OtapPayload::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
+                    OtapPayload::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                };
+
+                let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();
+                // Make sure we only have two attributes in the output
+                assert_eq!(2, output_attrs.num_rows());
+                // Make sure none of them are "c"
+                assert!(
+                    !output_attrs
+                        .column_by_name("str")
+                        .unwrap()
+                        .as_string::<i32>()
+                        .iter()
+                        .any(|s| s == Some("c"))
+                )
+            })
+        });
+    }
 
     #[test]
     fn test_zip_basic_flow() {
