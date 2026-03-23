@@ -16,6 +16,7 @@ const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
 const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
 const VALIDATION_METRIC_SET: &str = "validation.exporter.metrics";
 const VALIDATION_METRIC_NAME: &str = "valid";
+const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
 
 pub(crate) async fn run_pipelines_with_timeout(
     rendered_group: String,
@@ -25,7 +26,6 @@ pub(crate) async fn run_pipelines_with_timeout(
     ready_max_attempts: usize,
     ready_backoff: Duration,
     metrics_poll: Duration,
-    propagation_delay: Duration,
 ) -> Result<(), ValidationError> {
     let pipeline_simulator = PipelineSimulator::new(rendered_group.as_str())?;
     let _pipeline_handle = std::thread::spawn(move || pipeline_simulator.run());
@@ -46,8 +46,7 @@ pub(crate) async fn run_pipelines_with_timeout(
             metrics_poll,
         )
         .await?;
-        sleep(propagation_delay).await;
-        let result = ensure_validation_passed(&admin_client, &admin_base).await;
+        let result = wait_for_validation_finished(&admin_client, &admin_base, metrics_poll).await;
         shutdown_pipeline(&admin_client, &admin_base).await?;
         result
     })
@@ -135,22 +134,34 @@ async fn wait_for_loadgen(
     }
 }
 
-/// get metrics and check the validation metric
-/// errors if validation failed
-async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), ValidationError> {
-    let snapshot = fetch_metrics(client, base).await?;
-    match validation_from_metrics(&snapshot) {
-        Ok(()) => Ok(()),
-        Err(failed) => Err(ValidationError::Validation(format!(
-            "validation exporters did not report success: {failed}",
-        ))),
+/// Poll metrics until every validation exporter reports `finished == 1`,
+/// then check the `valid` gauge from the same snapshot. This replaces the
+/// previous fixed propagation-delay sleep followed by a single metrics check.
+async fn wait_for_validation_finished(
+    client: &Client,
+    base: &str,
+    metrics_poll: Duration,
+) -> Result<(), ValidationError> {
+    loop {
+        let snapshot = fetch_metrics(client, base).await?;
+        match validation_finished_and_passed(&snapshot) {
+            ValidationPollResult::NotFinished => {
+                sleep(metrics_poll).await;
+            }
+            ValidationPollResult::FinishedAndPassed => return Ok(()),
+            ValidationPollResult::FinishedWithFailures(failed) => {
+                return Err(ValidationError::Validation(format!(
+                    "validation exporters did not report success: {failed}",
+                )));
+            }
+        }
     }
 }
 
 /// shutdown pipeline after running
 async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
     let _ = client
-        .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
+        .post(format!("{base}/pipeline-groups/shutdown"))
         .send()
         .await
         .map_err(|e| ValidationError::Http(e.to_string()))?
@@ -187,34 +198,61 @@ fn loadgen_reached_limit(
         return true;
     }
 
-    for set in snapshot
+    let mut iter = snapshot
         .metric_sets
         .iter()
         .filter(|set| set.name == LOADGEN_METRIC_SET)
-    {
-        if let Some(label) = attribute_node_id(&set.attributes) {
-            let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-                + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-                + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
-            if &loadgen_signals_produced < expected_per_gen.get(&label).unwrap_or(&0u64) {
-                return false;
-            }
-        }
+        .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
+        .peekable();
+
+    // No loadgen metric sets found yet — generators have not reported their
+    // first telemetry tick. Keep polling.
+    if iter.peek().is_none() {
+        return false;
     }
-    true
+
+    iter.all(|(set, label)| {
+        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
+            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
+            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
+        loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
+    })
 }
 
-fn validation_from_metrics(snapshot: &MetricsSnapshot) -> Result<(), String> {
+/// Result of checking whether all validation exporters have finished.
+#[derive(Debug)]
+enum ValidationPollResult {
+    /// At least one exporter has not signaled `finished` yet.
+    NotFinished,
+    /// All exporters finished and all report `valid >= 1`.
+    FinishedAndPassed,
+    /// All exporters finished but one or more report `valid < 1`.
+    FinishedWithFailures(String),
+}
+
+/// Check a single metrics snapshot for the `finished` and `valid` gauges of
+/// every validation exporter. Returns a single result covering all exporters
+/// so that the caller can decide to keep polling or report success/failure.
+fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollResult {
     let mut failed_validation_exporters = vec![];
 
-    for set in snapshot
+    let mut iter = snapshot
         .metric_sets
         .iter()
         .filter(|set: &&MetricSetSnapshot| set.name == VALIDATION_METRIC_SET)
-    {
-        // if validation failed detected
+        .peekable();
+
+    if iter.peek().is_none() {
+        return ValidationPollResult::NotFinished;
+    }
+
+    for set in iter {
+        // If any exporter has not yet signaled finished, keep waiting.
+        if metric_value(set, VALIDATION_FINISHED_METRIC_NAME).is_none_or(|v| v < 1) {
+            return ValidationPollResult::NotFinished;
+        }
+        // Exporter is finished — check its validation result in the same pass.
         if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            // track the node id
             if let Some(label) = attribute_node_id(&set.attributes) {
                 failed_validation_exporters.push(label);
             }
@@ -222,9 +260,9 @@ fn validation_from_metrics(snapshot: &MetricsSnapshot) -> Result<(), String> {
     }
 
     if failed_validation_exporters.is_empty() {
-        Ok(())
+        ValidationPollResult::FinishedAndPassed
     } else {
-        Err(failed_validation_exporters.join(", "))
+        ValidationPollResult::FinishedWithFailures(failed_validation_exporters.join(", "))
     }
 }
 
@@ -275,15 +313,127 @@ mod tests {
     }
 
     #[test]
-    fn validation_from_metrics_reports_failed_labels() {
+    fn loadgen_empty_snapshot_returns_false() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
-            metric_sets: vec![
-                set_with_node(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 1, "cap1"),
-                set_with_node(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 0, "cap2"),
-            ],
+            metric_sets: vec![],
         };
-        let res = validation_from_metrics(&snap);
-        assert_eq!(res, Err("cap2".to_string()));
+        let mut expected = HashMap::new();
+        _ = expected.insert("genA".into(), 5);
+        assert!(!loadgen_reached_limit(&snap, &expected));
+    }
+
+    fn validation_set(valid: u64, finished: u64, node_id: &str) -> Vec<MetricSetSnapshot> {
+        vec![MetricSetSnapshot {
+            name: VALIDATION_METRIC_SET.into(),
+            brief: "test".into(),
+            attributes: HashMap::from([(
+                "node.id".into(),
+                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+            )]),
+            metrics: vec![
+                MetricDataPoint {
+                    name: VALIDATION_METRIC_NAME.into(),
+                    unit: "".into(),
+                    brief: "".into(),
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Cumulative),
+                    value_type: MetricValueType::U64,
+                    value: MetricValue::U64(valid),
+                },
+                MetricDataPoint {
+                    name: VALIDATION_FINISHED_METRIC_NAME.into(),
+                    unit: "".into(),
+                    brief: "".into(),
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Cumulative),
+                    value_type: MetricValueType::U64,
+                    value: MetricValue::U64(finished),
+                },
+            ],
+        }]
+    }
+
+    #[test]
+    fn validation_not_finished_keeps_polling() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: validation_set(0, 0, "cap1"),
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
+    }
+
+    #[test]
+    fn validation_finished_and_passed_returns_ok() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: validation_set(1, 1, "cap1"),
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::FinishedAndPassed
+        ));
+    }
+
+    #[test]
+    fn validation_finished_with_failures_reports_labels() {
+        let mut sets = validation_set(1, 1, "cap1");
+        sets.extend(validation_set(0, 1, "cap2"));
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: sets,
+        };
+        match validation_finished_and_passed(&snap) {
+            ValidationPollResult::FinishedWithFailures(failed) => {
+                assert_eq!(failed, "cap2");
+            }
+            other => panic!("expected FinishedWithFailures, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validation_mixed_finished_returns_not_finished() {
+        let mut sets = validation_set(1, 1, "cap1");
+        sets.extend(validation_set(0, 0, "cap2"));
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: sets,
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
+    }
+
+    #[test]
+    fn validation_empty_snapshot_returns_not_finished() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![],
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
+    }
+
+    #[test]
+    fn validation_no_matching_metric_sets_returns_not_finished() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![set_with_node(
+                LOADGEN_METRIC_SET,
+                LOADGEN_METRIC_NAME_LOGS,
+                100,
+                "genA",
+            )],
+        };
+        assert!(matches!(
+            validation_finished_and_passed(&snap),
+            ValidationPollResult::NotFinished
+        ));
     }
 }

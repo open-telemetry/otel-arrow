@@ -125,7 +125,7 @@ opentelemetry-proto = { version = "0.31", default-features = false, features = [
 opentelemetry = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", default-features = false, features = ["metrics", "internal-logs"] }
 opentelemetry-stdout = { version = "0.31.0", default-features = false, features = ["metrics"] }
-opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "internal-logs"] }
+opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "internal-logs"] }
 opentelemetry-prometheus = { version = "0.31.0", default-features = false, features = ["internal-logs"] }
 parking_lot = "0.12.5"
 paste = "1"
@@ -222,7 +222,7 @@ unchecked-arithmetic = []
 dev-tools = ["otap-df-core-nodes/dev-tools"]
 
 # Experimental features
-experimental-tls = ["otap-df-otap/experimental-tls"]
+experimental-tls = ["otap-df-otap/experimental-tls", "otap-df-core-nodes/experimental-tls"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).

@@ -66,9 +66,9 @@ impl<'a> TryFrom<&'a RecordBatch> for SummaryDpArrays<'a> {
 
 #[allow(missing_docs)]
 pub struct QuantileArrays<'a> {
-    list_array: &'a ListArray,
-    quantile_array: &'a Float64Array,
-    value_array: &'a Float64Array,
+    pub(crate) list_array: &'a ListArray,
+    pub(crate) quantile_array: &'a Float64Array,
+    pub(crate) value_array: &'a Float64Array,
 }
 
 impl<'a> QuantileArrays<'a> {
