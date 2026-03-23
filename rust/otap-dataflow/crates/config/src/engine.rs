@@ -189,7 +189,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn valid_engine_yaml(version: &str) -> String {
         format!(
@@ -219,10 +222,12 @@ groups:
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "otap-df-config-engine-tests-{}-{}.{}",
+            "otap-df-config-engine-tests-{}-{}-{}.{}",
             std::process::id(),
             suffix,
+            sequence,
             ext
         ));
         fs::write(&path, contents).expect("failed to write temporary test file");
