@@ -86,9 +86,14 @@
       ]
     },
     {
-      // prevent duplicate PRs from pip_requirements once pip-compile is enabled
+      // prevent duplicate PRs from pip_requirements once pip-compile is enabled;
+      // also disable on lock files so pip_requirements doesn't treat transitive
+      // deps (e.g. pydantic-core) as direct and raise independent update PRs
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["tools/pipeline_perf_test/**/requirements.txt"],
+      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.txt",
+        "tools/pipeline_perf_test/**/requirements.lock.txt"
+      ],
       "enabled": false
     },
     {
