@@ -3,7 +3,35 @@
 
 use data_engine_expressions::*;
 
-use crate::{execution_context::*, scalars::execute_scalar_expression, *};
+use crate::{
+    execution_context::*,
+    scalars::{SelectionOptions, execute_scalar_expression_with_options},
+    *,
+};
+
+fn execute_convert_inner_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    inner_expression: &'a ScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    execute_scalar_expression_with_options(
+        execution_context,
+        inner_expression,
+        SelectionOptions::new()
+            .with_selector_not_found_diagnostic_level(RecordSetEngineDiagnosticLevel::Info),
+    )
+}
+
+fn get_convert_failure_level(value: &Value<'_>) -> RecordSetEngineDiagnosticLevel {
+    if value.get_value_type() == ValueType::Null {
+        RecordSetEngineDiagnosticLevel::Info
+    } else {
+        RecordSetEngineDiagnosticLevel::Warn
+    }
+}
 
 pub fn execute_convert_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
@@ -16,7 +44,7 @@ where
     let value = match convert_scalar_expression {
         ConvertScalarExpression::Boolean(c) => {
             let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
 
             let value = inner_value.to_value();
 
@@ -24,7 +52,7 @@ where
                 ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
             } else {
                 execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                    get_convert_failure_level(&value),
                     convert_scalar_expression,
                     || {
                         format!(
@@ -39,7 +67,7 @@ where
         }
         ConvertScalarExpression::DateTime(c) => {
             let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
 
             let value = inner_value.to_value();
 
@@ -47,7 +75,7 @@ where
                 ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
             } else {
                 execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                    get_convert_failure_level(&value),
                     convert_scalar_expression,
                     || {
                         format!(
@@ -61,7 +89,7 @@ where
         }
         ConvertScalarExpression::Double(c) => {
             let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
 
             let value = inner_value.to_value();
 
@@ -69,7 +97,7 @@ where
                 ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
             } else {
                 execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                    get_convert_failure_level(&value),
                     convert_scalar_expression,
                     || {
                         format!(
@@ -83,7 +111,7 @@ where
         }
         ConvertScalarExpression::Integer(c) => {
             let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
 
             let value = inner_value.to_value();
 
@@ -91,7 +119,7 @@ where
                 ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
             } else {
                 execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                    get_convert_failure_level(&value),
                     convert_scalar_expression,
                     || {
                         format!(
@@ -104,7 +132,7 @@ where
             }
         }
         ConvertScalarExpression::String(c) => {
-            let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
+            let v = execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
             let value_type = v.get_value_type();
             if value_type == ValueType::String {
                 v
@@ -122,7 +150,7 @@ where
         }
         ConvertScalarExpression::TimeSpan(c) => {
             let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+                execute_convert_inner_expression(execution_context, c.get_inner_expression())?;
 
             let value = inner_value.to_value();
 
@@ -130,7 +158,7 @@ where
                 ResolvedValue::Computed(OwnedValue::TimeSpan(TimeSpanValueStorage::new(t)))
             } else {
                 execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                    get_convert_failure_level(&value),
                     convert_scalar_expression,
                     || {
                         format!(
@@ -158,6 +186,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
+    use crate::scalars::execute_scalar_expression;
 
     #[test]
     fn test_execute_convert_scalar_expression() {
