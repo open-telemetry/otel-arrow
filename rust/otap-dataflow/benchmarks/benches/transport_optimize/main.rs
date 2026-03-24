@@ -120,7 +120,9 @@ fn read_logs_batch(batch_size: usize, with_nulls: bool) -> OtapArrowRecords {
         columns[str_col_idx] = Arc::new(new_str_dict);
         let new_attrs_batch =
             RecordBatch::try_new(attrs_batch.schema(), columns).expect("can create batch");
-        otap_batch.set(ArrowPayloadType::LogAttrs, new_attrs_batch);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, new_attrs_batch)
+            .expect("can set LogAttrs batch");
     }
 
     otap_batch

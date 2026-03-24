@@ -246,7 +246,7 @@ impl GrpcClientSettings {
     ///
     /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
     /// which is a common source of connection failures with some proxy servers.
-    pub(crate) fn log_proxy_info(&self) {
+    pub fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();
@@ -470,6 +470,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_allows_plain_http_when_tls_unset() {
+        crate::crypto::ensure_crypto_provider();
         let settings: GrpcClientSettings =
             serde_json::from_str(r#"{ "grpc_endpoint": "http://localhost:4317" }"#).unwrap();
         let endpoint = settings.build_endpoint_with_tls().await.unwrap();
@@ -479,6 +480,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_accepts_https_without_explicit_tls_block() {
+        crate::crypto::ensure_crypto_provider();
         let settings: GrpcClientSettings = serde_json::from_str(
             r#"{ "grpc_endpoint": "https://localhost:4317", "tcp_nodelay": true }"#,
         )
@@ -491,6 +493,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn client_tls_defaults_are_scheme_driven_when_tls_block_absent() {
+        crate::crypto::ensure_crypto_provider();
         // No tls: block => scheme decides
         let http = tls_utils::load_client_tls_config(None, "http://localhost:4317")
             .await
@@ -506,6 +509,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_insecure_does_not_rewrite_scheme() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -522,6 +526,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn client_tls_insecure_true_without_custom_ca_returns_no_explicit_tls_config() {
+        crate::crypto::ensure_crypto_provider();
         let cfg = TlsClientConfig {
             insecure: Some(true),
             ..TlsClientConfig::default()
@@ -536,6 +541,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn client_tls_insecure_true_with_custom_ca_still_builds_tls_config() {
+        crate::crypto::ensure_crypto_provider();
         let cfg = TlsClientConfig {
             insecure: Some(true),
             ca_pem: Some(
@@ -554,6 +560,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn client_tls_insecure_skip_verify_true_fails_fast() {
+        crate::crypto::ensure_crypto_provider();
         let cfg = TlsClientConfig {
             insecure_skip_verify: Some(true),
             ..TlsClientConfig::default()
@@ -571,6 +578,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_allows_http_when_tls_is_configured() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "http://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -594,6 +602,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_rejects_partial_mtls_cert_without_key() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -616,6 +625,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_rejects_partial_mtls_key_without_cert() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -642,6 +652,7 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn build_endpoint_with_tls_errors_when_ca_file_missing() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -662,6 +673,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_enforces_tls_file_size_limit() {
+        crate::crypto::ensure_crypto_provider();
         // Create a CA file > 4MB (tls_utils MAX_TLS_FILE_SIZE).
         let mut tmp = NamedTempFile::new().unwrap();
         let oversized = vec![b'a'; 4 * 1024 * 1024 + 1];
@@ -688,6 +700,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_errors_when_no_trust_anchors() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -709,6 +722,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_enforces_cert_file_size_limit() {
+        crate::crypto::ensure_crypto_provider();
         // Create a client cert file > 4MB (tls_utils MAX_TLS_FILE_SIZE).
         let mut cert_tmp = NamedTempFile::new().unwrap();
         let mut key_tmp = NamedTempFile::new().unwrap();
@@ -742,6 +756,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_fails_with_empty_ca_pem() {
+        crate::crypto::ensure_crypto_provider();
         // Test 1: Empty ca_pem with system CAs disabled → "no trust anchors" error
         let settings1 = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
@@ -781,6 +796,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_accepts_server_name_override() {
+        crate::crypto::ensure_crypto_provider();
         // server_name_override should be accepted and not cause an error
         // (actual SNI behavior would require integration test with a real server)
         let settings = GrpcClientSettings {
@@ -801,6 +817,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_enables_tls_by_default_on_http() {
+        crate::crypto::ensure_crypto_provider();
         // Secure by default: http:// endpoint with empty TLS block should enable TLS (system roots)
         // because keys/certs are optional and insecure is false by default.
         let settings = GrpcClientSettings {
@@ -817,6 +834,7 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_disables_tls_when_insecure_true() {
+        crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
             grpc_endpoint: "http://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {

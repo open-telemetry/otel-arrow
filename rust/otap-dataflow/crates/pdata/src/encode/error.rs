@@ -28,6 +28,10 @@ pub enum Error {
     /// u32 underflow error
     #[error("An error occurred packing more than 2**32 - 1 entries into a record batch")]
     U32OverflowError,
+
+    /// Error propagated from the OTAP pdata layer (e.g. schema validation).
+    #[error(transparent)]
+    OtapError(#[from] crate::error::Error),
 }
 
 impl From<ciborium::ser::Error<std::io::Error>> for Error {

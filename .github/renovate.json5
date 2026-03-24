@@ -45,6 +45,18 @@
       ]
     },
     {
+      // group these dependencies that are tagged and released together
+      "groupName": "weaver crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "weaver_common",
+        "weaver_forge",
+        "weaver_resolved_schema",
+        "weaver_resolver",
+        "weaver_semconv"
+      ],
+    },
+    {
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
       // fine to take them together
@@ -74,9 +86,14 @@
       ]
     },
     {
-      // prevent duplicate PRs from pip_requirements once pip-compile is enabled
+      // prevent duplicate PRs from pip_requirements once pip-compile is enabled;
+      // also disable on lock files so pip_requirements doesn't treat transitive
+      // deps (e.g. pydantic-core) as direct and raise independent update PRs
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["tools/pipeline_perf_test/**/requirements.txt"],
+      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.txt",
+        "tools/pipeline_perf_test/**/requirements.lock.txt"
+      ],
       "enabled": false
     },
     {

@@ -18,3 +18,12 @@ pub mod perf_exporter;
 
 /// Parquet exporter.
 pub mod parquet_exporter;
+
+/// OTAP exporter.
+pub mod otap_exporter;
+
+/// OTLP gRPC exporter.
+pub mod otlp_grpc_exporter;
+
+/// OTLP HTTP exporter.
+pub mod otlp_http_exporter;

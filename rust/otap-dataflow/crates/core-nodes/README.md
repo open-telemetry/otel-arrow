@@ -14,6 +14,9 @@ Each component lives in its own subfolder within a category:
         console_exporter/
         error_exporter/
         noop_exporter/
+        otap_exporter/
+        otlp_grpc_exporter/
+        otlp_http_exporter/
         parquet_exporter/
         perf_exporter/
         topic_exporter/
@@ -34,6 +37,8 @@ Each component lives in its own subfolder within a category:
         mod.rs (category exports)
         fake_data_generator/
         internal_telemetry_receiver/
+        otap_receiver/
+        otlp_receiver/
         syslog_cef_receiver/
         topic_receiver/
       lib.rs
@@ -47,6 +52,9 @@ Each component lives in its own subfolder within a category:
 | console_exporter | `urn:otel:exporter:console` | `src/exporters/console_exporter/` |
 | error_exporter | `urn:otel:exporter:error` | `src/exporters/error_exporter/` |
 | noop_exporter | `urn:otel:exporter:noop` | `src/exporters/noop_exporter/` |
+| otap_exporter | `urn:otel:exporter:otap` | `src/exporters/otap_exporter/` |
+| otlp_grpc_exporter | `urn:otel:exporter:otlp_grpc` | `src/exporters/otlp_grpc_exporter/` |
+| otlp_http_exporter | `urn:otel:exporter:otlp_http` | `src/exporters/otlp_http_exporter/` |
 | parquet_exporter | `urn:otel:exporter:parquet` | `src/exporters/parquet_exporter/` |
 | perf_exporter | `urn:otel:exporter:perf` | `src/exporters/perf_exporter/` |
 | topic_exporter | `urn:otel:exporter:topic` | `src/exporters/topic_exporter/` |
@@ -65,6 +73,28 @@ Each component lives in its own subfolder within a category:
 
 - Placeholder exporter that ACKs all messages without processing
 - Lightweight for performance testing and pipeline validation
+
+#### otap_exporter
+
+- Streams OTAP Arrow payloads over gRPC to OTAP-compatible downstream receivers
+- Reuses shared OTAP transport, compression, and Arrow encoding support from
+  `otap-df-otap`
+
+#### otlp_grpc_exporter
+
+- Sends OTLP logs, metrics, and traces over unary gRPC export requests
+- Supports concurrent in-flight exports with ack/nack propagation back into the
+  pipeline
+- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
+  HTTP helpers
+
+#### otlp_http_exporter
+
+- Sends OTLP logs, metrics, and traces over OTLP/HTTP endpoints
+- Supports concurrent in-flight exports with ack/nack propagation back into the
+  pipeline
+- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
+  HTTP helpers
 
 #### parquet_exporter
 
@@ -165,6 +195,8 @@ Each component lives in its own subfolder within a category:
 | ---- | --- | ------ |
 | fake_data_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/fake_data_generator/` |
 | internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
+| otap_receiver | `urn:otel:receiver:otap` | `src/receivers/otap_receiver/` |
+| otlp_receiver | `urn:otel:receiver:otlp` | `src/receivers/otlp_receiver/` |
 | syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
 | topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
 
@@ -178,6 +210,19 @@ Each component lives in its own subfolder within a category:
 
 - Receives internal engine telemetry events from the internal log channel
 - Emits them as OTLP log pdata into the configured pipeline
+
+#### otap_receiver
+
+- Accepts OTAP Arrow streams over gRPC and forwards them into the pipeline as
+  `OtapPdata`
+- Supports downstream wait-for-result ack/nack routing back to OTAP clients
+
+#### otlp_receiver
+
+- Accepts OTLP over gRPC, OTLP/HTTP, or both, and forwards serialized OTLP
+  payloads into the pipeline
+- Shares gRPC, HTTP, concurrency, TLS, and ack-routing support from
+  `otap-df-otap`
 
 #### syslog_cef_receiver
 

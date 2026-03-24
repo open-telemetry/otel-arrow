@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
-use crate::otlp_receiver::OtlpReceiverMetrics;
+use crate::otlp_metrics::OtlpReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -53,7 +53,8 @@ pub struct AckSlot(
 
 impl AckSlot {
     /// Build a new per-signal slot map sized for the configured concurrency.
-    pub(crate) fn new(max_size: usize) -> Self {
+    #[must_use]
+    pub fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
 }
