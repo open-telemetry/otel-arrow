@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774225625322,
+  "lastUpdate": 1774311898010,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2756,6 +2756,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 92.84,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "84c4259bea0753ed03b05d19eba9c45a5a97d075",
+          "message": "azure monitor exporter: gzip batcher compression ratio configurable + bench + default to 6 + fix surfaced bugs on edge cases (#2388)\n\n# Change Summary\n\n**NOTE:** In local end-to-end tests with a basic pipeline setup, higher\ncompression levels produced modestly higher throughput at the cost of\nmore CPU, because each batch carries more log records and fewer HTTP\nrequests are needed for the same data volume. This indicates the test\nsetup was I/O bound. Making the compression level configurable allows\ntuning the exporter based on whether the workload of a given pipeline\nconfiguration is I/O bound (favor higher levels) or CPU bound (favor\nlower levels).\n\n- Make gzip batcher compression level configurable via\n`gzip_compression_level` config field (0-9).\n- Add gzip batcher benchmarks across compression levels 1, 6, 9 and\nanalysis document.\n- Set default compression level to 6 (matching `flate2::GzEncoder`\ndefault).\n- Replace fixed `GZIP_SAFETY_MARGIN` with `TARGET_LIMIT` (1020 KiB) that\nleaves 4 KiB headroom below the 1 MiB API limit.\n- Fix `is_first_entry` to use `row_count == 0` instead of\n`uncompressed_size == 0`, which was incorrect after sync flushes.\n- Fix size accounting: structural JSON bytes (`[`, `,`, `]`) are now\nincluded in size tracking.\n- Remove unused `total_uncompressed_size` field.\n- Add utilization tests enforcing that waste stays under one entry's\nworth of `TARGET_LIMIT` across entry sizes (1B-64KB), data profiles\n(json_log/hex_json), and compression levels (1/6/9).\n- Add edge case tests: flush boundary comma validity, hard limit\nenforcement, cross-batch (spillover) JSON validity.\n- Add deterministic replay test (`test_replay_seed_89`) demonstrating\ngzip framing overhead with incompressible data near the limit boundary.\n- Refactor config tests to use `test_api_config()` helper to avoid churn\nwhen new fields are added.\n- Log `gzip_compression_level` at exporter startup.\n\n## Batch Utilization Results (TARGET_LIMIT = 1020 KiB)\n\n### Batch Sizes\n\n| Profile | Entry Size | Level 1 | Level 6 | Level 9 |\n| ---------- | ---------- | -------------------- | --------------------\n| -------------------- |\n| tiny_json | 1 B | 1,044,495 (100.00%) | 1,044,491 (100.00%) |\n1,044,492 (100.00%) |\n| hex_json | 10 B | 1,044,483 (100.00%) | 1,044,488 (100.00%) |\n1,044,482 (100.00%) |\n| json_log | 256 B | 1,044,394 (99.99%) | 1,044,283 (99.98%) | 1,044,378\n(99.99%) |\n| hex_json | 256 B | 1,044,282 (99.98%) | 1,044,378 (99.99%) | 1,044,293\n(99.98%) |\n| json_log | 1 KB | 1,043,561 (99.91%) | 1,043,712 (99.93%) | 1,043,708\n(99.93%) |\n| hex_json | 1 KB | 1,044,006 (99.95%) | 1,043,676 (99.92%) | 1,044,042\n(99.96%) |\n| json_log | 2 KB | 1,042,706 (99.83%) | 1,043,156 (99.87%) | 1,043,178\n(99.88%) |\n| json_log | 16 KB | 1,037,774 (99.36%) | 1,037,962 (99.38%) | 1,037,960\n(99.38%) |\n| hex_json | 16 KB | 1,034,652 (99.06%) | 1,028,748 (98.49%) | 1,028,745\n(98.49%) |\n| json_log | 64 KB | 997,315 (95.48%) | 1,017,014 (97.37%) | 1,016,850\n(97.35%) |\n| hex_json | 64 KB | 999,133 (95.66%) | 1,010,212 (96.72%) | 1,010,178\n(96.72%) |\n| mixed_json | 1B-16KB | 1,035,417 (99.13%) | 1,037,592 (99.34%) |\n1,037,693 (99.35%) |\n\nAll batches under 1 MiB (max observed: 1,044,495 bytes, 4,081 bytes\nbelow 1 MiB).\nUtilization relative to TARGET_LIMIT: 95.48%-100.00%. Waste never\nexceeds one entry's worth of TARGET_LIMIT.\n\n### Flush Counts\n\n| Profile    | Entry Size | Level 1 | Level 6 | Level 9 |\n| ---------- | ---------- | ------- | ------- | ------- |\n| tiny_json  | 1 B        | 21      | 30      | 31      |\n| hex_json   | 10 B       | 45      | 56      | 56      |\n| json_log   | 256 B      | 10      | 9       | 10      |\n| hex_json   | 256 B      | 11      | 11      | 11      |\n| json_log   | 1 KB       | 8       | 8       | 8       |\n| hex_json   | 1 KB       | 11      | 9       | 10      |\n| json_log   | 2 KB       | 7       | 7       | 7       |\n| json_log   | 16 KB      | 6       | 6       | 6       |\n| hex_json   | 16 KB      | 7       | 6       | 6       |\n| json_log   | 64 KB      | 4       | 4       | 4       |\n| hex_json   | 64 KB      | 5       | 5       | 5       |\n| mixed_json | 1B-16KB    | 6       | 6       | 6       |\n\nWorst case: 56 flushes (hex_json/10B at level 6/9), well under\nMAX_GZIP_FLUSH_COUNT = 100.\n\n## What issue does this PR close?\n\nN/A\n\n## How are these changes tested?\n\nBenchmarks and unit tests (29 gzip_batcher tests, 24 config tests).\n\n## Are there any user-facing changes?\n\nAdded a new optional config field `gzip_compression_level` (0-9, default\n6) for tuning compression level.",
+          "timestamp": "2026-03-23T20:21:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/84c4259bea0753ed03b05d19eba9c45a5a97d075"
+        },
+        "date": 1774311891556,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 92.85,
             "unit": "MB"
           }
         ]
