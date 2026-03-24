@@ -25,11 +25,11 @@ use std::path::PathBuf;
 use sysinfo::System;
 use ctrlc;
 #[cfg(feature = "dhat-heap")]
-use once_cell::sync::Lazy;
-#[cfg(feature = "dhat-heap")]
-use std::sync::Mutex;
-#[cfg(feature = "dhat-heap")]
-use dhat::Profiler;
+use {
+    once_cell::sync::Lazy,
+    std::sync::Mutex,
+    dhat::Profiler,
+};
 
 #[cfg(all(
     not(windows),
