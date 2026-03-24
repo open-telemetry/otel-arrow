@@ -524,9 +524,9 @@ pub fn convert_bundle_to_pdata(
 
     // Create the appropriate OtapArrowRecords variant
     let records = match signal_type {
-        SignalType::Logs => create_logs_records(payloads),
-        SignalType::Traces => create_traces_records(payloads),
-        SignalType::Metrics => create_metrics_records(payloads),
+        SignalType::Logs => create_records::<Logs>(payloads)?,
+        SignalType::Traces => create_records::<Traces>(payloads)?,
+        SignalType::Metrics => create_records::<Metrics>(payloads)?,
     };
 
     // Wrap in OtapPayload and OtapPdata
@@ -534,81 +534,48 @@ pub fn convert_bundle_to_pdata(
     Ok(OtapPdata::new(Context::default(), payload))
 }
 
-/// Create Logs records from payloads.
-fn create_logs_records(payloads: &HashMap<SlotId, RecordBatch>) -> OtapArrowRecords {
-    let mut logs = Logs::default();
+fn create_records<T>(
+    payloads: &HashMap<SlotId, RecordBatch>,
+) -> Result<OtapArrowRecords, BundleConversionError>
+where
+    T: OtapBatchStore + Into<OtapArrowRecords>,
+{
+    let mut store = T::default();
 
     for (slot_id, batch) in payloads {
-        // Include signal-specific slots for Logs
-        if let Some((SignalType::Logs, payload_type)) = from_slot_id(*slot_id) {
-            logs.set(payload_type, batch.clone());
+        // Include signal-specific slots (any signal type)
+        if let Some((signal_type, payload_type)) = from_slot_id(*slot_id) {
+            debug_assert_eq!(signal_type, T::SIGNAL_TYPE, "Signal type should match slot");
+            store
+                .set(payload_type, batch.clone())
+                .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
         }
         // Also include shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
         else if let Some(payload_type) = slot_to_payload_type(*slot_id) {
             if is_shared_slot(*slot_id) {
-                logs.set(payload_type, batch.clone());
+                store
+                    .set(payload_type, batch.clone())
+                    .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
             }
         }
     }
 
-    OtapArrowRecords::Logs(logs)
-}
-
-/// Create Traces records from payloads.
-fn create_traces_records(payloads: &HashMap<SlotId, RecordBatch>) -> OtapArrowRecords {
-    let mut traces = Traces::default();
-
-    for (slot_id, batch) in payloads {
-        // Include signal-specific slots for Traces
-        if let Some((SignalType::Traces, payload_type)) = from_slot_id(*slot_id) {
-            traces.set(payload_type, batch.clone());
-        }
-        // Also include shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
-        else if let Some(payload_type) = slot_to_payload_type(*slot_id) {
-            if is_shared_slot(*slot_id) {
-                traces.set(payload_type, batch.clone());
-            }
-        }
-    }
-
-    OtapArrowRecords::Traces(traces)
-}
-
-/// Create Metrics records from payloads.
-fn create_metrics_records(payloads: &HashMap<SlotId, RecordBatch>) -> OtapArrowRecords {
-    let mut metrics = Metrics::default();
-
-    for (slot_id, batch) in payloads {
-        // Include signal-specific slots for Metrics
-        if let Some((SignalType::Metrics, payload_type)) = from_slot_id(*slot_id) {
-            metrics.set(payload_type, batch.clone());
-        }
-        // Also include shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
-        else if let Some(payload_type) = slot_to_payload_type(*slot_id) {
-            if is_shared_slot(*slot_id) {
-                metrics.set(payload_type, batch.clone());
-            }
-        }
-    }
-
-    OtapArrowRecords::Metrics(metrics)
+    Ok(store.into())
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
-    use arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc;
+    use otap_df_pdata::otap::OtapBatchStore;
+    use otap_df_pdata::{logs, metrics, record_batch, traces};
 
-    fn create_test_batch() -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Int64,
-            false,
-        )]));
-        let array = Int64Array::from(vec![1, 2, 3]);
-        RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    /// Helper to extract a single batch from an OtapArrowRecords.
+    fn extract_batch(records: &OtapArrowRecords, payload_type: ArrowPayloadType) -> RecordBatch {
+        records
+            .get(payload_type)
+            .unwrap_or_else(|| panic!("Expected batch for {payload_type:?}"))
+            .clone()
     }
 
     #[test]
@@ -686,10 +653,11 @@ mod tests {
 
     #[test]
     fn test_signal_type_detection() {
+        let records = logs!((Logs, ("id", UInt16, vec![1u16, 2, 3])));
         let mut payloads = HashMap::new();
         let _ = payloads.insert(
             to_slot_id(SignalType::Logs, ArrowPayloadType::Logs),
-            create_test_batch(),
+            extract_batch(&records.into(), ArrowPayloadType::Logs),
         );
 
         let signal = determine_signal_type(&payloads).unwrap();
@@ -698,10 +666,7 @@ mod tests {
 
     #[test]
     fn test_adapter_descriptor() {
-        let mut logs = Logs::default();
-        logs.set(ArrowPayloadType::Logs, create_test_batch());
-
-        let records = OtapArrowRecords::Logs(logs);
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         let descriptor = adapter.descriptor();
@@ -713,10 +678,7 @@ mod tests {
 
     #[test]
     fn test_adapter_payload_access() {
-        let mut logs = Logs::default();
-        logs.set(ArrowPayloadType::Logs, create_test_batch());
-
-        let records = OtapArrowRecords::Logs(logs);
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         let logs_slot = to_slot_id(SignalType::Logs, ArrowPayloadType::Logs);
@@ -808,10 +770,11 @@ mod tests {
         assert_eq!(signal_type, SignalType::Metrics);
 
         // Test with Arrow bundle (should return None)
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
         let mut arrow_payloads = HashMap::new();
         let _ = arrow_payloads.insert(
             to_slot_id(SignalType::Logs, ArrowPayloadType::Logs),
-            create_test_batch(),
+            extract_batch(&records, ArrowPayloadType::Logs),
         );
 
         assert!(find_otlp_slot(&arrow_payloads).is_none());
@@ -825,14 +788,12 @@ mod tests {
     fn test_traces_bundle_with_shared_slots_roundtrip() {
         // Simulate a Traces bundle that includes shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
         // This is the realistic case - bundles always have shared slots alongside signal-specific ones
-
-        let mut traces = Traces::default();
-        traces.set(ArrowPayloadType::Spans, create_test_batch());
-        traces.set(ArrowPayloadType::SpanAttrs, create_test_batch());
-        traces.set(ArrowPayloadType::ResourceAttrs, create_test_batch()); // shared
-        traces.set(ArrowPayloadType::ScopeAttrs, create_test_batch()); // shared
-
-        let records = OtapArrowRecords::Traces(traces);
+        let records = OtapArrowRecords::Traces(traces!(
+            (Spans, ("id", UInt16, vec![0u16, 1, 2])),
+            (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+        ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         // Simulate what Quiver does: extract slot→batch pairs
@@ -851,7 +812,7 @@ mod tests {
         assert_eq!(signal_type, SignalType::Traces);
 
         // Reconstruct the records
-        let reconstructed = create_traces_records(&recovered_payloads);
+        let reconstructed = create_records::<Traces>(&recovered_payloads).unwrap();
 
         // Verify all tables were recovered, including shared slots
         if let OtapArrowRecords::Traces(traces) = reconstructed {
@@ -879,13 +840,16 @@ mod tests {
     #[test]
     fn test_metrics_bundle_with_shared_slots_roundtrip() {
         // Metrics bundle with shared slots
-        let mut metrics = Metrics::default();
-        metrics.set(ArrowPayloadType::UnivariateMetrics, create_test_batch());
-        metrics.set(ArrowPayloadType::NumberDataPoints, create_test_batch());
-        metrics.set(ArrowPayloadType::ResourceAttrs, create_test_batch()); // shared
-        metrics.set(ArrowPayloadType::ScopeAttrs, create_test_batch()); // shared
-
-        let records = OtapArrowRecords::Metrics(metrics);
+        let records = OtapArrowRecords::Metrics(metrics!(
+            (UnivariateMetrics, ("id", UInt16, vec![0u16, 1, 2])),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![0u32, 1, 2]),
+                ("parent_id", UInt16, vec![0u16, 1, 2])
+            ),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+        ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         // Extract slot→batch pairs (simulating WAL storage)
@@ -901,7 +865,7 @@ mod tests {
         assert_eq!(signal_type, SignalType::Metrics);
 
         // Reconstruct and verify shared slots are included
-        let reconstructed = create_metrics_records(&recovered_payloads);
+        let reconstructed = create_records::<Metrics>(&recovered_payloads).unwrap();
 
         if let OtapArrowRecords::Metrics(metrics) = reconstructed {
             assert!(metrics.get(ArrowPayloadType::UnivariateMetrics).is_some());
@@ -922,13 +886,12 @@ mod tests {
     #[test]
     fn test_logs_bundle_with_shared_slots_roundtrip() {
         // Logs bundle with shared slots
-        let mut logs = Logs::default();
-        logs.set(ArrowPayloadType::Logs, create_test_batch());
-        logs.set(ArrowPayloadType::LogAttrs, create_test_batch());
-        logs.set(ArrowPayloadType::ResourceAttrs, create_test_batch()); // shared
-        logs.set(ArrowPayloadType::ScopeAttrs, create_test_batch()); // shared
-
-        let records = OtapArrowRecords::Logs(logs);
+        let records = OtapArrowRecords::Logs(logs!(
+            (Logs, ("id", UInt16, vec![0u16, 1, 2])),
+            (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+        ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         // Extract slot→batch pairs
@@ -942,7 +905,7 @@ mod tests {
         let signal_type = determine_signal_type(&recovered_payloads).unwrap();
         assert_eq!(signal_type, SignalType::Logs);
 
-        let reconstructed = create_logs_records(&recovered_payloads);
+        let reconstructed = create_records::<Logs>(&recovered_payloads).unwrap();
 
         if let OtapArrowRecords::Logs(logs) = reconstructed {
             assert!(logs.get(ArrowPayloadType::Logs).is_some());
@@ -964,14 +927,18 @@ mod tests {
     fn test_bundle_with_only_shared_slots_fails() {
         // Edge case: A bundle that somehow only has shared slots
         // (shouldn't happen in practice, but we should handle it gracefully)
+        let records = OtapArrowRecords::Logs(logs!(
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1])),
+            (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+        ));
         let mut payloads = HashMap::new();
         let _ = payloads.insert(
             to_slot_id(SignalType::Logs, ArrowPayloadType::ResourceAttrs),
-            create_test_batch(),
+            extract_batch(&records, ArrowPayloadType::ResourceAttrs),
         );
         let _ = payloads.insert(
             to_slot_id(SignalType::Logs, ArrowPayloadType::ScopeAttrs),
-            create_test_batch(),
+            extract_batch(&records, ArrowPayloadType::ScopeAttrs),
         );
 
         // Should fail to determine signal type since shared slots return None
@@ -988,14 +955,23 @@ mod tests {
         // In practice, bundles only contain one signal type, but let's verify behavior
 
         // HashMap iteration order is not guaranteed, but all slots should be from same signal
+        #[rustfmt::skip]
+        let records = OtapArrowRecords::Traces(traces!(
+            (Spans, 
+                ("id", UInt16, vec![0u16, 1])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 1]))
+        ));
+
         let mut payloads = HashMap::new();
         let _ = payloads.insert(
             to_slot_id(SignalType::Traces, ArrowPayloadType::Spans),
-            create_test_batch(),
+            extract_batch(&records, ArrowPayloadType::Spans),
         );
         let _ = payloads.insert(
             to_slot_id(SignalType::Traces, ArrowPayloadType::SpanEvents),
-            create_test_batch(),
+            extract_batch(&records, ArrowPayloadType::SpanEvents),
         );
 
         let signal = determine_signal_type(&payloads).unwrap();
@@ -1062,10 +1038,7 @@ mod tests {
     #[test]
     fn test_adapter_rejects_wrong_signal_slots() {
         // A Traces adapter should reject Logs and Metrics slots
-        let mut traces = Traces::default();
-        traces.set(ArrowPayloadType::Spans, create_test_batch());
-
-        let records = OtapArrowRecords::Traces(traces);
+        let records = OtapArrowRecords::Traces(traces!((Spans, ("id", UInt16, vec![0u16, 1, 2]))));
         let adapter = OtapRecordBundleAdapter::new(records);
 
         // Should reject Logs slot
@@ -1096,10 +1069,10 @@ mod tests {
         // that has them set
 
         // Test with Logs
-        let mut logs = Logs::default();
-        logs.set(ArrowPayloadType::Logs, create_test_batch());
-        logs.set(ArrowPayloadType::ResourceAttrs, create_test_batch());
-        let logs_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Logs(logs));
+        let logs_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Logs(logs!(
+            (Logs, ("id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+        )));
 
         let resource_slot = to_slot_id(SignalType::Logs, ArrowPayloadType::ResourceAttrs);
         assert!(
@@ -1108,10 +1081,10 @@ mod tests {
         );
 
         // Test with Traces
-        let mut traces = Traces::default();
-        traces.set(ArrowPayloadType::Spans, create_test_batch());
-        traces.set(ArrowPayloadType::ResourceAttrs, create_test_batch());
-        let traces_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Traces(traces));
+        let traces_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Traces(traces!(
+            (Spans, ("id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+        )));
 
         assert!(
             traces_adapter.payload(resource_slot).is_some(),
@@ -1119,10 +1092,10 @@ mod tests {
         );
 
         // Test with Metrics
-        let mut metrics = Metrics::default();
-        metrics.set(ArrowPayloadType::UnivariateMetrics, create_test_batch());
-        metrics.set(ArrowPayloadType::ResourceAttrs, create_test_batch());
-        let metrics_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Metrics(metrics));
+        let metrics_adapter = OtapRecordBundleAdapter::new(OtapArrowRecords::Metrics(metrics!(
+            (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+        )));
 
         assert!(
             metrics_adapter.payload(resource_slot).is_some(),

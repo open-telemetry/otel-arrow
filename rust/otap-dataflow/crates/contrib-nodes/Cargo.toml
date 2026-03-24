@@ -91,14 +91,30 @@ recordset-kql-processor = [
 resource-validator-processor = []
 
 [dev-dependencies]
+axum.workspace = true
+clap.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
+humantime.workspace = true
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-otap = { path = "../otap", features = ["test-utils"] }
 pretty_assertions.workspace = true
+rand.workspace = true
+serde_yaml.workspace = true
 wiremock.workspace = true
 
 [[bench]]
 name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
+required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "azure_monitor_gzip_batcher"
+path = "benches/exporters/azure_monitor_exporter/gzip_batcher.rs"
+harness = false
+required-features = ["azure-monitor-exporter"]
+
+[[example]]
+name = "mock_la_server"
+path = "examples/mock_la_server.rs"
 required-features = ["azure-monitor-exporter"]

@@ -95,7 +95,8 @@ impl ArrowLogsService for ArrowLogsServiceMock {
                 let batch_data = consumer
                     .consume_bar(&mut batch)
                     .expect("failed to decode log batch in mock OTAP stream");
-                let pdata = OtapArrowRecords::Logs(from_record_messages(batch_data));
+                let pdata =
+                    OtapArrowRecords::Logs(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -144,7 +145,8 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
                 let batch_data = consumer
                     .consume_bar(&mut batch)
                     .expect("failed to decode metrics batch in mock OTAP stream");
-                let pdata = OtapArrowRecords::Metrics(from_record_messages(batch_data));
+                let pdata =
+                    OtapArrowRecords::Metrics(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -192,7 +194,8 @@ impl ArrowTracesService for ArrowTracesServiceMock {
                 let batch_data = consume
                     .consume_bar(&mut batch)
                     .expect("failed to decode trace batch in mock OTAP stream");
-                let pdata = OtapArrowRecords::Traces(from_record_messages(batch_data));
+                let pdata =
+                    OtapArrowRecords::Traces(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -234,15 +237,13 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
     let mut otap_batch = match payload_type {
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
         ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-            OtapArrowRecords::Metrics(Metrics::default())
-        }
+        ArrowPayloadType::UnivariateMetrics => OtapArrowRecords::Metrics(Metrics::default()),
         _ => {
             panic!("unexpected payload_type")
         }
     };
 
-    otap_batch.set(payload_type, record_batch);
+    otap_batch.set(payload_type, record_batch).expect("valid");
 
     otap_batch
 }

@@ -38,3 +38,16 @@ records representation.
   layer](./experimental/query_engine/README.md)
 - [Parquet query examples: querying OTel-Arrow data in Parquet
   files using DataFusion](./parquet_query_examples/README.md)
+
+## Beaubourg (retired)
+
+The Beaubourg library, named after the Parisian building famous for
+its assembly of interconnected pipes, was the original Rust prototype
+for building generic data pipelines with receivers, processors, and
+exporters written by [Laurent
+Qu&#xE9;rel](https://github.com/lquerel). Its ideas and lessons
+directly shaped the design of the OTAP Dataflow engine that succeeded
+it. Beaubourg was removed from this repository after serving as a
+reference implementation, and we are grateful for the foundation it
+provided. Beaubourg is preserved
+[at this commit](https://github.com/open-telemetry/otel-arrow/tree/7c80ef943e417c5671b6dcb028cccc8d89935525/rust/beaubourg).

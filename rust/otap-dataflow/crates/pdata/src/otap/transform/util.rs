@@ -12,7 +12,7 @@ use arrow::datatypes::{ArrowNativeType, UInt16Type, UInt32Type};
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
-use crate::otap::{POSITION_LOOKUP, UNUSED_INDEX};
+use crate::otap::raw_batch_store::{POSITION_LOOKUP, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 use crate::schema::{FieldExt, consts};

@@ -362,9 +362,9 @@ mod test {
         let mut consumer = Consumer::default();
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::UInt32, false),
-            Field::new("b", DataType::UInt16, false),
-            Field::new("c", DataType::Utf8, true),
+            Field::new("flags", DataType::UInt32, false),
+            Field::new("id", DataType::UInt16, false),
+            Field::new("severity_text", DataType::Utf8, true),
         ]));
         let record_batch = RecordBatch::try_new(
             schema.clone(),
@@ -381,11 +381,11 @@ mod test {
         .unwrap();
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
-        input.set(ArrowPayloadType::Logs, record_batch);
+        input.set(ArrowPayloadType::Logs, record_batch).unwrap();
         let mut bar = producer.produce_bar(&mut input).unwrap();
-        let result = OtapArrowRecords::Logs(from_record_messages(
-            consumer.consume_bar(&mut bar).unwrap(),
-        ));
+        let result = OtapArrowRecords::Logs(
+            from_record_messages(consumer.consume_bar(&mut bar).unwrap()).unwrap(),
+        );
         assert_eq!(input, result);
 
         // write a second batch with the same schema to test that we can reuse the same
@@ -405,17 +405,17 @@ mod test {
         .unwrap();
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
-        input.set(ArrowPayloadType::Logs, record_batch);
+        input.set(ArrowPayloadType::Logs, record_batch).unwrap();
         let mut bar = producer.produce_bar(&mut input).unwrap();
-        let result = OtapArrowRecords::Logs(from_record_messages(
-            consumer.consume_bar(&mut bar).unwrap(),
-        ));
+        let result = OtapArrowRecords::Logs(
+            from_record_messages(consumer.consume_bar(&mut bar).unwrap()).unwrap(),
+        );
         assert_eq!(input, result);
 
         // send another batch with a different schema, but same payload type
         let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::UInt32, false),
-            Field::new("b", DataType::UInt16, false),
+            Field::new("flags", DataType::UInt32, false),
+            Field::new("id", DataType::UInt16, false),
         ]));
         let record_batch = RecordBatch::try_new(
             schema.clone(),
@@ -427,11 +427,11 @@ mod test {
         .unwrap();
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
-        input.set(ArrowPayloadType::Logs, record_batch);
+        input.set(ArrowPayloadType::Logs, record_batch).unwrap();
         let mut bar = producer.produce_bar(&mut input).unwrap();
-        let result = OtapArrowRecords::Logs(from_record_messages(
-            consumer.consume_bar(&mut bar).unwrap(),
-        ));
+        let result = OtapArrowRecords::Logs(
+            from_record_messages(consumer.consume_bar(&mut bar).unwrap()).unwrap(),
+        );
         assert_eq!(input, result);
     }
 
@@ -492,7 +492,7 @@ mod test {
             };
             let record_messages = consumer.consume_bar(&mut bar).unwrap();
             let mut result_otap_batch =
-                OtapArrowRecords::Logs(from_record_messages(record_messages));
+                OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
 
             // remove the delta encoding for the IDs so we can compare against the original.
             // this optimized encoding is added by the Producer automatically.
@@ -531,15 +531,15 @@ mod test {
         .unwrap();
 
         let mut input = OtapArrowRecords::Logs(Logs::default());
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         let mut producer = Producer::new();
         let mut bar = producer.produce_bar(&mut input).unwrap();
 
         let mut consumer = Consumer::default();
-        let result = OtapArrowRecords::Logs(from_record_messages(
-            consumer.consume_bar(&mut bar).unwrap(),
-        ));
+        let result = OtapArrowRecords::Logs(
+            from_record_messages(consumer.consume_bar(&mut bar).unwrap()).unwrap(),
+        );
         let result_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
 
         let expected_data = [("a", 0), ("a", 1), ("a", 1), ("b", 0), ("b", 1), ("b", 1)];
