@@ -313,27 +313,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
-
-                                    // Wait for active tasks to finish flushing.
-                                    // Use 90% of remaining time (keeping 10% buffer for cleanup),
-                                    // capped at MAX_TASK_DRAIN_WAIT.
-                                    let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
-                                    let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
-                                    let drain_result = tokio::time::timeout(drain_wait, async {
-                                        while active_task_count.get() > 0 {
-                                            tokio::task::yield_now().await;
-                                        }
-                                    }).await;
-
-                                    if drain_result.is_err() {
-                                        otel_warn!(
-                                            "syslog_cef_receiver.shutdown.drain_timeout",
-                                            active_tasks = active_task_count.get(),
-                                            message = "Shutdown drain timeout expired with tasks still active"
-                                        );
-                                    }
-
+                                    shutdown_flag.set(true);
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
