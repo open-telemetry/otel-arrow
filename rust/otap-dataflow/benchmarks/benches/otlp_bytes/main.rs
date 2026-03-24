@@ -122,8 +122,7 @@ fn otlp_payload_clone(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark cloning OtapPayload containing OtlpProtoBytes (logs).
-/// This confirms that clone is cheap due to bytes::Bytes being reference-counted.
+/// Benchmark converting OTAP to OTLP proto bytes
 fn otap_to_bytes_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTAP to OTLP Logs");
 
