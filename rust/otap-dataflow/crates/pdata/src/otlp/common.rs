@@ -586,7 +586,8 @@ impl SortedBatchCursor {
 /// This is used to initialize the [`SortedBatchCursor`]. It does this by sorting the IDs and then
 /// filling in the cursors indices to visit based on the sorted ID column.
 pub(crate) struct BatchSorter {
-    row_converter: RowConverter,
+    row_converter_3: RowConverter,
+    row_converter_2: RowConverter,
 
     // when we sort the record batch, to it's indices we put the ID columns into these Vecs before
     // transferring the indices to the cursor. We keep these on instance of the [`BatchSorter`] so
@@ -599,14 +600,22 @@ pub(crate) struct BatchSorter {
 impl BatchSorter {
     pub fn new() -> Self {
         // safety: these datatypes are sortable
-        let row_converter = RowConverter::new(vec![
+        let row_converter_2 = RowConverter::new(vec![
             SortField::new(DataType::UInt16),
             SortField::new(DataType::UInt16),
         ])
         .expect("can create row converter");
 
+        let row_converter_3 = RowConverter::new(vec![
+            SortField::new(DataType::UInt16),
+            SortField::new(DataType::UInt16),
+            SortField::new(DataType::UInt16),
+        ])
+        .expect("can create row converted");
+
         Self {
-            row_converter,
+            row_converter_2,
+            row_converter_3,
             rows: Vec::new(),
             u16_ids: Vec::new(),
             u32_ids: Vec::new(),
@@ -632,30 +641,50 @@ impl BatchSorter {
         cursor: &mut SortedBatchCursor,
     ) -> Result<()> {
         let mut sort_columns_idx = 0;
-        let mut sort_columns = [None, None];
+        let mut sort_columns = [None, None, None];
         for col_name in [consts::RESOURCE, consts::SCOPE] {
-            if let Some(resource_col) = record_batch.column_by_name(col_name) {
-                let resource_col = resource_col
+            if let Some(struct_col) = record_batch.column_by_name(col_name) {
+                let resource_col = struct_col
                     .as_any()
                     .downcast_ref::<StructArray>()
                     .ok_or_else(|| Error::ColumnDataTypeMismatch {
                         name: col_name.into(),
                         expect: DataType::Struct(Fields::empty()),
-                        actual: resource_col.data_type().clone(),
+                        actual: struct_col.data_type().clone(),
                     })?;
-                if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
-                    sort_columns[sort_columns_idx] = Some(resource_ids.clone());
+                if let Some(ids) = resource_col.column_by_name(consts::ID) {
+                    sort_columns[sort_columns_idx] = Some(ids.clone());
                     sort_columns_idx += 1;
                 }
             }
         }
 
+        if let Some(ids) = record_batch.column_by_name(consts::ID) {
+            sort_columns[sort_columns_idx] = Some(ids.clone())
+        }
+
         match sort_columns {
             // use row-sorter if we need to sort by both columns
-            [Some(resource_ids), Some(scope_ids)] => {
+            [Some(resource_ids), Some(scope_ids), Some(ids)] => {
                 let rows = self
-                    .row_converter
-                    .convert_columns(&[resource_ids, scope_ids])
+                    .row_converter_3
+                    .convert_columns(&[resource_ids, scope_ids, ids])
+                    .map_err(|e| Error::UnexpectedRecordBatchState {
+                        reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
+                    })?;
+                let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
+                sort.extend(rows.iter().enumerate());
+                sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+                // populate the cursor
+                cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
+
+                // save the rows vec allocation for next batch needs sorting
+                self.rows = Self::reuse_rows_vec(sort);
+            }
+            [Some(ids1), Some(ids2), None] => {
+                let rows = self
+                    .row_converter_2
+                    .convert_columns(&[ids1, ids2])
                     .map_err(|e| Error::UnexpectedRecordBatchState {
                         reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
                     })?;
@@ -670,7 +699,7 @@ impl BatchSorter {
             }
 
             //there's only one ID column, so we'll visit in the order of this column.
-            [Some(ids), None] => {
+            [Some(ids), None, None] => {
                 let ids = ids.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
                     Error::ColumnDataTypeMismatch {
                         name: consts::ID.into(),
@@ -683,7 +712,7 @@ impl BatchSorter {
 
             // no scope/resource ID columns....
             // just configure cursor to visit the root record batch in order
-            [None, None] => {
+            [None, None, None] => {
                 cursor.sorted_indices.extend(0..record_batch.num_rows());
             }
 
