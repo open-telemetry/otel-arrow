@@ -25,14 +25,10 @@ groups:
           sampler:
             type: processor:log_sampling
             config:
-              # policy:
-              #   ratio:
-              #     emit: 1
-              #     out_of: 10
               policy:
-                zip:
-                  interval: 5s
-                  max_items: 100
+                ratio:
+                  emit: 1
+                  out_of: 10
           debug:
             type: processor:debug
             config:

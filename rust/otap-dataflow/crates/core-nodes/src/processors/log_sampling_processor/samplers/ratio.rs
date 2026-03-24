@@ -15,8 +15,7 @@
 //! [RatioSampler::compute_to_keep].
 
 use super::Sampler;
-use arrow::array::BooleanArray;
-use arrow::buffer::BooleanBuffer;
+use arrow::array::{BooleanArray, BooleanBufferBuilder};
 use async_trait::async_trait;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::error::Error as EngineError;
@@ -132,10 +131,16 @@ impl RatioSampler {
 
 #[async_trait(?Send)]
 impl Sampler for RatioSampler {
-    fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray {
+    fn sample_arrow_records(
+        &mut self,
+        records: &OtapArrowRecords,
+        builder: &mut BooleanBufferBuilder,
+    ) -> BooleanArray {
         let total = records.root_record_batch().map_or(0, |rb| rb.num_rows());
         let to_keep = self.compute_to_keep(total);
-        BooleanArray::new(BooleanBuffer::collect_bool(total, |i| i < to_keep), None)
+        builder.append_n(to_keep, true);
+        builder.append_n(total - to_keep, false);
+        BooleanArray::new(builder.finish(), None)
     }
 
     async fn ensure_init(
@@ -164,7 +169,7 @@ mod tests {
         let mut sampler = RatioSampler::new(&cfg);
 
         let records = make_log_records(100);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 10);
     }
 
@@ -174,7 +179,7 @@ mod tests {
         let mut sampler = RatioSampler::new(&cfg);
 
         let records = make_log_records(100);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 100);
     }
 
@@ -186,7 +191,7 @@ mod tests {
         let cases = [(12, 6), (4, 1), (5, 2), (4, 1)];
         for (batch_size, expected_kept) in cases {
             let records = make_log_records(batch_size);
-            let sel = sampler.sample_arrow_records(&records);
+            let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
             assert_eq!(
                 sel.true_count(),
                 expected_kept,
@@ -205,7 +210,7 @@ mod tests {
         let mut sampler = RatioSampler::new(&cfg);
 
         let records = make_log_records(0);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.len(), 0);
         assert_eq!(sel.true_count(), 0);
     }
@@ -251,7 +256,7 @@ mod tests {
 
             for batch_size in batches {
                 let records = make_log_records(batch_size);
-                let sel = sampler.sample_arrow_records(&records);
+                let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
                 let actual = sel.true_count();
                 let expected = reference_compute_to_keep(
                     emit,

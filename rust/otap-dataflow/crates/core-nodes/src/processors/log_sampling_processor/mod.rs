@@ -17,6 +17,8 @@ use self::config::Config;
 use self::metrics::LogSamplingMetrics;
 use self::samplers::{Sampler, sampler_from_config};
 
+use arrow::array::BooleanBufferBuilder;
+use arrow::buffer::MutableBuffer;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -66,6 +68,8 @@ struct LogSamplingProcessor {
     metrics: MetricSet<LogSamplingMetrics>,
     /// Reusable bitmap pool for child batch filtering.
     id_bitmap_pool: IdBitmapPool,
+    /// Reusable buffer for filtering
+    filter_buffer: MutableBuffer,
 }
 
 impl LogSamplingProcessor {
@@ -83,6 +87,7 @@ impl LogSamplingProcessor {
             sampler,
             metrics,
             id_bitmap_pool: IdBitmapPool::new(),
+            filter_buffer: MutableBuffer::with_capacity(0),
         })
     }
 
@@ -100,10 +105,35 @@ impl LogSamplingProcessor {
         let mut records: OtapArrowRecords = payload.try_into()?;
         records.decode_transport_optimized_ids()?;
 
-        let selection = self.sampler.sample_arrow_records(&records);
+        // Prepare the filter buffer.
+        //
+        // We make sure we have capacity for the whole result here to avoid
+        // multiple resizes through samplers calling things like `append` or
+        // `append_n`
+        let buf_len = total.div_ceil(8);
+        let mut buf = std::mem::take(&mut self.filter_buffer);
+        buf.resize(buf_len, 0);
 
-        // Apply the filter to root + all child batches.
-        let filtered = match filter_otap_batch(&selection, &records, &mut self.id_bitmap_pool) {
+        // Filter
+        let mut builder = BooleanBufferBuilder::new_from_buffer(buf, 0);
+        let selection = self.sampler.sample_arrow_records(&records, &mut builder);
+        let filter_result = filter_otap_batch(&selection, &records, &mut self.id_bitmap_pool);
+
+        // Attempt to reclaim the buffer before checking the result. If this
+        // fails then we have a 0 size mutable buffer and it will simply get
+        // resized appropriately the next time around.
+        //
+        // This _should_ succeed if the sampler called finish as the builder
+        // will drop its buffer.
+        let (buf, _) = selection.into_parts();
+        match buf.into_inner().into_mutable() {
+            Ok(mutable) => self.filter_buffer = mutable,
+            Err(_) => {
+                self.metrics.filter_buffer_reclamation_failures.inc();
+            }
+        }
+
+        let filtered = match filter_result {
             Ok(filtered) => filtered,
             Err(e) => {
                 self.metrics.filtering_errors.inc();

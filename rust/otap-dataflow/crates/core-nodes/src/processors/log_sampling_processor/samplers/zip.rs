@@ -20,8 +20,7 @@
 //! budget for the next window.
 
 use super::Sampler;
-use arrow::array::BooleanArray;
-use arrow::buffer::BooleanBuffer;
+use arrow::array::{BooleanArray, BooleanBufferBuilder};
 use async_trait::async_trait;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::error::Error as EngineError;
@@ -102,10 +101,16 @@ impl ZipSampler {
 
 #[async_trait(?Send)]
 impl Sampler for ZipSampler {
-    fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray {
+    fn sample_arrow_records(
+        &mut self,
+        records: &OtapArrowRecords,
+        builder: &mut BooleanBufferBuilder,
+    ) -> BooleanArray {
         let total = records.root_record_batch().map_or(0, |rb| rb.num_rows());
         let to_keep = self.compute_to_keep(total);
-        BooleanArray::new(BooleanBuffer::collect_bool(total, |i| i < to_keep), None)
+        builder.append_n(to_keep, true);
+        builder.append_n(total - to_keep, false);
+        BooleanArray::new(builder.finish(), None)
     }
 
     async fn ensure_init(
@@ -140,11 +145,11 @@ mod tests {
         let mut sampler = ZipSampler::new(&cfg);
 
         let records = make_log_records(30);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 30);
 
         let records = make_log_records(50);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 50);
     }
 
@@ -157,11 +162,11 @@ mod tests {
         let mut sampler = ZipSampler::new(&cfg);
 
         let records = make_log_records(90);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 90);
 
         let records = make_log_records(50);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 10);
     }
 
@@ -175,18 +180,18 @@ mod tests {
 
         // Fill budget
         let records = make_log_records(100);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 100);
 
         let records = make_log_records(50);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 0);
 
         // Timer resets the budget
         sampler.notify_timer_tick();
 
         let records = make_log_records(50);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.true_count(), 50);
     }
 
@@ -199,7 +204,7 @@ mod tests {
         let mut sampler = ZipSampler::new(&cfg);
 
         let records = make_log_records(0);
-        let sel = sampler.sample_arrow_records(&records);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
         assert_eq!(sel.len(), 0);
         assert_eq!(sel.true_count(), 0);
     }

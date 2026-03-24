@@ -21,6 +21,11 @@ pub struct LogSamplingMetrics {
     /// Errors encountered while filtering OTAP batches.
     #[metric(unit = "{error}")]
     pub filtering_errors: Counter<u64>,
+
+    /// How many times we fail to reclaim the underlying filter
+    /// buffer.
+    #[metric(unit = "{error}")]
+    pub filter_buffer_reclamation_failures: Counter<u64>,
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ pub use ratio::{RatioConfig, RatioSampler};
 pub use zip::{ZipConfig, ZipSampler};
 
 use crate::processors::log_sampling_processor::config::Policy;
-use arrow::array::BooleanArray;
+use arrow::array::{BooleanArray, BooleanBufferBuilder};
 use async_trait::async_trait;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
@@ -23,12 +23,18 @@ use otap_df_pdata::otap::OtapArrowRecords;
 /// Trait for log sampling strategies.
 #[async_trait(?Send)]
 pub trait Sampler: std::fmt::Debug {
-    /// Produce a selection vector for the given OTAP Arrow records.
+    /// Produce a selection vector for the given OTAP Arrow records. Samplers
+    /// should always use the provided builder to build the result array so that
+    /// that buffer can be reclaimed by the processor after filtering.
     ///
     /// The returned [`BooleanArray`] must have length equal to
     /// `records.root_record_batch().map_or(0, |rb| rb.num_rows())`.
     /// `true` = keep, `false` = drop.
-    fn sample_arrow_records(&mut self, records: &OtapArrowRecords) -> BooleanArray;
+    fn sample_arrow_records(
+        &mut self,
+        records: &OtapArrowRecords,
+        builder: &mut BooleanBufferBuilder,
+    ) -> BooleanArray;
 
     /// One-time initialization. Called on every incoming message.
     /// Implementations that need setup (e.g. starting a periodic timer) should
