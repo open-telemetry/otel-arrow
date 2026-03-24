@@ -82,7 +82,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 
         // replace record batch with pipeline result
         if curr_batch.num_rows() > 0 {
-            otap_batch.set(attrs_payload_type, curr_batch);
+            otap_batch.set(attrs_payload_type, curr_batch)?;
         } else {
             otap_batch.remove(attrs_payload_type);
         }
@@ -904,7 +904,7 @@ mod test {
             .find(consts::ATTRIBUTE_INT)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         let query = r#"
             logs | apply attributes {
@@ -940,7 +940,7 @@ mod test {
             .find(consts::ATTRIBUTE_DOUBLE)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         let query = r#"
             logs | apply attributes {
@@ -980,7 +980,7 @@ mod test {
             .find(consts::ATTRIBUTE_BOOL)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         // kind of a useless update, but just trying to test something that will read from
         // a null column and also produce a null result
@@ -1016,7 +1016,7 @@ mod test {
             .find(consts::ATTRIBUTE_STR)
             .unwrap();
         _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
         // kind of a useless update, but just trying to test something that will read from
         // a null column and also produce a null result
@@ -1229,6 +1229,47 @@ mod test {
                 .attributes(vec![
                     KeyValue::new("k1", AnyValue::new_string("a")),
                     KeyValue::new("k2", AnyValue::new_string("a")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_condition_can_concatenate_in_case_schema_changes() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        // attributes that take the first "if" branch will have the optional int column appended,
+        // and those which take the "else if" branch will have the optional double column appended.
+        // this is checking that we can still concat the batches despite the schema mismatch
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1") {
+                    set value = 5
+                } else if (key == "k2") {
+                    set value = 14.0
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
                     KeyValue::new("k3", AnyValue::new_string("z")),
                 ])
                 .finish(),

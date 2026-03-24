@@ -10,8 +10,9 @@ use arrow::array::{
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
+use crate::otap::raw_batch_store::POSITION_LOOKUP;
 use crate::otap::transform::util::{id_column_dispatch, sort_otap_batch_by_parent_then_id};
-use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, num_items};
+use crate::otap::{Logs, Metrics, OtapBatchStore, Traces, num_items};
 use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, METRIC_TYPE, PARENT_ID};
@@ -1304,7 +1305,7 @@ mod tests {
                 expected_ids.extend(root_ids(rb));
             }
         }
-        let expected_items: usize = batches.iter().map(num_items).sum();
+        let expected_items: usize = batches.iter().map(|b| num_items(b)).sum();
 
         for i in get_split_sizes(expected_items) {
             let mut result =
@@ -1319,7 +1320,7 @@ mod tests {
             assert_eq!(split_ids, expected_ids);
 
             // Total item count must be preserved.
-            let result_items: usize = result.iter().map(num_items).sum();
+            let result_items: usize = result.iter().map(|b| num_items(b)).sum();
             assert_eq!(result_items, expected_items);
 
             // For metrics, verify data point row counts are preserved per type.

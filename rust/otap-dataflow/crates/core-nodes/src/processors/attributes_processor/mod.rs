@@ -323,7 +323,9 @@ impl AttributesProcessor {
                     if rb.num_rows() == 0 {
                         records.remove(payload_ty);
                     } else {
-                        records.set(payload_ty, rb);
+                        records
+                            .set(payload_ty, rb)
+                            .map_err(|e| engine_err(&format!("failed to set payload: {e}")))?;
                     }
                 }
             }

@@ -42,7 +42,7 @@ tonic = { workspace = true, optional = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, default-features = false, features = ["metrics", "internal-logs"] }
 opentelemetry-stdout = { workspace = true, default-features = false, features = ["metrics"] }
-opentelemetry-otlp = { workspace = true, default-features = false, features = ["grpc-tonic", "tls", "metrics" ] }
+opentelemetry-otlp = { workspace = true, default-features = false, features = ["grpc-tonic", "tls-provider-agnostic", "metrics"] }
 opentelemetry-prometheus = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
@@ -51,3 +51,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter","registry", "s
 tower = { workspace = true }
 tempfile = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }

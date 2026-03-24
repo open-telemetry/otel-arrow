@@ -156,7 +156,9 @@ crates/otap/lib.rs:      OTAP Dataflow pipeline factory
 All gRPC services are implemented using
 [Tonic](https://github.com/hyperium/tonic).
 
-The major OTAP Dataflow components of `otap_df_otap` are listed next.
+The major OTAP Dataflow components related to OTAP/OTLP pipeline transport are
+listed next. Their concrete core-node implementations now live in
+`otap-df-core-nodes`.
 
 #### Attributes processor
 
@@ -250,20 +252,16 @@ establish the performance of the OTAP Dataflow system.
 
 [See crate README.](./crates/core-nodes/README.md)
 
-The `otap-df-core-nodes` crate is the destination for core-node
-implementations as they are split out from `otap-df-otap` during the
-ongoing refactor.
-
-Current status:
-
 - Exporters: `console_exporter`, `error_exporter`, `noop_exporter`,
+  `otap_exporter`, `otlp_grpc_exporter`, `otlp_http_exporter`,
   `parquet_exporter`, `perf_exporter`, `topic_exporter`
 - Processors: `attributes_processor`, `batch_processor`,
   `content_router`, `debug_processor`, `delay_processor`,
   `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
   `retry_processor`, `signal_type_router`, `transform_processor`
 - Receivers: `fake_data_generator`, `internal_telemetry_receiver`,
-  `syslog_cef_receiver`, `topic_receiver`
+  `otap_receiver`, `otlp_receiver`, `syslog_cef_receiver`,
+  `topic_receiver`
 
 ### Contrib Nodes
 

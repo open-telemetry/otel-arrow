@@ -10,6 +10,7 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
+use otap_df_config::SignalType;
 use std::num::TryFromIntError;
 
 /// Result type
@@ -218,35 +219,24 @@ pub enum Error {
         message: String,
     },
 
-    #[error("Encoding error: {}", error)]
-    Encoding {
-        #[from]
-        error: crate::encode::Error,
-    },
-
     #[error("Format error: {}", error)]
     Format { error: String },
 
-    #[error("Extraneous column `{name}` in payload {payload_type:?}")]
-    ExtraneousField {
-        name: String,
+    #[error("Invalid schema for payload {payload_type:?}: {source}")]
+    InvalidSchemaForPayload {
+        payload_type: ArrowPayloadType,
+        source: crate::schema::error::Error,
+    },
+
+    #[error("Payload type {payload_type:?} is not valid for this batch store")]
+    InvalidPayloadTypeForSignal {
+        signal: SignalType,
         payload_type: ArrowPayloadType,
     },
 
-    #[error("Missing required columns {names:?} in payload {payload_type:?}")]
-    MissingRequiredFields {
-        names: Vec<String>,
-        payload_type: ArrowPayloadType,
-    },
-
-    #[error(
-        "Column `{name}` type mismatch in payload {payload_type:?}, \
-        expected OTAP type {expected:?}, actual: {actual}"
-    )]
-    FieldTypeMismatch {
-        name: String,
-        payload_type: ArrowPayloadType,
-        expected: crate::schema::schema::DataType,
-        actual: DataType,
+    #[error("Unexpected signal type found {found:?}, expected {expected:?}")]
+    UnexpectedSignalType {
+        found: SignalType,
+        expected: SignalType,
     },
 }

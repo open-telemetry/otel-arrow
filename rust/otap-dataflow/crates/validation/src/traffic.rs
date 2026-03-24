@@ -13,12 +13,12 @@ use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::path::PathBuf;
-
 const DEFAULT_MAX_SIGNAL_COUNT: usize = 2000;
 const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
 const DEFAULT_WEIGHT_ZERO: u32 = 0;
 const DEFAULT_LOG_WEIGHT: u32 = 100;
+const DEFAULT_IDLE_TIMEOUT_SECS: u8 = 3;
 
 /// Describes a connection between a Generator/Capture and a test container.
 ///
@@ -250,6 +250,9 @@ pub struct Capture {
     pub(crate) control_streams: Vec<String>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
+    /// Seconds to wait with no incoming messages before declaring the data
+    /// stream settled and performing the final validation check.
+    pub(crate) idle_timeout: u8,
 
     /// Optional connection to a test container. When set, the capture's
     /// receiver node is rendered from the connection's Jinja2 template instead
@@ -431,6 +434,13 @@ impl Capture {
         self
     }
 
+    /// Set how long (in seconds) the validation exporter should wait with no
+    /// incoming messages before declaring the data stream settled.
+    #[must_use]
+    pub fn idle_timeout(mut self, timeout_secs: u8) -> Self {
+        self.idle_timeout = timeout_secs;
+        self
+    }
     /// Connect this capture to a test container using a custom receiver.
     ///
     /// The capture's `suv_receiver` node will be rendered from the
@@ -468,6 +478,7 @@ impl Default for Capture {
             control_ports: vec![],
             control_streams: vec![],
             validate: vec![],
+            idle_timeout: DEFAULT_IDLE_TIMEOUT_SECS,
             container_connection: None,
         }
     }
