@@ -45,7 +45,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{Field, Schema};
@@ -58,6 +58,7 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
+use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
@@ -132,7 +133,7 @@ impl From<&ColumnAccessor> for DataScope {
 
 /// Identifier of the incoming source data for some scoped expression.
 #[derive(Debug)]
-enum LogicalExprDataSource {
+pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
 
@@ -147,7 +148,7 @@ enum LogicalExprDataSource {
 #[derive(Debug)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
-    logical_expr: Expr,
+    pub(crate) logical_expr: Expr,
 
     /// the type that the expression will produce.
     ///
@@ -161,7 +162,7 @@ pub struct ScopedLogicalExpr {
     pub expr_type: ExprLogicalType,
 
     /// identifies the source for the incoming data
-    source: LogicalExprDataSource,
+    pub(crate) source: LogicalExprDataSource,
 
     /// flag for whether the type of expression requires that dictionary encoding is removed from
     /// the input columns.
@@ -749,6 +750,32 @@ impl PhysicalExprEvalResult {
 
         result
     }
+
+    pub fn new_with_parent_ids(
+        values: ColumnarValue,
+        data_scope: Rc<DataScope>,
+        parent_ids: &UInt16Array,
+    ) -> Self {
+        Self {
+            values,
+            data_scope,
+            ids: None,
+            parent_ids: Some(Arc::new(parent_ids.clone())),
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
+
+    pub fn new_scalar(scalar_value: ScalarValue) -> Self {
+        Self {
+            values: ColumnarValue::Scalar(scalar_value),
+            data_scope: Rc::new(DataScope::StaticScalar),
+            ids: None,
+            parent_ids: None,
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -839,7 +866,7 @@ mod test {
         // Verify it's a scalar value of 99
         match columnar_value.unwrap().values {
             ColumnarValue::Scalar(scalar) => {
-                assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(99)));
+                assert_eq!(scalar, ScalarValue::Int64(Some(99)));
             }
             ColumnarValue::Array(_) => {
                 panic!("Expected scalar, got array");

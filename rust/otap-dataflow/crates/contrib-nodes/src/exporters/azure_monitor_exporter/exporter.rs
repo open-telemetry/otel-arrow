@@ -18,7 +18,7 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_pdata_views::views::logs::LogsDataView;
 
-use super::auth::Auth;
+use super::auth::{Auth, PendingTokenRefresh};
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::error::Error;
@@ -38,15 +38,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
-///
-/// Approximation using Little's Law (L = λ × W):
-///   - λ (throughput): LA API allows ~500 req/min per DCR (~8 req/s, estimated)
-///   - W (latency): p99 response time ~0.5-1s (estimated, varies by region/load)
-///   - L ≈ 8 × 0.5 = 4 slots minimum, doubled for burst headroom ≈ 8
-///
-/// Set to 16 to absorb transient latency spikes without throttling.
-/// Worst-case memory for pending requests is roughly: 16 × 1MB = 16MB.
-/// These are rough estimates — tune based on observed metrics in production.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
@@ -88,7 +79,7 @@ impl AzureMonitorExporter {
         let transformer = Transformer::new(&config);
 
         // Create Gzip batcher
-        let gzip_batcher = GzipBatcher::new();
+        let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
         let heartbeat = Heartbeat::new(&config.api)?;
@@ -251,7 +242,8 @@ impl AzureMonitorExporter {
         let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
         for log_entry in log_entries {
-            match self.gzip_batcher.push(&log_entry) {
+            let entry_len = log_entry.len();
+            match self.gzip_batcher.push(log_entry) {
                 Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(batch_id, msg_id);
@@ -267,7 +259,7 @@ impl AzureMonitorExporter {
                     otel_warn!(
                         "azure_monitor_exporter.message.log_entry_too_large",
                         msg_id = msg_id,
-                        size_bytes = log_entry.len()
+                        size_bytes = entry_len
                     );
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
@@ -478,11 +470,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name()
+            auth_method = self.config.auth.auth_method_name(),
+            gzip_compression_level = self.config.api.gzip_compression_level
         );
 
         let mut msg_id = 0;
-        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
+        let auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
             let error = Error::AuthHandlerCreation(Box::new(e));
             EngineError::InternalError {
                 message: error.to_string(),
@@ -507,70 +500,52 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 message: format!("Failed to start telemetry timer: {e}"),
             })?;
 
-        // Quick startup probe: try to acquire a token with a short timeout.
-        // On success, auth headers are set immediately and token refresh is scheduled normally.
-        // On failure (e.g., MSI on a non-Azure machine), a warning surfaces within ~5s
-        // and the main loop retries via the regular get_token() infinite retry path.
-        let mut next_token_refresh = match auth
-            .try_get_token(tokio::time::Duration::from_secs(5), 3)
-            .await
-        {
-            Ok(access_token) => {
-                match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
-                    Ok(header) => {
-                        self.client_pool.update_auth(header.clone());
-                        self.heartbeat.update_auth(header.clone());
-
-                        let next = Self::get_next_token_refresh(access_token);
-                        let refresh_in =
-                            next.saturating_duration_since(tokio::time::Instant::now());
-                        let total_secs = refresh_in.as_secs();
-                        let hours = total_secs / 3600;
-                        let minutes = (total_secs % 3600) / 60;
-                        let seconds = total_secs % 60;
-
-                        otel_info!(
-                            "azure_monitor_exporter.auth.initial_token_acquired",
-                            next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
-                        );
-                        next
-                    }
-                    Err(e) => {
-                        otel_warn!("azure_monitor_exporter.auth.initial_header_creation_failed", error = ?e);
-                        tokio::time::Instant::now()
-                    }
-                }
-            }
-            Err(e) => {
-                otel_warn!(
-                    "azure_monitor_exporter.auth.startup_probe_failed",
-                    error = %e,
-                    hint = "Check auth method configuration. Token acquisition will keep retrying in background."
-                );
-                tokio::time::Instant::now()
-            }
-        };
-
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
 
+        // Token acquisition starts immediately in the event loop.
+        // pdata is not accepted until we have a valid token with sufficient remaining lifetime.
+        let mut next_token_refresh = tokio::time::Instant::now();
+        let mut token_expiry_at = tokio::time::Instant::now();
+        let mut auth = Some(auth);
+        let mut pending_token = PendingTokenRefresh::new();
+
         loop {
-            // Determine if we should accept new messages
+            // We have a valid token when it won't expire within the buffer window
+            let has_token = token_expiry_at
+                > tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
             let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
+            let accepting_pdata = has_token && !at_capacity;
 
             tokio::select! {
                 biased;
 
-                _ = tokio::time::sleep_until(next_token_refresh) => {
-                    match auth.get_token().await {
+                // Start token acquisition when the timer fires and no acquisition is in progress
+                _ = tokio::time::sleep_until(next_token_refresh), if !pending_token.is_pending() => {
+                    pending_token.start(auth.take().expect("auth must be available when no token future is pending"));
+                }
+
+                // Poll the in-flight token acquisition (non-blocking for the rest of the loop)
+                token_result = pending_token.next_completion() => {
+                    auth = Some(token_result.auth);
+                    match token_result.result {
                         Ok(access_token) => {
                             match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
                                     self.heartbeat.update_auth(header.clone());
 
-                                    // Schedule next token refresh
+                                    // Compute expiry before consuming access_token
+                                    let now_utc = azure_core::time::OffsetDateTime::now_utc();
+                                    let expires_in = if access_token.expires_on > now_utc {
+                                        (access_token.expires_on - now_utc).unsigned_abs()
+                                    } else {
+                                        std::time::Duration::ZERO
+                                    };
+                                    token_expiry_at = tokio::time::Instant::now() + expires_in;
+
                                     next_token_refresh = Self::get_next_token_refresh(access_token);
 
                                     let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
@@ -583,21 +558,31 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 }
                                 Err(e) => {
                                     otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
-                                    // Retry every 10 seconds
-                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                                    let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
+                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                                 }
                             }
-
                         }
                         Err(e) => {
-                            otel_error!("azure_monitor_exporter.auth.token_refresh_failed", error = ?e);
-                            // Retry every 10 seconds
-                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                            let error_msg = e.to_string();
+                            let first_line = error_msg.lines().next().unwrap_or(&error_msg);
+
+                            otel_warn!(
+                                "azure_monitor_exporter.auth.token_acquisition_failed",
+                                error = %first_line
+                            );
+                            otel_debug!(
+                                "azure_monitor_exporter.auth.token_acquisition_failed.details",
+                                error = %e
+                            );
+                            self.metrics.borrow_mut().add_auth_failure();
+                            let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
+                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                         }
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_heartbeat_send) => {
+                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token => {
                     next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
                     self.metrics.borrow_mut().add_heartbeat();
                     match self.heartbeat.send().await {
@@ -612,7 +597,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_periodic_export), if !at_capacity => {
+                _ = tokio::time::sleep_until(next_periodic_export), if accepting_pdata => {
                     next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
                     if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
@@ -621,8 +606,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                // Control always flows; pdata guarded by !at_capacity
-                msg = msg_chan.recv_when(!at_capacity) => {
+                // TODO: Ensure that when rejecting pdata, data loss doesn't occur. (pending on lquerel's msg channel rework)
+                // Control always flows; pdata guarded by has_token && !at_capacity
+                msg = msg_chan.recv_when(accepting_pdata) => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
                             self.sync_gauges();
@@ -706,6 +692,8 @@ mod tests {
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
         }

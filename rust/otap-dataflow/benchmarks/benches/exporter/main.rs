@@ -8,6 +8,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use otap_df_channel::mpsc;
+use otap_df_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
 use otap_df_core_nodes::exporters::perf_exporter::{
     OTAP_PERF_EXPORTER_URN, PerfExporter, config::Config,
 };
@@ -19,10 +20,7 @@ use otap_df_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
-use otap_df_otap::{
-    otap_exporter::OTAPExporter,
-    pdata::{Context, OtapPdata},
-};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
@@ -63,7 +61,6 @@ use tonic::{Request, Response, Status};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_channel};
-use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
@@ -382,21 +379,30 @@ fn bench_exporter(c: &mut Criterion) {
             );
 
             let mut consumer = Consumer::default();
-            let trace_records = OtapArrowRecords::Traces(from_record_messages(
-                consumer
-                    .consume_bar(&mut arrow_traces_batch_data)
-                    .expect("can consume BAR"),
-            ));
-            let log_records = OtapArrowRecords::Logs(from_record_messages(
-                consumer
-                    .consume_bar(&mut arrow_logs_batch_data)
-                    .expect("can consume BAR"),
-            ));
-            let metrics_records = OtapArrowRecords::Metrics(from_record_messages(
-                consumer
-                    .consume_bar(&mut arrow_metrics_batch_data)
-                    .expect("can consume BAR"),
-            ));
+            let trace_records = OtapArrowRecords::Traces(
+                from_record_messages(
+                    consumer
+                        .consume_bar(&mut arrow_traces_batch_data)
+                        .expect("can consume BAR"),
+                )
+                .expect("can create Traces from records"),
+            );
+            let log_records = OtapArrowRecords::Logs(
+                from_record_messages(
+                    consumer
+                        .consume_bar(&mut arrow_logs_batch_data)
+                        .expect("can consume BAR"),
+                )
+                .expect("can create Logs from records"),
+            );
+            let metrics_records = OtapArrowRecords::Metrics(
+                from_record_messages(
+                    consumer
+                        .consume_bar(&mut arrow_metrics_batch_data)
+                        .expect("can consume BAR"),
+                )
+                .expect("can create Metrics from records"),
+            );
 
             otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
             otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));

@@ -558,6 +558,9 @@ impl_producer_ext!(
 // when the context stack is empty (nothing to unwind).
 
 /// Implements `ConsumerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
+///
+/// TODO: notify_ack and notify_nack should in most cases not return an error,
+/// we expect the extension to automatically count lost Ack and Nack messages.
 macro_rules! impl_consumer_ext {
     ($handler:ty) => {
         #[async_trait(?Send)]

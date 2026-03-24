@@ -80,6 +80,25 @@ fn default_scope() -> String {
     "https://monitor.azure.com/.default".to_string()
 }
 
+/// Default compression level. Level 6 provides a good starting point for most workloads.
+/// Tuning is recommended based on whether the pipeline is more CPU-bound (lower levels)
+/// or network-bound (higher levels), and the typical payload size.
+///
+/// On a basic pipeline (otlp recv -> azure_monitor exp), with wait_for_result: true enabled,
+/// on a Mac with M4Pro and 1KB random (highly incompressible) payloads, these throughput
+/// numbers were observed:
+/// level 1: ~20k/s
+/// level 6: ~23k/s
+/// level 9: ~25k/s
+///
+/// Default is chosen as 6 due to that being the default prior to adding this configuration option,
+/// as well as based on the observed throughput changes in local testing with different compression levels.
+/// This default could be changed based on observed performance characteristics in production, and performance
+/// tests with realistic payloads representative of production workloads.
+fn default_gzip_compression_level() -> u32 {
+    6
+}
+
 /// API configuration for connecting to Azure Monitor
 #[derive(Debug, Deserialize, Clone)]
 pub struct ApiConfig {
@@ -95,6 +114,17 @@ pub struct ApiConfig {
     /// Schema mapping configuration
     #[serde(default)]
     pub schema: SchemaConfig,
+
+    /// Arm Resource ID header for the logs exported to Azure Monitor (optional)
+    pub azure_monitor_source_resourceid: Option<String>,
+
+    /// Gzip compression level for batch payloads. Defaults to 6.
+    /// - 0: no compression (lowest CPU, largest payloads)
+    /// - 1: fast compression (low CPU, slightly larger payloads)
+    /// - 6: balanced (default, good ratio at moderate CPU)
+    /// - 9: maximum compression (highest CPU, marginal size reduction over 6)
+    #[serde(default = "default_gzip_compression_level")]
+    pub gzip_compression_level: u32,
 }
 
 /// Schema mapping configuration
@@ -137,6 +167,12 @@ impl Config {
         if self.api.dcr.is_empty() {
             return Err(Error::Config(
                 "Invalid configuration: dcr must be non-empty".to_string(),
+            ));
+        }
+
+        if self.api.gzip_compression_level > 9 {
+            return Err(Error::Config(
+                "Invalid configuration: gzip_compression_level must be 0-9".to_string(),
             ));
         }
 
@@ -202,15 +238,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Returns a valid `ApiConfig` with dummy values for use in tests.
+    /// Tests override only the fields they care about via `..test_api_config()`.
+    fn test_api_config() -> ApiConfig {
+        ApiConfig {
+            dcr_endpoint: "https://example.com".to_string(),
+            stream_name: "mystream".to_string(),
+            dcr: "mydcr".to_string(),
+            schema: SchemaConfig::default(),
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
+        }
+    }
+
     #[test]
     fn test_valid_config() {
         let config = Config {
-            api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
-                schema: SchemaConfig::default(),
-            },
+            api: test_api_config(),
             auth: AuthConfig {
                 scope: "https://monitor.azure.com/.default".to_string(),
                 client_id: Some("myclientid".to_string()),
@@ -228,7 +272,7 @@ mod tests {
                 dcr_endpoint: "".to_string(),
                 stream_name: "".to_string(),
                 dcr: "".to_string(),
-                schema: SchemaConfig::default(),
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -245,9 +289,6 @@ mod tests {
     fn test_schema_duplicate_columns() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
                     scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
@@ -257,6 +298,7 @@ mod tests {
                         ("attributes".into(), json!({"user.name": "Name"})),
                     ]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -276,9 +318,6 @@ mod tests {
     fn test_schema_duplicate_columns_in_nested_log_record_mapping() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([(
                         "service.name".into(),
@@ -297,6 +336,7 @@ mod tests {
                         ),
                     ]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -315,9 +355,6 @@ mod tests {
     fn test_schema_nested_object_only_allowed_for_attributes() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
@@ -326,6 +363,7 @@ mod tests {
                         json!({"nested": "NotAllowed"}),
                     )]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -347,14 +385,12 @@ mod tests {
     fn test_resource_scope_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
                     scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
                     log_record_mapping: HashMap::new(),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -373,9 +409,6 @@ mod tests {
     fn test_resource_log_record_field_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([("host.name".into(), "TimeGenerated".into())]),
                     scope_mapping: HashMap::new(),
@@ -384,6 +417,7 @@ mod tests {
                         json!("TimeGenerated"),
                     )]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -402,9 +436,6 @@ mod tests {
     fn test_resource_log_record_attribute_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Source".into())]),
                     scope_mapping: HashMap::new(),
@@ -413,6 +444,7 @@ mod tests {
                         json!({"log.source": "Source"}),
                     )]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -431,9 +463,6 @@ mod tests {
     fn test_scope_log_record_attribute_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::from([("scope.version".into(), "Version".into())]),
@@ -442,6 +471,7 @@ mod tests {
                         json!({"app.version": "Version"}),
                     )]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
@@ -460,9 +490,6 @@ mod tests {
     fn test_non_overlapping_mappings_accepted() {
         let config = Config {
             api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([
                         ("service.name".into(), "ServiceName".into()),
@@ -482,10 +509,83 @@ mod tests {
                         ),
                     ]),
                 },
+                ..test_api_config()
             },
             auth: AuthConfig::default(),
         };
 
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_azure_monitor_source_resourceid_from_config() {
+        let config = Config {
+            api: ApiConfig {
+                azure_monitor_source_resourceid: Some(
+                    "/subscriptions/test-sub/resourceGroups/test-rg".to_string(),
+                ),
+                ..test_api_config()
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert_eq!(
+            config.api.azure_monitor_source_resourceid,
+            Some("/subscriptions/test-sub/resourceGroups/test-rg".to_string())
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_gzip_compression_level_default_is_6() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.api.gzip_compression_level, 6);
+    }
+
+    #[test]
+    fn test_gzip_compression_level_0_no_compression() {
+        let config = Config {
+            api: ApiConfig {
+                gzip_compression_level: 0,
+                ..test_api_config()
+            },
+            auth: AuthConfig::default(),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_gzip_compression_level_9_max() {
+        let config = Config {
+            api: ApiConfig {
+                gzip_compression_level: 9,
+                ..test_api_config()
+            },
+            auth: AuthConfig::default(),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_gzip_compression_level_60_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                gzip_compression_level: 60,
+                ..test_api_config()
+            },
+            auth: AuthConfig::default(),
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: gzip_compression_level must be 0-9"
+        );
     }
 }

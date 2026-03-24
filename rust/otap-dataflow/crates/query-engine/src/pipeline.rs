@@ -93,6 +93,30 @@ pub trait PipelineStage {
     fn supports_exec_on_attributes(&self) -> bool {
         false
     }
+
+    /// When pipeline stages execute within the context of a conditional branch, they will only see
+    /// the batch that is local to that branch. However, there may be cases where some global state
+    /// may need to be maintained across branches. This method provides an opportunity to
+    /// initialize the state. It will be called with the OTAP batch that is the input to the
+    /// conditional pipeline stage.
+    fn init_state_for_conditional_branch(
+        &mut self,
+        _otap_batch: &OtapArrowRecords,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // default is to do nothing
+        Ok(())
+    }
+
+    /// Implementation of this trait method can be used to clear any state that was added in
+    /// [`init_state_for_conditional_branch`]
+    fn clear_state_for_conditional_branch(
+        &mut self,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // default is to do nothing
+        Ok(())
+    }
 }
 
 type BoxedPipelineStage = Box<dyn PipelineStage>;
@@ -172,11 +196,11 @@ impl PipelineStage for DataFusionPipelineStage {
             }
             1 => {
                 let new_rb = batches.into_iter().next().expect("batches not empty");
-                otap_batch.set(self.payload_type, new_rb)
+                otap_batch.set(self.payload_type, new_rb)?;
             }
             _ => {
                 let new_rb = concat_batches(batches[0].schema_ref(), &batches)?;
-                otap_batch.set(self.payload_type, new_rb)
+                otap_batch.set(self.payload_type, new_rb)?;
             }
         };
 
@@ -367,6 +391,28 @@ mod test {
         let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(otap_batch).await.unwrap();
         otap_to_logs_data(result)
+    }
+
+    pub async fn exec_metrics_pipeline<P: Parser>(
+        query: &str,
+        metrics_data: MetricsData,
+    ) -> MetricsData {
+        let parser_result = P::parse(query).unwrap();
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        otap_to_metrics_data(result)
+    }
+
+    pub async fn exec_traces_pipeline<P: Parser>(
+        query: &str,
+        traces_data: TracesData,
+    ) -> TracesData {
+        let parser_result = P::parse(query).unwrap();
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        otap_to_traces_data(result)
     }
 
     #[tokio::test]

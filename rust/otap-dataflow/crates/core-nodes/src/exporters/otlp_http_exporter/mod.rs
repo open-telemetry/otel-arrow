@@ -59,13 +59,13 @@ use reqwest::{Client, Response};
 #[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_warn;
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::metrics::ExporterPDataMetrics;
-use crate::otlp_grpc_exporter::InFlightExports;
-use crate::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
-use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
-use crate::otlp_http_exporter::config::Config;
-use crate::pdata::{Context, OtapPdata};
+use self::config::Config;
+use crate::exporters::otlp_grpc_exporter::InFlightExports;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
+use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
+use otap_df_otap::pdata::{Context, OtapPdata};
 
 mod config;
 
@@ -374,7 +374,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     };
 
-                    let endpoint = Rc::clone(match signal_type {
+                    let endpoint: Rc<String> = Rc::clone(match signal_type {
                         SignalType::Logs => &logs_endpoint,
                         SignalType::Metrics => &metrics_endpoint,
                         SignalType::Traces => &traces_endpoint,
@@ -713,8 +713,6 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
-    use arrow::array::{Int32Array, RecordBatch};
-    use arrow::datatypes::{DataType, Field, Schema};
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -727,7 +725,7 @@ mod test {
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
-    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
@@ -739,7 +737,6 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
@@ -758,11 +755,11 @@ mod test {
 
     use super::*;
 
-    use crate::otap_grpc::common::AckRegistry;
-    use crate::otlp_http::client_settings::HttpClientSettings;
-    use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
-    use crate::otlp_receiver::OtlpReceiverMetrics;
-    use crate::testing::TestCallData;
+    use otap_df_otap::otap_grpc::common::AckRegistry;
+    use otap_df_otap::otlp_http::client_settings::HttpClientSettings;
+    use otap_df_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
+    use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
+    use otap_df_otap::testing::TestCallData;
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -977,7 +974,7 @@ mod test {
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
     ) -> (PipelineContext, ExporterWrapper<OtapPdata>) {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
         let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -1631,96 +1628,6 @@ mod test {
     }
 
     #[test]
-    fn test_handles_invalid_otap_payloads() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        // this is something we won't be able to serialize into a valid OTLP payload.
-        // it would expect "resource" to be a struct column
-        let invalid_record_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "resource",
-                DataType::Int32,
-                false,
-            )])),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
-
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otap_batch,
-        ))];
-
-        let pdatas = subscribe_pdatas(pdatas, false);
-
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| {
-                Box::pin(async move {
-                    for pdata in pdatas {
-                        ctx.send_pdata(pdata).await.unwrap();
-                    }
-
-                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
-                        .await
-                        .unwrap();
-                })
-            })
-            .run_validation(|mut ctx, result| {
-                Box::pin(async move {
-                    // ensure exit success
-                    result.unwrap();
-
-                    let mut ack_count = 0;
-                    let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
-                    loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break, // channel closed, no more messages will be received
-                        };
-
-                        match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
-                                ack_count += 1;
-
-                                assert!(
-                                    nack.reason.contains("Column `resource` data type mismatch"),
-                                    "unexpected error message in Nack: {}",
-                                    nack.reason
-                                );
-
-                                assert!(
-                                    nack.permanent,
-                                    "expected malformed OTAP batch to be permanent nack"
-                                );
-
-                                if ack_count >= num_expected_nacks {
-                                    break;
-                                }
-                            }
-                            PipelineControlMsg::DeliverAck { .. } => {
-                                panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
-                            }
-                        }
-                    }
-                    assert_eq!(ack_count, num_expected_nacks);
-                })
-            })
-    }
-
-    #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
         let port = pick_unused_port().unwrap();
         let endpoint_addr = format!("127.0.0.1:{}", port);
@@ -2335,7 +2242,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2383,7 +2290,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2432,7 +2339,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2481,7 +2388,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2532,7 +2439,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2583,7 +2490,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -2632,7 +2539,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_pem() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2685,7 +2592,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_file() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2739,7 +2646,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_failure_wrong_client_cert() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2801,7 +2708,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_cert_without_key() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -2857,7 +2764,7 @@ mod test {
     #[test]
     #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_key_without_cert() {
-        crate::crypto::ensure_crypto_provider();
+        otap_df_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();

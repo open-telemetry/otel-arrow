@@ -41,60 +41,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - id: detect_os
-        name: Detect OS (self-hosted)
-        shell: bash
-        run: |
-          . /etc/os-release
-          echo "id=$ID" >> "$GITHUB_OUTPUT"
-          echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
 
-      - name: Install/prepare Python 3.14 on Oracle Linux 8 (self-hosted only)
-        if: ${{ runner.os == 'Linux' && steps.detect_os.outputs.id == 'ol' && startsWith(steps.detect_os.outputs.version_id, '8') }}
-        shell: bash
-        run: |
-          set -euxo pipefail
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-          # Run disk cleanup script
-          bash ./.github/workflows/scripts/disk-cleanup.sh
+      - name: Set up Python (non-OL8)
+        if: ${{ steps.detect_os.outputs.id != 'ol' }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
 
-          # Check if Python 3.14 is already installed to avoid unnecessary dnf operations
-          if rpm -q python3.14 python3.14-devel &>/dev/null; then
-            echo "Python 3.14 packages already installed, skipping repository setup and package installation"
-          else
-            # Enable repos and refresh metadata (only runs if Python not installed)
-            sudo dnf -y install oracle-epel-release-el8 || true
-            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-            sudo dnf -y makecache --timer
-
-            # Install core packages (ignore subpackages that don't exist on OL8)
-            sudo dnf -y install python3.14 python3.14-devel || true
-          fi
-
-          # pip may be packaged as part of python3.14 or available via ensurepip;
-          # fall back to ensurepip if needed.
-          if ! /usr/bin/python3.14 -m pip --version >/dev/null 2>&1; then
-            /usr/bin/python3.14 -m ensurepip --upgrade || true
-          fi
-
-          # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
-          /usr/bin/python3.14 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
-
-          # Add a 'python' shim so subsequent steps can call `python ...`
-          mkdir -p "$HOME/.local/bin"
-          ln -sf /usr/bin/python3.14 "$HOME/.local/bin/python"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-          # Smoke test
-          python --version
-          python -m pip --version
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build dataflow_engine
         run: |
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Install dependencies
