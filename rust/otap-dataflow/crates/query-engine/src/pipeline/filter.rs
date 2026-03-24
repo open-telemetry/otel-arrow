@@ -4048,11 +4048,11 @@ mod test {
                 .event_name("1")
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
                 .finish(),
+            LogRecord::build().event_name("2").finish(),
             LogRecord::build()
-                .event_name("2")
+                .event_name("3")
                 .attributes(vec![KeyValue::new("y", AnyValue::new_string("b"))])
                 .finish(),
-            LogRecord::build().event_name("3").finish(),
         ];
 
         let result = exec_logs_pipeline::<P>(
