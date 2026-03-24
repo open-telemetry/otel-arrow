@@ -33,6 +33,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
@@ -178,6 +179,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         pipeline_context: PipelineContext,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        control_plane_metrics_flush_interval: Duration,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
@@ -407,6 +409,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 control_senders,
                 event_reporter,
                 manager_metrics_reporter,
+                control_plane_metrics_flush_interval,
                 manager_telemetry_policy,
                 channel_metrics,
                 node_metric_handles,
@@ -421,6 +424,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 return_control_senders,
                 return_node_metric_handles,
                 dispatcher_metrics_reporter,
+                control_plane_metrics_flush_interval,
                 dispatcher_telemetry_policy,
             );
             dispatcher.run().await

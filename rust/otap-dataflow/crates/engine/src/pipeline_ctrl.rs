@@ -256,6 +256,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+    /// Flush cadence for the actor-owned control-plane metric snapshots.
+    control_plane_metrics_flush_interval: Duration,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
@@ -283,6 +285,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
@@ -305,6 +308,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
+            control_plane_metrics_flush_interval,
             channel_metrics,
             node_metric_handles,
             telemetry: telemetry_policy,
@@ -334,12 +338,21 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut downstream_shutdown_sent = false;
         let mut consecutive_runtime_ctrl = 0usize;
         let mut retry_delay: Option<clock::Sleep> = None;
+        let mut metrics_flush_delay: Option<clock::Sleep> = None;
         let mut shutdown_deadline_forced = false;
 
         loop {
             // Drain any buffered sends before processing new messages.
             self.drain_pending_sends();
-            self.report_runtime_control_metrics();
+
+            // Control-plane metrics are actor-owned state snapshots. Flush them
+            // on the telemetry reporting interval while they are dirty instead
+            // of materializing a new snapshot on every loop iteration.
+            if self.runtime_control_metrics.is_dirty() && metrics_flush_delay.is_none() {
+                metrics_flush_delay = Some(clock::sleep(self.control_plane_metrics_flush_interval));
+            } else if !self.runtime_control_metrics.is_dirty() {
+                metrics_flush_delay = None;
+            }
 
             // Arm the retry timer when pending sends appear; disarm when drained.
             if !self.pending_sends.is_empty() && retry_delay.is_none() {
@@ -380,6 +393,8 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             );
                         }
                     }
+                    // Deadline-forced drain is a major lifecycle boundary; do
+                    // not wait for the periodic flush interval to surface it.
                     self.report_runtime_control_metrics();
                     break;
                 }
@@ -484,6 +499,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     ),
                                 );
                             }
+                            // Flush immediately for the shutdown latch +
+                            // ingress-drain transition so operators can see
+                            // drain start promptly instead of waiting for the
+                            // next periodic telemetry interval.
                             self.report_runtime_control_metrics();
                         },
                         RuntimeControlMsg::ReceiverDrained { node_id } => {
@@ -525,8 +544,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                         Some(reason.clone()),
                                     ),
                                 );
+                                // The receiver-first phase is complete only
+                                // when the last receiver drains. Flush this
+                                // transition immediately because it marks the
+                                // handoff to downstream shutdown.
+                                self.report_runtime_control_metrics();
                             }
-                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::StartTimer { node_id, duration } => {
                             self.runtime_control_metrics.record_start_timer_received();
@@ -542,7 +565,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     self.telemetry_timers.timer_states.len(),
                                 );
                             }
-                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::CancelTimer { node_id } => {
                             self.runtime_control_metrics.record_cancel_timer_received();
@@ -553,7 +575,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     self.telemetry_timers.timer_states.len(),
                                 );
                             }
-                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::StartTelemetryTimer { node_id, duration } => {
                             self.runtime_control_metrics
@@ -571,7 +592,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     self.telemetry_timers.timer_states.len(),
                                 );
                             }
-                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::CancelTelemetryTimer { node_id, .. } => {
                             self.runtime_control_metrics
@@ -583,7 +603,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     self.telemetry_timers.timer_states.len(),
                                 );
                             }
-                            self.report_runtime_control_metrics();
                         }
                         RuntimeControlMsg::DelayData { node_id, when, data } => {
                             self.runtime_control_metrics.record_delay_data_received();
@@ -608,7 +627,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                 self.runtime_control_metrics
                                     .set_delayed_data_queued(self.delayed_data.len());
                             }
-                            self.report_runtime_control_metrics();
                         }
                     }
                 }
@@ -622,7 +640,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     consecutive_runtime_ctrl = 0;
                     if !is_draining_ingress {
                         self.handle_due_events(clock::now(), &mut pipeline_metrics_monitor);
-                        self.report_runtime_control_metrics();
                     }
                 }
 
@@ -634,14 +651,29 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     retry_delay = None;
                     continue;
                 }
+
+                _ = async {
+                    // `tokio::select!` cannot await an optional timer directly,
+                    // so wrap the mutable delay in a tiny async block and only
+                    // arm this branch when a periodic metrics flush is pending.
+                    if let Some(delay) = metrics_flush_delay.as_mut() {
+                        delay.await;
+                    }
+                }, if metrics_flush_delay.is_some() => {
+                    metrics_flush_delay = None;
+                    self.report_runtime_control_metrics();
+                }
             }
         }
 
         if is_draining_ingress && !shutdown_deadline_forced {
             self.runtime_control_metrics
                 .record_shutdown_completed(clock::now());
-            self.report_runtime_control_metrics();
         }
+        // Flush one last time on actor exit so late counters and zero-valued
+        // backlog transitions are not lost if the loop terminates before the
+        // next periodic interval elapses.
+        self.report_runtime_control_metrics();
 
         if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
@@ -842,6 +874,7 @@ pub struct PipelineCompletionMsgDispatcher<PData> {
     node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     completion_metrics: PipelineCompletionMetricsState,
+    control_plane_metrics_flush_interval: Duration,
 }
 
 impl<PData> PipelineCompletionMsgDispatcher<PData> {
@@ -852,6 +885,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         control_senders: ControlSenders<PData>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
         metrics_reporter: MetricsReporter,
+        control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
         Self {
@@ -859,6 +893,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
             control_senders,
             node_metric_handles,
             pending_sends: VecDeque::new(),
+            control_plane_metrics_flush_interval,
             completion_metrics: PipelineCompletionMetricsState::new(
                 &pipeline_context,
                 metrics_reporter,
@@ -983,10 +1018,20 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
     /// backpressured node-control sends without blocking the runtime.
     pub async fn run(mut self) -> Result<(), Error> {
         let mut retry_delay: Option<clock::Sleep> = None;
+        let mut metrics_flush_delay: Option<clock::Sleep> = None;
 
         loop {
             self.drain_pending_sends();
-            self.report_completion_metrics();
+
+            // Completion metrics use the same dirty-on-transition model as the
+            // runtime-control metrics, but they only flush on the periodic
+            // telemetry cadence. Completion traffic can be high-volume, so
+            // avoid publishing a fresh snapshot on every unwind step.
+            if self.completion_metrics.is_dirty() && metrics_flush_delay.is_none() {
+                metrics_flush_delay = Some(clock::sleep(self.control_plane_metrics_flush_interval));
+            } else if !self.completion_metrics.is_dirty() {
+                metrics_flush_delay = None;
+            }
 
             if !self.pending_sends.is_empty() && retry_delay.is_none() {
                 retry_delay = Some(clock::sleep(Duration::from_millis(5)));
@@ -1009,7 +1054,6 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             self.unwind_nack(nack);
                         }
                     }
-                    self.report_completion_metrics();
                 }
 
                 _ = async {
@@ -1019,9 +1063,24 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                 }, if retry_delay.is_some() => {
                     retry_delay = None;
                 }
+
+                _ = async {
+                    // The dispatcher only arms this branch when a dirty snapshot is waiting for the
+                    // next periodic flush interval.
+                    if let Some(delay) = metrics_flush_delay.as_mut() {
+                        delay.await;
+                    }
+                }, if metrics_flush_delay.is_some() => {
+                    metrics_flush_delay = None;
+                    self.report_completion_metrics();
+                }
             }
         }
 
+        // Flush one final completion snapshot on exit so short-lived completion
+        // bursts are still observed even if the dispatcher stops before the
+        // next periodic interval.
+        self.report_completion_metrics();
         Ok(())
     }
 
@@ -1171,6 +1230,8 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::timeout;
 
+    const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
     }
@@ -1260,6 +1321,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
             Vec::new(),
             empty_node_metric_handles(),
@@ -1758,6 +1820,7 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                     Vec::new(),
                     empty_node_metric_handles(),
@@ -2432,6 +2495,7 @@ mod tests {
                     ControlSenders::new(),
                     empty_node_metric_handles(),
                     MetricsReporter::create_new_and_receiver(16).1,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                 );
 
@@ -2503,6 +2567,7 @@ mod tests {
                     ControlSenders::new(),
                     empty_node_metric_handles(),
                     MetricsReporter::create_new_and_receiver(16).1,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                 );
 
@@ -3094,6 +3159,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter.clone(),
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             telemetry_policy.clone(),
             Vec::new(),
             node_metric_handles.clone(),
@@ -3256,6 +3322,18 @@ mod tests {
         node_specs: Vec<(&'static str, NodeType, usize)>,
         metric_level: MetricLevel,
     ) -> RuntimeControlTelemetryHarness<PData> {
+        setup_runtime_control_telemetry_harness_with_flush_interval(
+            node_specs,
+            metric_level,
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+        )
+    }
+
+    fn setup_runtime_control_telemetry_harness_with_flush_interval<PData: Clone>(
+        node_specs: Vec<(&'static str, NodeType, usize)>,
+        metric_level: MetricLevel,
+        flush_interval: Duration,
+    ) -> RuntimeControlTelemetryHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
@@ -3303,6 +3381,7 @@ mod tests {
             control_senders,
             event_reporter,
             metrics_reporter,
+            flush_interval,
             TelemetryPolicy {
                 pipeline_metrics: false,
                 tokio_metrics: false,
@@ -3336,16 +3415,49 @@ mod tests {
     }
 
     fn setup_completion_telemetry_harness(metric_level: MetricLevel) -> CompletionTelemetryHarness {
-        setup_completion_telemetry_harness_with_capacity(metric_level, 16)
+        setup_completion_telemetry_harness_with_options(
+            metric_level,
+            16,
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+            64,
+        )
     }
 
     fn setup_completion_telemetry_harness_with_capacity(
         metric_level: MetricLevel,
         control_capacity: usize,
     ) -> CompletionTelemetryHarness {
+        setup_completion_telemetry_harness_with_options(
+            metric_level,
+            control_capacity,
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+            64,
+        )
+    }
+
+    fn setup_completion_telemetry_harness_with_capacity_and_flush_interval(
+        metric_level: MetricLevel,
+        control_capacity: usize,
+        flush_interval: Duration,
+    ) -> CompletionTelemetryHarness {
+        setup_completion_telemetry_harness_with_options(
+            metric_level,
+            control_capacity,
+            flush_interval,
+            64,
+        )
+    }
+
+    fn setup_completion_telemetry_harness_with_options(
+        metric_level: MetricLevel,
+        control_capacity: usize,
+        flush_interval: Duration,
+        reporter_channel_size: usize,
+    ) -> CompletionTelemetryHarness {
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-        let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let (snapshot_rx, metrics_reporter) =
+            MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_context = PipelineContext::new(
             controller_context,
@@ -3380,6 +3492,7 @@ mod tests {
             control_senders,
             empty_node_metric_handles(),
             metrics_reporter,
+            flush_interval,
             TelemetryPolicy {
                 pipeline_metrics: false,
                 tokio_metrics: false,
@@ -3545,6 +3658,7 @@ mod tests {
                     ControlSenders::new(),
                     node_metric_handles.clone(),
                     metrics_reporter.clone(),
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     telemetry_policy.clone(),
                 );
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -4454,6 +4568,181 @@ mod tests {
             .await;
     }
 
+    // Ordinary runtime-control mutations should wait for the configured flush
+    // interval, and unchanged state should not emit duplicate snapshots on
+    // later intervals.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_flush_on_interval_without_repeated_snapshots() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let flush_interval = Duration::from_millis(200);
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
+                    vec![("processor", NodeType::Processor, 16)],
+                    MetricLevel::Normal,
+                    flush_interval,
+                );
+
+                let processor = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: processor.index,
+                        duration: Duration::from_secs(60),
+                    })
+                    .await
+                    .unwrap();
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    snapshot_rx.try_recv().is_err(),
+                    "dirty runtime-control state should not flush before the configured interval"
+                );
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("dirty runtime-control state should flush on the configured interval");
+                assert_u64(
+                    &metrics,
+                    RUNTIME_START_TIMER_RECEIVED,
+                    1,
+                    "periodic flush should include the timer-start counter",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_TIMERS_ACTIVE,
+                    1,
+                    "periodic flush should include the updated timer gauge",
+                );
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+                assert!(
+                    collect_metric_set_snapshots(
+                        &snapshot_rx,
+                        runtime_metrics_key,
+                        &[
+                            RUNTIME_DRAIN_ACTIVE,
+                            RUNTIME_DRAIN_PENDING_RECEIVERS,
+                            RUNTIME_PENDING_SENDS_BUFFERED,
+                            RUNTIME_TIMERS_ACTIVE,
+                            RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                            RUNTIME_DELAYED_DATA_QUEUED,
+                        ],
+                    )
+                    .is_none(),
+                    "unchanged runtime-control state should not emit on later intervals"
+                );
+
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+            })
+            .await;
+    }
+
+    // Shutdown phase boundaries are operationally important, so they should be
+    // reported immediately instead of waiting for the periodic flush interval.
+    #[tokio::test]
+    async fn test_runtime_control_metrics_shutdown_phase_flushes_immediately() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    runtime_metrics_key,
+                    snapshot_rx,
+                    ..
+                } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
+                    vec![
+                        ("receiver", NodeType::Receiver, 16),
+                        ("processor", NodeType::Processor, 16),
+                    ],
+                    MetricLevel::Normal,
+                    Duration::from_secs(1),
+                );
+
+                let receiver = nodes[0].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(5),
+                        reason: "immediate-flush".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    runtime_metrics_key,
+                    &[
+                        RUNTIME_DRAIN_ACTIVE,
+                        RUNTIME_DRAIN_PENDING_RECEIVERS,
+                        RUNTIME_PENDING_SENDS_BUFFERED,
+                        RUNTIME_TIMERS_ACTIVE,
+                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                        RUNTIME_DELAYED_DATA_QUEUED,
+                    ],
+                )
+                .expect("shutdown latch should flush without waiting for the full interval");
+                assert_u64(
+                    &metrics,
+                    RUNTIME_SHUTDOWN_RECEIVED,
+                    1,
+                    "shutdown transition should flush immediately",
+                );
+                assert_u64(
+                    &metrics,
+                    RUNTIME_DRAIN_INGRESS_SENT,
+                    1,
+                    "ingress-drain transition should flush immediately",
+                );
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::ReceiverDrained {
+                        node_id: receiver.index,
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+                assert!(manager_result.is_ok(), "manager should stop cleanly");
+            })
+            .await;
+    }
+
     // `runtime_metrics = none` should suppress the pipeline-scoped runtime
     // control metric set entirely.
     #[tokio::test]
@@ -5220,6 +5509,205 @@ mod tests {
             .await;
     }
 
+    // Completion metrics should flush on the configured interval and remain
+    // quiet on later intervals when no additional Ack/Nack work arrives.
+    #[tokio::test]
+    async fn test_completion_metrics_flush_on_interval_without_repeated_snapshots() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let flush_interval = Duration::from_millis(200);
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    ..
+                } = setup_completion_telemetry_harness_with_capacity_and_flush_interval(
+                    MetricLevel::Normal,
+                    16,
+                    flush_interval,
+                );
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    snapshot_rx.try_recv().is_err(),
+                    "completion metrics should not flush before the configured interval"
+                );
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+                let metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("completion metrics should flush on the configured interval");
+                assert_u64(
+                    &metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    1,
+                    "deliver_ack.received should flush on interval",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_ATTEMPTED,
+                    1,
+                    "ack.attempted should flush on interval",
+                );
+                assert_u64(
+                    &metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    1,
+                    "ack.delivered should flush on interval",
+                );
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+                assert!(
+                    collect_metric_set_snapshots(
+                        &snapshot_rx,
+                        completion_metrics_key,
+                        &[COMPLETION_PENDING_SENDS_BUFFERED],
+                    )
+                    .is_none(),
+                    "unchanged completion state should not emit on later intervals"
+                );
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+            })
+            .await;
+    }
+
+    // If the metrics reporter channel is full, the completion dispatcher should
+    // keep the state dirty and retry on the next flush interval.
+    #[tokio::test]
+    async fn test_completion_metrics_retry_after_deferred_flush() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let flush_interval = Duration::from_millis(60);
+                let CompletionTelemetryHarness {
+                    dispatcher,
+                    completion_tx,
+                    mut control_receivers,
+                    nodes,
+                    completion_metrics_key,
+                    snapshot_rx,
+                    ..
+                } = setup_completion_telemetry_harness_with_options(
+                    MetricLevel::Normal,
+                    16,
+                    flush_interval,
+                    1,
+                );
+
+                let processor = nodes[1].clone();
+                let dispatcher_handle =
+                    tokio::task::spawn_local(async move { dispatcher.run().await });
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive first Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                assert_eq!(
+                    snapshot_rx.len(),
+                    1,
+                    "first periodic flush should occupy the single-slot reporter channel"
+                );
+
+                completion_tx
+                    .send(PipelineCompletionMsg::DeliverAck {
+                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                    })
+                    .await
+                    .unwrap();
+
+                let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should receive second Ack")
+                    .expect("processor control channel should stay open");
+                assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                assert_eq!(
+                    snapshot_rx.len(),
+                    1,
+                    "deferred flush should keep the dirty snapshot pending instead of dropping it"
+                );
+
+                let _first_snapshot = snapshot_rx
+                    .try_recv()
+                    .expect("first snapshot should be buffered");
+
+                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                let retried_metrics = collect_metric_set_snapshots(
+                    &snapshot_rx,
+                    completion_metrics_key,
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .expect("dirty completion state should retry on the next interval");
+                assert_u64(
+                    &retried_metrics,
+                    COMPLETION_DELIVER_ACK_RECEIVED,
+                    1,
+                    "retried snapshot should preserve the second ack delta",
+                );
+                assert_u64(
+                    &retried_metrics,
+                    COMPLETION_ACK_ATTEMPTED,
+                    1,
+                    "retried snapshot should preserve the second attempted delta",
+                );
+                assert_u64(
+                    &retried_metrics,
+                    COMPLETION_ACK_DELIVERED,
+                    1,
+                    "retried snapshot should preserve the second delivered delta",
+                );
+
+                drop(completion_tx);
+                let dispatcher_result =
+                    timeout(Duration::from_millis(200), dispatcher_handle).await;
+                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+            })
+            .await;
+    }
+
     // Completion traffic must remain live even when the runtime-control lane is
     // saturated with unrelated work. An Ack routed through the completion lane
     // should still reach its node promptly.
@@ -5281,6 +5769,7 @@ mod tests {
                     control_senders,
                     empty_node_metric_handles(),
                     MetricsReporter::create_new_and_receiver(16).1,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                 );
 
@@ -5404,6 +5893,7 @@ mod tests {
                     control_senders,
                     empty_node_metric_handles(),
                     MetricsReporter::create_new_and_receiver(16).1,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                 );
 
@@ -5548,6 +6038,7 @@ mod tests {
                     control_senders,
                     empty_node_metric_handles(),
                     MetricsReporter::create_new_and_receiver(16).1,
+                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                 );
 

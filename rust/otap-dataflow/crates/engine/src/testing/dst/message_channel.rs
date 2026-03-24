@@ -9,6 +9,9 @@ use crate::testing::dst::common::setup_dst_runtime;
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
+// Seeded message-channel sweep covering the three behaviors that matter for the
+// refactor: bounded-fair control vs pdata delivery, processor draining once
+// shutdown is latched, and exporter forced-drain when admission never reopens.
 async fn run_message_channel_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();

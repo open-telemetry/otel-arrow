@@ -21,6 +21,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Use a short flush interval in DST so control-plane metrics keep the same code
+// paths active under simulation without adding long wall-clock waits to tests.
+const DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+
+// Seeded control-plane scenario that mixes runtime-control bursts, due work,
+// completion unwinding, and receiver-first shutdown. The point is to validate
+// ordering and eventual progress under many interleavings, not a single trace.
 async fn run_control_plane_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
@@ -55,6 +62,7 @@ async fn run_control_plane_seed(seed: u64) {
             control_senders.clone(),
             empty_node_metric_handles(),
             MetricsReporter::create_new_and_receiver(16).1,
+            DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
         );
 

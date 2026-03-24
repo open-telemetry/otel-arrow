@@ -9,6 +9,9 @@ use crate::testing::dst::common::{setup_dst_runtime, yield_cycles};
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
+// Seeded regression for the known closed-admission limitation: once shutdown is
+// latched while `recv_when(false)` keeps admission closed, buffered pdata stays
+// stranded behind control traffic until the deadline forces Shutdown out.
 async fn run_closed_admission_deadline_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();

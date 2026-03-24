@@ -21,6 +21,11 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Keep DST control-plane metrics on a short cadence so any metric-side
+// bookkeeping remains active during seeded runs without waiting for the normal
+// production reporting interval.
+const DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+
 #[derive(Debug, Clone)]
 pub(super) struct DstPData {
     pub(super) id: u64,
@@ -137,6 +142,7 @@ pub(super) fn build_manager<PData>(
         control_senders,
         observed_state_store.reporter(SendPolicy::default()),
         metrics_reporter,
+        DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
         TelemetryPolicy {
             runtime_metrics: MetricLevel::None,
             pipeline_metrics: false,

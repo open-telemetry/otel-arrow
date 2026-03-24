@@ -15,6 +15,15 @@
 //! transitions such as `pending_sends.buffered = 0` after a backlog drains,
 //! which would otherwise be lost if the engine only flushed non-zero metric
 //! sets.
+//!
+//! These states are actor-owned instead of ordinary `MetricSet` accumulators
+//! because the runtime-control manager and completion dispatcher need to retain
+//! the latest gauge values between events, including transitions back to zero.
+//! The actor marks the state `dirty` on meaningful changes and periodically
+//! materializes a snapshot on the configured telemetry reporting interval.
+//! Keeping the state dirty until a snapshot is accepted ensures that deferred
+//! reporter sends still preserve the latest gauge view and the accumulated
+//! counter deltas.
 
 use crate::context::PipelineContext;
 use otap_df_config::MetricLevel;
@@ -359,6 +368,9 @@ pub(crate) struct RuntimeControlMetricsState {
     level: MetricLevel,
     reporter: MetricsReporter,
     metrics: Option<RegisteredMetricSet<RuntimeControlMetrics>>,
+    /// Whether the actor-owned state has changed since the last accepted
+    /// snapshot. This gates periodic reporting so unchanged retry loops do not
+    /// keep publishing identical control-plane snapshots.
     dirty: bool,
     drain_active: bool,
     drain_pending_receivers: u64,
@@ -432,6 +444,11 @@ impl RuntimeControlMetricsState {
         self.metrics
             .as_ref()
             .map(RegisteredMetricSet::metric_set_key)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     pub(crate) fn set_pending_sends_buffered(&mut self, buffered: usize) {
@@ -697,7 +714,11 @@ impl RuntimeControlMetricsState {
                 }
                 self.dirty = false;
             }
-            ReportOutcome::Deferred => {}
+            ReportOutcome::Deferred => {
+                // Keep the state dirty so the actor retries on the next flush
+                // interval instead of dropping the latest gauge transition or
+                // accumulated counter deltas.
+            }
         }
         Ok(())
     }
@@ -707,6 +728,10 @@ pub(crate) struct PipelineCompletionMetricsState {
     level: MetricLevel,
     reporter: MetricsReporter,
     metrics: Option<RegisteredMetricSet<PipelineCompletionMetrics>>,
+    /// Whether the latest completion-path state has not yet been accepted by
+    /// the telemetry reporter. This avoids re-sending identical snapshots while
+    /// still preserving backlog-to-zero transitions and accumulated deltas when
+    /// the reporter temporarily defers a snapshot.
     dirty: bool,
     pending_sends_buffered: u64,
     deliver_ack_received: u64,
@@ -749,6 +774,11 @@ impl PipelineCompletionMetricsState {
         self.metrics
             .as_ref()
             .map(RegisteredMetricSet::metric_set_key)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     pub(crate) fn set_pending_sends_buffered(&mut self, buffered: usize) {
@@ -890,7 +920,11 @@ impl PipelineCompletionMetricsState {
                 }
                 self.dirty = false;
             }
-            ReportOutcome::Deferred => {}
+            ReportOutcome::Deferred => {
+                // Deferred snapshots must be retried later with the same state;
+                // otherwise the completion lane could lose backlog gauges or
+                // coalesced Ack/Nack deltas during reporter backpressure.
+            }
         }
         Ok(())
     }

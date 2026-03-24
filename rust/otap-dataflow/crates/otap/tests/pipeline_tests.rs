@@ -109,6 +109,7 @@ fn test_telemetry_registries_cleanup() {
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
+            Duration::from_secs(1),
             runtime_ctrl_tx,
             runtime_ctrl_rx,
             pipeline_completion_tx,

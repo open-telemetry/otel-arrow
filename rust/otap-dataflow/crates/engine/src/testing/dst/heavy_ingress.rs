@@ -25,6 +25,10 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Use a short flush interval in DST so control-plane metric code stays active
+// during the seeded backpressure sweep without introducing long waits.
+const DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+
 #[derive(Debug, Default)]
 struct FlowState {
     admitted: HashSet<u64>,
@@ -43,6 +47,11 @@ struct FlowState {
     runtime_noise_sent: usize,
 }
 
+// Seeded end-to-end pressure scenario: the receiver keeps admitting until the
+// bounded pdata path blocks, the processor alternates between paused and
+// resumed admission, the exporter schedules delayed completions, and unrelated
+// runtime-control noise competes with all of it. This is the representative
+// "interblock" case where no single component should wedge the others.
 async fn run_backpressure_interblock_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
@@ -83,6 +92,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
             control_senders.clone(),
             empty_node_metric_handles(),
             MetricsReporter::create_new_and_receiver(16).1,
+            DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
         );
 

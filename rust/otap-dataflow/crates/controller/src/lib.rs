@@ -970,6 +970,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
+        let telemetry_reporting_interval = engine.telemetry.reporting_interval;
         otel_info!(
             "controller.start",
             num_pipeline_groups = num_pipeline_groups,
@@ -1055,6 +1056,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             &controller_ctx,
             &engine_evt_reporter,
             &metrics_reporter,
+            telemetry_reporting_interval,
             internal_tracing_setup,
         )?;
 
@@ -1238,6 +1240,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             pipeline_config,
                             effective_channel_capacity_policy,
                             effective_telemetry_policy,
+                            telemetry_reporting_interval,
                             pipeline_factory,
                             pipeline_handle,
                             engine_evt_reporter,
@@ -1502,6 +1505,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         controller_ctx: &ControllerContext,
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
+        telemetry_reporting_interval: std::time::Duration,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
@@ -1575,6 +1579,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     internal_config,
                     internal_channel_capacity_policy,
                     internal_telemetry_policy,
+                    telemetry_reporting_interval,
                     pipeline_factory,
                     internal_pipeline_ctx,
                     internal_evt_reporter,
@@ -1624,6 +1629,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        telemetry_reporting_interval: std::time::Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
@@ -1713,6 +1719,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_context,
                     obs_evt_reporter,
                     metrics_reporter,
+                    telemetry_reporting_interval,
                     runtime_ctrl_msg_tx,
                     runtime_ctrl_msg_rx,
                     pipeline_completion_msg_tx,
