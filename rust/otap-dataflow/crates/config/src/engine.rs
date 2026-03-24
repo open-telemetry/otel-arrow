@@ -666,6 +666,154 @@ groups:
     }
 
     #[test]
+    fn resolve_policies_mixed_engine_and_group_inheritance() {
+        // The reviewer asked for a test where some policies come from the
+        // group level and others from the engine (top) level, exercising
+        // the full three-level precedence chain.
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    channel_metrics: detailed
+  channel_capacity:
+      control:
+        node: 500
+        pipeline: 501
+      pdata: 502
+  health:
+    ready_if: [Running, Updating]
+engine: {}
+groups:
+  default:
+    policies:
+      # Group sets telemetry and health but NOT channel_capacity.
+      telemetry:
+        channel_metrics: normal
+        pipeline_metrics: false
+      health:
+        ready_if: [Failed]
+    pipelines:
+      # Pipeline sets only channel_capacity → gets telemetry from group,
+      # health from group, channel_capacity from itself.
+      pipeline_with_capacity:
+        policies:
+          channel_capacity:
+              control:
+                node: 10
+                pipeline: 11
+              pdata: 12
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      # Pipeline sets only health → gets channel_capacity from group
+      # (absent) → falls through to engine; telemetry from group.
+      pipeline_with_health:
+        policies:
+          health:
+            ready_if: [Starting]
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      # No pipeline-level policies → inherits everything from group,
+      # with channel_capacity falling through to engine level.
+      pipeline_no_policies:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let find = |name: &str| {
+            resolved
+                .pipelines
+                .iter()
+                .find(|p| p.pipeline_id.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} pipeline should be resolved"))
+        };
+
+        // pipeline_with_capacity: channel_capacity from pipeline, rest from group.
+        let p = find("pipeline_with_capacity");
+        assert_eq!(p.policies.channel_capacity.control.node, 10);
+        assert_eq!(p.policies.channel_capacity.control.pipeline, 11);
+        assert_eq!(p.policies.channel_capacity.pdata, 12);
+        assert_eq!(
+            p.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert!(
+            !p.policies.telemetry.pipeline_metrics,
+            "pipeline_metrics should come from group"
+        );
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed],
+            "health should come from group"
+        );
+
+        // pipeline_with_health: health from pipeline, telemetry from group,
+        // channel_capacity absent at both pipeline and group → falls through to engine.
+        let p = find("pipeline_with_health");
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Starting],
+            "health should come from pipeline"
+        );
+        assert_eq!(
+            p.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert_eq!(
+            p.policies.channel_capacity.control.node, 500,
+            "channel_capacity should fall through group (absent) to engine"
+        );
+        assert_eq!(p.policies.channel_capacity.control.pipeline, 501);
+        assert_eq!(p.policies.channel_capacity.pdata, 502);
+
+        // pipeline_no_policies: telemetry and health from group, channel_capacity from engine.
+        let p = find("pipeline_no_policies");
+        assert_eq!(
+            p.policies.telemetry.channel_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed],
+            "health should come from group"
+        );
+        assert_eq!(
+            p.policies.channel_capacity.control.node, 500,
+            "channel_capacity should come from engine"
+        );
+        assert_eq!(p.policies.channel_capacity.pdata, 502);
+    }
+
+    #[test]
     fn from_yaml_parses_topic_declarations_with_queue_policy() {
         let yaml = r#"
 version: otel_dataflow/v1
