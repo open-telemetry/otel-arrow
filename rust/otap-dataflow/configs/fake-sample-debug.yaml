@@ -1,0 +1,47 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 100
+                signals_per_second: 100
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 10
+          debug:
+            type: processor:debug
+            config:
+              verbosity: basic
+              mode: signal
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: sampler
+          - from: sampler
+            to: debug
+          - from: debug
+            to: noop

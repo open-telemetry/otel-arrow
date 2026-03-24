@@ -38,15 +38,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
-///
-/// Approximation using Little's Law (L = λ × W):
-///   - λ (throughput): LA API allows ~500 req/min per DCR (~8 req/s, estimated)
-///   - W (latency): p99 response time ~0.5-1s (estimated, varies by region/load)
-///   - L ≈ 8 × 0.5 = 4 slots minimum, doubled for burst headroom ≈ 8
-///
-/// Set to 16 to absorb transient latency spikes without throttling.
-/// Worst-case memory for pending requests is roughly: 16 × 1MB = 16MB.
-/// These are rough estimates — tune based on observed metrics in production.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
@@ -88,7 +79,7 @@ impl AzureMonitorExporter {
         let transformer = Transformer::new(&config);
 
         // Create Gzip batcher
-        let gzip_batcher = GzipBatcher::new();
+        let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
         let heartbeat = Heartbeat::new(&config.api)?;
@@ -251,7 +242,8 @@ impl AzureMonitorExporter {
         let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
         for log_entry in log_entries {
-            match self.gzip_batcher.push(&log_entry) {
+            let entry_len = log_entry.len();
+            match self.gzip_batcher.push(log_entry) {
                 Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(batch_id, msg_id);
@@ -267,7 +259,7 @@ impl AzureMonitorExporter {
                     otel_warn!(
                         "azure_monitor_exporter.message.log_entry_too_large",
                         msg_id = msg_id,
-                        size_bytes = log_entry.len()
+                        size_bytes = entry_len
                     );
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
@@ -478,7 +470,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name()
+            auth_method = self.config.auth.auth_method_name(),
+            gzip_compression_level = self.config.api.gzip_compression_level
         );
 
         let mut msg_id = 0;
@@ -705,6 +698,7 @@ mod tests {
                     log_record_mapping: HashMap::new(),
                 },
                 azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
         }

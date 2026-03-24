@@ -15,9 +15,7 @@
   ],
   "ignorePaths": [
     // this directory has generated code, don't send updates to it
-    "collector/cmd/otelarrowcol/**",
-    // this reference implementation has been removed from our build pipelines
-    "rust/beaubourg/**"
+    "collector/cmd/otelarrowcol/**"
   ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
@@ -45,10 +43,16 @@
       ]
     },
     {
-      // group these crates that are tagged and released together
-      "groupName": "OpenTelemetry Weaver",
-      "matchDatasources": ["crate"],
-      "matchSourceUrls": ["https://github.com/open-telemetry/weaver"],
+      // group these dependencies that are tagged and released together
+      "groupName": "weaver crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "weaver_common",
+        "weaver_forge",
+        "weaver_resolved_schema",
+        "weaver_resolver",
+        "weaver_semconv"
+      ],
     },
     {
       // group together all github action workflow changes
@@ -80,9 +84,14 @@
       ]
     },
     {
-      // prevent duplicate PRs from pip_requirements once pip-compile is enabled
+      // prevent duplicate PRs from pip_requirements once pip-compile is enabled;
+      // also disable on lock files so pip_requirements doesn't treat transitive
+      // deps (e.g. pydantic-core) as direct and raise independent update PRs
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["tools/pipeline_perf_test/**/requirements.txt"],
+      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.txt",
+        "tools/pipeline_perf_test/**/requirements.lock.txt"
+      ],
       "enabled": false
     },
     {

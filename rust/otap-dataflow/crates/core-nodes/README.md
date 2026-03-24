@@ -30,6 +30,7 @@ Each component lives in its own subfolder within a category:
         durable_buffer_processor/
         fanout_processor/
         filter_processor/
+        log_sampling_processor/
         retry_processor/
         signal_type_router/
         transform_processor/
@@ -123,6 +124,7 @@ Each component lives in its own subfolder within a category:
 | durable_buffer_processor | `urn:otel:processor:durable_buffer` | `src/processors/durable_buffer_processor/` |
 | fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
 | filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
+| log_sampling_processor | `urn:otel:processor:log_sampling` | `src/processors/log_sampling_processor/` |
 | retry_processor | `urn:otel:processor:retry` | `src/processors/retry_processor/` |
 | signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
 | transform_processor | `urn:otel:processor:transform` | `src/processors/transform_processor/` |
@@ -172,6 +174,11 @@ Each component lives in its own subfolder within a category:
 - Filters OTAP signals according to configured trace/log filter rules
 - Tracks consumed and filtered signal metrics for telemetry
 - Useful for reducing data volume before downstream processing
+
+#### log_sampling_processor
+
+- Discards a portion of incoming logs according to a configurable sampling policy
+- Useful for reducing data volume in a telemetry backend
 
 #### retry_processor
 
