@@ -136,7 +136,9 @@ fn otap_to_bytes_logs(c: &mut Criterion) {
         b.iter(|| {
             let mut batch = otap_batch.clone();
             proto_buffer.clear();
-            encoder.encode(&mut batch, &mut proto_buffer).unwrap();
+            encoder
+                .encode(&mut batch, &mut proto_buffer)
+                .expect("can encode proto");
         })
     });
 
