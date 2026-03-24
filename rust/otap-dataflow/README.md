@@ -426,7 +426,7 @@ https://nnethercote.github.io/dh_view/.
 
 CPU profiling output will be automatically renderd on browser.
 
-Note: dhat needs a clean shutdown to generate dhat-heap.json file. In df_engine 
+Note: dhat needs a clean shutdown to generate dhat-heap.json file. In df_engine
       this can be done manually with Ctrl-C.
 
 ## Contributing
