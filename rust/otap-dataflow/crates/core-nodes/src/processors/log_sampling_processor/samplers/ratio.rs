@@ -3,13 +3,6 @@
 
 //! Ratio sampler -- emit a fixed fraction of log records.
 //!
-//! # Algorithm
-//!
-//! The ratio sampler keeps `emit` out of every `out_of` records.
-//! Conceptually, for each record: increment `seen`, and if
-//! `emitted < emit` then keep the record and increment `emitted`. When
-//! `seen` reaches `out_of`, reset both counters to zero.
-//!
 //! At the batch level, the number of records to keep is computed in O(1)
 //! using a closed-form formula rather than iterating per record. See
 //! [RatioSampler::compute_to_keep].
@@ -90,6 +83,9 @@ impl RatioSampler {
     /// Uses an O(1) closed-form formula that accounts for the current
     /// position within the emit/out_of cycle, any number of full cycles
     /// within the batch, and the leftover partial cycle at the end.
+    ///
+    /// Note: This means that we sample every record out of the front of the
+    /// incoming batch if `out_of` is greater than the incoming batch size.
     ///
     /// ## Example
     ///

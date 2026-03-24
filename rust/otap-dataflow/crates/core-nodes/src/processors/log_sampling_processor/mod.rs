@@ -6,8 +6,6 @@
 //! Reduces log volume by discarding a portion of incoming log records
 //! according to a configurable sampling strategy. Non-log signals
 //! (metrics and traces) pass through unchanged.
-//!
-//! See `README.md` in this module for full design documentation.
 
 mod config;
 mod metrics;
@@ -124,7 +122,7 @@ impl LogSamplingProcessor {
         // resized appropriately the next time around.
         //
         // This _should_ succeed if the sampler called finish as the builder
-        // will drop its buffer.
+        // will drop its reference.
         let (buf, _) = selection.into_parts();
         match buf.into_inner().into_mutable() {
             Ok(mutable) => self.filter_buffer = mutable,
