@@ -608,7 +608,7 @@ impl BatchSorter {
 
     /// Initializes the cursor to visit the root [`RecordBatch`] in the OTAP batch in order of
     /// ascending Resource ID & Scope ID. This allows the caller to easily iterate the root
-    /// [`RecordBatch`] in a depth-first trave rsal for each Resource -> Scope -> Log/Span/etc.
+    /// [`RecordBatch`] in a depth-first traversal for each Resource -> Scope -> Log/Span/etc.
     pub fn init_cursor_for_root_batch(
         &mut self,
         record_batch: &RecordBatch,
