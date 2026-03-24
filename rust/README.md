@@ -50,4 +50,4 @@ directly shaped the design of the OTAP Dataflow engine that succeeded
 it. Beaubourg was removed from this repository after serving as a
 reference implementation, and we are grateful for the foundation it
 provided. Beaubourg is preserved
-[here](https://github.com/open-telemetry/otel-arrow/tree/7c80ef943e417c5671b6dcb028cccc8d89935525/rust/beaubourg).
+[at this commit](https://github.com/open-telemetry/otel-arrow/tree/7c80ef943e417c5671b6dcb028cccc8d89935525/rust/beaubourg).
