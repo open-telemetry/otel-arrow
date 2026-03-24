@@ -6,7 +6,6 @@
 //! This crate benchmarks OTLP.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::otlp::ProtoBytesEncoder;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
