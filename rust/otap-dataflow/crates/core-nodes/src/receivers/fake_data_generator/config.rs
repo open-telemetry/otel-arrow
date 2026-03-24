@@ -14,6 +14,7 @@ use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
 use weaver_resolver::SchemaResolver;
+use weaver_semconv::Error as SemconvError;
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Source of telemetry data schema and attributes
@@ -228,7 +229,8 @@ impl Config {
         match self.data_source {
             DataSource::Static => Ok(None),
             DataSource::SemanticConventions => {
-                let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
+                let mut nfes: Vec<SemconvError> = Vec::new();
+                let registry_repo = RegistryRepo::try_new(None, &self.registry_path, &mut nfes)
                     .map_err(|err| err.to_string())?;
 
                 // Load the semantic convention registry.
