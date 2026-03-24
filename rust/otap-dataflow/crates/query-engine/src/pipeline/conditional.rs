@@ -269,6 +269,19 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(default_branch_batch);
         }
 
+        // give the pipeline stages within each branch the opportunity to clear any
+        // state that was initialized for this batch.
+        for branch in &mut self.branches {
+            for stage in &mut branch.pipeline_stages {
+                stage.clear_state_for_conditional_branch(exec_state)?;
+            }
+        }
+        if let Some(branch) = self.default_branch.as_mut() {
+            for stage in branch {
+                stage.clear_state_for_conditional_branch(exec_state)?;
+            }
+        }
+
         // reconstruct the result with the results of each branch
         match otap_batch {
             OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
@@ -391,24 +404,31 @@ impl PipelineStage for ConditionalPipelineStage {
 mod test {
     use crate::pipeline::{
         Pipeline,
-        test::{exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline},
+        test::{
+            exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline, otap_to_logs_data,
+        },
     };
+    use arrow::array::UInt16Array;
     use data_engine_parser_abstractions::Parser;
     use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::{
-        proto::opentelemetry::{
-            common::v1::{AnyValue, KeyValue},
-            logs::v1::LogRecord,
-            trace::v1::Span,
-        },
-        testing::round_trip::{to_metrics_data, to_traces_data},
-    };
     use otap_df_pdata::{
         proto::opentelemetry::{
             metrics::v1::Metric,
             trace::v1::{Status, span::SpanKind},
         },
+        schema::consts,
         testing::round_trip::to_logs_data,
+    };
+    use otap_df_pdata::{
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                common::v1::{AnyValue, KeyValue},
+                logs::v1::LogRecord,
+                trace::v1::Span,
+            },
+        },
+        testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
     };
 
     use super::*;
@@ -707,7 +727,20 @@ mod test {
                 set attributes["x"] = "world"
             }
         "#;
-        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let mut execution_state = ExecutionState::new();
+
+        let result = pipeline
+            .execute_with_state(
+                otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records))),
+                &mut execution_state,
+            )
+            .await
+            .unwrap();
+        let result = otap_to_logs_data(result);
+
         let expected = vec![
             LogRecord::build()
                 .severity_text("INFO")
@@ -723,7 +756,49 @@ mod test {
                 .finish(),
         ];
 
-        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected);
+
+        // ensure that if we send in a second batch, the ID tracking state gets reset and we don't
+        // end up overwriting IDs somehow. We'll have inserted IDs 1 and 2 for the batch above,
+        // so the next ID would be 3. But in the following batch, we have rows 4 rows with
+        // attributes, so the next ID should be 4
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ];
+
+        let result = pipeline
+            .execute_with_state(
+                otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records))),
+                &mut execution_state,
+            )
+            .await
+            .unwrap();
+
+        let id_column = result
+            .get(ArrowPayloadType::Logs)
+            .unwrap()
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+        assert_eq!(id_column, &UInt16Array::from_iter_values([0, 4, 2, 1, 3]));
     }
 
     #[tokio::test]

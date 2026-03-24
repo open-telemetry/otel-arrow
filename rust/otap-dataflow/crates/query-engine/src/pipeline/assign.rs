@@ -1028,6 +1028,17 @@ impl PipelineStage for AssignPipelineStage {
 
         Ok(())
     }
+
+    fn clear_state_for_conditional_branch(
+        &mut self,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // if we've added the NextIdTracker, we'll need to remove it. Otherwise, if the
+        // ExecutionState is reused between batches, it will not be reinitialized for the next
+        // incoming OTAP batch
+        _ = exec_state.remove_extension::<NextIdTracker>();
+        Ok(())
+    }
 }
 
 /// Extension implementation used to keep track of the next max ID when the ID column
