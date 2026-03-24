@@ -26,18 +26,47 @@ use sysinfo::System;
 use ctrlc;
 #[cfg(feature = "dhat-heap")]
 use {
-    once_cell::sync::Lazy,
-    std::sync::Mutex,
+    std::sync::{LazyLock, Mutex},
     dhat::Profiler,
 };
 
+// =======================
+// dhat (profiling) — wins everywhere when enabled
+// =======================
 #[cfg(all(
-    not(windows),
-    feature = "jemalloc",
-    feature = "mimalloc",
+    feature = "dhat-heap",
     not(any(test, doc)),
     not(clippy)
 ))]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
+
+
+// =======================
+// Windows default: mimalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    windows,
+    not(feature = "dhat-heap"),
+    not(any(test, doc)),
+    not(clippy)
+))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+
+// =======================
+// Linux default: jemalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    not(windows),
+    not(feature = "dhat-heap"),
+    not(any(test, doc)),
+    not(clippy)
+))]
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
@@ -299,7 +328,7 @@ fn validate_engine_components(
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc; // 1. The actual allocator
 #[cfg(feature = "dhat-heap")]
-static DHAT_PROFILER: Lazy<Mutex<Option<Profiler>>> = Lazy::new(|| Mutex::new(None));
+static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "dhat-heap")]
     ctrlc::set_handler(|| {
