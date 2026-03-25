@@ -13,61 +13,103 @@ use std::fmt::Display;
 #[serde(deny_unknown_fields)]
 pub struct Policies {
     /// Channel capacity policy.
-    #[serde(default)]
-    pub channel_capacity: ChannelCapacityPolicy,
+    ///
+    /// When absent, a parent scope's channel capacity policy or the built-in
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
-    #[serde(default)]
-    pub health: HealthPolicy,
+    ///
+    /// When absent, a parent scope's health policy or the built-in default
+    /// applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
-    #[serde(default)]
-    pub telemetry: TelemetryPolicy,
+    ///
+    /// When absent, a parent scope's telemetry policy or the built-in default
+    /// applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) telemetry: Option<TelemetryPolicy>,
     /// Resources policy controlling runtime core allocation.
     ///
-    /// When absent, the parent scope's resources policy or the built-in default
-    /// (`core_allocation: all_cores`) applies.  Serde leaves this `None` when
-    /// the key is omitted from the YAML/JSON, so a `policies:` block that only
-    /// sets (e.g.) `channel_capacity` does **not** implicitly pin `core_allocation`
-    /// to `AllCores` and shadow a `--num-cores` / `--core-id-range` CLI flag.
+    /// When absent, a parent scope's resources policy or the built-in default
+    /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resources: Option<ResourcesPolicy>,
+    pub(crate) resources: Option<ResourcesPolicy>,
 }
 
 impl Policies {
-    /// Returns the effective resources policy.
-    ///
-    /// When `resources` is `None` (not explicitly configured), the built-in
-    /// default [`ResourcesPolicy`] is returned as an owned value.  When it is
-    /// `Some`, a reference to the stored value is returned.
-    #[must_use]
-    pub fn effective_resources(&self) -> std::borrow::Cow<'_, ResourcesPolicy> {
-        self.resources
-            .as_ref()
-            .map(std::borrow::Cow::Borrowed)
-            .unwrap_or_else(|| std::borrow::Cow::Owned(ResourcesPolicy::default()))
+    /// Override the resources policy.
+    pub fn set_resources(&mut self, resources: ResourcesPolicy) {
+        self.resources = Some(resources);
     }
 
-    /// Returns validation errors for this policy set.
+    /// Resolves a fully-populated policy set from scopes ordered by precedence.
+    #[must_use]
+    pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
+        let mut channel_capacity = None;
+        let mut health = None;
+        let mut telemetry = None;
+        let mut resources = None;
+        for scope in scopes {
+            if channel_capacity.is_none() {
+                channel_capacity = scope.channel_capacity.as_ref();
+            }
+            if health.is_none() {
+                health = scope.health.as_ref();
+            }
+            if telemetry.is_none() {
+                telemetry = scope.telemetry.as_ref();
+            }
+            if resources.is_none() {
+                resources = scope.resources.as_ref();
+            }
+        }
+        ResolvedPolicies {
+            channel_capacity: channel_capacity.cloned().unwrap_or_default(),
+            health: health.cloned().unwrap_or_default(),
+
+            telemetry: telemetry.cloned().unwrap_or_default(),
+            resources: resources.cloned().unwrap_or_default(),
+        }
+    }
+
+    /// Returns validation errors for explicitly configured fields.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        let channel_capacity = &self.channel_capacity;
-        if channel_capacity.control.node == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.control.node must be greater than 0"
-            ));
-        }
-        if channel_capacity.control.pipeline == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
-            ));
-        }
-        if channel_capacity.pdata == 0 {
-            errors.push(format!(
-                "{path_prefix}.channel_capacity.pdata must be greater than 0"
-            ));
+        if let Some(channel_capacity) = &self.channel_capacity {
+            if channel_capacity.control.node == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.control.node must be greater than 0"
+                ));
+            }
+            if channel_capacity.control.pipeline == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
+                ));
+            }
+            if channel_capacity.pdata == 0 {
+                errors.push(format!(
+                    "{path_prefix}.channel_capacity.pdata must be greater than 0"
+                ));
+            }
         }
         errors
     }
+}
+
+/// Fully-resolved policy snapshot where every field is populated.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedPolicies {
+    /// Channel capacity policy.
+    pub channel_capacity: ChannelCapacityPolicy,
+    /// Health policy.
+    pub health: HealthPolicy,
+    /// Runtime telemetry policy.
+    pub telemetry: TelemetryPolicy,
+    /// Resources policy.
+    pub resources: ResourcesPolicy,
 }
 
 /// Engine-wide metric level controlling per-channel and per-node
@@ -251,28 +293,35 @@ mod tests {
 
     #[test]
     fn defaults_match_expected_values() {
-        let policies = Policies::default();
-        assert_eq!(policies.channel_capacity.control.node, 256);
-        assert_eq!(policies.channel_capacity.control.pipeline, 256);
-        assert_eq!(policies.channel_capacity.pdata, 128);
-        assert!(policies.telemetry.pipeline_metrics);
-        assert!(policies.telemetry.tokio_metrics);
+        let defaults = Policies::resolve([&Policies::default()]);
+        assert_eq!(defaults.channel_capacity.control.node, 256);
+        assert_eq!(defaults.channel_capacity.control.pipeline, 256);
+        assert_eq!(defaults.channel_capacity.pdata, 128);
+        assert!(defaults.telemetry.pipeline_metrics);
+        assert!(defaults.telemetry.tokio_metrics);
         assert_eq!(
-            policies.telemetry.channel_metrics,
+            defaults.telemetry.channel_metrics,
             super::MetricLevel::Basic
         );
         assert_eq!(
-            policies.effective_resources().core_allocation,
+            defaults.resources.core_allocation,
             super::CoreAllocation::AllCores
         );
+        assert_eq!(defaults.health, crate::health::HealthPolicy::default());
     }
 
     #[test]
     fn validates_non_zero_capacities() {
-        let mut policies = Policies::default();
-        policies.channel_capacity.control.node = 0;
-        policies.channel_capacity.control.pipeline = 0;
-        policies.channel_capacity.pdata = 0;
+        let policies = Policies {
+            channel_capacity: Some(super::ChannelCapacityPolicy {
+                control: super::ControlChannelCapacityPolicy {
+                    node: 0,
+                    pipeline: 0,
+                },
+                pdata: 0,
+            }),
+            ..Default::default()
+        };
 
         let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 3);
