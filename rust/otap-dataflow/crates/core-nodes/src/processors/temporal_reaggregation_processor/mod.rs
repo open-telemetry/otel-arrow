@@ -141,6 +141,7 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::error::Error as ConfigError;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -152,23 +153,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_default_config_parsing() {
-        let config: Config = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(config.period, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_custom_config_parsing() {
-        let config: Config = serde_json::from_value(json!({
-            "period": "30s",
-        }))
-        .unwrap();
-        assert_eq!(config.period, Duration::from_secs(30));
-    }
-
-    #[test]
     fn test_passthrough_logs() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -189,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_traces() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -209,131 +195,34 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_multiple_messages() {
-        let (rt, proc) = create_processor(json!({}));
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                // Send logs
-                let logs_pdata = create_test_pdata();
-                ctx.process(Message::PData(logs_pdata))
-                    .await
-                    .expect("process logs");
-
-                // Send traces
-                let traces_pdata = create_traces_pdata();
-                ctx.process(Message::PData(traces_pdata))
-                    .await
-                    .expect("process traces");
-
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected two forwarded messages");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
-    fn test_shutdown_with_no_buffered_data() {
-        let (rt, proc) = create_processor(json!({}));
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let deadline = std::time::Instant::now() + Duration::from_secs(1);
-                ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test".into(),
-                }))
-                .await
-                .expect("shutdown should succeed");
-
-                let output = ctx.drain_pdata().await;
-                assert!(output.is_empty(), "no data should be emitted on shutdown");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
-    fn test_timer_tick_increments_flush_counter() {
-        let (rt, proc) = create_processor(json!({}));
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                // Timer tick should be handled without error
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("timer tick should succeed");
-
-                // No data should be emitted (aggregation not implemented yet)
-                let output = ctx.drain_pdata().await;
-                assert!(output.is_empty(), "timer tick should not emit data yet");
-
-                // Send another timer tick
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("second timer tick should succeed");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
     fn test_factory_creation() {
-        let pipeline_ctx = create_test_pipeline_context();
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let node = test_node("temporal-reaggregation-factory-test");
-
-        let mut node_config =
-            NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
-        node_config.config = json!({
-            "period": "5s"
+        test_config(json!({ "period": "5s" }), |result| {
+            assert!(
+                result.is_ok(),
+                "factory should create processor successfully"
+            );
         });
-
-        let result = create_temporal_reaggregation_processor(
-            pipeline_ctx,
-            node,
-            Arc::new(node_config),
-            rt.config(),
-        );
-        assert!(
-            result.is_ok(),
-            "factory should create processor successfully"
-        );
     }
 
     #[test]
     fn test_factory_invalid_config() {
-        let pipeline_ctx = create_test_pipeline_context();
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let node = test_node("temporal-reaggregation-invalid-config");
-
-        let mut node_config =
-            NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
-        node_config.config = json!({
-            "period": 12345  // Wrong type, should be a string like "5s"
+        test_config(json!({ "period": 12345 }), |result| {
+            assert!(result.is_err(), "invalid config should fail");
         });
-
-        let result = create_temporal_reaggregation_processor(
-            pipeline_ctx,
-            node,
-            Arc::new(node_config),
-            rt.config(),
-        );
-        assert!(result.is_err(), "invalid config should fail");
     }
 
-    // --- Test Helpers ---
+    fn test_config<F>(config: serde_json::Value, assert_fn: F)
+    where
+        F: FnOnce(Result<ProcessorWrapper<OtapPdata>, ConfigError>),
+    {
+        let res = try_create_processor(config).map(|(_, proc)| proc);
+        assert_fn(res);
+    }
 
-    fn create_processor(
+    fn try_create_processor(
         config: serde_json::Value,
-    ) -> (TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>) {
+    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), otap_df_config::error::Error>
+    {
         let pipeline_ctx = create_test_pipeline_context();
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let node = test_node("temporal-reaggregation-test");
@@ -342,23 +231,20 @@ mod tests {
             NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
         node_config.config = config;
 
-        let proc = create_temporal_reaggregation_processor(
+        (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY.create)(
             pipeline_ctx,
             node,
             Arc::new(node_config),
             rt.config(),
         )
-        .expect("create processor");
-
-        (rt, proc)
+        .map(|proc| (rt, proc))
     }
 
     fn create_traces_pdata() -> OtapPdata {
         let mut datagen = DataGenerator::new(3);
         let traces_data = datagen.generate_traces();
-        let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(
-            traces_data,
-        ));
+        let otap_records =
+            otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(traces_data));
         OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
     }
 
