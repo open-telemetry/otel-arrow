@@ -386,14 +386,15 @@ docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 
 ## Profiling
 
-This section covers Memory & CPU Profiling for df_engine using dhat-rs and samply profilers respectively.
+This section covers Memory & CPU Profiling for df_engine using dhat-rs and
+samply profilers respectively.
 
 **Requirements**:
 
-- dhat-rs (https://docs.rs/dhat/latest/dhat/)
-- samply (https://github.com/mstange/samply)
+- dhat-rs <https://docs.rs/dhat/latest/dhat/>
+- samply <https://github.com/mstange/samply>
 
-**Installation**
+**Installation**:
 
 cargo install --locked samply
 
@@ -416,11 +417,11 @@ samply record ./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
 **Run with only Memory profiling enabled**:
 ./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
 
-**Result**
+**Result**:
 
 On successful termination of df_engine.exe, it will generate dhat-heap.json file
 for Memory profiling that need to be rendered by uploading it to:
-https://nnethercote.github.io/dh_view/.
+<https://nnethercote.github.io/dh_view/>.
 
 CPU profiling output will be automatically renderd on browser.
 
