@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -25,21 +26,17 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::metrics::MetricSet;
 
 use self::config::Config;
 use self::metrics::TemporalReaggregationMetrics;
 
-/// The URN for the temporal reaggregation processor.
+/// URN
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
 
 /// The temporal reaggregation processor.
-///
-/// Currently this is a passthrough implementation. Aggregation logic will be
-/// added in a subsequent stage.
 pub struct TemporalReaggregationProcessor {
     metrics: MetricSet<TemporalReaggregationMetrics>,
     collection_period: Duration,
@@ -97,10 +94,6 @@ impl TemporalReaggregationProcessor {
     }
 
     /// Starts the periodic flush timer if it has not already been started.
-    ///
-    /// The timer fires `TimerTick` control messages at a fixed cadence equal
-    /// to `collection_period`. We defer starting the timer until the first
-    /// data message arrives so that idle processors do not generate ticks.
     async fn ensure_timer_started(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -124,18 +117,12 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(pdata) => {
-                // Start the periodic flush timer on first data arrival.
                 self.ensure_timer_started(effect_handler).await?;
-
-                // Passthrough: forward all data unchanged.
-                // Aggregation logic will be added in a subsequent stage.
                 effect_handler.send_message_with_source_node(pdata).await?;
                 Ok(())
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    // Timer fired. In a future stage this will flush aggregated
-                    // state. For now, just record the metric.
                     self.metrics.flushes_timer.add(1);
                     Ok(())
                 }
@@ -143,10 +130,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                     mut metrics_reporter,
                 } => {
                     _ = metrics_reporter.report(&mut self.metrics);
-                    Ok(())
-                }
-                NodeControlMsg::Shutdown { .. } => {
-                    // Nothing buffered yet in this passthrough implementation.
                     Ok(())
                 }
                 _ => Ok(()),

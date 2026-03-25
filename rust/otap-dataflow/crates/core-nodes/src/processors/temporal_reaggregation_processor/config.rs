@@ -8,20 +8,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Default aggregation period (60 seconds).
-const DEFAULT_PERIOD_MS: u64 = 60_000;
+const DEFAULT_PERIOD_SECONDS: u64 = 60;
 
 fn default_period() -> Duration {
-    Duration::from_millis(DEFAULT_PERIOD_MS)
+    Duration::from_secs(DEFAULT_PERIOD_SECONDS)
 }
 
 /// Configuration for the temporal reaggregation processor.
-///
-/// # Example
-///
-/// ```yaml
-/// config:
-///   period: 60s
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// The interval at which the processor aggregates and emits metrics.
