@@ -6,33 +6,6 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one. It collects metrics for a fixed
 //! interval and emits a single data point per stream when the interval expires.
-//!
-//! # Supported Metric Types
-//!
-//! The following metric types are aggregated:
-//! - Monotonically increasing, cumulative sums
-//! - Monotonically increasing, cumulative histograms
-//! - Monotonically increasing, cumulative exponential histograms
-//! - Gauges (unless `pass_through.gauge` is set)
-//! - Summaries (unless `pass_through.summary` is set)
-//!
-//! The following metric types are passed through unchanged:
-//! - All delta metrics
-//! - Non-monotonically increasing sums
-//!
-//! Non-metrics signals (logs, traces) are always passed through unchanged.
-//!
-//! # Configuration
-//!
-//! ```yaml
-//! temporal-reaggregation:
-//!   type: urn:otel:processor:temporal_reaggregation
-//!   config:
-//!     period: 60s
-//!     pass_through:
-//!       gauge: false
-//!       summary: false
-//! ```
 
 pub mod config;
 mod metrics;
@@ -57,6 +30,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::metrics::MetricSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The URN for the temporal reaggregation processor.
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
@@ -66,10 +40,9 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 /// Currently this is a passthrough implementation. Aggregation logic will be
 /// added in a subsequent stage.
 pub struct TemporalReaggregationProcessor {
-    #[allow(dead_code)]
-    config: Config,
     metrics: MetricSet<TemporalReaggregationMetrics>,
     compute_duration: ComputeDuration,
+    collection_period: Duration,
 }
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
@@ -116,9 +89,9 @@ impl TemporalReaggregationProcessor {
                 error: e.to_string(),
             })?;
         Ok(Self {
-            config,
             metrics,
             compute_duration,
+            collection_period: config.period,
         })
     }
 }
@@ -209,23 +182,15 @@ mod tests {
     fn test_default_config_parsing() {
         let config: Config = serde_json::from_value(json!({})).unwrap();
         assert_eq!(config.period, std::time::Duration::from_secs(60));
-        assert!(!config.pass_through.gauge);
-        assert!(!config.pass_through.summary);
     }
 
     #[test]
     fn test_custom_config_parsing() {
         let config: Config = serde_json::from_value(json!({
             "period": "30s",
-            "pass_through": {
-                "gauge": true,
-                "summary": true
-            }
         }))
         .unwrap();
         assert_eq!(config.period, std::time::Duration::from_secs(30));
-        assert!(config.pass_through.gauge);
-        assert!(config.pass_through.summary);
     }
 
     #[test]
@@ -348,8 +313,7 @@ mod tests {
         let mut node_config =
             NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
         node_config.config = json!({
-            "period": "5s",
-            "pass_through": { "gauge": true }
+            "period": "5s"
         });
 
         let result = create_temporal_reaggregation_processor(

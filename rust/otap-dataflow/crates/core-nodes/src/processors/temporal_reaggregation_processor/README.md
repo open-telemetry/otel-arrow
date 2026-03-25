@@ -26,4 +26,3 @@ temporal-reaggregation:
     # Default: 60s
     period: 60s
 ```
-
