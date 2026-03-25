@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774404944216,
+  "lastUpdate": 1774422501025,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "9717b6a49c8d747b2560018049acf6648f01d877",
-          "message": "PerfTest - modify saturation test script to detect and run selective tests (#2200)\n\nSaturation test script now detects total cores in the machine, and\nfilters out tests it cannot run due to lack of cores. This has no impact\nof lab runs, as our machine has sufficient cores. This is mostly to help\nlocal runs where we don't have such powerful machines. And I want to\nre-use the script as-is, to investigate the lack of scalability with\nnumber of cores.",
-          "timestamp": "2026-03-05T07:41:06Z",
-          "tree_id": "16df9af52d79fff891577f54e6ecebac28bfc50a",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/9717b6a49c8d747b2560018049acf6648f01d877"
-        },
-        "date": 1772700588668,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.9999288320541382,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.49464635974779,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.12265962590818,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.63515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 57.9609375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 480001.7066120551,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 489601.3994218852,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00192,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11276148.038358055,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11214535.829831922,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16971332.110943206,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0ed2efb7f92d2370ae0449699414a2f68c058c28",
+          "message": "fix panic in `attribute_transform` benchmark (#2426)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nI noticed on main that running the `attribute_transform` benchmark\npanics because we are not adding the `type` column, which is supposed to\nbe required. The additional validation we added in\nhttps://github.com/open-telemetry/otel-arrow/pull/2356 now causes the\nbenchmarks to panic.\n\nThis PR resolves this by adding the required column.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes https://github.com/open-telemetry/otel-arrow/issues/2429\n\n## How are these changes tested?\n\nI ran the benchmarks locally and they do not panic anymore\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n \n No\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-03-25T06:20:47Z",
+          "tree_id": "91d05190696cfc73baa2cf6602704fa9a4992de6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0ed2efb7f92d2370ae0449699414a2f68c058c28"
+        },
+        "date": 1774422500125,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.8525137901306152,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.00049089040597,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.30639274362355,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 25.34296875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 26.25,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 653600.8703375625,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 659172.9079934815,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002466,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 17018615.127219774,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 17038464.204417598,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
