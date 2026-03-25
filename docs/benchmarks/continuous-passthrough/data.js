@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774383181837,
+  "lastUpdate": 1774404944216,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "198982749+Copilot@users.noreply.github.com",
-            "name": "Copilot",
-            "username": "Copilot"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "4185b93a1656879195dab482af90287a8130984b",
-          "message": "Fix --num-cores/--core-id-range CLI flags silently ignored when any policies block is present (#2154)\n\n`--num-cores` and `--core-id-range` were silently ignored whenever any\npipeline or group defined a `policies:` block — even for unrelated\nfields like `channel_capacity` — because `#[serde(default)]` on\n`Policies.resources: ResourcesPolicy` caused serde to materialize an\nimplicit `AllCores` default that the resolver treated as an explicit\ngroup-level override.\n\n# Change Summary\n\n## Root cause\n\n`resolve_resources_policy` used `.map(|p| p.resources.clone())` — which\nreturns `Some(ResourcesPolicy::default())` any time a `policies:` block\nexists, regardless of whether the user wrote `resources:`. This shadowed\nthe CLI override at the top-level config.\n\n## Changes\n\n- **`policy.rs`**: `Policies.resources` changed from `ResourcesPolicy` →\n`Option<ResourcesPolicy>` with `#[serde(default, skip_serializing_if =\n\"Option::is_none\")]`. Absent `resources:` now deserializes as `None`\ninstead of `AllCores`. Added `effective_resources() -> Cow<'_,\nResourcesPolicy>` for ergonomic access.\n\n- **`resolve.rs`**: `resolve_resources_policy` now uses `and_then` so a\n`None` resources at any scope falls through to the next, with\n`unwrap_or_default()` as the final fallback.\n\n- **`main.rs`**: `apply_cli_overrides` now sets\n`engine_cfg.policies.resources = Some(ResourcesPolicy { core_allocation\n})`.\n\n- **`controller/src/lib.rs`**: Core allocation access updated to\n`effective_resources().core_allocation`, extracted before partial moves\nof `channel_capacity`/`telemetry` fields to avoid borrow errors. Adds an\n`otel_info!` log per pipeline reporting both the resolved `num_cores`\ncount and the `core_allocation` strategy string (e.g. `*`, `[N cores]`,\nor a range-set), so startup logs confirm whether `--num-cores` actually\ntook effect. Test helper updated to use struct initializer form\n(`Policies { resources: Some(...), ..Default::default() }`) to satisfy\n`clippy::field_reassign_with_default`. Long method chain in core\nselection reformatted per `rustfmt` style.\n\n## What issue does this PR close?\n\n## How are these changes tested?\n\nAdded regression test\n`cli_num_cores_not_shadowed_by_implicit_default_resources` covering the\nexact scenario from the bug report: a group with `policies: {\nchannel_capacity: { pdata: 500 } }` and no explicit `resources:`,\ncombined with `--num-cores 4`. All existing controller tests continue to\npass. `cargo fmt` and `cargo clippy -D warnings` both pass.\n\n## Are there any user-facing changes?\n\nYes. Previously, `--num-cores`/`--core-id-range` were silently ignored\nwhen any `policies:` block existed at pipeline or group scope without an\nexplicit `resources:` key. After this fix, the CLI flag reliably takes\neffect as the global default unless a scope explicitly sets\n`resources.core_allocation` in YAML. Startup now logs both the resolved\ncore count and the core allocation strategy per pipeline via\n`otel_info!`, making it straightforward to confirm whether the CLI flag\nwas respected.\n\n<!-- START COPILOT ORIGINAL PROMPT -->\n\n\n\n<details>\n\n<summary>Original prompt</summary>\n\n> \n> ----\n> \n> *This section details on the original issue you should resolve*\n> \n> <issue_title>The --num-cores/--core-id-range CLI flags in df_engine\nare silently ignored when any pipeline or group defines a policies\nblock</issue_title>\n> <issue_description>The `--num-cores` and `--core-id-range` CLI flags\ndo not reliably control core allocation. When any pipeline or pipeline\ngroup defines a `policies:` block in YAML, even for an unrelated setting\nlike `channel_capacity`, the CLI core flags are silently ignored.\n> \n> ## Root Cause\n> \n> `apply_cli_overrides` in `src/main.rs` writes the CLI value into the\n**top-level** `engine_cfg.policies.resources.core_allocation`. Later,\n`resolve_resources_policy` in `crates/config/src/engine/resolve.rs`\nresolves the effective `ResourcesPolicy` for each pipeline using\nscope-level precedence (pipeline > group > top-level), returning the\n**entire** `ResourcesPolicy` struct from whichever scope first provides\na `policies` block.\n> \n> The problem is that `Policies` uses `#[serde(default)]` on all its\nfields. So if a user writes a `policies:` block at the pipeline or group\nlevel to configure *anything* (e.g., `channel_capacity`), the\ndeserializer also fills in a default `resources: { core_allocation:\nAllCores }` that the user never asked for. The resolver sees that this\nscope has a `ResourcesPolicy` and returns it, shadowing the CLI override\nat the top level.\n> \n> ## Example\n> \n> Given this config:\n> \n> ```yaml\n> groups:\n>   my_group:\n>     policies:\n>       channel_capacity:\n>         pdata: 500\n>     pipelines:\n>       my_pipeline:\n>         # ...\n> ```\n> Running `df_engine --config config.yaml --num-cores 4` will not use 4\ncores. The group-level policies: block exists (to set\n`channel_capacity`), so the deserializer fills in a default resources:\n`{ core_allocation: AllCores }`. Resolution picks that up instead of the\ntop-level value where the CLI wrote `CoreCount { count: 4 }`. The\npipeline runs on all cores with no warning.\n> \n> ## Workaround\n> \n> Set `core_allocation` explicitly at the pipeline or group level in\nYAML:\n> \n> ```yaml\n> groups:\n>   my_group:\n>     policies:\n>       channel_capacity:\n>         pdata: 500\n>       resources:\n>         core_allocation:\n>           type: core_count\n>           count: 4\n> ```\n> \n> ## Possible Fixes\n> \n> - Field-level merging: Resolve each policy field independently so that\nan unset resources at pipeline/group level falls through to top-level.\n> - Post-resolve CLI override: Apply --num-cores / --core-id-range to\nevery resolved pipeline's ResourcesPolicy after resolution, rather than\nonly to the pre-resolution top-level config.\n> - Warning: At minimum, detect and warn when a CLI core-allocation flag\nis effectively shadowed by an implicit default.\n> </issue_description>\n> \n> <agent_instructions>Use logs and confirm that the num-cores is\nreceived and respected properly.</agent_instructions>\n> \n> ## Comments on the Issue (you are @copilot in this section)\n> \n> <comments>\n> </comments>\n> \n\n\n</details>\n\n\n\n<!-- START COPILOT CODING AGENT SUFFIX -->\n\n- Fixes open-telemetry/otel-arrow#2098\n\n<!-- START COPILOT CODING AGENT TIPS -->\n---\n\n✨ Let Copilot coding agent [set things up for\nyou](https://github.com/open-telemetry/otel-arrow/issues/new?title=✨+Set+up+Copilot+instructions&body=Configure%20instructions%20for%20this%20repository%20as%20documented%20in%20%5BBest%20practices%20for%20Copilot%20coding%20agent%20in%20your%20repository%5D%28https://gh.io/copilot-coding-agent-tips%29%2E%0A%0A%3COnboard%20this%20repo%3E&assignees=copilot)\n— coding agent works faster and does higher quality work when set up for\nyour repo.\n\n---------\n\nCo-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>\nCo-authored-by: cijothomas <5232798+cijothomas@users.noreply.github.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>\nCo-authored-by: lalitb <1196320+lalitb@users.noreply.github.com>\nCo-authored-by: Cijo Thomas <cijo.thomas@gmail.com>\nCo-authored-by: jmacd <3629705+jmacd@users.noreply.github.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>\nCo-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>",
-          "timestamp": "2026-03-04T23:56:46Z",
-          "tree_id": "ae010543adbfab7ac63ab3ea77645ba8ae4be748",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/4185b93a1656879195dab482af90287a8130984b"
-        },
-        "date": 1772672068688,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.1987851858139038,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.3255004980766,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.64834492219556,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 52.481770833333336,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 55.4296875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 480474.30806324707,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 486234.1631068951,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00151,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11333740.496474216,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11276500.90727688,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 17056541.3238352,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2abee0d4642c6bf2c2be774c5001320451913e74",
+          "message": "Pipeline/group/engine policy precedence: prevent against misuse of unresolved policies (#2392)\n\n# Change Summary\n\nLike #2154 but for the other three policy fields. Make all fields Option\ntypes. Adds a ResolvedPolicies type which strips the Options after\nresolving. There was existing resolve code, but it was not used\nconsistently: this was observed for the `telemetry` policy.\n\n## What issue does this PR close?\n\nFixes #2389.\n\n## How are these changes tested?\n\nOne new test. The `configs/internal-telemetry.yaml` configuration is\nmodified to show the problem. Before the fix, no duration metrics. After\nthe fix, duration metrics, as set by the top-level policy.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-03-25T01:06:47Z",
+          "tree_id": "2f0c86819cc64049011069f5eb68faf12ae12b7e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2abee0d4642c6bf2c2be774c5001320451913e74"
+        },
+        "date": 1774404943538,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.179158091545105,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.06206144305598,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.35219875776397,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 24.942838541666667,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 25.94921875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 646166.4153672179,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 653785.7388886212,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007427,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16951807.108035505,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16971332.110943206,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
