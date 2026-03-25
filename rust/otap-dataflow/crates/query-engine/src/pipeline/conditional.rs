@@ -223,11 +223,8 @@ impl PipelineStage for ConditionalPipelineStage {
             // branch for every batch. For example, if the branch doesn't read or write some child
             // batch, we could avoid materializing it and sync up the rows once all branches have
             // been evaluated.
-            let mut branch_otap_batch = filter_otap_batch(
-                &branch_selection_vec,
-                otap_batch.clone(),
-                &mut self.id_bitmap_pool,
-            )?;
+            let mut branch_otap_batch =
+                filter_otap_batch(&branch_selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
             for stage in &mut branch.pipeline_stages {
                 branch_otap_batch = stage
@@ -249,7 +246,7 @@ impl PipelineStage for ConditionalPipelineStage {
         if already_selected_vec.true_count() != root_batch.num_rows() {
             let mut default_branch_batch = filter_otap_batch(
                 &not(&already_selected_vec)?,
-                otap_batch.clone(),
+                &otap_batch,
                 &mut self.id_bitmap_pool,
             )?;
 

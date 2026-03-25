@@ -215,7 +215,9 @@ fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg.policies.resources = Some(ResourcesPolicy { core_allocation });
+        engine_cfg
+            .policies
+            .set_resources(ResourcesPolicy { core_allocation });
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);
@@ -457,6 +459,7 @@ Example configuration files can be found in the configs/ directory.{}",
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use otap_df_config::policy::Policies;
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -691,7 +694,7 @@ connections:
         apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
 
         assert_eq!(
-            cfg.policies.effective_resources().core_allocation,
+            Policies::resolve([&cfg.policies]).resources.core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
         assert_eq!(
@@ -709,7 +712,7 @@ connections:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.effective_resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 3 }
         );
     }
@@ -749,7 +752,7 @@ groups:
 
         // CLI updates top-level/global policy.
         assert_eq!(
-            cfg.policies.effective_resources().core_allocation,
+            Policies::resolve([&cfg.policies]).resources.core_allocation,
             CoreAllocation::CoreCount { count: 2 }
         );
 
@@ -761,7 +764,7 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.effective_resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 5 }
         );
     }
@@ -806,7 +809,7 @@ groups:
             .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
             .expect("default/main should exist");
         assert_eq!(
-            main.policies.effective_resources().core_allocation,
+            main.policies.resources.core_allocation,
             CoreAllocation::CoreCount { count: 4 },
             "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
