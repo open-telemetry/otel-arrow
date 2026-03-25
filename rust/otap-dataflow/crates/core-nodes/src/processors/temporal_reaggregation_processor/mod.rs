@@ -27,6 +27,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
@@ -45,11 +46,11 @@ mod config;
 mod identity;
 mod metrics;
 
-use self::builder::{Checkpoint, MetricSignalBuilder, ResourceMeta, ScopeMeta, StreamMeta};
+use self::builder::{Checkpoint, MetricSignalBuilder, StreamMeta};
 use self::config::Config;
 use self::identity::{
-    AttributeHash, HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId,
-    StreamIdRef, metric_id_of, resource_id_of, scope_id_of, stream_id_of,
+    HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
+    metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
 use self::metrics::TemporalReaggregationMetrics;
 
@@ -66,6 +67,20 @@ enum ProcessPdataError {
         #[source]
         inner: Option<otap_df_pdata::error::Error>,
     },
+}
+
+/// Result of processing a single metrics pdata payload.
+#[allow(clippy::large_enum_variant)]
+enum ProcessResult {
+    /// Nothing in the batch was aggregatable. The original pdata should be
+    /// forwarded downstream unchanged.
+    NoAggregations,
+    /// Some metrics were non-aggregatable and have been assembled into a new
+    /// [`OtapArrowRecords`] batch that should be sent downstream immediately.
+    SomeAggregations(OtapArrowRecords),
+    /// All metrics were aggregatable (buffered for later flush). Nothing to
+    /// send downstream right now.
+    AllAggregated,
 }
 
 /// The URN for the temporal reaggregation processor.
@@ -105,8 +120,8 @@ pub fn create_temporal_reaggregation_processor(
 /// State for the current in-progress batch. This is all the stuff that has to
 /// be cleared between batches
 struct BatchState {
-    resources: HashMap<ResourceId, ResourceMeta>,
-    scopes: HashMap<ScopeId<'static>, ScopeMeta>,
+    resources: HashMap<ResourceId, u16>,
+    scopes: HashMap<ScopeId<'static>, u16>,
     metrics: HashMap<MetricId<'static>, u16>,
     streams: HashMap<StreamId<'static>, StreamMeta>,
 
@@ -117,6 +132,9 @@ struct BatchState {
     next_id_hdp: u32,
     next_id_ehdp: u32,
     next_id_sdp: u32,
+    next_id_ndp_exemplar: u32,
+    next_id_hdp_exemplar: u32,
+    next_id_ehdp_exemplar: u32,
 }
 
 impl BatchState {
@@ -134,6 +152,9 @@ impl BatchState {
             next_id_hdp: 0,
             next_id_ehdp: 0,
             next_id_sdp: 0,
+            next_id_ndp_exemplar: 0,
+            next_id_hdp_exemplar: 0,
+            next_id_ehdp_exemplar: 0,
         }
     }
 
@@ -142,7 +163,6 @@ impl BatchState {
         self.scopes.clear();
         self.metrics.clear();
         self.streams.clear();
-
         self.next_id_resource = 0;
         self.next_id_scope = 0;
         self.next_id_metric = 0;
@@ -150,6 +170,9 @@ impl BatchState {
         self.next_id_hdp = 0;
         self.next_id_ehdp = 0;
         self.next_id_sdp = 0;
+        self.next_id_ndp_exemplar = 0;
+        self.next_id_hdp_exemplar = 0;
+        self.next_id_ehdp_exemplar = 0;
     }
 }
 
@@ -168,6 +191,10 @@ pub struct TemporalReaggregationProcessor {
     hash_buf: HashBuffer,
     state: BatchState,
     builder: MetricSignalBuilder,
+    /// Reusable state for the passthrough batch. Cleared before each use in
+    /// [`process_view`] to track resources/scopes/metrics that appear in the
+    /// passthrough output.
+    passthrough_state: BatchState,
 }
 
 #[async_trait(?Send)]
@@ -185,38 +212,44 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                     SignalType::Metrics => {
                         let checkpoint = self.builder.checkpoint();
 
-                        // If we successfully process then we're done
-                        let Err(e) = self.process_metrics_pdata(&pdata) else {
-                            return Ok(());
-                        };
-
-                        match e {
-                            // Id overflows are fine. In this case we seal the current outbound
-                            // batch and then feed the data back into a next one. We do this to
-                            // prevent complex ack/nack scenarios where an input batch has
-                            // representation in multiple output batches.
-                            ProcessPdataError::IdOverflow => {
-                                self.metrics.flushes_overflow.inc();
-                                self.flush_at(effect_handler, &checkpoint).await?;
-                                match self.process_metrics_pdata(&pdata) {
-                                    Ok(_) => {
-                                        return Ok(());
-                                    }
-                                    Err(_) => {
-                                        // TODO: Nack this data
-                                        self.metrics.batches_rejected.inc();
-                                        self.clear_state();
+                        match self.process_metric_pdata(&pdata) {
+                            Ok(result) => {
+                                self.send_process_result(result, pdata, effect_handler)
+                                    .await?;
+                                return Ok(());
+                            }
+                            Err(e) => match e {
+                                // Id overflows are fine. In this case we seal
+                                // the current outbound batch and then feed the
+                                // data back into the next one. We do this to
+                                // prevent complex ack/nack scenarios where an
+                                // input batch has representation in multiple
+                                // output batches.
+                                ProcessPdataError::IdOverflow => {
+                                    self.metrics.flushes_overflow.inc();
+                                    self.flush(effect_handler, Some(checkpoint)).await?;
+                                    match self.process_metric_pdata(&pdata) {
+                                        Ok(result) => {
+                                            self.send_process_result(result, pdata, effect_handler)
+                                                .await?;
+                                            return Ok(());
+                                        }
+                                        Err(_) => {
+                                            // TODO: Nack this data
+                                            self.metrics.batches_rejected.inc();
+                                            self.clear_state();
+                                        }
                                     }
                                 }
-                            }
 
-                            // If we can't even create the view then we just have
-                            // to throw the batch away, we'll never be able to
-                            // operate on it.
-                            ProcessPdataError::ViewCreationFailed { .. } => {
-                                self.metrics.batches_rejected.inc();
-                                // TODO: Nack this data
-                            }
+                                // If we can't even create the view then we just
+                                // have to throw the batch away, we'll never be
+                                // able to operate on it.
+                                ProcessPdataError::ViewCreationFailed { .. } => {
+                                    self.metrics.batches_rejected.inc();
+                                    // TODO: Nack this data
+                                }
+                            },
                         }
                     }
                     // Non-metrics signals pass through unchanged.
@@ -228,12 +261,12 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    self.flush(effect_handler).await?;
+                    self.flush(effect_handler, None).await?;
                     self.metrics.flushes_timer.add(1);
                     Ok(())
                 }
                 NodeControlMsg::Shutdown { .. } => {
-                    self.flush(effect_handler).await?;
+                    self.flush(effect_handler, None).await?;
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
@@ -267,6 +300,7 @@ impl TemporalReaggregationProcessor {
             hash_buf: HashBuffer::new(),
             state: BatchState::new(),
             builder: MetricSignalBuilder::new(),
+            passthrough_state: BatchState::new(),
         })
     }
 
@@ -284,34 +318,46 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
-    /// Parse and process a metrics pdata payload. Returns `None` if the
-    /// payload could not be parsed as a metrics view.
-    fn process_metrics_pdata(&mut self, pdata: &OtapPdata) -> Result<(), ProcessPdataError> {
+    /// Parse and process a metrics pdata payload.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(ProcessResult::FullPassthrough)` if nothing in the batch is aggregatable
+    ///   and the original pdata should be sent downstream as-is.
+    /// - `Ok(ProcessResult::Passthrough(records))` if some metrics were non-aggregatable
+    ///   and need to be sent downstream immediately.
+    /// - `Ok(ProcessResult::AllAggregated)` if all metrics were aggregatable.
+    fn process_metric_pdata(
+        &mut self,
+        pdata: &OtapPdata,
+    ) -> Result<ProcessResult, ProcessPdataError> {
         match pdata.payload_ref() {
-            OtapPayload::OtapArrowRecords(records) => OtapMetricsView::try_from(records)
-                .map_err(|e| ProcessPdataError::ViewCreationFailed { inner: Some(e) })
-                .and_then(|v| self.process_view(&v)),
+            OtapPayload::OtapArrowRecords(records) => {
+                let view = OtapMetricsView::try_from(records)
+                    .map_err(|e| ProcessPdataError::ViewCreationFailed { inner: Some(e) })?;
+
+                if !has_aggregatable_metrics(&view) {
+                    return Ok(ProcessResult::NoAggregations);
+                }
+
+                match self.process_view(&view)? {
+                    Some(records) => Ok(ProcessResult::SomeAggregations(records)),
+                    None => Ok(ProcessResult::AllAggregated),
+                }
+            }
             OtapPayload::OtlpBytes(otlp) => {
                 let data = RawMetricsData::new(otlp.as_bytes());
-                self.process_view(&data)
-            }
-        }
-    }
 
-    /// Flush accumulated metrics and send downstream.
-    async fn flush(
-        &mut self,
-        effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        if !self.state.streams.is_empty() {
-            // TODO: Track some kind of failure metric here
-            if let Ok(records) = self.builder.finish(None) {
-                let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
-                effect_handler.send_message_with_source_node(pdata).await?;
+                if !has_aggregatable_metrics(&data) {
+                    return Ok(ProcessResult::NoAggregations);
+                }
+
+                match self.process_view(&data)? {
+                    Some(records) => Ok(ProcessResult::SomeAggregations(records)),
+                    None => Ok(ProcessResult::AllAggregated),
+                }
             }
-            self.clear_state();
         }
-        Ok(())
     }
 
     /// Flush accumulated metrics up to the given checkpoint and reset state.
@@ -320,12 +366,12 @@ impl TemporalReaggregationProcessor {
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
-    async fn flush_at(
+    async fn flush(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-        checkpoint: &Checkpoint,
+        checkpoint: Option<Checkpoint>,
     ) -> Result<(), Error> {
-        if let Ok(records) = self.builder.finish(Some(checkpoint)) {
+        if let Ok(records) = self.builder.finish(checkpoint) {
             if !records.is_empty() {
                 // TODO: Ack/nack and context propagation
                 let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
@@ -336,179 +382,233 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
-    /// Process a view, attempting to aggregate all of the records. May fail due
-    /// to id overflow or other capacity related restrictions.
-    fn process_view<V: MetricsView>(&mut self, view: &V) -> Result<(), ProcessPdataError> {
-        for resource_metrics in view.resources() {
-            let Some(resource) = resource_metrics.resource() else {
-                continue;
-            };
+    /// Send the result of [`process_metrics_pdata`] downstream.
+    ///
+    /// For [`ProcessResult::FullPassthrough`], the original pdata is forwarded.
+    /// For [`ProcessResult::Passthrough`], a newly built batch containing only
+    /// the non-aggregatable metrics is sent. For [`ProcessResult::AllAggregated`]
+    /// nothing is sent (data is buffered for the next flush).
+    async fn send_process_result(
+        &mut self,
+        result: ProcessResult,
+        original_pdata: OtapPdata,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        match result {
+            ProcessResult::NoAggregations => {
+                self.metrics.full_passthrough_batches.inc();
+                effect_handler
+                    .send_message_with_source_node(original_pdata)
+                    .await?;
+            }
+            ProcessResult::SomeAggregations(records) => {
+                self.metrics.passthrough_batches.inc();
+                let pt_pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
+                effect_handler
+                    .send_message_with_source_node(pt_pdata)
+                    .await?;
+            }
+            ProcessResult::AllAggregated => {}
+        }
+        Ok(())
+    }
 
-            let attrs = AttributeHash::compute(&mut self.hash_buf, resource.attributes());
-            let resource_id = resource_id_of(attrs);
-            self.process_resource(
-                resource_id,
-                &resource,
-                resource_metrics.schema_url().unwrap_or(b""),
-            )?;
+    /// Process a view, routing aggregatable metrics to the in-progress batch
+    /// and non-aggregatable metrics to a passthrough batch that is returned for
+    /// immediate downstream delivery.
+    ///
+    /// May fail due to id overflow or other capacity related restrictions.
+    fn process_view<V: MetricsView>(
+        &mut self,
+        view: &V,
+    ) -> Result<Option<OtapArrowRecords>, ProcessPdataError> {
+        self.passthrough_state.clear();
+        let mut pt_builder = MetricSignalBuilder::new();
+
+        for resource_metrics in view.resources() {
+            let resource = resource_metrics.resource();
+            let resource_schema_url = resource_metrics.schema_url().unwrap_or(b"");
+
+            // Lazily computed on first aggregatable metric under this resource.
+            // ResourceId is Copy so this tuple is cheap to cache.
+            let mut agg_resource: Option<(u16, ResourceId)> = None;
+            // Passthrough: just the assigned u16, no identity needed.
+            let mut pt_resource_id: Option<u16> = None;
 
             for scope_metrics in resource_metrics.scopes() {
-                let Some(scope) = scope_metrics.scope() else {
-                    continue;
-                };
-
-                let attrs = AttributeHash::compute(&mut self.hash_buf, scope.attributes());
-                let scope_id = scope_id_of(resource_id, &scope, attrs);
+                let scope = scope_metrics.scope();
                 let scope_schema_url = scope_metrics.schema_url();
-                self.process_scope(scope_id.clone(), &scope)?;
+
+                // Lazily computed. ScopeId borrows from `scope` which lives
+                // for this loop body.
+                let mut agg_scope: Option<(u16, ScopeId<'_>)> = None;
+                let mut pt_scope_id: Option<u16> = None;
 
                 for metric in scope_metrics.metrics() {
-                    let Some(metric_id) = metric_id_of(scope_id.clone(), &metric) else {
-                        continue;
-                    };
-
-                    if !is_aggregatable(&metric_id) {
-                        // TODO: Build passthrough batch.
-                        continue;
-                    }
-
-                    let otap_metric_id = self.process_metric(
-                        metric_id.clone(),
-                        &metric,
-                        resource_id,
-                        &scope_id,
-                        scope_schema_url,
-                    )?;
-
                     let Some(data) = metric.data() else {
                         continue;
                     };
 
-                    match data.value_type() {
-                        DataType::Gauge => {
-                            if let Some(gauge) = data.as_gauge() {
-                                for dp in gauge.data_points() {
-                                    let attrs =
-                                        AttributeHash::compute(&mut self.hash_buf, dp.attributes());
-                                    let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.process_number_dp(&dp, stream_id, otap_metric_id)?;
-                                }
+                    if is_data_aggregatable(&data) {
+                        // Lazily process resource
+                        let (res_otap_id, resource_identity) = match agg_resource {
+                            Some(x) => x,
+                            None => {
+                                let rid = resource_id_of(&mut self.hash_buf, resource.as_ref());
+                                let id = self.process_resource(rid, resource.as_ref())?;
+                                agg_resource = Some((id, rid));
+                                (id, rid)
                             }
-                        }
-                        DataType::Sum => {
-                            if let Some(sum) = data.as_sum() {
-                                for dp in sum.data_points() {
-                                    let attrs =
-                                        AttributeHash::compute(&mut self.hash_buf, dp.attributes());
-                                    let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.process_number_dp(&dp, stream_id, otap_metric_id)?;
-                                }
+                        };
+
+                        let (scp_otap_id, scope_identity) = match agg_scope.as_ref() {
+                            Some(x) => x,
+                            None => {
+                                let sid = scope_id_of(
+                                    &mut self.hash_buf,
+                                    resource_identity,
+                                    scope.as_ref(),
+                                );
+                                let id = self.process_scope(sid.clone(), scope.as_ref())?;
+                                agg_scope = Some((id, sid));
+                                agg_scope.as_ref().expect("agg_scope is some")
                             }
-                        }
-                        DataType::Histogram => {
-                            if let Some(hist) = data.as_histogram() {
-                                for dp in hist.data_points() {
-                                    let attrs =
-                                        AttributeHash::compute(&mut self.hash_buf, dp.attributes());
-                                    let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.process_histogram_dp(&dp, stream_id, otap_metric_id)?;
+                        };
+
+                        // Compute full metric identity for dedup
+                        let Some(metric_id) = metric_id_of(scope_identity.clone(), &metric) else {
+                            continue;
+                        };
+
+                        let otap_metric_id = self.process_metric(
+                            metric_id.clone(),
+                            &metric,
+                            res_otap_id,
+                            resource_schema_url,
+                            resource.as_ref(),
+                            *scp_otap_id,
+                            scope.as_ref(),
+                            scope_schema_url,
+                        )?;
+
+                        self.process_aggregatable_datapoints(&data, &metric_id, otap_metric_id)?;
+                    } else {
+                        let res_otap_id = match pt_resource_id {
+                            Some(x) => x,
+                            None => {
+                                let id = next_id_16(&mut self.passthrough_state.next_id_resource)?;
+                                if let Some(ref resource) = resource {
+                                    pt_builder.append_resource(id, resource);
                                 }
+                                pt_resource_id = Some(id);
+                                id
                             }
-                        }
-                        DataType::ExponentialHistogram => {
-                            if let Some(exp) = data.as_exponential_histogram() {
-                                for dp in exp.data_points() {
-                                    let attrs =
-                                        AttributeHash::compute(&mut self.hash_buf, dp.attributes());
-                                    let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.process_exp_histogram_dp(&dp, stream_id, otap_metric_id)?;
+                        };
+
+                        let scp_otap_id = match pt_scope_id {
+                            Some(x) => x,
+                            None => {
+                                let id = next_id_16(&mut self.passthrough_state.next_id_scope)?;
+                                if let Some(ref scope) = scope {
+                                    pt_builder.append_scope(id, scope);
                                 }
+                                pt_scope_id = Some(id);
+                                id
                             }
-                        }
-                        DataType::Summary => {
-                            if let Some(summary) = data.as_summary() {
-                                for dp in summary.data_points() {
-                                    let attrs =
-                                        AttributeHash::compute(&mut self.hash_buf, dp.attributes());
-                                    let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.process_summary_dp(&dp, stream_id, otap_metric_id)?;
-                                }
-                            }
-                        }
+                        };
+
+                        let otap_metric_id =
+                            next_id_16(&mut self.passthrough_state.next_id_metric)?;
+                        let (data_type, aggregation_temporality, is_monotonic) =
+                            identity::metric_type_info_of(&data);
+                        pt_builder.append_metric(
+                            otap_metric_id,
+                            &metric,
+                            data_type,
+                            aggregation_temporality,
+                            is_monotonic,
+                            res_otap_id,
+                            resource_schema_url,
+                            resource.as_ref(),
+                            scp_otap_id,
+                            scope.as_ref(),
+                            scope_schema_url,
+                        );
+
+                        self.append_passthrough_datapoints(&mut pt_builder, &data, otap_metric_id)?;
                     }
                 }
             }
         }
-        Ok(())
+
+        if self.passthrough_state.next_id_metric > 0 {
+            pt_builder
+                .finish(None)
+                .map(Some)
+                .map_err(|_| ProcessPdataError::IdOverflow)
+        } else {
+            Ok(None)
+        }
     }
 
     fn process_resource<R: ResourceView>(
         &mut self,
         resource_id: ResourceId,
-        view: &R,
-        schema_url: &[u8],
-    ) -> Result<(), ProcessPdataError> {
-        if let Vacant(v) = self.state.resources.entry_ref(&resource_id) {
-            let id = self.state.next_id_resource;
-            if id == u16::MAX {
-                return Err(ProcessPdataError::IdOverflow);
+        view: Option<&R>,
+    ) -> Result<u16, ProcessPdataError> {
+        match self.state.resources.entry_ref(&resource_id) {
+            Occupied(o) => Ok(*o.get()),
+            Vacant(v) => {
+                let id = self.state.next_id_resource;
+                if id == u16::MAX {
+                    return Err(ProcessPdataError::IdOverflow);
+                }
+                self.state.next_id_resource += 1;
+                if let Some(view) = view {
+                    self.builder.append_resource(id, view);
+                }
+                _ = v.insert_with_key(resource_id, id);
+                Ok(id)
             }
-            self.state.next_id_resource += 1;
-
-            self.builder.append_resource(id, view);
-
-            _ = v.insert_with_key(
-                resource_id,
-                ResourceMeta {
-                    id,
-                    schema_url: schema_url.to_vec(),
-                    dropped_attributes_count: view.dropped_attributes_count(),
-                },
-            );
         }
-        Ok(())
     }
 
     fn process_scope<S: InstrumentationScopeView>(
         &mut self,
         scope_id: ScopeId<'_>,
-        view: &S,
-    ) -> Result<(), ProcessPdataError> {
-        // ScopeIdRef clones cheaply
-        let lookup_scope = ScopeIdRef(&scope_id.clone());
-        if let Vacant(v) = self.state.scopes.entry_ref(&lookup_scope) {
-            let id = self.state.next_id_scope;
-            if id == u16::MAX {
-                return Err(ProcessPdataError::IdOverflow);
+        view: Option<&S>,
+    ) -> Result<u16, ProcessPdataError> {
+        let lookup = ScopeIdRef(&scope_id.clone());
+        match self.state.scopes.entry_ref(&lookup) {
+            Occupied(o) => Ok(*o.get()),
+            Vacant(v) => {
+                let id = self.state.next_id_scope;
+                if id == u16::MAX {
+                    return Err(ProcessPdataError::IdOverflow);
+                }
+                self.state.next_id_scope += 1;
+                if let Some(view) = view {
+                    self.builder.append_scope(id, view);
+                }
+                _ = v.insert_with_key(scope_id.into_owned(), id);
+                Ok(id)
             }
-            self.state.next_id_scope += 1;
-
-            self.builder.append_scope(id, view);
-
-            _ = v.insert_with_key(
-                scope_id.into_owned(),
-                ScopeMeta {
-                    id,
-                    name: view.name().unwrap_or(b"").to_vec(),
-                    version: view.version().unwrap_or(b"").to_vec(),
-                    dropped_attributes_count: view.dropped_attributes_count(),
-                },
-            );
         }
-        Ok(())
     }
 
-    fn process_metric<M: MetricView>(
+    fn process_metric<M: MetricView, R: ResourceView, S: InstrumentationScopeView>(
         &mut self,
         metric_id: MetricId<'_>,
         view: &M,
-        resource_id: ResourceId,
-        scope_id: &ScopeId<'_>,
+        resource_otap_id: u16,
+        resource_schema_url: &[u8],
+        resource_view: Option<&R>,
+        scope_otap_id: u16,
+        scope_view: Option<&S>,
         scope_schema_url: &[u8],
     ) -> Result<u16, ProcessPdataError> {
-        // MetricIdRef clones cheaply
-        let lookup_metric = MetricIdRef(&metric_id.clone());
-        match self.state.metrics.entry_ref(&lookup_metric) {
+        let lookup = MetricIdRef(&metric_id.clone());
+        match self.state.metrics.entry_ref(&lookup) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
                 let id = self.state.next_id_metric;
@@ -516,27 +616,81 @@ impl TemporalReaggregationProcessor {
                     return Err(ProcessPdataError::IdOverflow);
                 }
                 self.state.next_id_metric += 1;
-
-                let resource_meta = &self.state.resources[&resource_id];
-                let scope_meta = self
-                    .state
-                    .scopes
-                    .get(&ScopeIdRef(scope_id))
-                    .expect("scope must exist");
-
                 self.builder.append_metric(
                     id,
-                    &metric_id,
                     view,
-                    resource_meta,
-                    scope_meta,
+                    metric_id.data_type,
+                    metric_id.aggregation_temporality,
+                    metric_id.is_monotonic,
+                    resource_otap_id,
+                    resource_schema_url,
+                    resource_view,
+                    scope_otap_id,
+                    scope_view,
                     scope_schema_url,
                 );
-
                 _ = v.insert_with_key(metric_id.into_owned(), id);
                 Ok(id)
             }
         }
+    }
+
+    /// Append all data points from an aggregatable metric to the in-progress
+    /// aggregation batch.
+    fn process_aggregatable_datapoints<'a, D: DataView<'a>>(
+        &mut self,
+        data: &D,
+        metric_id: &MetricId<'_>,
+        otap_metric_id: u16,
+    ) -> Result<(), ProcessPdataError> {
+        match data.value_type() {
+            DataType::Gauge => {
+                if let Some(gauge) = data.as_gauge() {
+                    for dp in gauge.data_points() {
+                        let sid =
+                            stream_id_of(&mut self.hash_buf, metric_id.clone(), dp.attributes());
+                        self.process_number_dp(&dp, sid, otap_metric_id)?;
+                    }
+                }
+            }
+            DataType::Sum => {
+                if let Some(sum) = data.as_sum() {
+                    for dp in sum.data_points() {
+                        let sid =
+                            stream_id_of(&mut self.hash_buf, metric_id.clone(), dp.attributes());
+                        self.process_number_dp(&dp, sid, otap_metric_id)?;
+                    }
+                }
+            }
+            DataType::Histogram => {
+                if let Some(hist) = data.as_histogram() {
+                    for dp in hist.data_points() {
+                        let sid =
+                            stream_id_of(&mut self.hash_buf, metric_id.clone(), dp.attributes());
+                        self.process_histogram_dp(&dp, sid, otap_metric_id)?;
+                    }
+                }
+            }
+            DataType::ExponentialHistogram => {
+                if let Some(exp) = data.as_exponential_histogram() {
+                    for dp in exp.data_points() {
+                        let sid =
+                            stream_id_of(&mut self.hash_buf, metric_id.clone(), dp.attributes());
+                        self.process_exp_histogram_dp(&dp, sid, otap_metric_id)?;
+                    }
+                }
+            }
+            DataType::Summary => {
+                if let Some(summary) = data.as_summary() {
+                    for dp in summary.data_points() {
+                        let sid =
+                            stream_id_of(&mut self.hash_buf, metric_id.clone(), dp.attributes());
+                        self.process_summary_dp(&dp, sid, otap_metric_id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn process_number_dp<V: NumberDataPointView>(
@@ -546,14 +700,13 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), ProcessPdataError> {
         let time = dp.time_unix_nano();
-        // StreamIdRef clones cheaply
-        let lookup_stream = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup_stream) {
+        let lookup = StreamIdRef(&stream_id.clone());
+        match self.state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
-                let state = o.get_mut();
-                if time > state.time_unix_nano {
-                    let row_index = state.dp_row_index;
-                    state.time_unix_nano = time;
+                let s = o.get_mut();
+                if time > s.time_unix_nano {
+                    let row_index = s.dp_row_index;
+                    s.time_unix_nano = time;
                     self.builder.replace_number_dp(row_index, dp);
                 }
             }
@@ -583,14 +736,13 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), ProcessPdataError> {
         let time = dp.time_unix_nano();
-        // StreamIdRef clones cheaply
-        let lookup_stream = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup_stream) {
+        let lookup = StreamIdRef(&stream_id.clone());
+        match self.state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
-                let state = o.get_mut();
-                if time > state.time_unix_nano {
-                    let row_index = state.dp_row_index;
-                    state.time_unix_nano = time;
+                let s = o.get_mut();
+                if time > s.time_unix_nano {
+                    let row_index = s.dp_row_index;
+                    s.time_unix_nano = time;
                     self.builder.replace_histogram_dp(row_index, dp);
                 }
             }
@@ -620,14 +772,13 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), ProcessPdataError> {
         let time = dp.time_unix_nano();
-        // StreamIdRef clones cheaply
-        let lookup_stream = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup_stream) {
+        let lookup = StreamIdRef(&stream_id.clone());
+        match self.state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
-                let state = o.get_mut();
-                if time > state.time_unix_nano {
-                    let row_index = state.dp_row_index;
-                    state.time_unix_nano = time;
+                let s = o.get_mut();
+                if time > s.time_unix_nano {
+                    let row_index = s.dp_row_index;
+                    s.time_unix_nano = time;
                     self.builder.replace_exp_histogram_dp(row_index, dp);
                 }
             }
@@ -659,14 +810,13 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), ProcessPdataError> {
         let time = dp.time_unix_nano();
-        // StreamIdRef clones cheaply
-        let lookup_stream = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup_stream) {
+        let lookup = StreamIdRef(&stream_id.clone());
+        match self.state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
-                let state = o.get_mut();
-                if time > state.time_unix_nano {
-                    let row_index = state.dp_row_index;
-                    state.time_unix_nano = time;
+                let s = o.get_mut();
+                if time > s.time_unix_nano {
+                    let row_index = s.dp_row_index;
+                    s.time_unix_nano = time;
                     self.builder.replace_summary_dp(row_index, dp);
                 }
             }
@@ -689,28 +839,139 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
+    /// Append all data points from a non-aggregatable metric to the passthrough
+    /// builder, including exemplars.
+    fn append_passthrough_datapoints<'a, D: DataView<'a>>(
+        &mut self,
+        pt_builder: &mut MetricSignalBuilder,
+        data: &D,
+        otap_metric_id: u16,
+    ) -> Result<(), ProcessPdataError> {
+        match data.value_type() {
+            DataType::Gauge => {
+                if let Some(gauge) = data.as_gauge() {
+                    for dp in gauge.data_points() {
+                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ndp)?;
+                        let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
+                        pt_builder.append_number_dp_exemplars(
+                            dp_id,
+                            &dp,
+                            &mut self.passthrough_state.next_id_ndp_exemplar,
+                        )?;
+                    }
+                }
+            }
+            DataType::Sum => {
+                if let Some(sum) = data.as_sum() {
+                    for dp in sum.data_points() {
+                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ndp)?;
+                        let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
+                        pt_builder.append_number_dp_exemplars(
+                            dp_id,
+                            &dp,
+                            &mut self.passthrough_state.next_id_ndp_exemplar,
+                        )?;
+                    }
+                }
+            }
+            DataType::Histogram => {
+                if let Some(hist) = data.as_histogram() {
+                    for dp in hist.data_points() {
+                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_hdp)?;
+                        let _ = pt_builder.append_histogram_dp(dp_id, otap_metric_id, &dp);
+                        pt_builder.append_histogram_dp_exemplars(
+                            dp_id,
+                            &dp,
+                            &mut self.passthrough_state.next_id_hdp_exemplar,
+                        )?;
+                    }
+                }
+            }
+            DataType::ExponentialHistogram => {
+                if let Some(exp) = data.as_exponential_histogram() {
+                    for dp in exp.data_points() {
+                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ehdp)?;
+                        let _ = pt_builder.append_exp_histogram_dp(dp_id, otap_metric_id, &dp);
+                        pt_builder.append_exp_histogram_dp_exemplars(
+                            dp_id,
+                            &dp,
+                            &mut self.passthrough_state.next_id_ehdp_exemplar,
+                        )?;
+                    }
+                }
+            }
+            DataType::Summary => {
+                if let Some(summary) = data.as_summary() {
+                    for dp in summary.data_points() {
+                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_sdp)?;
+                        let _ = pt_builder.append_summary_dp(dp_id, otap_metric_id, &dp);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn clear_state(&mut self) {
         self.state.clear();
         self.builder.clear();
     }
 }
 
-/// Returns `true` if this metric type should be aggregated (buffered and
-/// flushed on timer), `false` if it should be passed through unchanged.
-fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
-    let Some(data_type) = DataType::from_u8(metric_id.data_type) else {
-        return false;
-    };
-
-    let cumulative = metric_id.aggregation_temporality == AggregationTemporality::Cumulative as u8;
-    let monotonic = metric_id.is_monotonic;
-
-    match data_type {
-        DataType::Gauge | DataType::Summary => true,
-        DataType::Sum if cumulative && monotonic => true,
-        DataType::Histogram | DataType::ExponentialHistogram if cumulative => true,
-        _ => false,
+/// Allocate the next u16 ID from a counter, returning an error on overflow.
+fn next_id_16(counter: &mut u16) -> Result<u16, ProcessPdataError> {
+    let id = *counter;
+    if id == u16::MAX {
+        return Err(ProcessPdataError::IdOverflow);
     }
+    *counter += 1;
+    Ok(id)
+}
+
+/// Allocate the next u32 ID from a counter, returning an error on overflow.
+fn next_id_32(counter: &mut u32) -> Result<u32, ProcessPdataError> {
+    let id = *counter;
+    if id == u32::MAX {
+        return Err(ProcessPdataError::IdOverflow);
+    }
+    *counter += 1;
+    Ok(id)
+}
+
+/// Lightweight check on a [`DataView`] to determine if it represents an
+/// aggregatable metric type. This avoids computing a full [`MetricId`] which
+/// requires scope/resource context.
+fn is_data_aggregatable<'a, D: DataView<'a>>(data: &D) -> bool {
+    match data.value_type() {
+        DataType::Gauge | DataType::Summary => true,
+        DataType::Sum => data.as_sum().is_some_and(|s| {
+            s.aggregation_temporality() == AggregationTemporality::Cumulative && s.is_monotonic()
+        }),
+        DataType::Histogram => data
+            .as_histogram()
+            .is_some_and(|h| h.aggregation_temporality() == AggregationTemporality::Cumulative),
+        DataType::ExponentialHistogram => data
+            .as_exponential_histogram()
+            .is_some_and(|e| e.aggregation_temporality() == AggregationTemporality::Cumulative),
+    }
+}
+
+/// Returns `true` if the view contains at least one aggregatable metric.
+/// This is a preflight check to determine if we can skip processing entirely
+/// and pass the whole batch through unchanged.
+fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
+    for resource_metrics in view.resources() {
+        for scope_metrics in resource_metrics.scopes() {
+            for metric in scope_metrics.metrics() {
+                if let Some(data) = metric.data() {
+                    if is_data_aggregatable(&data) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -2145,6 +2406,564 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
             assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    #[test]
+    fn test_full_passthrough_delta_sum() {
+        // A batch containing only a delta sum (non-aggregatable) should be
+        // passed through immediately without waiting for a timer tick.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("delta.requests")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(50i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            // Should get output immediately (no timer tick needed)
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1, "delta sum should pass through immediately");
+            assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_full_passthrough_non_monotonic_cumulative_sum() {
+        // A non-monotonic cumulative sum is not aggregatable and should pass
+        // through immediately.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("temperature")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Cumulative,
+                                false, // non-monotonic
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_double(23.5f64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(
+                output.len(),
+                1,
+                "non-monotonic cumulative sum should pass through"
+            );
+            assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_full_passthrough_delta_histogram() {
+        // A delta histogram should pass through immediately.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("delta.latency")
+                            .data_histogram(Histogram::new(
+                                AggregationTemporality::Delta,
+                                vec![
+                                    HistogramDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .count(10u64)
+                                        .sum(100.0f64)
+                                        .bucket_counts(vec![2, 3, 5])
+                                        .explicit_bounds(vec![10.0, 50.0])
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(
+                output.len(),
+                1,
+                "delta histogram should pass through immediately"
+            );
+            assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_mixed_aggregatable_and_passthrough() {
+        // A batch with both a cumulative monotonic sum (aggregatable) and a
+        // delta sum (passthrough) in the same resource and scope. The delta
+        // sum should be passed through immediately while the cumulative sum
+        // should be buffered.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        // Aggregatable: cumulative monotonic sum
+                        Metric::build()
+                            .name("requests.total")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Cumulative,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(100i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                        // Passthrough: delta sum
+                        Metric::build()
+                            .name("requests.delta")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(50i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data);
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            // The passthrough batch with only the delta sum should arrive
+            // immediately.
+            let output = ctx.drain_pdata().await;
+            assert_eq!(
+                output.len(),
+                1,
+                "passthrough batch should be emitted immediately"
+            );
+
+            // Verify the passthrough batch contains only the delta metric
+            let expected_passthrough = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("requests.delta")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(50i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            assert_output_otlp_equivalent(&output[0], expected_passthrough);
+
+            // Now trigger a timer tick to flush the aggregated metric
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1, "aggregated metric should flush on timer");
+
+            let expected_aggregated = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("requests.total")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Cumulative,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(100i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            assert_output_otlp_equivalent(&flushed[0], expected_aggregated);
+        });
+    }
+
+    #[test]
+    fn test_passthrough_all_aggregated_no_immediate_output() {
+        // When a batch contains only aggregatable metrics, nothing should be
+        // emitted until a timer tick.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let pdata = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("cpu.gauge")
+                            .data_gauge(Gauge::new(vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(1000u64)
+                                    .value_double(42.0f64)
+                                    .finish(),
+                            ]))
+                            .finish(),
+                    ],
+                )],
+            )]));
+
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert!(
+                output.is_empty(),
+                "all-aggregatable batch should not emit anything immediately"
+            );
+        });
+    }
+
+    #[test]
+    fn test_passthrough_delta_exp_histogram() {
+        // A delta exponential histogram should pass through.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("delta.exp.latency")
+                            .data_exponential_histogram(ExponentialHistogram::new(
+                                AggregationTemporality::Delta,
+                                vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .count(5u64)
+                                        .scale(2i32)
+                                        .zero_count(1u64)
+                                        .positive(Buckets::new(0, vec![1, 2]))
+                                        .negative(Buckets::new(0, vec![1, 1]))
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(
+                output.len(),
+                1,
+                "delta exp histogram should pass through immediately"
+            );
+            assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_mixed_resources_passthrough_and_aggregate() {
+        // Two different resources: one with only aggregatable metrics, the
+        // other with only passthrough metrics.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![
+                // Resource A: cumulative gauge (aggregatable)
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build().finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_double(75.0f64)
+                                        .finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    )],
+                ),
+                // Resource B: delta sum (passthrough)
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build().finish(),
+                        vec![
+                            Metric::build()
+                                .name("requests.delta")
+                                .data_sum(Sum::new(
+                                    AggregationTemporality::Delta,
+                                    true,
+                                    vec![
+                                        NumberDataPoint::build()
+                                            .time_unix_nano(1000u64)
+                                            .value_int(10i64)
+                                            .finish(),
+                                    ],
+                                ))
+                                .finish(),
+                        ],
+                    )],
+                ),
+            ]);
+
+            let pdata = make_otlp_pdata(input_data);
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            // Passthrough for resource B should be emitted
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1, "passthrough batch should be emitted");
+
+            let expected_passthrough = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                    .finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("requests.delta")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(10i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            assert_output_otlp_equivalent(&output[0], expected_passthrough);
+
+            // Flush the aggregated gauge
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1, "aggregated gauge should flush on timer");
+        });
+    }
+
+    /// Helper to build a `ResourceMetrics` with `resource: None`.
+    fn resource_metrics_without_resource(scope_metrics: Vec<ScopeMetrics>) -> ResourceMetrics {
+        ResourceMetrics {
+            resource: None,
+            scope_metrics,
+            schema_url: String::new(),
+        }
+    }
+
+    /// Helper to build a `ScopeMetrics` with `scope: None`.
+    fn scope_metrics_without_scope(metrics: Vec<Metric>) -> ScopeMetrics {
+        ScopeMetrics {
+            scope: None,
+            metrics,
+            schema_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_none_resource_aggregation() {
+        // A batch with resource=None should still be processed (not skipped).
+        // The gauge data point should be aggregated and flushed on timer.
+        // We use OTLP bytes encoding because the OTAP encoder normalizes
+        // None resources, but the raw bytes view preserves the None.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
+                ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("cpu")
+                            .data_gauge(Gauge::new(vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(1000u64)
+                                    .value_double(42.0f64)
+                                    .finish(),
+                            ]))
+                            .finish(),
+                    ],
+                ),
+            ])]);
+
+            let pdata = make_otlp_bytes_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            // No immediate output (gauge is aggregated)
+            let output = ctx.drain_pdata().await;
+            assert!(
+                output.is_empty(),
+                "gauge should be buffered, not emitted immediately"
+            );
+
+            // Flush
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1, "buffered gauge should flush on timer");
+            assert_output_otlp_equivalent(&flushed[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_none_scope_aggregation() {
+        // A batch with scope=None should still be processed.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![scope_metrics_without_scope(vec![
+                    Metric::build()
+                        .name("mem")
+                        .data_gauge(Gauge::new(vec![
+                            NumberDataPoint::build()
+                                .time_unix_nano(2000u64)
+                                .value_double(1024.0f64)
+                                .finish(),
+                        ]))
+                        .finish(),
+                ])],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert!(output.is_empty(), "gauge should be buffered");
+
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1);
+            assert_output_otlp_equivalent(&flushed[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_none_resource_passthrough() {
+        // A delta sum under a None resource should pass through immediately.
+        // This uses OTLP bytes encoding and the full passthrough path forwards
+        // the original pdata unchanged (still as OTLP bytes, not OTAP records).
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
+                ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("delta.count")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_int(5i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                ),
+            ])]);
+
+            let pdata = make_otlp_bytes_pdata(input_data);
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1, "delta sum should pass through immediately");
+            // Full passthrough forwards original OTLP bytes unchanged -
+            // just verify something was emitted, the payload format is preserved.
+            assert!(
+                matches!(output[0].payload_ref(), OtapPayload::OtlpBytes(_)),
+                "full passthrough should preserve OTLP bytes payload"
+            );
+        });
+    }
+
+    #[test]
+    fn test_none_resource_and_scope() {
+        // Both resource=None and scope=None should still work.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
+                scope_metrics_without_scope(vec![
+                    Metric::build()
+                        .name("temp")
+                        .data_gauge(Gauge::new(vec![
+                            NumberDataPoint::build()
+                                .time_unix_nano(3000u64)
+                                .value_double(98.6f64)
+                                .finish(),
+                        ]))
+                        .finish(),
+                ]),
+            ])]);
+
+            let pdata = make_otlp_bytes_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert!(output.is_empty(), "gauge should be buffered");
+
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1);
+            assert_output_otlp_equivalent(&flushed[0], input_data);
         });
     }
 }

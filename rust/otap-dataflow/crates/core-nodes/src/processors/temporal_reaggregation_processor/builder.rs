@@ -31,18 +31,19 @@ use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
 use otap_df_pdata::encode::append_attribute_value;
 use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
-use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
+use otap_df_pdata::encode::record::metrics::{
+    ExemplarsRecordBatchBuilder, MetricsRecordBatchBuilder,
+};
 use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::metrics::{
-    AggregationTemporality, BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView,
-    MetricView, NumberDataPointView, SummaryDataPointView, Value, ValueAtQuantileView,
+    AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
+    HistogramDataPointView, MetricView, NumberDataPointView, SummaryDataPointView, Value,
+    ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-
-use super::identity::MetricId;
 
 /// Snapshot of builder positions, used to slice back to the last valid position
 /// of each payload on error.
@@ -53,18 +54,21 @@ pub struct Checkpoint {
     scope_attrs: usize,
     ndp: usize,
     ndp_attrs: usize,
+    ndp_exemplars: usize,
+    ndp_exemplar_attrs: usize,
     hdp: usize,
     hdp_attrs: usize,
+    hdp_exemplars: usize,
+    hdp_exemplar_attrs: usize,
     ehdp: usize,
     ehdp_attrs: usize,
+    ehdp_exemplars: usize,
+    ehdp_exemplar_attrs: usize,
     sdp: usize,
     sdp_attrs: usize,
 }
 
 /// Record batch builders for all metric signal payload types.
-///
-/// TODO: Exemplars are not currently supported and just dropped by this
-/// processor.
 pub struct MetricSignalBuilder {
     metrics: MetricsRecordBatchBuilder,
     resource_attrs: AttributesRecordBatchBuilder<u16>,
@@ -77,6 +81,12 @@ pub struct MetricSignalBuilder {
     histogram_dps: HistogramDataPointBuilder,
     exp_histogram_dps: ExpHistogramDataPointBuilder,
     summary_dps: SummaryDataPointBuilder,
+    ndp_exemplars: ExemplarsRecordBatchBuilder,
+    ndp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
+    hdp_exemplars: ExemplarsRecordBatchBuilder,
+    hdp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
+    ehdp_exemplars: ExemplarsRecordBatchBuilder,
+    ehdp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
 }
 
 impl MetricSignalBuilder {
@@ -93,6 +103,12 @@ impl MetricSignalBuilder {
             histogram_dps: HistogramDataPointBuilder::new(),
             exp_histogram_dps: ExpHistogramDataPointBuilder::new(),
             summary_dps: SummaryDataPointBuilder::new(),
+            ndp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            ndp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
+            hdp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            hdp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
+            ehdp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            ehdp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
         }
     }
 
@@ -104,9 +120,10 @@ impl MetricSignalBuilder {
     /// discard some changes if we couldn't fully append an incoming pdata.
     pub fn finish(
         &mut self,
-        checkpoint: Option<&Checkpoint>,
+        checkpoint: Option<Checkpoint>,
     ) -> otap_df_pdata::error::Result<OtapArrowRecords> {
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
+        let checkpoint = checkpoint.as_ref();
 
         finish_payload(
             self.metrics.finish(),
@@ -138,6 +155,18 @@ impl MetricSignalBuilder {
             &mut records,
             checkpoint.map(|c| c.ndp_attrs),
         )?;
+        finish_exemplar_payload(
+            self.ndp_exemplars.finish(),
+            ArrowPayloadType::NumberDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.ndp_exemplars),
+        )?;
+        finish_payload(
+            self.ndp_exemplar_attrs.finish(),
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ndp_exemplar_attrs),
+        )?;
         finish_payload(
             self.histogram_dps.finish(),
             ArrowPayloadType::HistogramDataPoints,
@@ -150,6 +179,18 @@ impl MetricSignalBuilder {
             &mut records,
             checkpoint.map(|c| c.hdp_attrs),
         )?;
+        finish_exemplar_payload(
+            self.hdp_exemplars.finish(),
+            ArrowPayloadType::HistogramDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.hdp_exemplars),
+        )?;
+        finish_payload(
+            self.hdp_exemplar_attrs.finish(),
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.hdp_exemplar_attrs),
+        )?;
         finish_payload(
             self.exp_histogram_dps.finish(),
             ArrowPayloadType::ExpHistogramDataPoints,
@@ -161,6 +202,18 @@ impl MetricSignalBuilder {
             ArrowPayloadType::ExpHistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_attrs),
+        )?;
+        finish_exemplar_payload(
+            self.ehdp_exemplars.finish(),
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.ehdp_exemplars),
+        )?;
+        finish_payload(
+            self.ehdp_exemplar_attrs.finish(),
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ehdp_exemplar_attrs),
         )?;
         finish_payload(
             self.summary_dps.finish(),
@@ -186,10 +239,16 @@ impl MetricSignalBuilder {
             scope_attrs: self.scope_attrs.len(),
             ndp: self.number_dps.id.len(),
             ndp_attrs: self.ndp_attrs.len(),
+            ndp_exemplars: self.ndp_exemplars.len(),
+            ndp_exemplar_attrs: self.ndp_exemplar_attrs.len(),
             hdp: self.histogram_dps.id.len(),
             hdp_attrs: self.hdp_attrs.len(),
+            hdp_exemplars: self.hdp_exemplars.len(),
+            hdp_exemplar_attrs: self.hdp_exemplar_attrs.len(),
             ehdp: self.exp_histogram_dps.id.len(),
             ehdp_attrs: self.ehdp_attrs.len(),
+            ehdp_exemplars: self.ehdp_exemplars.len(),
+            ehdp_exemplar_attrs: self.ehdp_exemplar_attrs.len(),
             sdp: self.summary_dps.id.len(),
             sdp_attrs: self.summary_attrs.len(),
         }
@@ -207,6 +266,12 @@ impl MetricSignalBuilder {
         self.histogram_dps.clear();
         self.exp_histogram_dps.clear();
         self.summary_dps.clear();
+        self.ndp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.ndp_exemplar_attrs = AttributesRecordBatchBuilder::new();
+        self.hdp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.hdp_exemplar_attrs = AttributesRecordBatchBuilder::new();
+        self.ehdp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.ehdp_exemplar_attrs = AttributesRecordBatchBuilder::new();
     }
 
     /// Append resource attributes for a newly seen resource.
@@ -226,44 +291,51 @@ impl MetricSignalBuilder {
     }
 
     /// Append a complete metric row for a newly seen metric.
-    pub fn append_metric<M: MetricView>(
+    pub fn append_metric<M: MetricView, R: ResourceView, S: InstrumentationScopeView>(
         &mut self,
         id: u16,
-        metric_id: &MetricId<'_>,
         view: &M,
-        resource_meta: &ResourceMeta,
-        scope_meta: &ScopeMeta,
+        data_type: u8,
+        aggregation_temporality: u8,
+        is_monotonic: bool,
+        resource_otap_id: u16,
+        resource_schema_url: &[u8],
+        resource_view: Option<&R>,
+        scope_otap_id: u16,
+        scope_view: Option<&S>,
         scope_schema_url: &[u8],
     ) {
         self.metrics.append_id(id);
-        self.metrics.resource.append_id(Some(resource_meta.id));
+        self.metrics.resource.append_id(Some(resource_otap_id));
         self.metrics
             .resource
-            .append_schema_url(Some(&resource_meta.schema_url));
-        self.metrics
-            .resource
-            .append_dropped_attributes_count(resource_meta.dropped_attributes_count);
-        self.metrics.scope.append_id(Some(scope_meta.id));
-        self.metrics.scope.append_name(Some(&scope_meta.name));
-        self.metrics.scope.append_version(Some(&scope_meta.version));
+            .append_schema_url(Some(resource_schema_url));
+        self.metrics.resource.append_dropped_attributes_count(
+            resource_view.map_or(0, |r| r.dropped_attributes_count()),
+        );
+        self.metrics.scope.append_id(Some(scope_otap_id));
         self.metrics
             .scope
-            .append_dropped_attributes_count(scope_meta.dropped_attributes_count);
+            .append_name(scope_view.and_then(|s| s.name()));
+        self.metrics
+            .scope
+            .append_version(scope_view.and_then(|s| s.version()));
+        self.metrics.scope.append_dropped_attributes_count(
+            scope_view.map_or(0, |s| s.dropped_attributes_count()),
+        );
         self.metrics.append_scope_schema_url(scope_schema_url);
-        self.metrics.append_metric_type(metric_id.data_type);
+        self.metrics.append_metric_type(data_type);
         self.metrics.append_name(view.name());
         self.metrics.append_description(view.description());
         self.metrics.append_unit(view.unit());
 
-        let agg_temp =
-            if metric_id.aggregation_temporality == AggregationTemporality::Unspecified as u8 {
-                None
-            } else {
-                Some(metric_id.aggregation_temporality as i32)
-            };
+        let agg_temp = if aggregation_temporality == AggregationTemporality::Unspecified as u8 {
+            None
+        } else {
+            Some(aggregation_temporality as i32)
+        };
         self.metrics.append_aggregation_temporality(agg_temp);
-        self.metrics
-            .append_is_monotonic(Some(metric_id.is_monotonic));
+        self.metrics.append_is_monotonic(Some(is_monotonic));
     }
 
     /// Append a new number data point row including its attributes.
@@ -352,6 +424,68 @@ impl MetricSignalBuilder {
     pub fn replace_summary_dp<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
         self.summary_dps.replace(row, dp);
     }
+
+    /// Append exemplars for a number data point. The `dp_id` is the OTAP ID
+    /// of the parent data point row. The caller provides the exemplar ID
+    /// counter which is incremented for each exemplar appended.
+    pub fn append_number_dp_exemplars<V: NumberDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.ndp_exemplars,
+                &mut self.ndp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
+    }
+
+    /// Append exemplars for a histogram data point.
+    pub fn append_histogram_dp_exemplars<V: HistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.hdp_exemplars,
+                &mut self.hdp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
+    }
+
+    /// Append exemplars for an exponential histogram data point.
+    pub fn append_exp_histogram_dp_exemplars<V: ExponentialHistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.ehdp_exemplars,
+                &mut self.ehdp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Finish building a payload type and set it on the output records.
@@ -375,6 +509,58 @@ fn finish_payload(
         records.set(payload_type, rb)?;
     }
     Ok(())
+}
+
+/// Finish building an exemplar payload type and set it on the output records.
+///
+/// Like [`finish_payload`] but the exemplar builder uses adaptive schemas so
+/// the `finish` result may produce an empty batch that we can skip.
+fn finish_exemplar_payload(
+    result: Result<RecordBatch, arrow::error::ArrowError>,
+    payload_type: ArrowPayloadType,
+    records: &mut OtapArrowRecords,
+    truncate_len: Option<usize>,
+) -> otap_df_pdata::error::Result<()> {
+    let rb = result.expect("Valid record batch");
+    let rb = match truncate_len {
+        Some(len) if len < rb.num_rows() => rb.slice(0, len),
+        _ => rb,
+    };
+    if rb.num_rows() > 0 {
+        records.set(payload_type, rb)?;
+    }
+    Ok(())
+}
+
+/// Append a single exemplar row to the given exemplar builder and its attribute
+/// builder. The caller is responsible for allocating the `id`.
+fn append_exemplar<E: ExemplarView>(
+    exemplar_builder: &mut ExemplarsRecordBatchBuilder,
+    attr_builder: &mut AttributesRecordBatchBuilder<u32>,
+    id: u32,
+    parent_dp_id: u32,
+    exemplar: &E,
+) {
+    exemplar_builder.append_id(id);
+    exemplar_builder.append_parent_id(parent_dp_id);
+    exemplar_builder.append_time_unix_nano(exemplar.time_unix_nano() as i64);
+
+    let (double, integer) = match exemplar.value() {
+        Some(Value::Double(val)) => (Some(val), None),
+        Some(Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
+    exemplar_builder.append_double_value(double);
+    exemplar_builder.append_int_value(integer);
+
+    // Ignore span_id/trace_id errors — they're non-fatal encoding issues
+    let _ = exemplar_builder.append_span_id(exemplar.span_id().unwrap_or(&[0; 8]));
+    let _ = exemplar_builder.append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]));
+
+    for kv in exemplar.filtered_attributes() {
+        attr_builder.append_parent_id(&id);
+        let _ = append_attribute_value(attr_builder, &kv);
+    }
 }
 
 /// A column of nullable primitive values that supports random-access writes.
@@ -1107,11 +1293,7 @@ static SUMMARY_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
 });
 
 fn empty_record_batch() -> Result<RecordBatch, arrow::error::ArrowError> {
-    RecordBatch::try_new_with_options(
-        Arc::new(Schema::empty()),
-        vec![],
-        &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-    )
+    Ok(RecordBatch::new_empty(Schema::empty().into()))
 }
 
 /// Write `value` into `vec` at `index`. Appends if `index == vec.len()`,
@@ -1169,21 +1351,6 @@ fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
         Arc::new(values_array),
         None,
     )
-}
-
-/// Metadata for a unique resource, stored alongside its OTAP batch ID.
-pub(super) struct ResourceMeta {
-    pub(super) id: u16,
-    pub(super) schema_url: Vec<u8>,
-    pub(super) dropped_attributes_count: u32,
-}
-
-/// Metadata for a unique instrumentation scope, stored alongside its OTAP batch ID.
-pub(super) struct ScopeMeta {
-    pub(super) id: u16,
-    pub(super) name: Vec<u8>,
-    pub(super) version: Vec<u8>,
-    pub(super) dropped_attributes_count: u32,
 }
 
 /// Tracks the builder row index and latest timestamp for a data point stream.
