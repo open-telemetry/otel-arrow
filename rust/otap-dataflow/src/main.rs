@@ -23,17 +23,13 @@ use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
-use ctrlc;
+
 #[cfg(feature = "dhat-heap")]
 use {
     std::sync::{LazyLock, Mutex},
     dhat::Profiler,
+    ctrlc,
 };
-
-compile_error!(
-    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
-     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
-);
 
 // Crypto provider features are mutually exclusive.
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
@@ -91,8 +87,8 @@ static GLOBAL: dhat::Alloc = dhat::Alloc;
 // Windows default: mimalloc (only if dhat-heap is OFF)
 // =======================
 #[cfg(all(
-    feature = "mimalloc",
     not(feature = "dhat-heap"),
+    feature = "mimalloc",
     not(any(test, doc, clippy))
 ))]
 #[global_allocator]
@@ -102,9 +98,9 @@ static GLOBAL: MiMalloc = MiMalloc;
 // Linux default: jemalloc (only if dhat-heap is OFF)
 // =======================
 #[cfg(all(
+    not(feature = "dhat-heap"),
     feature = "jemalloc",
     not(windows),
-    not(feature = "dhat-heap"),
     not(feature = "mimalloc"),
     not(any(test, doc, clippy))
 ))]
@@ -315,9 +311,6 @@ fn validate_engine_components(
     Ok(())
 }
 
-#[cfg(feature = "dhat-heap")]
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc; // 1. The actual allocator
 #[cfg(feature = "dhat-heap")]
 static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
 fn main() -> Result<(), Box<dyn std::error::Error>> {
