@@ -1169,7 +1169,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         {
             let core_allocation = pipeline_entry
                 .policies
-                .effective_resources()
+                .resources
                 .core_allocation
                 .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
@@ -1472,10 +1472,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry
-                        .policies
-                        .effective_resources()
-                        .core_allocation,
+                    &pipeline_entry.policies.resources.core_allocation,
                 )
             })
             .collect()
@@ -1765,7 +1762,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
 
     fn available_core_ids() -> Vec<CoreId> {
@@ -1810,15 +1807,14 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let policies = Policies {
-            resources: Some(ResourcesPolicy { core_allocation }),
-            ..Default::default()
-        };
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
-            policies,
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy { core_allocation },
+                ..Default::default()
+            },
             role: ResolvedPipelineRole::Regular,
         }
     }

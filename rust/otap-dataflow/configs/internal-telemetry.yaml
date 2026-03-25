@@ -1,10 +1,10 @@
 version: otel_dataflow/v1
 policies:
   channel_capacity:
-      control:
-        node: 256
-        pipeline: 256
-      pdata: 128
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 128
   telemetry:
     runtime_metrics: detailed
 engine:
@@ -31,10 +31,10 @@ engine:
     pipeline:
       policies:
         channel_capacity:
-            control:
-              node: 64
-              pipeline: 64
-            pdata: 64
+          control:
+            node: 64
+            pipeline: 64
+          pdata: 64
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
@@ -55,6 +55,12 @@ groups:
   default:
     pipelines:
       main:
+        policies:
+          channel_capacity:
+            control:
+              node: 200
+              pipeline: 200
+            pdata: 20
         nodes:
           generator:
             type: receiver:traffic_generator

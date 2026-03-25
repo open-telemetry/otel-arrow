@@ -8,13 +8,18 @@ use std::sync::Arc;
 
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::{and, concat_batches, filter_record_batch, not, or};
+use arrow::compute::{and, filter_record_batch, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::{Logs, Metrics, Traces};
+use otap_df_pdata::otap::raw_batch_store::{
+    LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
+};
+use otap_df_pdata::otap::transform::concatenate::concatenate;
+use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use otap_df_pdata::otap::filter::IdBitmapPool;
 
@@ -65,6 +70,64 @@ impl ConditionalPipelineStage {
     }
 }
 
+fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
+    branch_results: &mut Vec<OtapArrowRecords>,
+) -> Result<OtapArrowRecords>
+where
+    T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
+        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otap_df_pdata::error::Error>
+        + TryFrom<OtapArrowRecords, Error = otap_df_pdata::error::Error>,
+    OtapArrowRecords: From<T>,
+{
+    let mut batches = Vec::new();
+    for branch_result in branch_results.drain(..) {
+        let batch_store: T = branch_result.try_into()?;
+        batches.push(batch_store.into_batches())
+    }
+
+    let concatenated_batches = concatenate(&mut batches)?;
+    let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
+    let result_store = T::try_from(raw_store)?;
+
+    Ok(OtapArrowRecords::from(result_store))
+}
+
+fn concatenate_logs(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
+}
+
+fn concatenate_metrics(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
+}
+
+fn concatenate_traces(branch_results: &mut Vec<OtapArrowRecords>) -> Result<OtapArrowRecords> {
+    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
+}
+
+fn concatenate_attrs_record_batches(branch_results: &mut Vec<RecordBatch>) -> Result<RecordBatch> {
+    // to call schema aware `concatenate` on just the attributes record batch, we stick it in
+    // a Logs OTAP batch and treat it as log attributes. This is a bit of a hack until we have
+    // a better top-level interface for calling concatenate.
+
+    let mut otap_batches = branch_results
+        .drain(..)
+        .map(|attrs_record_batch| {
+            let mut logs_record_batches = Logs::default();
+            logs_record_batches.set(ArrowPayloadType::LogAttrs, attrs_record_batch)?;
+            Ok(OtapArrowRecords::from(logs_record_batches))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let concatenated_logs = concatenate_logs(&mut otap_batches)?;
+    let mut concatenated_logs_batches = Logs::try_from(concatenated_logs)?.into_batches();
+    let concatenated_attrs_batch = concatenated_logs_batches
+        [POSITION_LOOKUP[ArrowPayloadType::LogAttrs as usize]]
+        .take()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "expected concatenate to produce non 'None' batch".into(),
+        })?;
+
+    Ok(concatenated_attrs_batch)
+}
 /// A branch within a conditional pipeline stage
 pub struct ConditionalPipelineStageBranch {
     /// This condition will be evaluated to determine for which rows to execute the pipeline
@@ -97,6 +160,19 @@ impl PipelineStage for ConditionalPipelineStage {
         task_context: Arc<TaskContext>,
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
+        // give the pipeline stages within each branch the opportunity to initialize any
+        // necessary state:
+        for branch in &mut self.branches {
+            for stage in &mut branch.pipeline_stages {
+                stage.init_state_for_conditional_branch(&otap_batch, exec_state)?;
+            }
+        }
+        if let Some(branch) = self.default_branch.as_mut() {
+            for stage in branch {
+                stage.init_state_for_conditional_branch(&otap_batch, exec_state)?;
+            }
+        }
+
         let root_batch = match otap_batch.root_record_batch() {
             Some(root_batch) => root_batch,
             None => {
@@ -147,11 +223,8 @@ impl PipelineStage for ConditionalPipelineStage {
             // branch for every batch. For example, if the branch doesn't read or write some child
             // batch, we could avoid materializing it and sync up the rows once all branches have
             // been evaluated.
-            let mut branch_otap_batch = filter_otap_batch(
-                &branch_selection_vec,
-                otap_batch.clone(),
-                &mut self.id_bitmap_pool,
-            )?;
+            let mut branch_otap_batch =
+                filter_otap_batch(&branch_selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
             for stage in &mut branch.pipeline_stages {
                 branch_otap_batch = stage
@@ -173,7 +246,7 @@ impl PipelineStage for ConditionalPipelineStage {
         if already_selected_vec.true_count() != root_batch.num_rows() {
             let mut default_branch_batch = filter_otap_batch(
                 &not(&already_selected_vec)?,
-                otap_batch.clone(),
+                &otap_batch,
                 &mut self.id_bitmap_pool,
             )?;
 
@@ -193,37 +266,25 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(default_branch_batch);
         }
 
-        // reconstruct the result with the results of each branch
-        let mut result = match otap_batch {
-            OtapArrowRecords::Logs(_) => OtapArrowRecords::Logs(Logs::default()),
-            OtapArrowRecords::Traces(_) => OtapArrowRecords::Traces(Traces::default()),
-            OtapArrowRecords::Metrics(_) => OtapArrowRecords::Metrics(Metrics::default()),
-        };
-
-        // concat all the record batches for each payload type and set in the result
-        for payload_type in otap_batch.allowed_payload_types() {
-            // TODO - when we implement filter stages that can modify the schema, such as adding or
-            // deleting columns, we'll need extra logic here to combine project the record batches
-            // into a common schema containing a superset of all the fields.
-
-            let schema = branch_results
-                .iter()
-                .filter_map(|branch_result| branch_result.get(*payload_type))
-                .map(|record_batch| record_batch.schema())
-                .next();
-
-            if let Some(schema) = schema {
-                let record_batch = concat_batches(
-                    &schema,
-                    branch_results
-                        .iter()
-                        .filter_map(|branch_result| branch_result.get(*payload_type)),
-                )?;
-                result.set(*payload_type, record_batch)?;
+        // give the pipeline stages within each branch the opportunity to clear any
+        // state that was initialized for this batch.
+        for branch in &mut self.branches {
+            for stage in &mut branch.pipeline_stages {
+                stage.clear_state_for_conditional_branch(exec_state)?;
+            }
+        }
+        if let Some(branch) = self.default_branch.as_mut() {
+            for stage in branch {
+                stage.clear_state_for_conditional_branch(exec_state)?;
             }
         }
 
-        Ok(result)
+        // reconstruct the result with the results of each branch
+        match otap_batch {
+            OtapArrowRecords::Logs(_) => concatenate_logs(&mut branch_results),
+            OtapArrowRecords::Metrics(_) => concatenate_metrics(&mut branch_results),
+            OtapArrowRecords::Traces(_) => concatenate_traces(&mut branch_results),
+        }
     }
 
     async fn execute_on_attributes(
@@ -326,8 +387,7 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         // reconstruct the result by concatenating the record batches from all branches
-        let batch_refs = branch_results.iter().collect::<Vec<_>>();
-        let final_result = concat_batches(branch_results[0].schema_ref(), batch_refs)?;
+        let final_result = concatenate_attrs_record_batches(&mut branch_results)?;
 
         Ok(final_result)
     }
@@ -339,14 +399,34 @@ impl PipelineStage for ConditionalPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
+    use crate::pipeline::{
+        Pipeline,
+        test::{
+            exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline, otap_to_logs_data,
+        },
+    };
+    use arrow::array::UInt16Array;
     use data_engine_parser_abstractions::Parser;
     use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::proto::opentelemetry::{
-        common::v1::{AnyValue, KeyValue},
-        logs::v1::LogRecord,
+    use otap_df_pdata::{
+        proto::opentelemetry::{
+            metrics::v1::Metric,
+            trace::v1::{Status, span::SpanKind},
+        },
+        schema::consts,
+        testing::round_trip::to_logs_data,
     };
-    use otap_df_pdata::testing::round_trip::to_logs_data;
+    use otap_df_pdata::{
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                common::v1::{AnyValue, KeyValue},
+                logs::v1::LogRecord,
+                trace::v1::Span,
+            },
+        },
+        testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
+    };
 
     use super::*;
 
@@ -586,5 +666,213 @@ mod test {
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_logs_batch() {
+        let log_records = vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("ERROR").finish(),
+        ];
+
+        // the logs that take the "if" branch will get the optional severity_number column added
+        // whereas the logs that take the "else" branch will get the optional event_name column
+        // added. This test ensures we still concatenate them correctly despite the schema mismatch
+        let query = r#"logs |
+            if (severity_text == "INFO") {
+                set severity_number = 10
+            } else {
+                set event_name = "hello"
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .severity_number(10)
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("hello")
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_id_remapping() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("ERROR").finish(),
+        ];
+
+        // some logs will not have the 'id' column set, because they do not have attributes.
+        // when the attribute is assigned, the id column will be set, but since this is happening
+        // inside each branch, the assigned ids may conflict. When the batches from each branch are
+        // concatenated, the conflicting IDs must be reconciled, and what we're testing here is
+        // that this reconciliation actually happens.
+        let query = r#"logs |
+            if (severity_text == "INFO") {
+                set attributes["x"] = "hello"
+            } else {
+                set attributes["x"] = "world"
+            }
+        "#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let mut execution_state = ExecutionState::new();
+
+        let result = pipeline
+            .execute_with_state(
+                otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records))),
+                &mut execution_state,
+            )
+            .await
+            .unwrap();
+        let result = otap_to_logs_data(result);
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("world"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected);
+
+        // ensure that if we send in a second batch, the ID tracking state gets reset and we don't
+        // end up overwriting IDs somehow. We'll have inserted IDs 1 and 2 for the batch above,
+        // so the next ID would be 3. But in the following batch, we have rows 4 rows with
+        // attributes, so the next ID should be 4
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ];
+
+        let result = pipeline
+            .execute_with_state(
+                otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records))),
+                &mut execution_state,
+            )
+            .await
+            .unwrap();
+
+        let id_column = result
+            .get(ArrowPayloadType::Logs)
+            .unwrap()
+            .column_by_name(consts::ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+        assert_eq!(id_column, &UInt16Array::from_iter_values([0, 4, 2, 1, 3]));
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_traces_batch() {
+        let spans = vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+        ];
+        // the spans that take the "if" branch will get the optional kind column added whereas the
+        // spans that take the "else" branch wont. This test ensures we still concatenate them
+        // correctly despite the schema mismatch
+        let query = r#"traces |
+            if (attributes["x"] == "a") {
+                set kind = 1
+            }
+        "#;
+        let result = exec_traces_pipeline::<OplParser>(query, to_traces_data(spans)).await;
+
+        let expected = vec![
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .kind(SpanKind::Internal)
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                .span_id([0; 8])
+                .trace_id([0; 16])
+                .status(Status::default())
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_spans[0].scope_spans[0].spans, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_concat_handles_stages_that_modified_metric_batch() {
+        let metrics = vec![
+            Metric::build().name("metric1").finish(),
+            Metric::build().name("metric2").finish(),
+        ];
+
+        // the metrics that take the "if" branch will get the optional description column added
+        // whereas the logs that take the "else" branch will get the optional unit column
+        // added. This test ensures we still concatenate them correctly despite the schema mismatch
+        let query = r#"metrics |
+            if (name == "metric1") {
+                set description = "description"
+            } else {
+                set unit = "centimeters"
+            }
+        "#;
+        let result = exec_metrics_pipeline::<OplParser>(query, to_metrics_data(metrics)).await;
+
+        let expected = vec![
+            Metric::build()
+                .name("metric1")
+                .description("description")
+                .finish(),
+            Metric::build().name("metric2").unit("centimeters").finish(),
+        ];
+
+        pretty_assertions::assert_eq!(
+            result.resource_metrics[0].scope_metrics[0].metrics,
+            expected
+        )
     }
 }

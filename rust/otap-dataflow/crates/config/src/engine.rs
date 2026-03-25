@@ -14,7 +14,7 @@ use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
-use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::policy::{ChannelCapacityPolicy, Policies, TelemetryPolicy};
 use crate::topic::{TopicImplSelectionPolicy, TopicSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -136,24 +136,24 @@ impl EngineObservabilityPipelineConfig {
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
     /// Channel capacity policy.
-    #[serde(default)]
-    pub channel_capacity: ChannelCapacityPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel_capacity: Option<ChannelCapacityPolicy>,
     /// Health policy used by observed-state liveness/readiness evaluation.
-    #[serde(default)]
-    pub health: HealthPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) health: Option<HealthPolicy>,
     /// Runtime telemetry policy controlling pipeline-local metric collection.
-    #[serde(default)]
-    pub telemetry: TelemetryPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) telemetry: Option<TelemetryPolicy>,
 }
 
 impl EngineObservabilityPolicies {
     #[must_use]
-    fn into_policies(self) -> Policies {
+    pub(crate) fn into_policies(self) -> Policies {
         Policies {
             channel_capacity: self.channel_capacity,
             health: self.health,
             telemetry: self.telemetry,
-            resources: Some(ResourcesPolicy::default()),
+            resources: None,
         }
     }
 
@@ -349,19 +349,20 @@ groups:
     fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        assert_eq!(config.policies.channel_capacity.control.node, 256);
-        assert_eq!(config.policies.channel_capacity.control.pipeline, 256);
-        assert_eq!(config.policies.channel_capacity.control.completion, 512);
-        assert_eq!(config.policies.channel_capacity.pdata, 128);
-        assert_eq!(config.policies.health, HealthPolicy::default());
-        assert!(config.policies.telemetry.pipeline_metrics);
-        assert!(config.policies.telemetry.tokio_metrics);
+        let defaults = Policies::resolve([&config.policies]);
+        assert_eq!(defaults.channel_capacity.control.node, 256);
+        assert_eq!(defaults.channel_capacity.control.pipeline, 256);
+        assert_eq!(defaults.channel_capacity.control.completion, 512);
+        assert_eq!(defaults.channel_capacity.pdata, 128);
+        assert_eq!(defaults.health, HealthPolicy::default());
+        assert!(defaults.telemetry.pipeline_metrics);
+        assert!(defaults.telemetry.tokio_metrics);
         assert_eq!(
-            config.policies.telemetry.runtime_metrics,
+            defaults.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
-            config.policies.effective_resources().core_allocation,
+            defaults.resources.core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
     }
@@ -490,7 +491,7 @@ groups:
         assert_eq!(p1_resolved.policies.channel_capacity.control.completion, 53);
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
-            p1_resolved.policies.effective_resources().core_allocation,
+            p1_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
         );
         assert_eq!(
@@ -526,7 +527,7 @@ groups:
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
-            p2_resolved.policies.effective_resources().core_allocation,
+            p2_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
         );
 
@@ -551,9 +552,292 @@ groups:
             crate::policy::MetricLevel::None
         );
         assert_eq!(
-            p3_resolved.policies.effective_resources().core_allocation,
+            p3_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
+    }
+
+    #[test]
+    fn resolve_policies_inherit_from_parent_scope() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    runtime_metrics: detailed
+  channel_capacity:
+      control:
+        node: 500
+        pipeline: 501
+        completion: 503
+      pdata: 502
+  health:
+    ready_if: [Running, Updating]
+engine: {}
+groups:
+  default:
+    pipelines:
+      partial:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+                completion: 101
+              pdata: 128
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      explicit:
+        policies:
+          telemetry:
+            runtime_metrics: none
+          channel_capacity:
+              control:
+                node: 10
+                pipeline: 11
+                completion: 13
+              pdata: 12
+          health:
+            ready_if: [Failed]
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      no_policies:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let find = |name: &str| {
+            resolved
+                .pipelines
+                .iter()
+                .find(|p| p.pipeline_id.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} pipeline should be resolved"))
+        };
+
+        // Pipeline with only channel_capacity inherits telemetry and health.
+        let partial = find("partial");
+        assert_eq!(partial.policies.channel_capacity.control.node, 100);
+        assert_eq!(
+            partial.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::Detailed,
+            "should inherit telemetry from top level"
+        );
+        assert_eq!(
+            partial.policies.health.ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ],
+            "should inherit health from top level"
+        );
+
+        // Pipeline with explicit overrides.
+        let explicit = find("explicit");
+        assert_eq!(
+            explicit.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::None
+        );
+        assert_eq!(explicit.policies.channel_capacity.control.node, 10);
+        assert_eq!(
+            explicit.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed]
+        );
+
+        // Pipeline with no policies inherits everything.
+        let no_policies = find("no_policies");
+        assert_eq!(
+            no_policies.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::Detailed
+        );
+        assert_eq!(no_policies.policies.channel_capacity.control.node, 500);
+        assert_eq!(
+            no_policies.policies.channel_capacity.control.completion,
+            503
+        );
+        assert_eq!(no_policies.policies.channel_capacity.pdata, 502);
+        assert_eq!(
+            no_policies.policies.health.ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ],
+        );
+    }
+
+    #[test]
+    fn resolve_policies_mixed_engine_and_group_inheritance() {
+        // The reviewer asked for a test where some policies come from the
+        // group level and others from the engine (top) level, exercising
+        // the full three-level precedence chain.
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  telemetry:
+    runtime_metrics: detailed
+  channel_capacity:
+      control:
+        node: 500
+        pipeline: 501
+        completion: 503
+      pdata: 502
+  health:
+    ready_if: [Running, Updating]
+engine: {}
+groups:
+  default:
+    policies:
+      # Group sets telemetry and health but NOT channel_capacity.
+      telemetry:
+        runtime_metrics: normal
+        pipeline_metrics: false
+      health:
+        ready_if: [Failed]
+    pipelines:
+      # Pipeline sets only channel_capacity → gets telemetry from group,
+      # health from group, channel_capacity from itself.
+      pipeline_with_capacity:
+        policies:
+          channel_capacity:
+              control:
+                node: 10
+                pipeline: 11
+                completion: 13
+              pdata: 12
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      # Pipeline sets only health → gets channel_capacity from group
+      # (absent) → falls through to engine; telemetry from group.
+      pipeline_with_health:
+        policies:
+          health:
+            ready_if: [Starting]
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      # No pipeline-level policies → inherits everything from group,
+      # with channel_capacity falling through to engine level.
+      pipeline_no_policies:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let find = |name: &str| {
+            resolved
+                .pipelines
+                .iter()
+                .find(|p| p.pipeline_id.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} pipeline should be resolved"))
+        };
+
+        // pipeline_with_capacity: channel_capacity from pipeline, rest from group.
+        let p = find("pipeline_with_capacity");
+        assert_eq!(p.policies.channel_capacity.control.node, 10);
+        assert_eq!(p.policies.channel_capacity.control.pipeline, 11);
+        assert_eq!(p.policies.channel_capacity.pdata, 12);
+        assert_eq!(
+            p.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert!(
+            !p.policies.telemetry.pipeline_metrics,
+            "pipeline_metrics should come from group"
+        );
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed],
+            "health should come from group"
+        );
+
+        // pipeline_with_health: health from pipeline, telemetry from group,
+        // channel_capacity absent at both pipeline and group → falls through to engine.
+        let p = find("pipeline_with_health");
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Starting],
+            "health should come from pipeline"
+        );
+        assert_eq!(
+            p.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert_eq!(
+            p.policies.channel_capacity.control.node, 500,
+            "channel_capacity should fall through group (absent) to engine"
+        );
+        assert_eq!(p.policies.channel_capacity.control.pipeline, 501);
+        assert_eq!(p.policies.channel_capacity.pdata, 502);
+
+        // pipeline_no_policies: telemetry and health from group, channel_capacity from engine.
+        let p = find("pipeline_no_policies");
+        assert_eq!(
+            p.policies.telemetry.runtime_metrics,
+            crate::policy::MetricLevel::Normal,
+            "telemetry should come from group"
+        );
+        assert_eq!(
+            p.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed],
+            "health should come from group"
+        );
+        assert_eq!(
+            p.policies.channel_capacity.control.node, 500,
+            "channel_capacity should come from engine"
+        );
+        assert_eq!(p.policies.channel_capacity.pdata, 502);
     }
 
     #[test]
@@ -922,7 +1206,7 @@ groups:
             crate::policy::MetricLevel::Normal
         );
         assert_eq!(
-            obs.policies.effective_resources().core_allocation,
+            obs.policies.resources.core_allocation,
             crate::policy::CoreAllocation::AllCores
         );
         assert_eq!(

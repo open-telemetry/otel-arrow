@@ -16,7 +16,6 @@
     // This repo has multiple independent Cargo workspaces that rust-analyzer
     // needs to know about for proper IDE support.
     "rust-analyzer.linkedProjects": [
-        "rust/beaubourg/Cargo.toml",
         "rust/otap-dataflow/Cargo.toml",
         "rust/parquet-query-examples/Cargo.toml",
         "rust/experimental/query_abstraction/Cargo.toml",
