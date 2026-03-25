@@ -85,6 +85,7 @@ impl TemporalReaggregationProcessor {
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
+        config.validate()?;
         Ok(Self {
             metrics,
             collection_period: config.period,
