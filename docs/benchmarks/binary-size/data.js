@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774311898010,
+  "lastUpdate": 1774398327261,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2783,6 +2783,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 92.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0dde9c12802beebd157468f013b01a33cd40b3ac",
+          "message": "feat: Log sampling processor (#2390)\n\n# Change Summary\n\nThis PR adds a very simple log sampling processor that's intended to be\nextensible and leave room for more sophisticated samplers in the future.\n\n## What issue does this PR close?\n\n* Closes #2382\n\n## How are these changes tested?\n\nUnit tests added - I also ran it locally and observed the metrics in the\ndashboard. This was with an `emit: 1, out_of: 10` and it dropped\nprecisely 90% according to the reported metrics.\n\n<img width=\"1745\" height=\"862\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/1faf1c68-b0fc-4193-9dd0-5de03e4399b3\"\n/>\n\nAnd the debug processor reported getting batches of exactly 10 which is\nexpected given traffic generator was spitting out batches of 100:\n\n<img width=\"407\" height=\"116\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/231c8e37-e93f-4567-b797-cab7223cc5f5\"\n/>\n\n\n## Are there any user-facing changes?\n\nYes, new processor!",
+          "timestamp": "2026-03-24T19:10:26Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0dde9c12802beebd157468f013b01a33cd40b3ac"
+        },
+        "date": 1774398321711,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 93,
             "unit": "MB"
           }
         ]
