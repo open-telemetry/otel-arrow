@@ -200,8 +200,7 @@ Each component lives in its own subfolder within a category:
 
 #### temporal_reaggregation_processor
 
-- Reaggregates cumulative metrics at a lower frequency to reduce telemetry volume
-- Supports cumulative sums, histograms, exponential histograms, gauges, and summaries
+- Reaggregates metrics at a lower frequency to reduce telemetry volume
 
 ### Receivers
 
