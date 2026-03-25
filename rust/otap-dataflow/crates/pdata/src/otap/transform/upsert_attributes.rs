@@ -18,7 +18,7 @@ use arrow::array::{
     Array, ArrayData, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray,
     MutableArrayData, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
 };
-use arrow::buffer::{MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{SlicesIterator, cast};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
@@ -1048,6 +1048,10 @@ struct UnifiedDictMulti {
     /// Per-row key mapping for existing column rows → unified dict keys.
     /// `None` when there is no existing column (creating a new column).
     existing_keys: Option<Vec<u16>>,
+
+    /// The null buffer from the existing dictionary keys
+    existing_nulls: Option<NullBuffer>,
+
     /// Per-upsert key mappings, indexed by position in `resolved`. `None` for upserts that
     /// are inactive (don't target this column).
     new_keys: SmallVec<[Option<ActiveKeys>; SMALLVEC_SIZE]>,
@@ -1074,6 +1078,8 @@ fn try_build_unified_dict_multi(
     col_name: &str,
 ) -> Result<Option<UnifiedDictMulti>> {
     const MAX_DICT_CARDINALITY: usize = 65535;
+
+    println!("existing col = {:?}", existing_col);
 
     // Map from value (bytes) to unified dict index
     let mut value_to_idx: HashMap<Option<&[u8]>, u16> = HashMap::new();
@@ -1342,6 +1348,7 @@ fn try_build_unified_dict_multi(
     Ok(Some(UnifiedDictMulti {
         values: unified_values,
         existing_keys,
+        existing_nulls: existing_col.map(|col| col.nulls().cloned()).flatten(),
         new_keys,
     }))
 }
@@ -1487,6 +1494,27 @@ fn merge_values_with_unified_dict(
         }
     }
 
+    #[inline]
+    fn mark_existing_nulls(
+        nulls: &mut Option<BooleanBufferBuilder>,
+        existing: &NullBuffer,
+        start: usize,
+        end: usize,
+        current_len: usize,
+        count: usize,
+    ) {
+        // let buff = existing.slice(start, end - start);
+
+        let builder = nulls.get_or_insert_with(|| {
+            // First null encountered: allocate and backfill all prior positions as valid.
+            let mut b = BooleanBufferBuilder::new(current_len + count);
+            b.append_n(current_len, true);
+            b
+        });
+        let nulls_for_range = existing.inner().slice(start, end - start);
+        builder.append_buffer(&nulls_for_range);
+    }
+
     // Per-upsert update counters, indexed by upsert position. Inactive slots stay at 0.
     let mut update_counters: Vec<usize> = vec![0; resolved.len()];
 
@@ -1499,8 +1527,20 @@ fn merge_values_with_unified_dict(
                 // otherwise emit nulls (new column case).
                 match &unified.existing_keys {
                     Some(existing_keys) => {
+                        if let Some(existing_nulls) = &unified.existing_nulls {
+                            // TODO will this make things slow? We should rerun the bench
+                            mark_existing_nulls(
+                                &mut nulls,
+                                existing_nulls,
+                                run.start,
+                                run.end,
+                                output_keys.len(),
+                                count,
+                            );
+                        } else {
+                            mark_valid(&mut nulls, count);
+                        }
                         output_keys.extend_from_slice(&existing_keys[run.start..run.end]);
-                        mark_valid(&mut nulls, count);
                     }
                     None => {
                         mark_nulls(&mut nulls, output_keys.len(), count);

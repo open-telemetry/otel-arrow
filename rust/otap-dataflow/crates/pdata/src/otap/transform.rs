@@ -1252,9 +1252,9 @@ pub fn transform_attributes_impl(
                 let new_value = ColumnarValue::Scalar(match insert_literal {
                     // TODO find a way to avoid the clone?
                     LiteralValue::Str(str) => ScalarValue::Utf8(Some(str.into())),
-                    _ => {
-                        todo!("convert other literal types")
-                    }
+                    LiteralValue::Int(int) => ScalarValue::Int64(Some(*int)),
+                    LiteralValue::Double(float) => ScalarValue::Float64(Some(*float)),
+                    LiteralValue::Bool(b) => ScalarValue::Boolean(Some(*b)),
                 });
 
                 upserts.push(AttributeUpsert {
@@ -7179,6 +7179,7 @@ where
 #[cfg(test)]
 mod insert_tests {
     use super::*;
+    use crate::arrays::Int64ArrayAccessor;
     use crate::schema::consts;
     use arrow::array::*;
     use arrow::datatypes::*;
@@ -7296,12 +7297,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.deleted_entries, 1);
         assert_eq!(stats.inserted_entries, 1);
@@ -7353,12 +7350,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No inserts should happen because the key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -7377,7 +7370,9 @@ mod insert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
         assert_eq!(vals.value(0), "original_value");
     }
@@ -7420,12 +7415,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0, 1])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Should insert:
         // - parent 0: "c" (not "a" because it exists)
@@ -7476,12 +7467,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7491,9 +7478,10 @@ mod insert_tests {
             .column_by_name(consts::ATTRIBUTE_INT)
             .unwrap()
             .as_any()
-            .downcast_ref::<Int64Array>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<Int64Array>()
             .unwrap();
-        // First row (existing) should be null, second row (inserted) should be 42
         assert!(int_col.is_null(0));
         assert_eq!(int_col.value(1), 42);
     }
@@ -7537,6 +7525,7 @@ mod insert_tests {
             upsert: None,
         };
 
+        // let ids: ArrayRef:
         let (result, stats) = transform_attributes_with_stats(
             &input,
             &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
