@@ -3,7 +3,7 @@
 
 //! Configuration for the temporal reaggregation processor.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::time::Duration;
 
 use otap_df_config::error::Error as ConfigError;
@@ -29,6 +29,13 @@ pub struct Config {
     /// Limits the number of outbound requests for ack/nack tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
+
+    /// Maximum number of unique metric streams to track in a single aggregating
+    /// batch. When exceeded, the current batch is flushed early and the
+    /// overflowing data is retried into a fresh batch. This provides an
+    /// imperfect bound on memory usage. Default: 32767 (half of u16::MAX).
+    #[serde(default = "default_max_stream_cardinality")]
+    pub max_stream_cardinality: NonZeroU16,
 }
 
 impl Config {
@@ -73,6 +80,7 @@ impl Default for Config {
             period: default_period(),
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
+            max_stream_cardinality: default_max_stream_cardinality(),
         }
     }
 }
@@ -83,6 +91,10 @@ const fn default_inbound_request_limit() -> NonZeroUsize {
 
 const fn default_outbound_request_limit() -> NonZeroUsize {
     NonZeroUsize::new(2048).expect("ok")
+}
+
+const fn default_max_stream_cardinality() -> NonZeroU16 {
+    NonZeroU16::new(u16::MAX / 2).expect("ok")
 }
 
 fn default_period() -> Duration {
@@ -159,6 +171,23 @@ mod tests {
         // The default should be accepted.
         let accept_default = Config::default();
         assert!(accept_default.validate().is_ok());
+    }
+
+    #[test]
+    fn test_deserialize_with_max_stream_cardinality() {
+        let config: Config = serde_json::from_value(json!({
+            "max_stream_cardinality": 100
+        }))
+        .unwrap();
+        assert_eq!(config.max_stream_cardinality.get(), 100);
+    }
+
+    #[test]
+    fn test_deserialize_rejects_zero_max_stream_cardinality() {
+        let result: Result<Config, _> = serde_json::from_value(json!({
+            "max_stream_cardinality": 0
+        }));
+        assert!(result.is_err(), "zero max_stream_cardinality should fail");
     }
 
     #[test]
