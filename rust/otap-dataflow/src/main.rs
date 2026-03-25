@@ -30,43 +30,6 @@ use {
     dhat::Profiler,
 };
 
-// =======================
-// dhat (profiling) — wins everywhere when enabled
-// =======================
-#[cfg(all(
-    feature = "dhat-heap",
-    not(any(test, doc)),
-    not(clippy)
-))]
-#[global_allocator]
-static GLOBAL: dhat::Alloc = dhat::Alloc;
-
-
-// =======================
-// Windows default: mimalloc (only if dhat-heap is OFF)
-// =======================
-#[cfg(all(
-    windows,
-    not(feature = "dhat-heap"),
-    not(any(test, doc)),
-    not(clippy)
-))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-
-// =======================
-// Linux default: jemalloc (only if dhat-heap is OFF)
-// =======================
-#[cfg(all(
-    not(windows),
-    not(feature = "dhat-heap"),
-    not(any(test, doc)),
-    not(clippy)
-))]
-#[global_allocator]
-static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
-
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
@@ -114,11 +77,37 @@ use mimalloc::MiMalloc;
 #[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+// =======================
+// dhat (profiling) — wins everywhere when enabled
+// =======================
+#[cfg(all(
+    feature = "dhat-heap",
+    not(any(test, doc, clippy))
+))]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
+
+// =======================
+// Windows default: mimalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    feature = "mimalloc",
+    not(feature = "dhat-heap"),
+    not(any(test, doc, clippy))
+))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
+// =======================
+// Linux default: jemalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    feature = "jemalloc",
+    not(windows),
+    not(feature = "dhat-heap"),
+    not(feature = "mimalloc"),
+    not(any(test, doc, clippy))
+))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
