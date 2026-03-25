@@ -202,7 +202,6 @@ Each component lives in its own subfolder within a category:
 
 - Reaggregates cumulative metrics at a lower frequency to reduce telemetry volume
 - Supports cumulative sums, histograms, exponential histograms, gauges, and summaries
-- Optionally passes through gauges and summaries unchanged
 
 ### Receivers
 
