@@ -10,13 +10,13 @@
 pub mod config;
 mod metrics;
 
-use self::config::Config;
-use self::metrics::TemporalReaggregationMetrics;
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -24,13 +24,14 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_telemetry::metrics::MetricSet;
-use std::sync::Arc;
-use std::time::Duration;
+
+use self::config::Config;
+use self::metrics::TemporalReaggregationMetrics;
 
 /// The URN for the temporal reaggregation processor.
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
@@ -41,8 +42,9 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 /// added in a subsequent stage.
 pub struct TemporalReaggregationProcessor {
     metrics: MetricSet<TemporalReaggregationMetrics>,
-    compute_duration: ComputeDuration,
     collection_period: Duration,
+    /// Whether the periodic flush timer has been started.
+    timer_started: bool,
 }
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
@@ -83,16 +85,33 @@ impl TemporalReaggregationProcessor {
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
-        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
         Ok(Self {
             metrics,
-            compute_duration,
             collection_period: config.period,
+            timer_started: false,
         })
+    }
+
+    /// Starts the periodic flush timer if it has not already been started.
+    ///
+    /// The timer fires `TimerTick` control messages at a fixed cadence equal
+    /// to `collection_period`. We defer starting the timer until the first
+    /// data message arrives so that idle processors do not generate ticks.
+    async fn ensure_timer_started(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if !self.timer_started {
+            let _handle = effect_handler
+                .start_periodic_timer(self.collection_period)
+                .await?;
+            self.timer_started = true;
+        }
+        Ok(())
     }
 }
 
@@ -104,12 +123,26 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
+            Message::PData(pdata) => {
+                // Start the periodic flush timer on first data arrival.
+                self.ensure_timer_started(effect_handler).await?;
+
+                // Passthrough: forward all data unchanged.
+                // Aggregation logic will be added in a subsequent stage.
+                effect_handler.send_message_with_source_node(pdata).await?;
+                Ok(())
+            }
             Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::TimerTick {} => {
+                    // Timer fired. In a future stage this will flush aggregated
+                    // state. For now, just record the metric.
+                    self.metrics.flushes_timer.add(1);
+                    Ok(())
+                }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
                     _ = metrics_reporter.report(&mut self.metrics);
-                    self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
                 NodeControlMsg::Shutdown { .. } => {
@@ -118,12 +151,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 }
                 _ => Ok(()),
             },
-            Message::PData(pdata) => {
-                // Passthrough: forward all data unchanged.
-                // Aggregation logic will be added in a subsequent stage.
-                effect_handler.send_message_with_source_node(pdata).await?;
-                Ok(())
-            }
         }
     }
 }
@@ -181,7 +208,7 @@ mod tests {
     #[test]
     fn test_default_config_parsing() {
         let config: Config = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(config.period, std::time::Duration::from_secs(60));
+        assert_eq!(config.period, Duration::from_secs(60));
     }
 
     #[test]
@@ -190,7 +217,7 @@ mod tests {
             "period": "30s",
         }))
         .unwrap();
-        assert_eq!(config.period, std::time::Duration::from_secs(30));
+        assert_eq!(config.period, Duration::from_secs(30));
     }
 
     #[test]
@@ -268,7 +295,7 @@ mod tests {
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let deadline = std::time::Instant::now() + Duration::from_secs(1);
                 ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline,
                     reason: "test".into(),
@@ -286,17 +313,24 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_telemetry() {
+    fn test_timer_tick_increments_flush_counter() {
         let (rt, proc) = create_processor(json!({}));
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
+                // Timer tick should be handled without error
                 ctx.process(Message::timer_tick_ctrl_msg())
                     .await
                     .expect("timer tick should succeed");
 
+                // No data should be emitted (aggregation not implemented yet)
                 let output = ctx.drain_pdata().await;
-                assert!(output.is_empty(), "timer tick should not emit data");
+                assert!(output.is_empty(), "timer tick should not emit data yet");
+
+                // Send another timer tick
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("second timer tick should succeed");
             })
             .validate(|ctx| async move {
                 let counters = ctx.counters();
