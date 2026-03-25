@@ -57,6 +57,7 @@ http.workspace = true
 async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
+xxhash-rust.workspace = true
 weaver_common = { workspace = true, optional = true }
 weaver_forge = { workspace = true, optional = true }
 weaver_resolved_schema = { workspace = true, optional = true }

@@ -6,9 +6,6 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
-pub mod config;
-mod metrics;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,20 +24,33 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::views::otap::common::OtapAttributeView;
 use otap_df_telemetry::metrics::MetricSet;
 
+mod config;
+mod identity;
+mod metrics;
+
 use self::config::Config;
+use self::identity::AttributeHashBuffer;
 use self::metrics::TemporalReaggregationMetrics;
 
-/// URN
+/// The URN for the temporal reaggregation processor.
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
 
 /// The temporal reaggregation processor.
+///
+/// Currently this is a passthrough implementation. Aggregation logic will be
+/// added in a subsequent stage.
 pub struct TemporalReaggregationProcessor {
     metrics: MetricSet<TemporalReaggregationMetrics>,
     collection_period: Duration,
     /// Whether the periodic flush timer has been started.
     timer_started: bool,
+    /// Reusable buffer for attribute hashing. Stored as `'static` between
+    /// calls and recycled to the local lifetime via [`AttributeHashBuffer::recycle`]
+    /// at the start of each `process()` invocation.
+    attr_buf: AttributeHashBuffer<OtapAttributeView<'static>>,
 }
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
@@ -90,10 +100,15 @@ impl TemporalReaggregationProcessor {
             metrics,
             collection_period: config.period,
             timer_started: false,
+            attr_buf: AttributeHashBuffer::new(),
         })
     }
 
     /// Starts the periodic flush timer if it has not already been started.
+    ///
+    /// The timer fires `TimerTick` control messages at a fixed cadence equal
+    /// to `collection_period`. We defer starting the timer until the first
+    /// data message arrives so that idle processors do not generate ticks.
     async fn ensure_timer_started(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -117,12 +132,30 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(pdata) => {
+                // Start the periodic flush timer on first data arrival.
                 self.ensure_timer_started(effect_handler).await?;
+
+                // Retype the attribute hash buffer from 'static to the local
+                // lifetime so it can be used with views borrowed from `pdata`.
+                // The buffer's heap allocations are preserved across calls.
+                let attr_buf = std::mem::replace(&mut self.attr_buf, AttributeHashBuffer::new());
+                let mut attr_buf: AttributeHashBuffer<OtapAttributeView<'_>> = attr_buf.recycle();
+
+                // TODO: use attr_buf for identity computation in Stage 3.
+                let _ = &mut attr_buf;
+
+                // Retype back to 'static for storage on the struct.
+                self.attr_buf = attr_buf.recycle();
+
+                // Passthrough: forward all data unchanged.
+                // Aggregation logic will be added in a subsequent stage.
                 effect_handler.send_message_with_source_node(pdata).await?;
                 Ok(())
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
+                    // Timer fired. In a future stage this will flush aggregated
+                    // state. For now, just record the metric.
                     self.metrics.flushes_timer.add(1);
                     Ok(())
                 }
@@ -153,8 +186,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_default_config_parsing() {
+        let config: Config = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(config.period, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_custom_config_parsing() {
+        let config: Config = serde_json::from_value(json!({
+            "period": "30s",
+        }))
+        .unwrap();
+        assert_eq!(config.period, Duration::from_secs(30));
+    }
+
+    #[test]
     fn test_passthrough_logs() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
+        let (rt, proc) = create_processor(json!({}));
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -195,6 +243,79 @@ mod tests {
     }
 
     #[test]
+    fn test_passthrough_multiple_messages() {
+        let (rt, proc) = create_processor(json!({}));
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                // Send logs
+                let logs_pdata = create_test_pdata();
+                ctx.process(Message::PData(logs_pdata))
+                    .await
+                    .expect("process logs");
+
+                // Send traces
+                let traces_pdata = create_traces_pdata();
+                ctx.process(Message::PData(traces_pdata))
+                    .await
+                    .expect("process traces");
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected two forwarded messages");
+            })
+            .validate(|ctx| async move {
+                let counters = ctx.counters();
+                counters.assert(0, 0, 0, 0);
+            });
+    }
+
+    #[test]
+    fn test_shutdown_with_no_buffered_data() {
+        let (rt, proc) = create_processor(json!({}));
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(1);
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                    deadline,
+                    reason: "test".into(),
+                }))
+                .await
+                .expect("shutdown should succeed");
+
+                let output = ctx.drain_pdata().await;
+                assert!(output.is_empty(), "no data should be emitted on shutdown");
+            })
+            .validate(|ctx| async move {
+                let counters = ctx.counters();
+                counters.assert(0, 0, 0, 0);
+            });
+    }
+
+    #[test]
+    fn test_timer_tick_increments_flush_counter() {
+        let (rt, proc) = create_processor(json!({}));
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("timer tick should succeed");
+
+                let output = ctx.drain_pdata().await;
+                assert!(output.is_empty(), "timer tick should not emit data yet");
+
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("second timer tick should succeed");
+            })
+            .validate(|ctx| async move {
+                let counters = ctx.counters();
+                counters.assert(0, 0, 0, 0);
+            });
+    }
+
+    #[test]
     fn test_factory_creation() {
         test_config(json!({ "period": "5s" }), |result| {
             assert!(
@@ -211,6 +332,21 @@ mod tests {
         });
     }
 
+    #[test]
+    fn test_factory_rejects_period_below_minimum() {
+        test_config(json!({ "period": "0s" }), |result| {
+            assert!(result.is_err(), "zero period should fail validation");
+        });
+        test_config(json!({ "period": "50ms" }), |result| {
+            assert!(result.is_err(), "sub-100ms period should fail validation");
+        });
+        test_config(json!({ "period": "100ms" }), |result| {
+            assert!(result.is_ok(), "100ms period should pass validation");
+        });
+    }
+
+    // --- Test Helpers ---
+
     fn test_config<F>(config: serde_json::Value, assert_fn: F)
     where
         F: FnOnce(Result<ProcessorWrapper<OtapPdata>, ConfigError>),
@@ -225,7 +361,7 @@ mod tests {
     {
         let pipeline_ctx = create_test_pipeline_context();
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let node = test_node("temporal-reaggregation-test");
+        let node = test_node("temporal-reaggregation-config-test");
 
         let mut node_config =
             NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);

@@ -412,7 +412,7 @@ struct SignalBuffer<T: OtapPayloadHelpers> {
     inbound: SlotState<BatchContext>,
 
     /// Map of outbound requests.  This contains the assignments from each input
-    /// batch, each a corresponding (maybe partial) inbound context.
+    /// batch, init_cursor_for_u16_id_columneach a corresponding (maybe partial) inbound context.
     outbound: SlotState<Vec<BatchPortion>>,
 
     /// Arrival time of the oldest data. This is reset whenever the number in the
