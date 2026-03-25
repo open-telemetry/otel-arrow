@@ -10,10 +10,10 @@ one pipeline runtime.
 The engine is not the whole process. In this project, the process-level
 controller and the in-core engine have distinct responsibilities:
 
-| Component | Role |
-|-----------|------|
+| Component  | Role                                                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Controller | Resolves configuration, allocates cores, creates topic bindings, spawns per-core pipeline runtimes, and drives pipeline lifecycle from admin or process-level events. |
-| Engine | Runs receivers, processors, exporters, channels, timers, completion unwinding, and graceful drain/shutdown inside one pipeline runtime on one core. |
+| Engine     | Runs receivers, processors, exporters, channels, timers, completion unwinding, and graceful drain/shutdown inside one pipeline runtime on one core.                 |
 
 This README documents the current `OtapPdata`-based engine used by OTAP
 Dataflow. It focuses on the runtime model that contributors and advanced users
@@ -22,18 +22,18 @@ behavior.
 
 ## Core Concepts
 
-| Term | Meaning |
-|------|---------|
-| DAG | A directed acyclic graph of nodes and connections describing one pipeline. |
-| Pipeline | The configured DAG itself. |
-| Pipeline runtime | One instantiated copy of a pipeline running on one assigned core. A pipeline configured on `n` cores produces `n` pipeline runtimes. |
-| Receiver / ingress | A node that admits external work into the DAG and produces `pdata` for downstream nodes. |
-| Processor | A node that consumes `pdata`, transforms it, and may emit zero, one, or many downstream `pdata` messages. |
-| Exporter / egress | A node that consumes `pdata` and terminates the in-process DAG path. |
-| `pdata` | The data unit flowing on the forward path. In this project, `pdata` means `OtapPdata`. |
-| Ack/Nack / completion | The completion state of an in-flight `pdata` request. Completion traffic travels on the return path and is surfaced as `Ack` or `Nack` control messages. |
-| Hyper-edge | A runtime wiring unit that groups compatible logical connections onto one bounded underlying `pdata` channel. |
-| Topic | A named in-process transport used to connect pipelines without a direct DAG edge. Topic receiver/exporter nodes bridge between a pipeline runtime and the topic runtime. |
+| Term                 | Meaning                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| DAG                  | A directed acyclic graph of nodes and connections describing one pipeline.                                                                                                     |
+| Pipeline             | The configured DAG itself.                                                                                                                                                     |
+| Pipeline runtime     | One instantiated copy of a pipeline running on one assigned core. A pipeline configured on `n` cores produces `n` pipeline runtimes.                                         |
+| Receiver / ingress   | A node that admits external work into the DAG and produces `pdata` for downstream nodes.                                                                                      |
+| Processor            | A node that consumes `pdata`, transforms it, and may emit zero, one, or many downstream `pdata` messages.                                                                    |
+| Exporter / egress    | A node that consumes `pdata` and terminates the in-process DAG path.                                                                                                          |
+| `pdata`              | The data unit flowing on the forward path. In this project, `pdata` means `OtapPdata`.                                                                                        |
+| Ack/Nack / completion | The completion state of an in-flight `pdata` request. Completion traffic travels on the return path and is surfaced as `Ack` or `Nack` control messages.                    |
+| Hyper-edge           | A runtime wiring unit that groups compatible logical connections onto one bounded underlying `pdata` channel.                                                                 |
+| Topic                | A named in-process transport used to connect pipelines without a direct DAG edge. Topic receiver/exporter nodes bridge between a pipeline runtime and the topic runtime.     |
 
 ## Architecture
 
@@ -138,8 +138,8 @@ Each pipeline runtime uses three channel families:
    - a **runtime-control channel** for timers, delayed-data requests,
      receiver-drain notifications, and shutdown requests, consumed by
      `RuntimeCtrlMsgManager`
-   - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`, consumed by
-     `PipelineCompletionMsgDispatcher`
+   - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`,
+     consumed by `PipelineCompletionMsgDispatcher`
 
 ### Why Runtime-Control and Completion Are Split
 
@@ -248,8 +248,9 @@ behavior:
    due work back into node-control messages.
 
 4. **Ack/Nack completion flow**
-   Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on the
-   pipeline-completion channel. `PipelineCompletionMsgDispatcher` consumes that channel,
+   Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on
+   the pipeline-completion channel. `PipelineCompletionMsgDispatcher` consumes
+   that channel,
    unwinds the caller subscription stack stored in `pdata`, and delivers
    `Ack`/`Nack` node-control messages to the closest interested upstream node.
 
