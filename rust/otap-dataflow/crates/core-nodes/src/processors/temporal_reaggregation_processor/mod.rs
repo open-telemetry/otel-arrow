@@ -4,8 +4,7 @@
 //! Temporal reaggregation processor for OTAP metrics.
 //!
 //! This processor decreases telemetry volume by reaggregating metrics collected
-//! at a higher frequency into a lower one. It collects metrics for a fixed
-//! interval and emits a single data point per stream when the interval expires.
+//! at a higher frequency into a lower one.
 
 pub mod config;
 mod metrics;
