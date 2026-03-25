@@ -305,21 +305,29 @@ impl HashBuffer {
 #[repr(u8)]
 enum HashTag {
     /// Prefixes each attribute key.
-    Key = 0xf5,
+    Key = 0xf0,
     /// Represents an empty / null value.
-    Empty = 0xf6,
+    Empty = 0xf1,
     /// Prefixes a byte-array value.
-    Bytes = 0xf7,
+    Bytes = 0xf2,
     /// Prefixes a string value.
-    Str = 0xf8,
+    Str = 0xf3,
     /// Represents `true`.
-    BoolTrue = 0xf9,
+    BoolTrue = 0xf4,
     /// Represents `false`.
-    BoolFalse = 0xfa,
+    BoolFalse = 0xf5,
     /// Prefixes an i64 value (little-endian).
-    Int = 0xfb,
+    Int = 0xf6,
     /// Prefixes an f64 value (little-endian bits).
-    Double = 0xfc,
+    Double = 0xf7,
+    /// Marks the start of a map (key-value list) value.
+    MapPrefix = 0xf8,
+    /// Marks the end of a map (key-value list) value.
+    MapSuffix = 0xf9,
+    /// Marks the start of an array (slice) value.
+    ArrayPrefix = 0xfa,
+    /// Marks the end of an array (slice) value.
+    ArraySuffix = 0xfb,
 }
 
 impl AttributeHash {
@@ -350,12 +358,26 @@ impl AttributeHash {
 }
 
 /// Write an attribute's value into the hash buffer with type-discriminator
-/// prefixes.
+/// prefixes. Delegates to [`write_value`] for the actual value encoding.
 fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
     let Some(val) = attr.value() else {
         buf.push(HashTag::Empty as u8);
         return;
     };
+    write_value(buf, &val);
+}
+
+/// Recursively encode an [`AnyValueView`] into the hash buffer.
+///
+/// Scalar types are encoded with a type-discriminator prefix followed by
+/// the value bytes. Composite types use prefix/suffix delimiters:
+///
+/// - **Map (KeyValueList)**: `MapPrefix`, then key-value pairs sorted by key
+///   (each key with `Key` prefix + length, each value recursively encoded),
+///   then `MapSuffix`.
+/// - **Array**: `ArrayPrefix`, then each element recursively encoded in order,
+///   then `ArraySuffix`.
+fn write_value<'a>(buf: &mut Vec<u8>, val: &impl AnyValueView<'a>) {
     match val.value_type() {
         ValueType::String => {
             buf.push(HashTag::Str as u8);
@@ -389,9 +411,28 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
         ValueType::Empty => {
             buf.push(HashTag::Empty as u8);
         }
-        // FIXME: Views don't support these types yet either.
-        ValueType::Array | ValueType::KeyValueList => {
-            buf.push(HashTag::Empty as u8);
+        ValueType::KeyValueList => {
+            buf.push(HashTag::MapPrefix as u8);
+            if let Some(entries) = val.as_kvlist() {
+                let mut sorted: Vec<_> = entries.collect();
+                sorted.sort_by(|a, b| a.key().cmp(b.key()));
+                for entry in &sorted {
+                    buf.push(HashTag::Key as u8);
+                    write_len(buf, entry.key().len());
+                    buf.extend_from_slice(entry.key());
+                    write_attr_value(buf, entry);
+                }
+            }
+            buf.push(HashTag::MapSuffix as u8);
+        }
+        ValueType::Array => {
+            buf.push(HashTag::ArrayPrefix as u8);
+            if let Some(elements) = val.as_array() {
+                for element in elements {
+                    write_value(buf, &element);
+                }
+            }
+            buf.push(HashTag::ArraySuffix as u8);
         }
     }
 }
@@ -680,6 +721,7 @@ mod tests {
         val: Option<TestValue>,
     }
 
+    #[derive(Clone)]
     enum TestValue {
         Str(Vec<u8>),
         Int(i64),
@@ -687,18 +729,20 @@ mod tests {
         Bool(bool),
         Bytes(Vec<u8>),
         Empty,
+        Array(Vec<TestValue>),
+        Map(Vec<(Vec<u8>, TestValue)>),
     }
 
     struct TestAnyValue<'a>(&'a TestValue);
 
-    impl AnyValueView<'_> for TestAnyValue<'_> {
+    impl<'a> AnyValueView<'a> for TestAnyValue<'a> {
         type KeyValue = TestAttr;
         type ArrayIter<'arr>
-            = std::iter::Empty<Self>
+            = std::vec::IntoIter<TestAnyValue<'a>>
         where
             Self: 'arr;
         type KeyValueIter<'kv>
-            = std::iter::Empty<TestAttr>
+            = std::vec::IntoIter<TestAttr>
         where
             Self: 'kv;
 
@@ -710,6 +754,8 @@ mod tests {
                 TestValue::Bool(_) => ValueType::Bool,
                 TestValue::Bytes(_) => ValueType::Bytes,
                 TestValue::Empty => ValueType::Empty,
+                TestValue::Array(_) => ValueType::Array,
+                TestValue::Map(_) => ValueType::KeyValueList,
             }
         }
         fn as_string(&self) -> Option<&[u8]> {
@@ -748,10 +794,26 @@ mod tests {
             }
         }
         fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
-            None
+            if let TestValue::Array(items) = self.0 {
+                let views: Vec<TestAnyValue<'_>> = items.iter().map(TestAnyValue).collect();
+                Some(views.into_iter())
+            } else {
+                None
+            }
         }
         fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
-            None
+            if let TestValue::Map(entries) = self.0 {
+                let attrs: Vec<TestAttr> = entries
+                    .iter()
+                    .map(|(k, v)| TestAttr {
+                        key: k.clone(),
+                        val: Some(v.clone()),
+                    })
+                    .collect();
+                Some(attrs.into_iter())
+            } else {
+                None
+            }
         }
     }
 
@@ -815,5 +877,219 @@ mod tests {
             key: key.as_bytes().to_vec(),
             val: None,
         }
+    }
+
+    fn list_attr(key: &str, values: Vec<TestValue>) -> TestAttr {
+        TestAttr {
+            key: key.as_bytes().to_vec(),
+            val: Some(TestValue::Array(values)),
+        }
+    }
+
+    fn map_attr(key: &str, entries: Vec<(&str, TestValue)>) -> TestAttr {
+        TestAttr {
+            key: key.as_bytes().to_vec(),
+            val: Some(TestValue::Map(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec(), v))
+                    .collect(),
+            )),
+        }
+    }
+
+    // ---- Array and Map hashing tests ----
+
+    #[test]
+    fn test_array_value_produces_distinct_hash() {
+        let mut buf = HashBuffer::new();
+        let h_array = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr("k", vec![TestValue::Int(1), TestValue::Int(2)])].into_iter(),
+        );
+        let h_empty = AttributeHash::compute(&mut buf, vec![empty_attr("k")].into_iter());
+        assert_ne!(h_array, h_empty);
+    }
+
+    #[test]
+    fn test_map_value_produces_distinct_hash() {
+        let mut buf = HashBuffer::new();
+        let h_map = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![("a", TestValue::Int(1)), ("b", TestValue::Int(2))],
+            )]
+            .into_iter(),
+        );
+        let h_empty = AttributeHash::compute(&mut buf, vec![empty_attr("k")].into_iter());
+        assert_ne!(h_map, h_empty);
+    }
+
+    #[test]
+    fn test_array_order_matters() {
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr("k", vec![TestValue::Int(1), TestValue::Int(2)])].into_iter(),
+        );
+        let h2 = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr("k", vec![TestValue::Int(2), TestValue::Int(1)])].into_iter(),
+        );
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_map_order_independence() {
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![("a", TestValue::Int(1)), ("b", TestValue::Int(2))],
+            )]
+            .into_iter(),
+        );
+        let h2 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![("b", TestValue::Int(2)), ("a", TestValue::Int(1))],
+            )]
+            .into_iter(),
+        );
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_nested_map_in_array() {
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr(
+                "k",
+                vec![TestValue::Map(vec![
+                    (b"x".to_vec(), TestValue::Int(10)),
+                    (b"y".to_vec(), TestValue::Int(20)),
+                ])],
+            )]
+            .into_iter(),
+        );
+        let h2 = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr(
+                "k",
+                vec![TestValue::Map(vec![
+                    (b"x".to_vec(), TestValue::Int(10)),
+                    (b"y".to_vec(), TestValue::Int(99)),
+                ])],
+            )]
+            .into_iter(),
+        );
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_nested_array_in_map() {
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![(
+                    "items",
+                    TestValue::Array(vec![TestValue::Int(1), TestValue::Int(2)]),
+                )],
+            )]
+            .into_iter(),
+        );
+        let h2 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![(
+                    "items",
+                    TestValue::Array(vec![TestValue::Int(3), TestValue::Int(4)]),
+                )],
+            )]
+            .into_iter(),
+        );
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_empty_array_vs_empty_map_distinct() {
+        let mut buf = HashBuffer::new();
+        let h_array = AttributeHash::compute(&mut buf, vec![list_attr("k", vec![])].into_iter());
+        let h_map = AttributeHash::compute(&mut buf, vec![map_attr("k", vec![])].into_iter());
+        assert_ne!(h_array, h_map);
+    }
+
+    #[test]
+    fn test_array_vs_scalar_distinct() {
+        let mut buf = HashBuffer::new();
+        // [42] as an array with a single int element
+        let h_array = AttributeHash::compute(
+            &mut buf,
+            vec![list_attr("k", vec![TestValue::Int(42)])].into_iter(),
+        );
+        // 42 as a bare int
+        let h_scalar = AttributeHash::compute(&mut buf, vec![int_attr("k", 42)].into_iter());
+        assert_ne!(h_array, h_scalar);
+    }
+
+    #[test]
+    fn test_map_determinism() {
+        let mut buf = HashBuffer::new();
+        let make_attrs = || {
+            vec![map_attr(
+                "k",
+                vec![
+                    ("host", TestValue::Str(b"server1".to_vec())),
+                    ("port", TestValue::Int(8080)),
+                ],
+            )]
+        };
+        let h1 = AttributeHash::compute(&mut buf, make_attrs().into_iter());
+        let h2 = AttributeHash::compute(&mut buf, make_attrs().into_iter());
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_deeply_nested_structure() {
+        // map containing an array containing another map
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![(
+                    "nested",
+                    TestValue::Array(vec![TestValue::Map(vec![(
+                        b"inner_key".to_vec(),
+                        TestValue::Str(b"inner_val".to_vec()),
+                    )])]),
+                )],
+            )]
+            .into_iter(),
+        );
+        let h2 = AttributeHash::compute(
+            &mut buf,
+            vec![map_attr(
+                "k",
+                vec![(
+                    "nested",
+                    TestValue::Array(vec![TestValue::Map(vec![(
+                        b"inner_key".to_vec(),
+                        TestValue::Str(b"changed".to_vec()),
+                    )])]),
+                )],
+            )]
+            .into_iter(),
+        );
+        assert_ne!(h1, h2);
+        // And it should be non-empty
+        assert_ne!(h1, AttributeHash::EMPTY);
     }
 }
