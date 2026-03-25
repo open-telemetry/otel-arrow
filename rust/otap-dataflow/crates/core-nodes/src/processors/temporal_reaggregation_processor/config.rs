@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Default aggregation period (60 seconds).
 const DEFAULT_PERIOD_SECONDS: u64 = 60;
 
 fn default_period() -> Duration {
