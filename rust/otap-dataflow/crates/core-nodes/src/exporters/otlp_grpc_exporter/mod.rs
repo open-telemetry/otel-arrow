@@ -753,6 +753,7 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::PipelineCompletionMsg;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::{
@@ -784,7 +785,7 @@ mod tests {
     #[cfg(not(windows))]
     use {
         otap_df_engine::control::{
-            Controllable, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+            Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
             pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         otap_df_engine::local::message::{LocalReceiver, LocalSender},
