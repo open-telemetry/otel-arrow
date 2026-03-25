@@ -48,7 +48,7 @@ use otap_df_telemetry::otel_warn;
 mod builder;
 mod config;
 mod identity;
-mod metrics;
+mod telemetry;
 
 use self::builder::{Checkpoint, MetricSignalBuilder, StreamMeta};
 use self::config::Config;
@@ -56,7 +56,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::metrics::TemporalReaggregationMetrics;
+use self::telemetry::TemporalReaggregationMetrics;
 
 const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
 
@@ -384,17 +384,12 @@ impl TemporalReaggregationProcessor {
         msg: AckMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
-            // This is pretty bad as who knows if we're holding outbounds that
-            // can ever be cleared if this is malfunctioning. Best case
-            // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::OUTBOUND_NOT_FOUND_EVENT);
             return Ok(());
         };
 
@@ -427,7 +422,7 @@ impl TemporalReaggregationProcessor {
                     // this implies a lack of correctness in another component or the
                     // engine itself.
                     false => {
-                        // TODO: Emit some kind of warning event here.
+                        otel_warn!(telemetry::ERRONEOUS_ACK_EVENT);
                         continue;
                     }
                 },
@@ -482,17 +477,16 @@ impl TemporalReaggregationProcessor {
         msg: NackMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
+            // It's either this or we raise an engine error and crash.
             // This is pretty bad as who knows if we're holding outbounds that
             // can ever be cleared if this is malfunctioning. Best case
             // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::OUTBOUND_NOT_FOUND_EVENT);
             return Ok(());
         };
 
@@ -551,7 +545,7 @@ impl TemporalReaggregationProcessor {
             OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
-                    otel_warn!(VIEW_CREATION_FAILED_EVENT, error = %e);
+                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
                     self.metrics.batches_rejected.inc();
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler

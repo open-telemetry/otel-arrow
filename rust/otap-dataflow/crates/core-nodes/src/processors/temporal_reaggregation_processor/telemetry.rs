@@ -1,10 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metrics for the temporal reaggregation processor.
+//! Telemetry definitions for the temporal reaggregation processor.
 
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
+
+pub const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
+pub const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
+pub const INVALID_CALLDATA_EVENT: &str = "temporal_reaggregation.calldata.invalid";
+pub const OUTBOUND_NOT_FOUND_EVENT: &str = "temporal_reaggregation.outbound.not_found";
+pub const ERRONEOUS_ACK_EVENT: &str = "temporal_reaggregation.ack.erroneous";
 
 /// Metrics for the temporal reaggregation processor.
 #[metric_set(name = "temporal_reaggregation.processor.pdata.metrics")]
