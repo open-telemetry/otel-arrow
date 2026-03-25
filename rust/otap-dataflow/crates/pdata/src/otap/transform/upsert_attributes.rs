@@ -12,6 +12,8 @@ use std::sync::Arc;
 use arrow::util::bit_iterator::BitSliceIterator;
 use smallvec::{SmallVec, smallvec};
 
+use crate::otlp::attributes::AttributeValueType;
+use crate::schema::consts;
 use arrow::array::{
     Array, ArrayData, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray,
     MutableArrayData, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
@@ -21,8 +23,6 @@ use arrow::compute::{SlicesIterator, cast};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 
@@ -51,7 +51,7 @@ const SMALLVEC_SIZE: usize = 16;
 /// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
 /// for enforcing it (typically at the planner level). Passing duplicate keys results in undefined
 /// behavior and may result in duplicate attributes.
-pub(crate) struct AttributeUpsert<'a> {
+pub struct AttributeUpsert<'a> {
     /// The attribute key being upserted (e.g., "http.method").
     pub attrs_key: &'a str,
     /// Boolean mask over existing rows: `true` where key matches `attrs_key`.
@@ -98,7 +98,7 @@ struct ResolvedUpsert<'a> {
 /// A new `RecordBatch` with the same schema as `existing_attrs` (potentially with new value
 /// columns added), containing all non-updated (passthrough) rows, updated rows, and newly
 /// inserted rows. Insert rows are appended in upsert order at the tail of the [`RecordBatch`]
-pub(crate) fn upsert_attributes(
+pub fn upsert_attributes(
     existing_attrs: &RecordBatch,
     upserts: &[AttributeUpsert<'_>],
 ) -> Result<RecordBatch> {
@@ -237,7 +237,8 @@ pub(crate) fn upsert_attributes(
     }
 
     let output_schema = Arc::new(Schema::new(output_fields));
-    Ok(RecordBatch::try_new(output_schema, output_columns)?)
+    // TODO no unwrap (I think we can expect here)
+    Ok(RecordBatch::try_new(output_schema, output_columns).unwrap())
 }
 
 /// Resolve the OTAP attribute value type and target value column name from a data type.
@@ -260,9 +261,12 @@ fn resolve_attr_type_and_col_name(
         DataType::Int64 => Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT))),
         DataType::Float64 => Ok((AttributeValueType::Double, Some(consts::ATTRIBUTE_DOUBLE))),
         DataType::Binary => Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES))),
-        other => Err(Error::ExecutionError {
-            cause: format!("unsupported attribute value type: {other:?}"),
-        }),
+        other => {
+            // TODO - need an error for this
+            todo!("TODO")
+        } // other => Err(Error:: {
+          //     cause: format!("unsupported attribute value type: {other:?}"),
+          // }),
     }
 }
 
@@ -361,7 +365,8 @@ fn build_row_owners(num_existing: usize, resolved: &[ResolvedUpsert<'_>]) -> Vec
 fn build_combined_mask(resolved: &[ResolvedUpsert<'_>]) -> Result<BooleanArray> {
     let mut combined = resolved[0].mask.clone();
     for upsert in &resolved[1..] {
-        combined = arrow::compute::or(&combined, upsert.mask)?;
+        // TODO no unwrap (I think we can expect here)
+        combined = arrow::compute::or(&combined, upsert.mask).unwrap();
     }
     Ok(combined)
 }
@@ -564,9 +569,12 @@ fn merge_key_column(
                 .expect("key column is StringArray");
             merge_key_column_plain(field, existing_str, &insert_keys, total_output_rows)
         }
-        other => Err(Error::ExecutionError {
-            cause: format!("unexpected key column type: {other:?}"),
-        }),
+        other => {
+            // TODO need return the error for this
+            todo!("TODO")
+        } // other => Err(Error::ExecutionError {
+          //     cause: format!("unexpected key column type: {other:?}"),
+          // }),
     }
 }
 
@@ -589,12 +597,13 @@ fn merge_key_column_dict(
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "encountered invalid key column type in dict.\
-                        expected Utf8, found {:?}",
-                        dict.values().data_type()
+                .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                    name: consts::ATTRIBUTE_KEY.into(),
+                    expect: DataType::Dictionary(
+                        Box::new(DataType::UInt8),
+                        Box::new(DataType::Utf8),
                     ),
+                    actual: dict.values().data_type().clone(),
                 })?
         }
         DataType::UInt16 => {
@@ -607,17 +616,19 @@ fn merge_key_column_dict(
             dict.values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "encountered invalid key column type in dict.\
-                        expected Utf8, found {:?}",
-                        dict.values().data_type()
+                .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                    name: consts::ATTRIBUTE_KEY.into(),
+                    expect: DataType::Dictionary(
+                        Box::new(DataType::UInt16),
+                        Box::new(DataType::Utf8),
                     ),
+                    actual: dict.values().data_type().clone(),
                 })?
         }
         other => {
-            return Err(Error::ExecutionError {
-                cause: format!("unexpected dictionary key type for key column: {other:?}"),
+            return Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                actual: key_type.clone(),
             });
         }
     };
@@ -636,7 +647,8 @@ fn merge_key_column_dict(
                 let new_idx = existing_cardinality + novel_keys.len();
                 if new_idx >= 65535 {
                     // Overflow u16: fall back to plain Utf8.
-                    let decoded = cast(existing_col, &DataType::Utf8)?;
+                    // TODO - NO UNWRAP NEED ERROR
+                    let decoded = cast(existing_col, &DataType::Utf8).unwrap();
                     let decoded_str = decoded
                         .as_any()
                         .downcast_ref::<StringArray>()
@@ -917,7 +929,9 @@ fn merge_value_column(
             None => resolved_upsert
                 .new_values_scalar
                 .expect("is scalar")
-                .to_array()?,
+                .to_array()
+                // TODO NO UNWRAP NEED ERROR
+                .unwrap(),
         };
         let is_scalar = resolved_upsert.new_values_array.is_none();
         let arr = decode_to_plain(&arr)?;
@@ -1001,7 +1015,8 @@ fn merge_value_column(
 /// If the column is already plain, returns a clone of the Arc.
 fn decode_to_plain(col: &ArrayRef) -> Result<ArrayRef> {
     match col.data_type() {
-        DataType::Dictionary(_, value_type) => Ok(cast(col, value_type.as_ref())?),
+        // TODO NO UNWRAP NEED ERROR
+        DataType::Dictionary(_, value_type) => Ok(cast(col, value_type.as_ref()).unwrap()),
         _ => Ok(Arc::clone(col)),
     }
 }
@@ -1076,7 +1091,11 @@ fn try_build_unified_dict_multi(
             Some(arr) => (Arc::clone(arr), false),
             // safety: OK to expect here because when we construct resolved upsert, we set either
             // the new_values_array as Some or new_values_scalar to Some, never neither
-            None => (r.new_values_scalar.expect("is scalar").to_array()?, true),
+            // TODO NO UNWRAP NEED ERROR
+            None => (
+                r.new_values_scalar.expect("is scalar").to_array().unwrap(),
+                true,
+            ),
         };
         maybe_scalar_arrays[i] = Some((arr, is_scalar));
     }
@@ -1350,8 +1369,9 @@ fn extract_dict_any_info<'a>(
             let keys: &[u16] = dict.keys().values();
             Ok((Arc::clone(dict.values()), Cow::Borrowed(keys)))
         }
-        other => Err(Error::ExecutionError {
-            cause: format!("unsupported dictionary key type: {other:?}"),
+        other => Err(Error::UnsupportedDictionaryKeyType {
+            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+            actual: key_type.clone(),
         }),
     }
 }
@@ -1424,9 +1444,12 @@ fn array_value_as_bytes(arr: &ArrayRef, idx: usize) -> Result<Option<&[u8]>> {
                 .expect("is binary");
             Ok(Some(bin_arr.value(idx)))
         }
-        other => Err(Error::ExecutionError {
-            cause: format!("Invalid type for byte conversion {other:?}"),
-        }),
+        other => {
+            // TODO need error
+            todo!("need error")
+        } // other => Err(Error::ExecutionError {
+          //     cause: format!("Invalid type for byte conversion {other:?}"),
+          // }),
     }
 }
 
@@ -1664,7 +1687,8 @@ fn create_new_value_column_batched(
             Some(arr) => Arc::clone(arr),
             // safety: OK to expect here because when we construct resolved upsert, we set either
             // the new_values_array as Some or new_values_scalar to Some, never neither
-            None => r.new_values_scalar.expect("scalar").to_array()?,
+            // TODO need error no unwrap
+            None => r.new_values_scalar.expect("scalar").to_array().unwrap(),
         };
         let is_scalar = r.new_values_array.is_none();
         // Decode to plain (non-dict) for primitive merge.

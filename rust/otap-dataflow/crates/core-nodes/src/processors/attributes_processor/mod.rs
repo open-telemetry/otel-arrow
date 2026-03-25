@@ -33,6 +33,7 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
+use arrow::array::{ArrayRef, UInt16Array};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -314,7 +315,9 @@ impl AttributesProcessor {
             let payloads = self.attrs_payloads(signal);
             for &payload_ty in payloads {
                 if let Some(rb) = records.get(payload_ty) {
-                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
+                    // TODO need to call this with the ID column from the parent record batch
+                    let id_col = Arc::new(UInt16Array::new_null(0)) as ArrayRef;
+                    let (rb, stats) = transform_attributes_with_stats(rb, &id_col, &self.transform)
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;

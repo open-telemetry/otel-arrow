@@ -9,16 +9,19 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, MutableArrayData,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array, make_array,
+    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt16Array, UInt32Array,
+    make_array,
 };
-use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{SortColumn, and, cast, not};
+use arrow::compute::{SortColumn, and, cast, filter, not};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type,
 };
 use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::scalar::ScalarValue;
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_required_array,
@@ -29,6 +32,8 @@ use crate::encode::record::array::{
     Int64ArrayBuilder, StringArrayBuilder, dictionary::DictionaryOptions,
 };
 use crate::error::{Error, Result};
+use crate::otap::filter::IdBitmap;
+use crate::otap::transform::upsert_attributes::AttributeUpsert;
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts::{self, metadata};
@@ -40,6 +45,7 @@ pub mod split;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod transport_optimize;
+pub mod upsert_attributes;
 pub mod util;
 
 pub fn remove_delta_encoding<T>(
@@ -923,13 +929,17 @@ pub struct TransformStats {
 ///   missing columns, unsupported key types).
 pub fn transform_attributes_with_stats(
     attrs_record_batch: &RecordBatch,
+    id_column: &ArrayRef,
     transform: &AttributesTransform,
 ) -> Result<(RecordBatch, TransformStats)> {
-    transform_attributes_impl(attrs_record_batch, transform, true)
+    transform_attributes_impl(attrs_record_batch, id_column, transform, true)
 }
 
+// TODO need to comment on why the ID column argument is passed (and comment in all the places
+// in which you've drilled it in)
 pub fn transform_attributes_impl(
     attrs_record_batch: &RecordBatch,
+    id_column: &ArrayRef,
     transform: &AttributesTransform,
     compute_stats: bool,
 ) -> Result<(RecordBatch, TransformStats)> {
@@ -954,13 +964,12 @@ pub fn transform_attributes_impl(
         });
     }
 
-    // Check if we need early materialization for insert/upsert.
-    // We only need to materialize if insert or upsert is present AND we have parent_id column
-    // This allows us to get the full list of parents before any deletes are applied
+    // Check whether to eagerly materialize the parent_id column, which is needed if insert or
+    // upsert is present. This allows us to get the full list of parents before any deletes.
     //
     // At the same time, set flag to check if the batch already has the transport optimized
-    // encoding. This is used later to determine if we need to decode because the transformation
-    // would break some sequences of encoded IDs.
+    // encoding. This is used later to determine if we need to lazily materialize the because ID
+    // column because the transformation would break some sequences of encoded IDs.
     let insert_or_upsert_needed = (transform.insert.is_some() || has_upsert)
         && schema.column_with_name(consts::PARENT_ID).is_some();
     let (attrs_record_batch_cow, is_transport_optimized) = if insert_or_upsert_needed {
@@ -982,7 +991,7 @@ pub fn transform_attributes_impl(
     let attrs_record_batch = attrs_record_batch_cow.as_ref();
     let schema = attrs_record_batch.schema();
 
-    let (rb, mut stats) = match key_column.data_type() {
+    let (mut rb, mut stats) = match key_column.data_type() {
         DataType::Utf8 => {
             let keys_arr = key_column
                 .as_any()
@@ -994,7 +1003,7 @@ pub fn transform_attributes_impl(
                 renamed_entries: keys_transform_result.replaced_rows as u64,
                 deleted_entries: keys_transform_result.deleted_rows as u64,
                 inserted_entries: 0,
-                upserted_entries: keys_transform_result.upserted_rows as u64,
+                upserted_entries: 0,
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
@@ -1068,7 +1077,7 @@ pub fn transform_attributes_impl(
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
-                            upserted_entries: dict_imm_result.upserted_rows as u64,
+                            upserted_entries: 0,
                         },
                     )
                 }
@@ -1092,7 +1101,7 @@ pub fn transform_attributes_impl(
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
-                            upserted_entries: dict_imm_result.upserted_rows as u64,
+                            upserted_entries: 0,
                         },
                     )
                 }
@@ -1104,6 +1113,7 @@ pub fn transform_attributes_impl(
                 }
             };
 
+            // TODO - fix this comment it's kind of confusing ....
             // if all rows have been removed (all attributes deleted) just return empty RecordBatch
             // NOTE: If we have inserts, we might still return rows even if all existing were deleted.
             // But here we just produce the "remaining" batch. Inserts are appended later.
@@ -1172,134 +1182,222 @@ pub fn transform_attributes_impl(
         }
     };
 
-    // Handle inserts and upserts
-    // According to OTel collector spec, `insert` only inserts if the key does not already exist.
-    // `upsert` inserts if the key doesn't exist, or updates the value if it does.
-    // For upsert, we've already deleted matching keys above, so we can treat upsert entries
-    // as unconditional inserts.
+    // TODO this is ugly
+    let num_inserts = transform
+        .insert
+        .as_ref()
+        .map(|i| i.entries.len())
+        .unwrap_or(0);
+    let num_upserts = transform
+        .upsert
+        .as_ref()
+        .map(|u| u.entries.len())
+        .unwrap_or(0);
 
-    // Collect all entries that need to be inserted: regular inserts + upsert entries
-    let insert_entries = transform.insert.as_ref().map(|i| &i.entries);
-    let upsert_entries = transform.upsert.as_ref().map(|u| &u.entries);
+    if num_inserts + num_upserts > 0 {
+        // TODO we could materialize parent_ids way down here where it's actually neeeded ...
 
-    let has_any_inserts = insert_entries.is_some_and(|e| !e.is_empty())
-        || upsert_entries.is_some_and(|e| !e.is_empty());
+        let mut upserts = Vec::with_capacity(num_inserts + num_upserts);
 
-    if has_any_inserts {
-        if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
-            // Merge insert and upsert entries for determining needed columns
-            let all_entries_iter = insert_entries
-                .into_iter()
-                .flat_map(|e| e.iter())
-                .chain(upsert_entries.into_iter().flat_map(|e| e.iter()));
-
-            let mut needs_int = false;
-            let mut needs_double = false;
-            let mut needs_bool = false;
-            let mut needs_str = false;
-            for (_, v) in all_entries_iter {
-                match v {
-                    LiteralValue::Int(_) => needs_int = true,
-                    LiteralValue::Double(_) => needs_double = true,
-                    LiteralValue::Bool(_) => needs_bool = true,
-                    LiteralValue::Str(_) => needs_str = true,
+        let mut parent_id_set = IdBitmap::new();
+        match id_column.data_type() {
+            DataType::UInt16 => {
+                let id_column = id_column
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    // safety: we've checked the type
+                    .expect("can downcast ot u16");
+                if let Some(nulls) = id_column.nulls() {
+                    todo!("handle the nulls in the ID column")
+                } else {
+                    parent_id_set.populate(id_column.values().iter().map(|i| *i as u32));
                 }
             }
-
-            // Extend schema and batch to include missing value columns
-            let (rb_extended, extended_schema) =
-                extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
-
-            let mut combined_rb = rb_extended;
-            let mut combined_schema = extended_schema;
-
-            // Handle regular inserts (only insert if key doesn't exist)
-            if let Some(insert) = transform.insert.as_ref() {
-                let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
-                    DataType::UInt16 => create_inserted_batch::<u16>(
-                        &combined_rb,
-                        original_parent_ids,
-                        insert,
-                        combined_schema.as_ref(),
-                    )?,
-                    DataType::UInt32 => create_inserted_batch::<u32>(
-                        &combined_rb,
-                        original_parent_ids,
-                        insert,
-                        combined_schema.as_ref(),
-                    )?,
-                    data_type => {
-                        return Err(Error::ColumnDataTypeMismatch {
-                            name: consts::PARENT_ID.into(),
-                            expect: DataType::UInt16, // or UInt32
-                            actual: data_type,
-                        });
-                    }
-                };
-                if count > 0 {
-                    let (reconciled_orig, reconciled_new, unified_schema) =
-                        reconcile_batches_for_concat(combined_rb, new_rows)?;
-
-                    combined_rb = arrow::compute::concat_batches(
-                        &unified_schema,
-                        &[reconciled_orig, reconciled_new],
-                    )
-                    .map_err(|e| Error::Format {
-                        error: e.to_string(),
-                    })?;
-                    combined_schema = unified_schema;
-                    stats.inserted_entries = count as u64;
-                }
-            }
-
-            // Handle upserts: since matching keys were already deleted from the batch
-            // via KeyTransformRangeType::Upsert, we can reuse create_inserted_batch —
-            // its existing-key check will find no conflicts.
-            if let Some(upsert) = transform.upsert.as_ref() {
-                let upsert_as_insert = InsertTransform::new(upsert.entries.clone());
-                let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
-                    DataType::UInt16 => create_inserted_batch::<u16>(
-                        &combined_rb,
-                        original_parent_ids,
-                        &upsert_as_insert,
-                        combined_schema.as_ref(),
-                    )?,
-                    DataType::UInt32 => create_inserted_batch::<u32>(
-                        &combined_rb,
-                        original_parent_ids,
-                        &upsert_as_insert,
-                        combined_schema.as_ref(),
-                    )?,
-                    data_type => {
-                        return Err(Error::ColumnDataTypeMismatch {
-                            name: consts::PARENT_ID.into(),
-                            expect: DataType::UInt16, // or UInt32
-                            actual: data_type,
-                        });
-                    }
-                };
-                if count > 0 {
-                    let (reconciled_orig, reconciled_new, unified_schema) =
-                        reconcile_batches_for_concat(combined_rb, new_rows)?;
-
-                    combined_rb = arrow::compute::concat_batches(
-                        &unified_schema,
-                        &[reconciled_orig, reconciled_new],
-                    )
-                    .map_err(|e| Error::Format {
-                        error: e.to_string(),
-                    })?;
-                    stats.upserted_entries = count as u64;
-
-                    return Ok((combined_rb, stats));
-                }
-            }
-
-            if stats.inserted_entries > 0 || stats.upserted_entries > 0 {
-                return Ok((combined_rb, stats));
+            _ => {
+                todo!("need test cases for all the others")
             }
         }
+
+        let key_column = get_required_array(&attrs_record_batch_cow, consts::ATTRIBUTE_KEY)?;
+        let parent_ids_col = get_required_array(&attrs_record_batch_cow, consts::PARENT_ID)?;
+
+        let mut existing_id_set = IdBitmap::new();
+
+        if let Some(inserts) = transform.insert.as_ref() {
+            for (attrs_key, insert_literal) in &inserts.entries {
+                // TODO no unwrap
+                let existing_key_mask =
+                    eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
+                // TODO no unwrap (pretty sure we can expect ...)
+                let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+                let existing_parent_ids_u16 = existing_parent_ids
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .unwrap(); // TODO can't actually unwrap this
+                existing_id_set
+                    .populate(existing_parent_ids_u16.values().iter().map(|i| *i as u32));
+
+                // TODO - any way to reuse this?
+                let mut parent_ids =
+                    Vec::with_capacity(id_column.len() - existing_id_set.len() as usize);
+                for id in parent_id_set.iter() {
+                    if existing_id_set.contains(id) {
+                        continue;
+                    }
+                    parent_ids.push(id as u16);
+                }
+
+                stats.inserted_entries += parent_ids.len() as u64;
+
+                let new_value = ColumnarValue::Scalar(match insert_literal {
+                    // TODO find a way to avoid the clone?
+                    LiteralValue::Str(str) => ScalarValue::Utf8(Some(str.into())),
+                    _ => {
+                        todo!("convert other literal types")
+                    }
+                });
+
+                upserts.push(AttributeUpsert {
+                    attrs_key: &attrs_key,
+                    existing_key_mask: BooleanArray::new(BooleanBuffer::new_set(0), None),
+                    new_values: new_value,
+                    upsert_parent_ids: UInt16Array::from(parent_ids),
+                })
+            }
+        }
+
+        // TODO need actual error
+        rb = upsert_attributes::upsert_attributes(&rb, &upserts)?;
     }
+
+    // // Handle inserts and upserts
+    // // According to OTel collector spec, `insert` only inserts if the key does not already exist.
+    // // `upsert` inserts if the key doesn't exist, or updates the value if it does.
+    // // For upsert, we've already deleted matching keys above, so we can treat upsert entries
+    // // as unconditional inserts.
+
+    // // Collect all entries that need to be inserted: regular inserts + upsert entries
+    // let insert_entries = transform.insert.as_ref().map(|i| &i.entries);
+    // let upsert_entries = transform.upsert.as_ref().map(|u| &u.entries);
+
+    // let has_any_inserts = insert_entries.is_some_and(|e| !e.is_empty())
+    //     || upsert_entries.is_some_and(|e| !e.is_empty());
+
+    // if has_any_inserts {
+    //     if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
+    //         // Merge insert and upsert entries for determining needed columns
+    //         let all_entries_iter = insert_entries
+    //             .into_iter()
+    //             .flat_map(|e| e.iter())
+    //             .chain(upsert_entries.into_iter().flat_map(|e| e.iter()));
+
+    //         let mut needs_int = false;
+    //         let mut needs_double = false;
+    //         let mut needs_bool = false;
+    //         let mut needs_str = false;
+    //         for (_, v) in all_entries_iter {
+    //             match v {
+    //                 LiteralValue::Int(_) => needs_int = true,
+    //                 LiteralValue::Double(_) => needs_double = true,
+    //                 LiteralValue::Bool(_) => needs_bool = true,
+    //                 LiteralValue::Str(_) => needs_str = true,
+    //             }
+    //         }
+
+    //         // Extend schema and batch to include missing value columns
+    //         let (rb_extended, extended_schema) =
+    //             extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
+
+    //         let mut combined_rb = rb_extended;
+    //         let mut combined_schema = extended_schema;
+
+    //         // Handle regular inserts (only insert if key doesn't exist)
+    //         if let Some(insert) = transform.insert.as_ref() {
+    //             let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
+    //                 DataType::UInt16 => create_inserted_batch::<u16>(
+    //                     &combined_rb,
+    //                     original_parent_ids,
+    //                     insert,
+    //                     combined_schema.as_ref(),
+    //                 )?,
+    //                 DataType::UInt32 => create_inserted_batch::<u32>(
+    //                     &combined_rb,
+    //                     original_parent_ids,
+    //                     insert,
+    //                     combined_schema.as_ref(),
+    //                 )?,
+    //                 data_type => {
+    //                     return Err(Error::ColumnDataTypeMismatch {
+    //                         name: consts::PARENT_ID.into(),
+    //                         expect: DataType::UInt16, // or UInt32
+    //                         actual: data_type,
+    //                     });
+    //                 }
+    //             };
+    //             if count > 0 {
+    //                 let (reconciled_orig, reconciled_new, unified_schema) =
+    //                     reconcile_batches_for_concat(combined_rb, new_rows)?;
+
+    //                 combined_rb = arrow::compute::concat_batches(
+    //                     &unified_schema,
+    //                     &[reconciled_orig, reconciled_new],
+    //                 )
+    //                 .map_err(|e| Error::Format {
+    //                     error: e.to_string(),
+    //                 })?;
+    //                 combined_schema = unified_schema;
+    //                 stats.inserted_entries = count as u64;
+    //             }
+    //         }
+
+    //         // Handle upserts: since matching keys were already deleted from the batch
+    //         // via KeyTransformRangeType::Upsert, we can reuse create_inserted_batch —
+    //         // its existing-key check will find no conflicts.
+    //         if let Some(upsert) = transform.upsert.as_ref() {
+    //             let upsert_as_insert = InsertTransform::new(upsert.entries.clone());
+    //             let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
+    //                 DataType::UInt16 => create_inserted_batch::<u16>(
+    //                     &combined_rb,
+    //                     original_parent_ids,
+    //                     &upsert_as_insert,
+    //                     combined_schema.as_ref(),
+    //                 )?,
+    //                 DataType::UInt32 => create_inserted_batch::<u32>(
+    //                     &combined_rb,
+    //                     original_parent_ids,
+    //                     &upsert_as_insert,
+    //                     combined_schema.as_ref(),
+    //                 )?,
+    //                 data_type => {
+    //                     return Err(Error::ColumnDataTypeMismatch {
+    //                         name: consts::PARENT_ID.into(),
+    //                         expect: DataType::UInt16, // or UInt32
+    //                         actual: data_type,
+    //                     });
+    //                 }
+    //             };
+    //             if count > 0 {
+    //                 let (reconciled_orig, reconciled_new, unified_schema) =
+    //                     reconcile_batches_for_concat(combined_rb, new_rows)?;
+
+    //                 combined_rb = arrow::compute::concat_batches(
+    //                     &unified_schema,
+    //                     &[reconciled_orig, reconciled_new],
+    //                 )
+    //                 .map_err(|e| Error::Format {
+    //                     error: e.to_string(),
+    //                 })?;
+    //                 stats.upserted_entries = count as u64;
+
+    //                 return Ok((combined_rb, stats));
+    //             }
+    //         }
+
+    //         if stats.inserted_entries > 0 || stats.upserted_entries > 0 {
+    //             return Ok((combined_rb, stats));
+    //         }
+    //     }
+    // }
 
     Ok((rb, stats))
 }
@@ -1320,9 +1418,10 @@ pub fn transform_attributes_impl(
 /// documentation on [`AttributesTransform::validate`] for more information.
 pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
+    id_column: &ArrayRef,
     transform: &AttributesTransform,
 ) -> Result<RecordBatch> {
-    let (result, _) = transform_attributes_impl(attrs_record_batch, transform, false)?;
+    let (result, _) = transform_attributes_impl(attrs_record_batch, id_column, transform, false)?;
     Ok(result)
 }
 
@@ -1342,8 +1441,6 @@ struct KeysTransformResult {
     replaced_rows: usize,
     /// Exact number of rows that were deleted due to delete rules (row-level deletions)
     deleted_rows: usize,
-    /// Exact number of rows that were deleted due to upsert rules (row-level upsert deletions)
-    upserted_rows: usize,
 }
 
 /// Transform the attributes key array
@@ -1375,25 +1472,14 @@ fn transform_keys(
         .map(|d| plan_key_deletes(len, values, offsets, d))
         .transpose()?;
 
-    let upsert_plan = transform
-        .upsert
-        .as_ref()
-        .filter(|u| !u.entries.is_empty())
-        .map(|u| plan_key_upserts(len, values, offsets, u))
-        .transpose()?;
-
     // check if we can return early because there are no modifications to be made
     let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
     let total_replacements = replacement_plan
         .as_ref()
         .map(|r| r.total_replacements)
         .unwrap_or(0);
-    let total_upsert_deletions = upsert_plan
-        .as_ref()
-        .map(|u| u.total_upsert_deletions)
-        .unwrap_or(0);
 
-    if total_deletions == 0 && total_replacements == 0 && total_upsert_deletions == 0 {
+    if total_deletions == 0 && total_replacements == 0 {
         // if no modifications are being made to the array, we can just return the original
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
@@ -1401,25 +1487,19 @@ fn transform_keys(
             transform_ranges: Vec::new(),
             replaced_rows: 0,
             deleted_rows: 0,
-            upserted_rows: 0,
         });
     }
 
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let transform_ranges = merge_transform_ranges(
-        replacement_plan.as_ref(),
-        delete_plan.as_ref(),
-        upsert_plan.as_ref(),
-    );
+    let transform_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
 
     // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
         values,
         replacement_plan.as_ref(),
         delete_plan.as_ref(),
-        upsert_plan.as_ref(),
     ));
 
     // keep track pointer to the previous offset that had values replaced
@@ -1462,13 +1542,12 @@ fn transform_keys(
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
 
-    let new_offsets = if all_offsets_same_len && total_deletions == 0 && total_upsert_deletions == 0
-    {
+    let new_offsets = if all_offsets_same_len && total_deletions == 0 {
         // if the target and replacement happen to be the same length and there were no deletions, we
         // can just reuse the existing offsets
         offsets.clone()
     } else {
-        let num_offsets = (array.len() - total_deletions - total_upsert_deletions) + 1;
+        let num_offsets = (array.len() - total_deletions) + 1;
         let mut new_offsets = MutableBuffer::new(num_offsets * size_of::<i32>());
 
         // for each offset that was not replaced, keep track of how much to adjust it based on how
@@ -1533,14 +1612,8 @@ fn transform_keys(
                         (deleted_val_len * transform_range.range.len()) as i32;
                 }
                 KeyTransformRangeType::Upsert => {
-                    // upsert ranges are removed just like deletes, but tracked separately for stats
-                    let upserted_val_len = upsert_plan
-                        .as_ref()
-                        .expect("upsert plan should be initialized")
-                        .target_keys[transform_range.idx]
-                        .len();
-                    curr_total_offset_adjustment -=
-                        (upserted_val_len * transform_range.range.len()) as i32;
+                    // do nothing
+                    // TODO - maybe we should just delete this variant of the enum
                 }
             }
 
@@ -1602,7 +1675,6 @@ fn transform_keys(
         keep_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
-        upserted_rows: total_upsert_deletions,
     })
 }
 
@@ -1626,8 +1698,6 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     deleted_rows: usize,
     /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
     renamed_rows: usize,
-    /// Exact number of rows removed due to upsert rules
-    upserted_rows: usize,
 }
 
 /// Transforms the keys for the dictionary array.
@@ -1690,8 +1760,8 @@ where
     // ranges haven't been computed, it's more performant to compute the statistics from the
     // transformed dictionary values than to materialize the ranges of transformed dictionary keys
     // just for statistics computation.
-    let (renamed_rows, deleted_rows, upserted_rows) = if !compute_stats {
-        (0, 0, 0)
+    let (renamed_rows, deleted_rows) = if !compute_stats {
+        (0, 0)
     } else if compute_dict_key_transform_ranges {
         transform_stats_from_transform_ranges(&dict_key_transform_ranges)
     } else {
@@ -1699,7 +1769,7 @@ where
             dict_arr,
             &dict_values_transform_result.transform_ranges,
         );
-        (rename_count, 0, 0)
+        (rename_count, 0)
     };
 
     if dict_values_transform_result.keep_ranges.is_none() {
@@ -1722,7 +1792,6 @@ where
 
             renamed_rows,
             deleted_rows,
-            upserted_rows,
         });
     }
 
@@ -1812,7 +1881,6 @@ where
         transform_ranges: dict_key_transform_ranges,
         deleted_rows,
         renamed_rows,
-        upserted_rows,
     })
 }
 
@@ -1893,22 +1961,21 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     dict_key_transform_ranges
 }
 
-fn transform_stats_from_transform_ranges(
-    transform_ranges: &[KeyTransformRange],
-) -> (usize, usize, usize) {
+fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange]) -> (usize, usize) {
     let mut count_rename = 0;
     let mut count_delete = 0;
-    let mut count_upsert = 0;
 
     for range in transform_ranges {
         match range.range_type {
             KeyTransformRangeType::Delete => count_delete += range.len(),
             KeyTransformRangeType::Replace => count_rename += range.len(),
-            KeyTransformRangeType::Upsert => count_upsert += range.len(),
+            KeyTransformRangeType::Upsert => {
+                // TODO maybe this enum variant should just be deleted
+            }
         }
     }
 
-    (count_rename, count_delete, count_upsert)
+    (count_rename, count_delete)
 }
 
 fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyType>(
@@ -1982,35 +2049,49 @@ impl KeyTransformRange {
 fn merge_transform_ranges<'a>(
     replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
-    upsert_plan: Option<&'a KeyUpsertPlan<'_>>,
 ) -> Cow<'a, [KeyTransformRange]> {
-    let has_rep = replacement_plan.is_some_and(|p| !p.ranges.is_empty());
-    let has_del = delete_plan.is_some_and(|p| !p.ranges.is_empty());
-    let has_ups = upsert_plan.is_some_and(|p| !p.ranges.is_empty());
+    match (replacement_plan, delete_plan) {
+        (Some(replacement_plan), Some(delete_plan)) => {
+            let mut result =
+                Vec::with_capacity(replacement_plan.ranges.len() + delete_plan.ranges.len());
 
-    match (has_rep, has_del, has_ups) {
-        (false, false, false) => Cow::Borrowed(&[]),
-        (true, false, false) => Cow::Borrowed(&replacement_plan.expect("checked").ranges),
-        (false, true, false) => Cow::Borrowed(&delete_plan.expect("checked").ranges),
-        (false, false, true) => Cow::Borrowed(&upsert_plan.expect("checked").ranges),
-        _ => {
-            // Multiple plans present: collect and sort by start index
-            let cap = replacement_plan.map_or(0, |p| p.ranges.len())
-                + delete_plan.map_or(0, |p| p.ranges.len())
-                + upsert_plan.map_or(0, |p| p.ranges.len());
-            let mut result = Vec::with_capacity(cap);
-            if let Some(p) = replacement_plan {
-                result.extend(p.ranges.iter().cloned());
+            let mut rep_idx = 0;
+            let mut del_idx = 0;
+
+            while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
+                let rep_start = replacement_plan.ranges[rep_idx].start();
+                let del_start = delete_plan.ranges[del_idx].start();
+
+                if rep_start <= del_start {
+                    let rep_range = replacement_plan.ranges[rep_idx].clone();
+                    result.push(rep_range);
+                    rep_idx += 1;
+                } else {
+                    let del_range = delete_plan.ranges[del_idx].clone();
+                    result.push(del_range);
+                    del_idx += 1;
+                }
             }
-            if let Some(p) = delete_plan {
-                result.extend(p.ranges.iter().cloned());
+
+            // append any remaining replacements
+            while rep_idx < replacement_plan.ranges.len() {
+                let rep_range = replacement_plan.ranges[rep_idx].clone();
+                result.push(rep_range);
+                rep_idx += 1;
             }
-            if let Some(p) = upsert_plan {
-                result.extend(p.ranges.iter().cloned());
+
+            // append any remaining deletions
+            while del_idx < delete_plan.ranges.len() {
+                let del_range = delete_plan.ranges[del_idx].clone();
+                result.push(del_range);
+                del_idx += 1;
             }
-            result.sort_by_key(|r| r.start());
+
             Cow::Owned(result)
         }
+        (Some(replacement_plan), None) => Cow::Borrowed(&replacement_plan.ranges),
+        (None, Some(delete_plan)) => Cow::Borrowed(&delete_plan.ranges),
+        (None, None) => Cow::Borrowed(&[]),
     }
 }
 
@@ -2164,44 +2245,45 @@ fn plan_key_deletes<'a>(
     })
 }
 
-/// Plan for how the source keys array should be modified to handle upsert deletions.
-/// Produces `Upsert` range types so stats can distinguish upsert-caused row removals
-/// from explicit deletes.
-struct KeyUpsertPlan<'a> {
-    /// The bytes of the keys being upserted
-    target_keys: &'a [Vec<u8>],
-    /// Contiguous ranges of matching rows in the original array
-    ranges: Vec<KeyTransformRange>,
-    /// How many values matched per target key
-    counts: Vec<usize>,
-    /// Total number of rows that will be removed for upsert
-    total_upsert_deletions: usize,
-}
+// TODO - not sure this is needed
+// /// Plan for how the source keys array should be modified to handle upsert deletions.
+// /// Produces `Upsert` range types so stats can distinguish upsert-caused row removals
+// /// from explicit deletes.
+// struct KeyUpsertPlan<'a> {
+//     /// The bytes of the keys being upserted
+//     target_keys: &'a [Vec<u8>],
+//     /// Contiguous ranges of matching rows in the original array
+//     ranges: Vec<KeyTransformRange>,
+//     /// How many values matched per target key
+//     counts: Vec<usize>,
+//     /// Total number of rows that will be removed for upsert
+//     total_upsert_deletions: usize,
+// }
 
-/// Plan upsert-caused deletions: find rows matching upsert keys, tagged as `Upsert`.
-fn plan_key_upserts<'a>(
-    array_len: usize,
-    values_buf: &'a Buffer,
-    offsets: &'a OffsetBuffer<i32>,
-    upsert_keys: &'a UpsertTransform,
-) -> Result<KeyUpsertPlan<'a>> {
-    let target_bytes = upsert_keys.target_bytes.as_slice();
+// /// Plan upsert-caused deletions: find rows matching upsert keys, tagged as `Upsert`.
+// fn plan_key_upserts<'a>(
+//     array_len: usize,
+//     values_buf: &'a Buffer,
+//     offsets: &'a OffsetBuffer<i32>,
+//     upsert_keys: &'a UpsertTransform,
+// ) -> Result<KeyUpsertPlan<'a>> {
+//     let target_bytes = upsert_keys.target_bytes.as_slice();
 
-    let target_ranges = find_matching_key_ranges(
-        array_len,
-        values_buf,
-        offsets,
-        target_bytes,
-        KeyTransformRangeType::Upsert,
-    )?;
+//     let target_ranges = find_matching_key_ranges(
+//         array_len,
+//         values_buf,
+//         offsets,
+//         target_bytes,
+//         KeyTransformRangeType::Upsert,
+//     )?;
 
-    Ok(KeyUpsertPlan {
-        target_keys: target_bytes,
-        ranges: target_ranges.ranges,
-        counts: target_ranges.counts,
-        total_upsert_deletions: target_ranges.total_matches,
-    })
-}
+//     Ok(KeyUpsertPlan {
+//         target_keys: target_bytes,
+//         ranges: target_ranges.ranges,
+//         counts: target_ranges.counts,
+//         total_upsert_deletions: target_ranges.total_matches,
+//     })
+// }
 
 // The return type from `find_matching_key_ranges`
 struct KeyTransformTargetRanges {
@@ -2312,15 +2394,13 @@ fn calculate_new_keys_buffer_len(
     key_arr_values_buffer: &Buffer,
     replacement_plan: Option<&KeyReplacementPlan<'_>>,
     delete_plan: Option<&KeyDeletePlan<'_>>,
-    upsert_plan: Option<&KeyUpsertPlan<'_>>,
 ) -> usize {
     let all_replaced_keys_same_len = replacement_plan
         .map(|r| r.all_replacements_same_len)
         .unwrap_or(true);
     let total_deletions = delete_plan.map(|d| d.total_deletions).unwrap_or(0);
-    let total_upsert_deletions = upsert_plan.map(|u| u.total_upsert_deletions).unwrap_or(0);
 
-    if all_replaced_keys_same_len && total_deletions == 0 && total_upsert_deletions == 0 {
+    if all_replaced_keys_same_len && total_deletions == 0 {
         key_arr_values_buffer.len()
     } else {
         let replacement_len_delta = replacement_plan
@@ -2337,17 +2417,8 @@ fn calculate_new_keys_buffer_len(
                     .sum()
             })
             .unwrap_or(0);
-        let count_upsert_deleted_bytes: usize = upsert_plan
-            .map(|u| {
-                (0..u.counts.len())
-                    .map(|i| u.counts[i] * u.target_keys[i].len())
-                    .sum()
-            })
-            .unwrap_or(0);
 
-        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize
-            - count_deleted_bytes
-            - count_upsert_deleted_bytes
+        (key_arr_values_buffer.len() as i32 + replacement_len_delta) as usize - count_deleted_bytes
     }
 }
 
@@ -3698,7 +3769,12 @@ mod test {
             )
             .unwrap();
 
-            let result = transform_attributes(&record_batch, &transform).unwrap();
+            let result = transform_attributes(
+                &record_batch,
+                &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+                &transform,
+            )
+            .unwrap();
 
             let types = UInt8Array::from_iter_values(std::iter::repeat_n(
                 AttributeValueType::Str as u8,
@@ -3851,6 +3927,7 @@ mod test {
 
             let result = transform_attributes(
                 &record_batch,
+                &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
                 &AttributesTransform {
                     insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
@@ -4101,7 +4178,12 @@ mod test {
             )
             .unwrap();
 
-            let result = transform_attributes(&input, &transform).unwrap();
+            let result = transform_attributes(
+                &input,
+                &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+                &transform,
+            )
+            .unwrap();
 
             let expected = RecordBatch::try_new(
                 schema.clone(),
@@ -4162,6 +4244,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
@@ -4216,6 +4299,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4258,6 +4342,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4343,6 +4428,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4423,6 +4509,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4485,6 +4572,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4552,6 +4640,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: None,
@@ -4620,6 +4709,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
@@ -4700,6 +4790,7 @@ mod test {
 
         let result = transform_attributes(
             &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
             &AttributesTransform {
                 insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
@@ -5379,7 +5470,11 @@ mod test {
             false,
         )])));
         for tx in test_cases {
-            let result = transform_attributes(&batch, &tx);
+            let result = transform_attributes(
+                &batch,
+                &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+                &tx,
+            );
             assert!(matches!(
                 result,
                 Err(Error::InvalidAttributeTransform { .. })
@@ -5421,12 +5516,22 @@ mod test {
             upsert: None,
         };
 
-        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (with_stats, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
         assert_eq!(stats.renamed_entries, 2);
         assert_eq!(stats.deleted_entries, 1);
 
         // parity with original transform
-        let plain = transform_attributes(&input, &tx).unwrap();
+        let plain = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
         assert_eq!(with_stats, plain);
     }
 
@@ -5471,11 +5576,21 @@ mod test {
             upsert: None,
         };
 
-        let (with_stats, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (with_stats, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
         assert_eq!(stats.renamed_entries, 2);
         assert_eq!(stats.deleted_entries, 1);
 
-        let plain = transform_attributes(&input, &tx).unwrap();
+        let plain = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
         assert_eq!(with_stats, plain);
     }
 
@@ -7104,8 +7219,9 @@ mod insert_tests {
             upsert: None,
         };
 
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
         let (result, stats) =
-            transform_attributes_with_stats(&input, &tx).expect("transform failed");
+            transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
 
         assert_eq!(stats.inserted_entries, 2);
 
@@ -7135,8 +7251,9 @@ mod insert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
             .unwrap();
+        let vals = vals.downcast_dict::<StringArray>().unwrap();
         let v2 = vals.value(2);
         let v3 = vals.value(3);
         assert_eq!(v2, "prod");
@@ -7179,7 +7296,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.deleted_entries, 1);
         assert_eq!(stats.inserted_entries, 1);
@@ -7231,7 +7353,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // No inserts should happen because the key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -7293,7 +7420,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0, 1])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Should insert:
         // - parent 0: "c" (not "a" because it exists)
@@ -7344,7 +7476,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7400,7 +7537,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7454,7 +7596,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7510,7 +7657,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 4);
         assert_eq!(result.num_rows(), 5); // 1 original + 4 inserted
@@ -7560,7 +7712,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7610,7 +7767,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // No inserts because key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -7664,7 +7826,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Only 1 insert (new_key), existing_key should be skipped
         assert_eq!(stats.inserted_entries, 1);
@@ -7693,7 +7860,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // No parents to insert into
         assert_eq!(stats.inserted_entries, 0);
@@ -7747,7 +7919,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // 1 + 1 + 2 = 4 inserts
         assert_eq!(stats.inserted_entries, 4);
@@ -7791,7 +7968,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 2);
         assert_eq!(result.num_rows(), 4);
@@ -7836,7 +8018,12 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // No inserts because key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -8053,7 +8240,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Should have upserted 1 entry (insert, since key didn't exist)
         assert_eq!(stats.upserted_entries, 1);
@@ -8106,7 +8298,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Should have upserted 1 entry (update, since key already existed)
         assert_eq!(stats.upserted_entries, 1);
@@ -8168,7 +8365,12 @@ mod upsert_tests {
             ]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Should have upserted 4 entries (2 parents * 2 keys)
         assert_eq!(stats.upserted_entries, 4);
@@ -8233,7 +8435,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -8281,7 +8488,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -8329,7 +8541,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -8382,7 +8599,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(stats.upserted_entries, 1);
@@ -8448,7 +8670,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.deleted_entries, 1);
         assert_eq!(stats.upserted_entries, 1);
@@ -8504,7 +8731,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.upserted_entries, 2);
         assert_eq!(result.num_rows(), 2);
@@ -8542,7 +8774,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // No parents exist, so nothing to upsert
         assert_eq!(stats.upserted_entries, 0);
@@ -8595,7 +8832,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -8668,7 +8910,12 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
+            &tx,
+        )
+        .unwrap();
 
         // Verify data correctness: should have 4 rows
         // parent 0: "a"="2" (upserted)

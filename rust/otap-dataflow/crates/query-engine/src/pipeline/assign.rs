@@ -36,13 +36,13 @@ use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
+use otap_df_pdata::otap::transform::upsert_attributes::{AttributeUpsert, upsert_attributes};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attributes::{AttributeUpsert, upsert_attributes};
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
@@ -57,8 +57,6 @@ use crate::pipeline::expr::{
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
-
-mod attributes;
 
 /// Empty placeholder record batch used when assigning attributes in cases where there is not a
 /// pre-existing attributes record batch

@@ -3,6 +3,7 @@
 
 //! Implementations of [`PipelineStage`] for processing attributes
 
+use arrow::array::{StructArray, UInt16Array};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -10,6 +11,7 @@ use datafusion::execution::context::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::schema::consts;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -43,13 +45,53 @@ impl PipelineStage for AttributeTransformPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        let attrs_payload_type = match self.attrs_id {
-            AttributesIdentifier::Root => match otap_batch {
-                OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-                _ => ArrowPayloadType::MetricAttrs,
-            },
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+        let root_record_batch = match otap_batch.root_record_batch() {
+            Some(root_rb) => root_rb,
+            None => {
+                // nothing to do
+                return Ok(otap_batch);
+            }
+        };
+
+        let (attrs_payload_type, id_col) = match self.attrs_id {
+            AttributesIdentifier::Root => {
+                let attrs_payload_type = match otap_batch {
+                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                };
+                let id_col = root_record_batch.column_by_name(consts::ID);
+                (attrs_payload_type, id_col)
+            }
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let struct_col_name = match payload_type {
+                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                    other => {
+                        return Err(Error::InvalidPipelineError {
+                            cause: format!("Unsupported attributes payload type {other:?}"),
+                            query_location: None,
+                        });
+                    }
+                };
+
+                // access the ID column from the nested Resource/Scope struct
+                let id_col = root_record_batch
+                    .column_by_name(struct_col_name)
+                    .map(|s| {
+                        s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                            Error::ExecutionError {
+                                cause: format!(
+                                    "invalid struct column. found type {:?}",
+                                    s.data_type()
+                                ),
+                            }
+                        })
+                    })
+                    .transpose()?
+                    .and_then(|s| s.column_by_name(consts::ID));
+                (payload_type, id_col)
+            }
         };
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
@@ -60,12 +102,16 @@ impl PipelineStage for AttributeTransformPipelineStage {
             }
         };
 
+        // TODO maybe should have a lazy static Arc here instead of creating a new Arc
+        // for every transform - or better yet should the function accept optional?
+        let id_col = id_col
+            .map(|id_col| Arc::clone(id_col))
+            .unwrap_or(Arc::new(UInt16Array::new_null(0)));
+
         // transform attributes
-        let attrs_transformed =
-            transform_attributes(attrs_record_batch, &self.transform).map_err(|e| {
-                Error::ExecutionError {
-                    cause: format!("error transforming attributes {e}"),
-                }
+        let attrs_transformed = transform_attributes(attrs_record_batch, &id_col, &self.transform)
+            .map_err(|e| Error::ExecutionError {
+                cause: format!("error transforming attributes {e}"),
             })?;
 
         if attrs_transformed.num_rows() == 0 {
