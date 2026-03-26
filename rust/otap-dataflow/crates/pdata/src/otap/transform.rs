@@ -726,6 +726,7 @@ impl InsertTransform {
         Self { entries }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -743,6 +744,7 @@ impl UpsertTransform {
         Self { entries }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -847,7 +849,7 @@ impl AttributesTransform {
             .map(|u| !u.is_empty())
             .unwrap_or_default();
 
-        return does_inserts || does_upserts;
+        does_inserts || does_upserts
     }
 
     /// Validates the attribute transform operation. The current rule is that no key can be
@@ -1018,9 +1020,7 @@ pub fn apply_attribute_transform(
                     // fill nulls in the existing ID column
                     let new_ids = try_fill_null_ids(existing_id_col)?;
                     let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
-                    otap_batch
-                        .set(parent_payload_type, new_parent_batch)
-                        .unwrap();
+                    otap_batch.set(parent_payload_type, new_parent_batch)?;
                     new_ids
                 } else {
                     // no need to fill in nulls b/c there aren't any
@@ -1041,9 +1041,7 @@ pub fn apply_attribute_transform(
                     )),
                 };
                 let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
-                otap_batch
-                    .set(parent_payload_type, new_parent_batch)
-                    .unwrap();
+                otap_batch.set(parent_payload_type, new_parent_batch)?;
                 new_ids
             }
         }
@@ -1066,7 +1064,9 @@ pub fn apply_attribute_transform(
     // TODO if the ID column has transport optimized encoding, we need to remove it.
 
     let mut attrs_record_batch = otap_batch.get(attrs_payload_type);
-    if attrs_record_batch.is_none() && id_column.len() > 0 && transform.may_create_new_attributes()
+    if attrs_record_batch.is_none()
+        && !id_column.is_empty()
+        && transform.may_create_new_attributes()
     {
         // we need to insert some new attributes, but the current attribute record
         // batch doesn't exist! pass in a placeholder ...
@@ -1118,11 +1118,9 @@ fn try_fill_null_ids(id_column: &ArrayRef) -> Result<ArrayRef> {
             let new_ids = try_fill_null_ids_primitive::<UInt32Type>(id_column)?;
             Ok(Arc::new(new_ids))
         }
-        dt => {
-            return Err(Error::InvalidIdColumnType {
-                data_type: dt.clone(),
-            });
-        }
+        dt => Err(Error::InvalidIdColumnType {
+            data_type: dt.clone(),
+        }),
     }
 }
 
@@ -1134,7 +1132,7 @@ fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
     };
     let mut curr_max = max(id_column);
     let one = T::default_value()
-        .add_checked(T::Native::from_usize(1).unwrap())
+        .add_checked(T::Native::from_usize(1).expect("can convert 1 to ID type"))
         // safety: adding zero to one will not overflow
         .expect("add zero to one");
 
@@ -1159,17 +1157,25 @@ fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
     let mut last_valid_segment_end = 0;
 
     for (valid_start, valid_end) in nulls.valid_slices() {
-        for i in last_valid_segment_end..valid_start {
+        for new_id in new_ids
+            .iter_mut()
+            .take(valid_start)
+            .skip(last_valid_segment_end)
+        {
             let next_id = get_next_id()?;
-            new_ids[i] = next_id;
+            *new_id = next_id;
         }
         last_valid_segment_end = valid_end;
     }
 
     // fill in the last segment
-    for i in last_valid_segment_end..id_column.len() {
+    for new_id in new_ids
+        .iter_mut()
+        .take(id_column.len())
+        .skip(last_valid_segment_end)
+    {
         let next_id = get_next_id()?;
-        new_ids[i] = next_id;
+        *new_id = next_id;
     }
 
     Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
@@ -1228,7 +1234,10 @@ pub fn transform_attributes_with_stats(
 /// Parameters:
 /// - `attrs_record_batch` - the record batch on which to apply the transform
 /// - `id_column` - the ID column from the parent record batch. This is used to determine the
-///   unique list of all IDs when creating new attributes during insert/upsert operations.
+///   unique list of all IDs when creating new attributes during insert/upsert operations. IF such
+///   operations are to be performed, ID column should be plain encoded (all delta encoding
+///   removed) perform any inserts or updates. Otherwise it is not necessary to remove delta
+///   encoding and if no ID column is available an empty placeholder can be passed.
 /// - `transform` - the attribute transform to apply
 /// - `compute_stats` - whether to populate the transform stats`
 pub fn transform_attributes_impl(
@@ -1482,7 +1491,7 @@ pub fn transform_attributes_impl(
     let needs_upsert = upsert_transform.map(|u| !u.is_empty()).unwrap_or_default();
 
     if needs_insert || needs_upsert {
-        let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;
+        let parent_ids_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
         rb = if parent_ids_col.data_type() == &DataType::UInt16 {
             apply_inserts_and_upserts::<UInt16Type>(
                 insert_transform,
@@ -2919,7 +2928,7 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
     if let Some(inserts) = insert_transform {
         for (attrs_key, insert_literal) in &inserts.entries {
             let existing_key_mask =
-                eq(&key_column, &StringArray::new_scalar(&attrs_key)).map_err(|_| {
+                eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
                     Error::UnsupportedStringColumnType {
                         data_type: key_column.data_type().clone(),
                     }
@@ -2947,7 +2956,7 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
             stats.inserted_entries += parent_ids.len() as u64;
 
             attr_upsert_args.push(AttributeUpsert {
-                attrs_key: &attrs_key,
+                attrs_key,
                 existing_key_mask: BooleanArray::new(
                     BooleanBuffer::new_unset(existing_key_mask.len()),
                     None,
@@ -2961,7 +2970,7 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
     if let Some(upserts) = upsert_transform {
         for (attrs_key, upsert_literal) in &upserts.entries {
             let existing_key_mask =
-                eq(&key_column, &StringArray::new_scalar(&attrs_key)).map_err(|_| {
+                eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
                     Error::UnsupportedStringColumnType {
                         data_type: key_column.data_type().clone(),
                     }
@@ -2989,7 +2998,7 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
             stats.upserted_entries += parent_ids.len() as u64;
 
             attr_upsert_args.push(AttributeUpsert {
-                attrs_key: &attrs_key,
+                attrs_key,
                 existing_key_mask,
                 new_values: ColumnarValue::Scalar(upsert_literal.into()),
                 upsert_parent_ids: PrimitiveArray::<T>::from_iter_values(parent_ids),
@@ -3081,7 +3090,7 @@ fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) ->
             if id_column.nulls().is_some() {
                 parent_id_set.populate(id_column.iter().flatten());
             } else {
-                parent_id_set.populate(id_column.values().iter().map(|i| *i));
+                parent_id_set.populate(id_column.values().iter().copied());
             }
         }
         DataType::Dictionary(k, _) => match k.as_ref() {
@@ -7020,7 +7029,6 @@ mod insert_tests {
     use super::*;
     use crate::schema::consts;
     use arrow::array::*;
-    use arrow::datatypes::*;
     use std::sync::Arc;
 
     #[test]
@@ -8092,7 +8100,6 @@ mod upsert_tests {
     use super::*;
     use crate::schema::consts;
     use arrow::array::*;
-    use arrow::datatypes::*;
     use std::sync::Arc;
 
     #[test]

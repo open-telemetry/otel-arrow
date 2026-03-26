@@ -7,7 +7,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::slice;
 use std::sync::{Arc, LazyLock};
 
 use arrow::util::bit_iterator::BitSliceIterator;
@@ -566,7 +565,7 @@ fn merge_parent_id_column_dict<T: ArrowPrimitiveType>(
         }
     }
 
-    let result_values = if new_values.len() > 0 {
+    let result_values = if !new_values.is_empty() {
         let mut new_dict_values = Vec::with_capacity(existing_dict_values.len() + new_values.len());
         new_dict_values.extend_from_slice(existing_dict_values_primitive.values());
         new_dict_values.extend_from_slice(&new_values);
@@ -1251,8 +1250,10 @@ fn merge_value_column<T: ArrowPrimitiveType>(
 /// If the column is already plain, returns a clone of the Arc.
 fn decode_to_plain(col: &ArrayRef) -> Result<ArrayRef> {
     match col.data_type() {
-        // TODO NO UNWRAP NEED ERROR
-        DataType::Dictionary(_, value_type) => Ok(cast(col, value_type.as_ref()).unwrap()),
+        DataType::Dictionary(_, value_type) => {
+            // safety: cast from Dict<_, T> to T will succeed - the types are compatible
+            Ok(cast(col, value_type.as_ref()).expect("can cast to dict value type"))
+        }
         _ => Ok(Arc::clone(col)),
     }
 }
@@ -1588,7 +1589,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
     Ok(Some(UnifiedDictMulti {
         values: unified_values,
         existing_keys,
-        existing_nulls: existing_col.map(|col| col.nulls().cloned()).flatten(),
+        existing_nulls: existing_col.and_then(|col| col.nulls().cloned()),
         new_keys,
     }))
 }
@@ -1616,7 +1617,7 @@ fn extract_dict_any_info<'a>(
             let keys: &[u16] = dict.keys().values();
             Ok((Arc::clone(dict.values()), Cow::Borrowed(keys)))
         }
-        other => Err(Error::UnsupportedDictionaryKeyType {
+        _ => Err(Error::UnsupportedDictionaryKeyType {
             expect_oneof: vec![DataType::UInt8, DataType::UInt16],
             actual: key_type.clone(),
         }),

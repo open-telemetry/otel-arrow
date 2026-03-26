@@ -105,7 +105,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
         // TODO maybe should have a lazy static Arc here instead of creating a new Arc
         // for every transform - or better yet should the function accept optional?
         let id_col = id_col
-            .map(|id_col| Arc::clone(id_col))
+            .map(Arc::clone)
             .unwrap_or(Arc::new(UInt16Array::new_null(0)));
 
         // transform attributes
