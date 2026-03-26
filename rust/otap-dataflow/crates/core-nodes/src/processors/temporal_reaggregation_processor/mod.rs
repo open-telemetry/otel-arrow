@@ -27,7 +27,6 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::views::otap::OtapMetricsView;
-use otap_df_pdata::views::otap::common::OtapAttributeView;
 use otap_df_telemetry::metrics::MetricSet;
 
 mod accumulator;
@@ -38,10 +37,6 @@ mod metrics;
 
 use self::accumulator::MetricAggregator;
 use self::config::Config;
-use self::identity::{
-    AttributeHashBuffer, DataPointIdAssigner, MetricId, MetricIdAssigner, ResourceId,
-    ResourceIdAssigner, ScopeId, ScopeIdAssigner, StreamId, U16IdAssigner, U32IdAssigner,
-};
 use self::metrics::TemporalReaggregationMetrics;
 
 /// The URN for the temporal reaggregation processor.
@@ -53,19 +48,8 @@ pub struct TemporalReaggregationProcessor {
     collection_period: Duration,
     /// Whether the periodic flush timer has been started.
     timer_started: bool,
-    /// Reusable buffer for attribute hashing. Stored as `'static` between
-    /// calls and recycled to the local lifetime via [`AttributeHashBuffer::recycle`]
-    /// at the start of each `process()` invocation.
-    attr_buf: AttributeHashBuffer<OtapAttributeView<'static>>,
     /// Accumulates metrics data over the collection interval.
     accumulator: MetricAggregator,
-    // resource_ids: ResourceIdAssigner,
-    // scope_ids: ScopeIdAssigner,
-    // metric_ids: MetricIdAssigner,
-    // number_ids: DataPointIdAssigner,
-    // histogram_ids: DataPointIdAssigner,
-    // exp_histogram_ids: DataPointIdAssigner,
-    // summary_ids: DataPointIdAssigner,
 }
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
@@ -115,15 +99,7 @@ impl TemporalReaggregationProcessor {
             metrics,
             collection_period: config.period,
             timer_started: false,
-            attr_buf: AttributeHashBuffer::new(),
             accumulator: MetricAggregator::new(),
-            // resource_ids: ResourceIdAssigner::new(),
-            // scope_ids: ScopeIdAssigner::new(),
-            // metric_ids: MetricIdAssigner::new(),
-            // number_ids: DataPointIdAssigner::new(),
-            // histogram_ids: DataPointIdAssigner::new(),
-            // exp_histogram_ids: DataPointIdAssigner::new(),
-            // summary_ids: DataPointIdAssigner::new(),
         })
     }
 
@@ -167,22 +143,11 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
 
                 match pdata.signal_type() {
                     SignalType::Metrics => {
-                        // Recycle the attribute hash buffer for this call.
-                        let attr_buf =
-                            std::mem::replace(&mut self.attr_buf, AttributeHashBuffer::new());
-                        let mut attr_buf: AttributeHashBuffer<OtapAttributeView<'_>> =
-                            attr_buf.recycle();
-
-                        // Build a view over the incoming metrics and ingest.
                         if let OtapPayload::OtapArrowRecords(ref records) = *pdata.payload_ref() {
                             if let Ok(view) = OtapMetricsView::try_from(records) {
-                                self.accumulator.ingest(view, &mut attr_buf);
+                                self.accumulator.ingest(view);
                             }
                         }
-
-                        // Recycle back to 'static for storage.
-                        self.attr_buf = attr_buf.recycle();
-
                         // TODO (Stage 3b): Check stream overflow and flush if needed.
                     }
                     // Non-metrics signals pass through unchanged.

@@ -24,6 +24,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use hashbrown::Equivalent;
 use otap_df_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
@@ -60,7 +61,7 @@ where
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.ids.insert(key.clone(), id);
+        _ = self.ids.insert(key.clone(), id);
         id
     }
 
@@ -92,7 +93,7 @@ where
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.ids.insert(key.clone(), id);
+        _ = self.ids.insert(key.clone(), id);
         id
     }
 
@@ -106,28 +107,23 @@ where
 // View bridge functions
 // ---------------------------------------------------------------------------
 
-/// Compute a [`ResourceId`] from a [`ResourceView`].
-pub fn resource_id_of<'a, R: ResourceView<Attribute<'a> = A>, A: AttributeView>(
-    resource: &'a R,
-    buf: &mut AttributeHashBuffer<A>,
-) -> ResourceId {
-    ResourceId {
-        attrs: AttributeHash::of(buf, resource.attributes()),
-    }
+/// Compute a [`ResourceId`] from a pre-computed attribute hash.
+pub fn resource_id_of(attrs: AttributeHash) -> ResourceId {
+    ResourceId { attrs }
 }
 
-/// Compute a [`ScopeId`] from a [`ResourceId`] and an
-/// [`InstrumentationScopeView`].
-pub fn scope_id_of<'a, S: InstrumentationScopeView<Attribute<'a> = A>, A: AttributeView>(
+/// Compute a [`ScopeId`] from a [`ResourceId`], a [`InstrumentationScopeView`],
+/// and a pre-computed attribute hash.
+pub fn scope_id_of<'a, S: InstrumentationScopeView>(
     resource_id: ResourceId,
     scope: &'a S,
-    buf: &mut AttributeHashBuffer<A>,
+    attrs: AttributeHash,
 ) -> ScopeId<'a> {
     ScopeId {
         resource: resource_id,
         name: Cow::Borrowed(scope.name().unwrap_or(b"")),
         version: Cow::Borrowed(scope.version().unwrap_or(b"")),
-        attrs: AttributeHash::of(buf, scope.attributes()),
+        attrs,
     }
 }
 
@@ -174,16 +170,11 @@ pub fn metric_id_of<'a, M: MetricView>(
     })
 }
 
-/// Compute a [`StreamId`] from a [`MetricId`] and a data-point attribute
-/// iterator.
-pub fn stream_id_of<'a, A: AttributeView>(
-    metric_id: MetricId<'a>,
-    dp_attrs: impl Iterator<Item = A>,
-    buf: &mut AttributeHashBuffer<A>,
-) -> StreamId<'a> {
+/// Compute a [`StreamId`] from a [`MetricId`] and a pre-computed attribute hash.
+pub fn stream_id_of<'a>(metric_id: MetricId<'a>, attrs: AttributeHash) -> StreamId<'a> {
     StreamId {
         metric: metric_id,
-        attrs: AttributeHash::of(buf, dp_attrs),
+        attrs,
     }
 }
 
@@ -278,6 +269,62 @@ impl<'a> ScopeId<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId {
     pub(super) attrs: AttributeHash,
+}
+
+// ---------------------------------------------------------------------------
+// hashbrown::Equivalent wrappers
+//
+// We can't impl Equivalent<XxxId<'static>> for XxxId<'a> directly because it
+// conflicts with the blanket impl when 'a = 'static. Instead we use newtype
+// wrappers that hashbrown::HashMap::get accepts as lookup keys.
+// ---------------------------------------------------------------------------
+
+/// Wrapper for looking up a borrowed [`ScopeId`] in a
+/// `HashMap<ScopeId<'static>, _>`.
+pub struct ScopeIdRef<'a>(pub &'a ScopeId<'a>);
+
+impl<'a> Equivalent<ScopeId<'static>> for ScopeIdRef<'a> {
+    fn equivalent(&self, key: &ScopeId<'static>) -> bool {
+        self.0 == key
+    }
+}
+
+impl<'a> std::hash::Hash for ScopeIdRef<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+/// Wrapper for looking up a borrowed [`MetricId`] in a
+/// `HashMap<MetricId<'static>, _>`.
+pub struct MetricIdRef<'a>(pub &'a MetricId<'a>);
+
+impl<'a> Equivalent<MetricId<'static>> for MetricIdRef<'a> {
+    fn equivalent(&self, key: &MetricId<'static>) -> bool {
+        self.0 == key
+    }
+}
+
+impl<'a> std::hash::Hash for MetricIdRef<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+/// Wrapper for looking up a borrowed [`StreamId`] in a
+/// `HashMap<StreamId<'static>, _>`.
+pub struct StreamIdRef<'a>(pub &'a StreamId<'a>);
+
+impl<'a> Equivalent<StreamId<'static>> for StreamIdRef<'a> {
+    fn equivalent(&self, key: &StreamId<'static>) -> bool {
+        self.0 == key
+    }
+}
+
+impl<'a> std::hash::Hash for StreamIdRef<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
 }
 
 // ---------------------------------------------------------------------------
