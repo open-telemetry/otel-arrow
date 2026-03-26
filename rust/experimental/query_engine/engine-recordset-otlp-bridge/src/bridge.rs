@@ -313,7 +313,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                     let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(map.len());
 
                     for (key, value) in map.take_values().drain() {
-                        push_value(&schema, &mut log_record, &mut attributes, key, value);
+                        push_value(schema, &mut log_record, &mut attributes, key, value);
                     }
 
                     log_record.with_attributes(attributes)
@@ -325,7 +325,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                     );
 
                     for (key, value) in summary.group_by_values {
-                        push_value(&schema, &mut log_record, &mut attributes, key, value);
+                        push_value(schema, &mut log_record, &mut attributes, key, value);
                     }
 
                     for (key, value) in summary.aggregation_values {
@@ -334,7 +334,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                                 let avg = sum.to_double() / count as f64;
 
                                 push_value(
-                                    &schema,
+                                    schema,
                                     &mut log_record,
                                     &mut attributes,
                                     key,
@@ -343,7 +343,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                             }
                             SummaryAggregation::Count(v) => {
                                 push_value(
-                                    &schema,
+                                    schema,
                                     &mut log_record,
                                     &mut attributes,
                                     key,
@@ -351,7 +351,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                                 );
                             }
                             SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
-                                push_value(&schema, &mut log_record, &mut attributes, key, v);
+                                push_value(schema, &mut log_record, &mut attributes, key, v);
                             }
                             SummaryAggregation::Sum(v) => {
                                 let v = match v {
@@ -362,7 +362,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                                         OwnedValue::Integer(IntegerValueStorage::new(i))
                                     }
                                 };
-                                push_value(&schema, &mut log_record, &mut attributes, key, v);
+                                push_value(schema, &mut log_record, &mut attributes, key, v);
                             }
                         }
                     }
@@ -414,7 +414,10 @@ fn push_value(
     key: Box<str>,
     value: OwnedValue,
 ) {
-    if let Some(_) = schema.get_schema_for_key(schema.normalize_key(&key)) {
+    if schema
+        .get_schema_for_key(schema.normalize_key(&key))
+        .is_some()
+    {
         log_record.set(&key, ResolvedValue::Computed(value));
     } else {
         attributes.push((key, value.into()));
