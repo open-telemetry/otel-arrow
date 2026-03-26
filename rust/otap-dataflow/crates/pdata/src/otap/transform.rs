@@ -16,7 +16,7 @@ use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer, ScalarBu
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, cast, filter, not};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type, UInt32Type,
 };
 use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
@@ -1187,104 +1187,35 @@ pub fn transform_attributes_impl(
         }
     };
 
-    // TODO this is ugly
-    let num_inserts = transform
-        .insert
-        .as_ref()
-        .map(|i| i.entries.len())
-        .unwrap_or(0);
-    let num_upserts = transform
-        .upsert
-        .as_ref()
-        .map(|u| u.entries.len())
-        .unwrap_or(0);
+    // handle upserts or inserts
+    let insert_transform = transform.insert.as_ref();
+    let needs_insert = insert_transform
+        .map(|i| !i.entries.is_empty())
+        .unwrap_or_default();
+    let upsert_transform = transform.upsert.as_ref();
+    let needs_upsert = upsert_transform
+        .map(|u| !u.entries.is_empty())
+        .unwrap_or_default();
 
-    if num_inserts + num_upserts > 0 {
-        // TODO we could materialize parent_ids way down here where it's actually neeeded ...
-
-        let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts);
-
-        let mut parent_id_set = IdBitmap::new();
-        populate_parent_id_set(&mut parent_id_set, id_column)?;
-        let key_column = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
-        let parent_ids_col = get_required_array(&rb, consts::PARENT_ID)?;
-
-        let mut existing_id_set = IdBitmap::new();
-
-        if let Some(inserts) = transform.insert.as_ref() {
-            for (attrs_key, insert_literal) in &inserts.entries {
-                // TODO no unwrap
-                let existing_key_mask =
-                    eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
-                // TODO no unwrap (pretty sure we can expect ...)
-                let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
-                populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
-
-                // TODO - any way to reuse this?
-                let mut parent_ids =
-                    Vec::with_capacity((parent_id_set.len() - existing_id_set.len()) as usize);
-                for id in parent_id_set.iter() {
-                    if existing_id_set.contains(id) {
-                        continue;
-                    }
-                    parent_ids.push(id as u16);
-                }
-
-                stats.inserted_entries += parent_ids.len() as u64;
-
-                attr_upsert_args.push(AttributeUpsert {
-                    attrs_key: &attrs_key,
-                    existing_key_mask: BooleanArray::new(
-                        BooleanBuffer::new_unset(existing_key_mask.len()),
-                        None,
-                    ),
-                    new_values: ColumnarValue::Scalar(insert_literal.into()),
-                    upsert_parent_ids: UInt16Array::from(parent_ids),
-                })
-            }
+    if needs_insert || needs_upsert {
+        let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;
+        rb = if parent_ids_col.data_type() == &DataType::UInt16 {
+            do_inserts_and_upserts::<UInt16Type>(
+                insert_transform,
+                upsert_transform,
+                id_column,
+                rb,
+                &mut stats,
+            )?
+        } else {
+            do_inserts_and_upserts::<UInt32Type>(
+                insert_transform,
+                upsert_transform,
+                id_column,
+                rb,
+                &mut stats,
+            )?
         }
-
-        if let Some(upserts) = transform.upsert.as_ref() {
-            for (attrs_key, upsert_literal) in &upserts.entries {
-                // TODO no unwrap
-                let existing_key_mask =
-                    eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
-                // TODO no unwrap (pretty sure we can expect ...)
-                let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
-                populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
-
-                let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
-                for id in existing_parent_ids
-                    .as_any()
-                    .downcast_ref::<UInt16Array>()
-                    .unwrap()
-                    .iter()
-                    .flatten()
-                {
-                    parent_ids.push(id);
-                }
-                for id in parent_id_set.iter() {
-                    if existing_id_set.contains(id) {
-                        continue;
-                    }
-                    parent_ids.push(id as u16);
-                }
-
-                stats.upserted_entries += parent_ids.len() as u64;
-
-                println!("existing_key_mask = {existing_key_mask:?}");
-                println!("parent_ids = {parent_ids:?}");
-                attr_upsert_args.push(AttributeUpsert {
-                    attrs_key: &attrs_key,
-                    existing_key_mask,
-                    new_values: ColumnarValue::Scalar(upsert_literal.into()),
-                    upsert_parent_ids: UInt16Array::from(parent_ids),
-                })
-            }
-        }
-
-        // TODO need actual error
-        rb = upsert_attributes::upsert_attributes(&rb, &attr_upsert_args)?;
     }
 
     Ok((rb, stats))
@@ -2689,6 +2620,114 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
         Ok(indices)
     }
+}
+
+fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
+    insert_transform: Option<&InsertTransform>,
+    upsert_transform: Option<&UpsertTransform>,
+    id_column: &ArrayRef,
+    attrs_record_batch: RecordBatch,
+    stats: &mut TransformStats,
+) -> Result<RecordBatch> {
+    let num_inserts = insert_transform
+        .as_ref()
+        .map(|i| i.entries.len())
+        .unwrap_or(0);
+    let num_upserts = upsert_transform
+        .as_ref()
+        .map(|u| u.entries.len())
+        .unwrap_or(0);
+    let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts);
+
+    let mut parent_id_set = IdBitmap::new();
+    populate_parent_id_set(&mut parent_id_set, id_column)?;
+    let key_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+    let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;
+
+    let mut existing_id_set = IdBitmap::new();
+
+    if let Some(inserts) = insert_transform {
+        for (attrs_key, insert_literal) in &inserts.entries {
+            // TODO no unwrap
+            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
+            // TODO no unwrap (pretty sure we can expect ...)
+            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+            populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
+
+            // TODO - any way to reuse this?
+            let mut parent_ids =
+                Vec::with_capacity((parent_id_set.len() - existing_id_set.len()) as usize);
+            for id in parent_id_set.iter() {
+                if existing_id_set.contains(id) {
+                    continue;
+                }
+                // TODO no unwrap here (pretty sure we can expect)
+                parent_ids.push(T::Native::from_usize(id as usize).unwrap());
+            }
+
+            stats.inserted_entries += parent_ids.len() as u64;
+
+            attr_upsert_args.push(AttributeUpsert {
+                attrs_key: &attrs_key,
+                existing_key_mask: BooleanArray::new(
+                    BooleanBuffer::new_unset(existing_key_mask.len()),
+                    None,
+                ),
+                new_values: ColumnarValue::Scalar(insert_literal.into()),
+                upsert_parent_ids: PrimitiveArray::<T>::from_iter_values(parent_ids),
+            })
+        }
+    }
+
+    if let Some(upserts) = upsert_transform {
+        for (attrs_key, upsert_literal) in &upserts.entries {
+            // TODO no unwrap
+            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
+            // TODO no unwrap (pretty sure we can expect ...)
+            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+            populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
+
+            let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
+            populate_parent_id_vec::<T>(&mut parent_ids, &existing_parent_ids)?;
+            for id in parent_id_set.iter() {
+                if existing_id_set.contains(id) {
+                    continue;
+                }
+                parent_ids.push(T::Native::from_usize(id as usize).unwrap());
+            }
+
+            stats.upserted_entries += parent_ids.len() as u64;
+
+            attr_upsert_args.push(AttributeUpsert {
+                attrs_key: &attrs_key,
+                existing_key_mask,
+                new_values: ColumnarValue::Scalar(upsert_literal.into()),
+                upsert_parent_ids: PrimitiveArray::<T>::from_iter_values(parent_ids),
+            })
+        }
+    }
+
+    upsert_attributes::upsert_attributes::<T>(&attrs_record_batch, &attr_upsert_args)
+}
+
+fn populate_parent_id_vec<T: ArrowPrimitiveType>(
+    parent_id_vec: &mut Vec<T::Native>,
+    arr: &ArrayRef,
+) -> Result<()> {
+    match arr.data_type() {
+        DataType::Dictionary(k, _) => {
+            todo!("handle dictionary")
+        }
+        _ => {
+            if let Some(as_native) = arr.as_any().downcast_ref::<PrimitiveArray<T>>() {
+                parent_id_vec.extend(as_native.iter().flatten())
+            } else {
+                todo!("error it's an invalid type")
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) -> Result<()> {
