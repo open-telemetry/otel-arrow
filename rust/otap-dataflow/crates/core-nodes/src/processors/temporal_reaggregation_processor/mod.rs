@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
@@ -24,24 +25,29 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::OtapPayload;
+use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otap::common::OtapAttributeView;
 use otap_df_telemetry::metrics::MetricSet;
 
+mod accumulator;
 mod config;
+mod data_points;
 mod identity;
 mod metrics;
 
+use self::accumulator::MetricAggregator;
 use self::config::Config;
-use self::identity::AttributeHashBuffer;
+use self::identity::{
+    AttributeHashBuffer, DataPointIdAssigner, MetricId, MetricIdAssigner, ResourceId,
+    ResourceIdAssigner, ScopeId, ScopeIdAssigner, StreamId, U16IdAssigner, U32IdAssigner,
+};
 use self::metrics::TemporalReaggregationMetrics;
 
 /// The URN for the temporal reaggregation processor.
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
 
 /// The temporal reaggregation processor.
-///
-/// Currently this is a passthrough implementation. Aggregation logic will be
-/// added in a subsequent stage.
 pub struct TemporalReaggregationProcessor {
     metrics: MetricSet<TemporalReaggregationMetrics>,
     collection_period: Duration,
@@ -51,6 +57,15 @@ pub struct TemporalReaggregationProcessor {
     /// calls and recycled to the local lifetime via [`AttributeHashBuffer::recycle`]
     /// at the start of each `process()` invocation.
     attr_buf: AttributeHashBuffer<OtapAttributeView<'static>>,
+    /// Accumulates metrics data over the collection interval.
+    accumulator: MetricAggregator,
+    // resource_ids: ResourceIdAssigner,
+    // scope_ids: ScopeIdAssigner,
+    // metric_ids: MetricIdAssigner,
+    // number_ids: DataPointIdAssigner,
+    // histogram_ids: DataPointIdAssigner,
+    // exp_histogram_ids: DataPointIdAssigner,
+    // summary_ids: DataPointIdAssigner,
 }
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
@@ -101,14 +116,18 @@ impl TemporalReaggregationProcessor {
             collection_period: config.period,
             timer_started: false,
             attr_buf: AttributeHashBuffer::new(),
+            accumulator: MetricAggregator::new(),
+            // resource_ids: ResourceIdAssigner::new(),
+            // scope_ids: ScopeIdAssigner::new(),
+            // metric_ids: MetricIdAssigner::new(),
+            // number_ids: DataPointIdAssigner::new(),
+            // histogram_ids: DataPointIdAssigner::new(),
+            // exp_histogram_ids: DataPointIdAssigner::new(),
+            // summary_ids: DataPointIdAssigner::new(),
         })
     }
 
     /// Starts the periodic flush timer if it has not already been started.
-    ///
-    /// The timer fires `TimerTick` control messages at a fixed cadence equal
-    /// to `collection_period`. We defer starting the timer until the first
-    /// data message arrives so that idle processors do not generate ticks.
     async fn ensure_timer_started(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -118,6 +137,18 @@ impl TemporalReaggregationProcessor {
                 .start_periodic_timer(self.collection_period)
                 .await?;
             self.timer_started = true;
+        }
+        Ok(())
+    }
+
+    /// Flush accumulated metrics and send downstream.
+    async fn flush(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if let Some(batch) = self.accumulator.flush() {
+            let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(batch));
+            effect_handler.send_message_with_source_node(pdata).await?;
         }
         Ok(())
     }
@@ -132,31 +163,43 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(pdata) => {
-                // Start the periodic flush timer on first data arrival.
                 self.ensure_timer_started(effect_handler).await?;
 
-                // Retype the attribute hash buffer from 'static to the local
-                // lifetime so it can be used with views borrowed from `pdata`.
-                // The buffer's heap allocations are preserved across calls.
-                let attr_buf = std::mem::replace(&mut self.attr_buf, AttributeHashBuffer::new());
-                let mut attr_buf: AttributeHashBuffer<OtapAttributeView<'_>> = attr_buf.recycle();
+                match pdata.signal_type() {
+                    SignalType::Metrics => {
+                        // Recycle the attribute hash buffer for this call.
+                        let attr_buf =
+                            std::mem::replace(&mut self.attr_buf, AttributeHashBuffer::new());
+                        let mut attr_buf: AttributeHashBuffer<OtapAttributeView<'_>> =
+                            attr_buf.recycle();
 
-                // TODO: use attr_buf for identity computation in Stage 3.
-                let _ = &mut attr_buf;
+                        // Build a view over the incoming metrics and ingest.
+                        if let OtapPayload::OtapArrowRecords(ref records) = *pdata.payload_ref() {
+                            if let Ok(view) = OtapMetricsView::try_from(records) {
+                                self.accumulator.ingest(view, &mut attr_buf);
+                            }
+                        }
 
-                // Retype back to 'static for storage on the struct.
-                self.attr_buf = attr_buf.recycle();
+                        // Recycle back to 'static for storage.
+                        self.attr_buf = attr_buf.recycle();
 
-                // Passthrough: forward all data unchanged.
-                // Aggregation logic will be added in a subsequent stage.
-                effect_handler.send_message_with_source_node(pdata).await?;
+                        // TODO (Stage 3b): Check stream overflow and flush if needed.
+                    }
+                    // Non-metrics signals pass through unchanged.
+                    SignalType::Logs | SignalType::Traces => {
+                        effect_handler.send_message_with_source_node(pdata).await?;
+                    }
+                }
                 Ok(())
             }
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::TimerTick {} => {
-                    // Timer fired. In a future stage this will flush aggregated
-                    // state. For now, just record the metric.
+                    self.flush(effect_handler).await?;
                     self.metrics.flushes_timer.add(1);
+                    Ok(())
+                }
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush(effect_handler).await?;
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
@@ -179,7 +222,6 @@ mod tests {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_otap::testing::create_test_pdata;
-    use otap_df_pdata::OtapPayload;
     use otap_df_pdata::testing::fixtures::DataGenerator;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -243,18 +285,16 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_multiple_messages() {
+    fn test_passthrough_multiple_non_metrics() {
         let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
-                // Send logs
                 let logs_pdata = create_test_pdata();
                 ctx.process(Message::PData(logs_pdata))
                     .await
                     .expect("process logs");
 
-                // Send traces
                 let traces_pdata = create_traces_pdata();
                 ctx.process(Message::PData(traces_pdata))
                     .await
@@ -262,6 +302,29 @@ mod tests {
 
                 let output = ctx.drain_pdata().await;
                 assert_eq!(output.len(), 2, "expected two forwarded messages");
+            })
+            .validate(|ctx| async move {
+                let counters = ctx.counters();
+                counters.assert(0, 0, 0, 0);
+            });
+    }
+
+    #[test]
+    fn test_metrics_are_buffered_not_forwarded() {
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                let pdata = create_metrics_pdata();
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process metrics");
+
+                let output = ctx.drain_pdata().await;
+                assert!(
+                    output.is_empty(),
+                    "metrics should be buffered, not forwarded immediately"
+                );
             })
             .validate(|ctx| async move {
                 let counters = ctx.counters();
@@ -293,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn test_timer_tick_increments_flush_counter() {
+    fn test_timer_tick_with_no_data() {
         let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
@@ -303,11 +366,10 @@ mod tests {
                     .expect("timer tick should succeed");
 
                 let output = ctx.drain_pdata().await;
-                assert!(output.is_empty(), "timer tick should not emit data yet");
-
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("second timer tick should succeed");
+                assert!(
+                    output.is_empty(),
+                    "timer tick with no data should emit nothing"
+                );
             })
             .validate(|ctx| async move {
                 let counters = ctx.counters();
@@ -357,8 +419,7 @@ mod tests {
 
     fn try_create_processor(
         config: serde_json::Value,
-    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), otap_df_config::error::Error>
-    {
+    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), ConfigError> {
         let pipeline_ctx = create_test_pipeline_context();
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let node = test_node("temporal-reaggregation-config-test");
@@ -374,6 +435,15 @@ mod tests {
             rt.config(),
         )
         .map(|proc| (rt, proc))
+    }
+
+    fn create_metrics_pdata() -> OtapPdata {
+        let mut datagen = DataGenerator::new(3);
+        let metrics_data = datagen.generate_metrics();
+        let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
+            metrics_data,
+        ));
+        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
     }
 
     fn create_traces_pdata() -> OtapPdata {
