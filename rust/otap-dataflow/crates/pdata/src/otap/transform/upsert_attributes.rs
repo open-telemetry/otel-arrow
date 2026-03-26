@@ -181,9 +181,12 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
         let existing_col = existing_attrs.column(col_idx);
 
         let (merged_field, merged_col) = match col_name {
-            consts::PARENT_ID => {
-                merge_parent_id_column(field, existing_col, &resolved, total_num_inserts)?
-            }
+            consts::PARENT_ID => merge_parent_id_column(
+                field,
+                Arc::clone(existing_col),
+                &resolved,
+                total_num_inserts,
+            )?,
 
             consts::ATTRIBUTE_TYPE => merge_type_column(
                 field,
@@ -399,18 +402,18 @@ fn build_combined_mask<T: ArrowPrimitiveType>(
 /// directly into a single output buffer — no intermediate slices or concat allocations.
 fn merge_parent_id_column<T: ArrowPrimitiveType>(
     field: &Field,
-    existing_col: &ArrayRef,
+    mut existing_col: ArrayRef,
     resolved: &[ResolvedUpsert<'_, T>],
     total_num_inserts: usize,
 ) -> Result<(Field, ArrayRef)> {
     if total_num_inserts == 0 {
-        return Ok((field.as_ref().clone(), Arc::clone(existing_col)));
+        return Ok((field.as_ref().clone(), Arc::clone(&existing_col)));
     }
 
     // merge as dict if type is dict and all the values would fit
     if matches!(existing_col.data_type(), DataType::Dictionary(_, _)) {
         if let Some(merged_dict_column) =
-            merge_parent_id_column_dict(existing_col, resolved, total_num_inserts)?
+            merge_parent_id_column_dict(&existing_col, resolved, total_num_inserts)?
         {
             return Ok((
                 Field::new(
@@ -421,9 +424,13 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
                 merged_dict_column,
             ));
         }
-    }
 
-    // fall back to native parent ID
+        // fall back to native parent ID
+        // safety: if we're here, we know the existing col must be a dictionary array with
+        // the correct value type (u32), otherwise merge_parent_id_column_dict would have
+        // returned an error. Casting Dict<_, u32> to u32 is will succeed
+        existing_col = cast(&existing_col, &DataType::UInt32).expect("can safely cast to native")
+    }
 
     let num_existing = existing_col.len();
     let total_output_rows = num_existing + total_num_inserts;
@@ -453,7 +460,13 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
     }
 
     let result = make_array(mutable.freeze());
-    Ok((field.as_ref().clone(), result))
+    Ok((
+        field
+            .as_ref()
+            .clone()
+            .with_data_type(existing_col.data_type().clone()),
+        result,
+    ))
 }
 
 fn merge_parent_id_column_dict<T: ArrowPrimitiveType>(
@@ -2008,6 +2021,7 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::UInt32Type;
 
     /// Helper to build a Dict(u16, Utf8) array from a slice of strings.
     fn dict_utf8_u16(values: &[&str]) -> ArrayRef {
@@ -3510,5 +3524,246 @@ mod tests {
         assert_eq!(strs.value(3), "d"); // passthrough
         assert_eq!(strs.value(4), "new"); // insert from upsert 1
         assert_eq!(strs.value(5), "new"); // insert from upsert 1
+    }
+
+    // ---- merge_parent_id_column dict tests ----
+
+    /// Helper to build a Dict(u8, UInt32) array from a slice of u32 values.
+    fn dict_u32_u8(values: &[u32]) -> ArrayRef {
+        let plain = Arc::new(UInt32Array::from(values.to_vec())) as ArrayRef;
+        let dict_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        cast(&plain, &dict_type).unwrap()
+    }
+
+    /// Helper to build a Dict(u16, UInt32) array from a slice of u32 values.
+    fn dict_u32_u16(values: &[u32]) -> ArrayRef {
+        let plain = Arc::new(UInt32Array::from(values.to_vec())) as ArrayRef;
+        let dict_type =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32));
+        cast(&plain, &dict_type).unwrap()
+    }
+
+    /// Helper to build a minimal ResolvedUpsert<UInt32Type> for parent_id column tests.
+    fn parent_id_test_resolved<'a>(
+        parent_ids: &'a UInt32Array,
+        mask: &'a BooleanArray,
+        num_updates: usize,
+        num_inserts: usize,
+    ) -> ResolvedUpsert<'a, UInt32Type> {
+        ResolvedUpsert {
+            attrs_key: "test",
+            mask,
+            attr_value_type: AttributeValueType::Str,
+            target_col_name: Some(consts::ATTRIBUTE_STR),
+            new_values_array: None,
+            new_values_scalar: None,
+            upsert_parent_ids: parent_ids,
+            num_updates,
+            num_inserts,
+        }
+    }
+
+    /// Decode a potentially dict-encoded UInt32 column to a plain UInt32Array for assertions.
+    fn decode_parent_ids(col: &ArrayRef) -> Vec<u32> {
+        let plain = cast(col, &DataType::UInt32).unwrap();
+        let arr = plain
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("expected UInt32Array after cast");
+        arr.values().to_vec()
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_no_inserts() {
+        // No inserts — column should be returned unchanged (early-out path).
+        let existing = dict_u32_u8(&[0, 1, 0]);
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        let parent_ids = UInt32Array::from(Vec::<u32>::new());
+        let mask = BooleanArray::from(vec![false, false, false]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 0)];
+
+        let (_, result_col) = merge_parent_id_column(&field, existing, &resolved, 0).unwrap();
+
+        assert_eq!(result_col.len(), 3);
+        assert_eq!(decode_parent_ids(&result_col), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_u8_inserts_existing_values() {
+        // Existing: Dict(u8, u32) [0, 1, 0] (dict values [0, 1])
+        // Insert parent IDs: [0, 1] — all values already in dict
+        // Expected: 5 rows [0, 1, 0, 0, 1], output stays Dict(u8, _)
+        let existing = dict_u32_u8(&[0, 1, 0]);
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        let parent_ids = UInt32Array::from(vec![0u32, 1]);
+        let mask = BooleanArray::from(vec![false, false, false]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 2)];
+
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, 2).unwrap();
+
+        assert_eq!(result_col.len(), 5);
+        assert_eq!(decode_parent_ids(&result_col), vec![0, 1, 0, 0, 1]);
+        // Should stay as Dict(u8, _) since no new values were added.
+        assert!(
+            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt8),
+            "expected Dict(u8, UInt32) output, got {:?}",
+            result_field.data_type()
+        );
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_u8_inserts_novel_values() {
+        // Existing: Dict(u8, u32) [0, 1, 0] (dict values [0, 1])
+        // Insert parent IDs: [2, 3] — novel values
+        // Expected: 5 rows [0, 1, 0, 2, 3], dict values extended, output stays Dict(u8, _)
+        let existing = dict_u32_u8(&[0, 1, 0]);
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        let parent_ids = UInt32Array::from(vec![2u32, 3]);
+        let mask = BooleanArray::from(vec![false, false, false]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 2)];
+
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, 2).unwrap();
+
+        assert_eq!(result_col.len(), 5);
+        assert_eq!(decode_parent_ids(&result_col), vec![0, 1, 0, 2, 3]);
+        assert!(
+            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt8),
+            "expected Dict(u8, UInt32) output, got {:?}",
+            result_field.data_type()
+        );
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_u16_inserts() {
+        // Existing: Dict(u16, u32) [10, 20, 10] (dict values [10, 20])
+        // Insert parent IDs: [30, 10] — one novel, one existing
+        // Expected: 5 rows [10, 20, 10, 30, 10]
+        let existing = dict_u32_u16(&[10, 20, 10]);
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        let parent_ids = UInt32Array::from(vec![30u32, 10]);
+        let mask = BooleanArray::from(vec![false, false, false]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 2)];
+
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, 2).unwrap();
+
+        assert_eq!(result_col.len(), 5);
+        assert_eq!(decode_parent_ids(&result_col), vec![10, 20, 10, 30, 10]);
+        // Cardinality is 3, fits in u8
+        assert!(
+            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt8),
+            "expected Dict(u8, UInt32) output, got {:?}",
+            result_field.data_type()
+        );
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_u8_overflows_to_u16() {
+        // Existing: Dict(u8, u32) with 256 distinct values (maxed out u8)
+        // Insert a novel value → cardinality becomes 257, exceeds u8
+        // Expected: output widens to Dict(u16, _)
+        let distinct_values: Vec<u32> = (0..256u32).collect();
+        let existing = dict_u32_u8(&distinct_values);
+        assert!(
+            matches!(existing.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt8),
+            "precondition: existing should be Dict(u8, UInt32)"
+        );
+
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        // Insert value 999, which is not in the existing dict
+        let parent_ids = UInt32Array::from(vec![999u32]);
+        let mask = BooleanArray::from(vec![false; 256]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 1)];
+
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, 1).unwrap();
+
+        assert_eq!(result_col.len(), 257);
+        // Should widen to Dict(u16, _) since cardinality (257) exceeds u8 max (256).
+        assert!(
+            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt16),
+            "expected Dict(u16, UInt32) output after overflow, got {:?}",
+            result_field.data_type()
+        );
+        // Verify first, last existing, and inserted value.
+        let decoded = decode_parent_ids(&result_col);
+        assert_eq!(decoded[0], 0);
+        assert_eq!(decoded[255], 255);
+        assert_eq!(decoded[256], 999);
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_batched_two_upserts() {
+        // Existing: Dict(u8, u32) [0, 1, 0, 1] (dict values [0, 1])
+        // Upsert 0: 1 update + 1 insert, parent_ids [0, 5]
+        // Upsert 1: 0 updates + 2 inserts, parent_ids [1, 6]
+        // Expected: 7 rows [0, 1, 0, 1, 5, 1, 6]
+        let existing = dict_u32_u8(&[0, 1, 0, 1]);
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+
+        let parent_ids_0 = UInt32Array::from(vec![0u32, 5]);
+        let mask_0 = BooleanArray::from(vec![true, false, false, false]);
+
+        let parent_ids_1 = UInt32Array::from(vec![1u32, 6]);
+        let mask_1 = BooleanArray::from(vec![false, false, false, false]);
+
+        let resolved = vec![
+            parent_id_test_resolved(&parent_ids_0, &mask_0, 1, 1),
+            parent_id_test_resolved(&parent_ids_1, &mask_1, 0, 2),
+        ];
+
+        let total_num_inserts = 3; // 1 from upsert 0 + 2 from upsert 1
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, total_num_inserts).unwrap();
+
+        assert_eq!(result_col.len(), 7);
+        assert_eq!(decode_parent_ids(&result_col), vec![0, 1, 0, 1, 5, 1, 6]);
+        assert!(
+            matches!(result_field.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt8),
+            "expected Dict(u8, UInt32) output, got {:?}",
+            result_field.data_type()
+        );
+    }
+
+    #[test]
+    fn test_merge_parent_id_dict_overflow_falls_back_to_plain() {
+        // Existing: Dict(u16, u32) with 65535 distinct values (one less than max u16 cardinality).
+        // Insert two novel values → total cardinality becomes 65537, which exceeds the 65535
+        // limit in merge_parent_id_column_dict, causing it to return None and fall back to plain.
+        let distinct_values: Vec<u32> = (0..65535u32).collect();
+        let existing = dict_u32_u16(&distinct_values);
+        assert!(
+            matches!(existing.data_type(), DataType::Dictionary(k, _) if **k == DataType::UInt16),
+            "precondition: existing should be Dict(u16, UInt32)"
+        );
+        assert_eq!(existing.len(), 65535);
+
+        let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
+        // Insert two novel values. The first (99999) brings cardinality to 65536 which still
+        // fits in u16 (key=65535). The second (100000) would need key=65536, exceeding u16,
+        // so the dict path bails out.
+        let parent_ids = UInt32Array::from(vec![99999u32, 100000]);
+        let mask = BooleanArray::from(vec![false; 65535]);
+        let resolved = vec![parent_id_test_resolved(&parent_ids, &mask, 0, 2)];
+
+        let (result_field, result_col) =
+            merge_parent_id_column(&field, existing, &resolved, 2).unwrap();
+
+        assert_eq!(result_col.len(), 65537);
+        // Should fall back to plain UInt32 since dict cardinality would exceed u16 max.
+        assert_eq!(
+            result_field.data_type(),
+            &DataType::UInt32,
+            "expected plain UInt32 output after overflow, got {:?}",
+            result_field.data_type()
+        );
+        // Verify values.
+        let decoded = decode_parent_ids(&result_col);
+        assert_eq!(decoded[0], 0);
+        assert_eq!(decoded[65534], 65534);
+        assert_eq!(decoded[65535], 99999);
+        assert_eq!(decoded[65536], 100000);
     }
 }

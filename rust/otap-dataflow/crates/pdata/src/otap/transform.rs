@@ -6989,7 +6989,7 @@ mod insert_tests {
             let (result, stats) =
                 transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
 
-            assert_eq!(stats.upserted_entries, 2);
+            assert_eq!(stats.inserted_entries, 2);
 
             assert_eq!(result.num_rows(), 3);
 
