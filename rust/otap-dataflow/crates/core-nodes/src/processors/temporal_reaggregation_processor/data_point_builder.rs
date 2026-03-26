@@ -1,12 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! SOA (Struct of Arrays) storage for data points and a nullable column helper.
+//! Specialized builders for data point record batches. The motivation behind
+//! these is having an API to overwrite data points that have already been pushed
+//! because a newer data point came in. Many metric types are aggregated in this
+//! way by taking the latest point.
 //!
-//! Data points are stored in column-oriented format so that they can be
-//! converted to Arrow arrays at flush time with minimal copying. The
-//! [`NullableColumn`] helper wraps a `Vec<T>` and a `BooleanBufferBuilder`
-//! to support random-access writes for nullable fixed-width columns.
+//! APIs to write at a specific Array position are typically not supported by
+//! arrow-rs ArrayBuilder types and by extension not supported by the builder
+//! types in [otap_df_pdata::encode::record]. These types usually only support
+//! appends.
+//!
+//! Random write APIs _are_, however, generally supported by the arrow-rs
+//! BufferBuilder types (including [BooleanBufferBuilder] for [NullBuffer]s).
+//! Arrow-rs also generally supports direct conversion to Arrays from Vec<T> for
+//! fixed-width types.
+//!
+//! So, we have these builders which use Vec<T> as much as possible along with
+//! [BooleanBufferBuilder] directly for nulls.
+//!
+//! Note: These builders currently make no attempt to optimize for space via
+//! dictionary encoding. We may want to add this in the future, however a typical
+//! pipeline configuration may be to place a batch processor immeditaly following
+//! this component in which case the dictionary could get re-written or removed
+//! anyway. Figuring out under what circumstances it's better to use dictionaries
+//! here needs investigation.
 
 use std::sync::Arc;
 
@@ -23,20 +41,16 @@ use otap_df_pdata_views::views::metrics::{
     SummaryDataPointView, Value, ValueAtQuantileView,
 };
 
-// ---------------------------------------------------------------------------
-// NullableColumn<T>
-// ---------------------------------------------------------------------------
-
 /// A column of nullable primitive values that supports random-access writes.
 ///
 /// At flush time, converts to an Arrow [`PrimitiveArray`] via zero-copy for
 /// the values buffer and a constructed null bitmap.
-pub struct NullableColumn<T: ArrowPrimitiveType> {
+pub struct NullableColumnBuilder<T: ArrowPrimitiveType> {
     values: Vec<T::Native>,
     validity: BooleanBufferBuilder,
 }
 
-impl<T: ArrowPrimitiveType> NullableColumn<T> {
+impl<T: ArrowPrimitiveType> NullableColumnBuilder<T> {
     pub fn new() -> Self {
         Self {
             values: Vec::new(),
@@ -64,8 +78,24 @@ impl<T: ArrowPrimitiveType> NullableColumn<T> {
         self.validity.set_bit(index, false);
     }
 
-    pub fn len(&self) -> usize {
-        self.values.len()
+    /// Write a value at `index`. If `index == len`, appends; otherwise
+    /// overwrites the existing entry.
+    pub fn write_value(&mut self, index: usize, value: T::Native) {
+        if index == self.values.len() {
+            self.push_value(value);
+        } else {
+            self.set_value(index, value);
+        }
+    }
+
+    /// Write a null at `index`. If `index == len`, appends; otherwise
+    /// overwrites the existing entry.
+    pub fn write_null(&mut self, index: usize) {
+        if index == self.values.len() {
+            self.push_null();
+        } else {
+            self.set_null(index);
+        }
     }
 
     /// Convert to an Arrow [`PrimitiveArray`]. The values buffer is zero-copy.
@@ -82,29 +112,25 @@ impl<T: ArrowPrimitiveType> NullableColumn<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NumberDataPointColumns
-// ---------------------------------------------------------------------------
-
-pub struct NumberDataPointColumns {
+pub struct NumberDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumn<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
     pub time_unix_nano: Vec<i64>,
-    pub int_value: NullableColumn<Int64Type>,
-    pub double_value: NullableColumn<Float64Type>,
+    pub int_value: NullableColumnBuilder<Int64Type>,
+    pub double_value: NullableColumnBuilder<Float64Type>,
     pub flags: Vec<u32>,
 }
 
-impl NumberDataPointColumns {
+impl NumberDataPointBuilder {
     pub fn new() -> Self {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumn::new(),
+            start_time_unix_nano: NullableColumnBuilder::new(),
             time_unix_nano: Vec::new(),
-            int_value: NullableColumn::new(),
-            double_value: NullableColumn::new(),
+            int_value: NullableColumnBuilder::new(),
+            double_value: NullableColumnBuilder::new(),
             flags: Vec::new(),
         }
     }
@@ -113,39 +139,43 @@ impl NumberDataPointColumns {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
-        push_start_time(&mut self.start_time_unix_nano, dp.start_time_unix_nano());
-        self.time_unix_nano.push(dp.time_unix_nano() as i64);
-        push_number_value(&mut self.int_value, &mut self.double_value, dp.value());
-        self.flags.push(dp.flags().into_inner());
+        self.write(row, dp);
         row
     }
 
     pub fn overwrite<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
-        set_start_time(
+        self.write(row, dp);
+    }
+
+    fn write<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
+        write_start_time(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano(),
         );
-        self.time_unix_nano[row] = dp.time_unix_nano() as i64;
-        set_number_value(&mut self.int_value, &mut self.double_value, row, dp.value());
-        self.flags[row] = dp.flags().into_inner();
-    }
+        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
 
-    pub fn len(&self) -> usize {
-        self.id.len()
-    }
+        match dp.value() {
+            Some(Value::Integer(v)) => {
+                self.int_value.write_value(row, v);
+                self.double_value.write_null(row);
+            }
+            Some(Value::Double(v)) => {
+                self.int_value.write_null(row);
+                self.double_value.write_value(row, v);
+            }
+            None => {
+                self.int_value.write_null(row);
+                self.double_value.write_null(row);
+            }
+        }
 
-    pub fn is_empty(&self) -> bool {
-        self.id.is_empty()
+        write_or_push(&mut self.flags, row, dp.flags().into_inner());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
         if self.id.is_empty() {
-            return RecordBatch::try_new_with_options(
-                Arc::new(Schema::empty()),
-                vec![],
-                &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-            );
+            return empty_record_batch();
         }
 
         let schema = Arc::new(Schema::new(vec![
@@ -193,38 +223,34 @@ impl NumberDataPointColumns {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HistogramDataPointColumns
-// ---------------------------------------------------------------------------
-
-pub struct HistogramDataPointColumns {
+pub struct HistogramDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumn<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
-    pub sum: NullableColumn<Float64Type>,
+    pub sum: NullableColumnBuilder<Float64Type>,
     pub bucket_counts: Vec<Vec<u64>>,
     pub explicit_bounds: Vec<Vec<f64>>,
     pub flags: Vec<u32>,
-    pub min: NullableColumn<Float64Type>,
-    pub max: NullableColumn<Float64Type>,
+    pub min: NullableColumnBuilder<Float64Type>,
+    pub max: NullableColumnBuilder<Float64Type>,
 }
 
-impl HistogramDataPointColumns {
+impl HistogramDataPointBuilder {
     pub fn new() -> Self {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumn::new(),
+            start_time_unix_nano: NullableColumnBuilder::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
-            sum: NullableColumn::new(),
+            sum: NullableColumnBuilder::new(),
             bucket_counts: Vec::new(),
             explicit_bounds: Vec::new(),
             flags: Vec::new(),
-            min: NullableColumn::new(),
-            max: NullableColumn::new(),
+            min: NullableColumnBuilder::new(),
+            max: NullableColumnBuilder::new(),
         }
     }
 
@@ -232,49 +258,37 @@ impl HistogramDataPointColumns {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
-        push_start_time(&mut self.start_time_unix_nano, dp.start_time_unix_nano());
-        self.time_unix_nano.push(dp.time_unix_nano() as i64);
-        self.count.push(dp.count());
-        push_optional_f64(&mut self.sum, dp.sum());
-        self.bucket_counts.push(dp.bucket_counts().collect());
-        self.explicit_bounds.push(dp.explicit_bounds().collect());
-        self.flags.push(dp.flags().into_inner());
-        push_optional_f64(&mut self.min, dp.min());
-        push_optional_f64(&mut self.max, dp.max());
+        self.write(row, dp);
         row
     }
 
     pub fn overwrite<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        set_start_time(
+        self.write(row, dp);
+    }
+
+    fn write<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
+        write_start_time(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano(),
         );
-        self.time_unix_nano[row] = dp.time_unix_nano() as i64;
-        self.count[row] = dp.count();
-        set_optional_f64(&mut self.sum, row, dp.sum());
-        self.bucket_counts[row] = dp.bucket_counts().collect();
-        self.explicit_bounds[row] = dp.explicit_bounds().collect();
-        self.flags[row] = dp.flags().into_inner();
-        set_optional_f64(&mut self.min, row, dp.min());
-        set_optional_f64(&mut self.max, row, dp.max());
-    }
-
-    pub fn len(&self) -> usize {
-        self.id.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.id.is_empty()
+        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_push(&mut self.count, row, dp.count());
+        write_optional_f64(&mut self.sum, row, dp.sum());
+        write_or_push(&mut self.bucket_counts, row, dp.bucket_counts().collect());
+        write_or_push(
+            &mut self.explicit_bounds,
+            row,
+            dp.explicit_bounds().collect(),
+        );
+        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_optional_f64(&mut self.min, row, dp.min());
+        write_optional_f64(&mut self.max, row, dp.max());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
         if self.id.is_empty() {
-            return RecordBatch::try_new_with_options(
-                Arc::new(Schema::empty()),
-                vec![],
-                &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-            );
+            return empty_record_batch();
         }
 
         let schema = Arc::new(Schema::new(vec![
@@ -283,7 +297,7 @@ impl HistogramDataPointColumns {
             Field::new(
                 consts::START_TIME_UNIX_NANO,
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
+                true,
             ),
             Field::new(
                 consts::TIME_UNIX_NANO,
@@ -342,17 +356,13 @@ impl HistogramDataPointColumns {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ExpHistogramDataPointColumns
-// ---------------------------------------------------------------------------
-
-pub struct ExpHistogramDataPointColumns {
+pub struct ExpHistogramDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumn<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
-    pub sum: NullableColumn<Float64Type>,
+    pub sum: NullableColumnBuilder<Float64Type>,
     pub scale: Vec<i32>,
     pub zero_count: Vec<u64>,
     pub positive_offset: Vec<i32>,
@@ -360,20 +370,20 @@ pub struct ExpHistogramDataPointColumns {
     pub negative_offset: Vec<i32>,
     pub negative_bucket_counts: Vec<Vec<u64>>,
     pub flags: Vec<u32>,
-    pub min: NullableColumn<Float64Type>,
-    pub max: NullableColumn<Float64Type>,
+    pub min: NullableColumnBuilder<Float64Type>,
+    pub max: NullableColumnBuilder<Float64Type>,
     pub zero_threshold: Vec<f64>,
 }
 
-impl ExpHistogramDataPointColumns {
+impl ExpHistogramDataPointBuilder {
     pub fn new() -> Self {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumn::new(),
+            start_time_unix_nano: NullableColumnBuilder::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
-            sum: NullableColumn::new(),
+            sum: NullableColumnBuilder::new(),
             scale: Vec::new(),
             zero_count: Vec::new(),
             positive_offset: Vec::new(),
@@ -381,8 +391,8 @@ impl ExpHistogramDataPointColumns {
             negative_offset: Vec::new(),
             negative_bucket_counts: Vec::new(),
             flags: Vec::new(),
-            min: NullableColumn::new(),
-            max: NullableColumn::new(),
+            min: NullableColumnBuilder::new(),
+            max: NullableColumnBuilder::new(),
             zero_threshold: Vec::new(),
         }
     }
@@ -396,93 +406,47 @@ impl ExpHistogramDataPointColumns {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
-        push_start_time(&mut self.start_time_unix_nano, dp.start_time_unix_nano());
-        self.time_unix_nano.push(dp.time_unix_nano() as i64);
-        self.count.push(dp.count());
-        push_optional_f64(&mut self.sum, dp.sum());
-        self.scale.push(dp.scale());
-        self.zero_count.push(dp.zero_count());
-        match dp.positive() {
-            Some(b) => {
-                self.positive_offset.push(b.offset());
-                self.positive_bucket_counts
-                    .push(b.bucket_counts().collect());
-            }
-            None => {
-                self.positive_offset.push(0);
-                self.positive_bucket_counts.push(Vec::new());
-            }
-        }
-        match dp.negative() {
-            Some(b) => {
-                self.negative_offset.push(b.offset());
-                self.negative_bucket_counts
-                    .push(b.bucket_counts().collect());
-            }
-            None => {
-                self.negative_offset.push(0);
-                self.negative_bucket_counts.push(Vec::new());
-            }
-        }
-        self.flags.push(dp.flags().into_inner());
-        push_optional_f64(&mut self.min, dp.min());
-        push_optional_f64(&mut self.max, dp.max());
-        self.zero_threshold.push(dp.zero_threshold());
+        self.write_view(row, dp);
         row
     }
 
-    pub fn overwrite<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        set_start_time(
+    pub fn replace<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
+        // We keep the same parent_id/id here and just write the rest of the fields
+        self.write_view(row, dp);
+    }
+
+    fn write_view<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
+        write_start_time(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano(),
         );
-        self.time_unix_nano[row] = dp.time_unix_nano() as i64;
-        self.count[row] = dp.count();
-        set_optional_f64(&mut self.sum, row, dp.sum());
-        self.scale[row] = dp.scale();
-        self.zero_count[row] = dp.zero_count();
-        match dp.positive() {
-            Some(b) => {
-                self.positive_offset[row] = b.offset();
-                self.positive_bucket_counts[row] = b.bucket_counts().collect();
-            }
-            None => {
-                self.positive_offset[row] = 0;
-                self.positive_bucket_counts[row] = Vec::new();
-            }
-        }
-        match dp.negative() {
-            Some(b) => {
-                self.negative_offset[row] = b.offset();
-                self.negative_bucket_counts[row] = b.bucket_counts().collect();
-            }
-            None => {
-                self.negative_offset[row] = 0;
-                self.negative_bucket_counts[row] = Vec::new();
-            }
-        }
-        self.flags[row] = dp.flags().into_inner();
-        set_optional_f64(&mut self.min, row, dp.min());
-        set_optional_f64(&mut self.max, row, dp.max());
-        self.zero_threshold[row] = dp.zero_threshold();
-    }
-
-    pub fn len(&self) -> usize {
-        self.id.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.id.is_empty()
+        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_push(&mut self.count, row, dp.count());
+        write_optional_f64(&mut self.sum, row, dp.sum());
+        write_or_push(&mut self.scale, row, dp.scale());
+        write_or_push(&mut self.zero_count, row, dp.zero_count());
+        let (pos_offset, pos_counts) = match dp.positive() {
+            Some(b) => (b.offset(), b.bucket_counts().collect()),
+            None => (0, Vec::new()),
+        };
+        write_or_push(&mut self.positive_offset, row, pos_offset);
+        write_or_push(&mut self.positive_bucket_counts, row, pos_counts);
+        let (neg_offset, neg_counts) = match dp.negative() {
+            Some(b) => (b.offset(), b.bucket_counts().collect()),
+            None => (0, Vec::new()),
+        };
+        write_or_push(&mut self.negative_offset, row, neg_offset);
+        write_or_push(&mut self.negative_bucket_counts, row, neg_counts);
+        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_optional_f64(&mut self.min, row, dp.min());
+        write_optional_f64(&mut self.max, row, dp.max());
+        write_or_push(&mut self.zero_threshold, row, dp.zero_threshold());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
         if self.id.is_empty() {
-            return RecordBatch::try_new_with_options(
-                Arc::new(Schema::empty()),
-                vec![],
-                &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-            );
+            return empty_record_batch();
         }
 
         let buckets_fields = vec![
@@ -500,7 +464,7 @@ impl ExpHistogramDataPointColumns {
             Field::new(
                 consts::START_TIME_UNIX_NANO,
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
+                true,
             ),
             Field::new(
                 consts::TIME_UNIX_NANO,
@@ -616,14 +580,10 @@ impl ExpHistogramDataPointColumns {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SummaryDataPointColumns
-// ---------------------------------------------------------------------------
-
-pub struct SummaryDataPointColumns {
+pub struct SummaryDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumn<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
     pub sum: Vec<f64>,
@@ -631,12 +591,12 @@ pub struct SummaryDataPointColumns {
     pub flags: Vec<u32>,
 }
 
-impl SummaryDataPointColumns {
+impl SummaryDataPointBuilder {
     pub fn new() -> Self {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumn::new(),
+            start_time_unix_nano: NullableColumnBuilder::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
             sum: Vec::new(),
@@ -649,50 +609,36 @@ impl SummaryDataPointColumns {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
-        push_start_time(&mut self.start_time_unix_nano, dp.start_time_unix_nano());
-        self.time_unix_nano.push(dp.time_unix_nano() as i64);
-        self.count.push(dp.count());
-        self.sum.push(dp.sum());
-        self.quantiles.push(
-            dp.quantile_values()
-                .map(|q| (q.quantile(), q.value()))
-                .collect(),
-        );
-        self.flags.push(dp.flags().into_inner());
+        self.write(row, dp);
         row
     }
 
     pub fn overwrite<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
-        set_start_time(
+        self.write(row, dp);
+    }
+
+    fn write<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
+        write_start_time(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano(),
         );
-        self.time_unix_nano[row] = dp.time_unix_nano() as i64;
-        self.count[row] = dp.count();
-        self.sum[row] = dp.sum();
-        self.quantiles[row] = dp
-            .quantile_values()
-            .map(|q| (q.quantile(), q.value()))
-            .collect();
-        self.flags[row] = dp.flags().into_inner();
-    }
-
-    pub fn len(&self) -> usize {
-        self.id.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.id.is_empty()
+        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_push(&mut self.count, row, dp.count());
+        write_or_push(&mut self.sum, row, dp.sum());
+        write_or_push(
+            &mut self.quantiles,
+            row,
+            dp.quantile_values()
+                .map(|q| (q.quantile(), q.value()))
+                .collect(),
+        );
+        write_or_push(&mut self.flags, row, dp.flags().into_inner());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
         if self.id.is_empty() {
-            return RecordBatch::try_new_with_options(
-                Arc::new(Schema::empty()),
-                vec![],
-                &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-            );
+            return empty_record_batch();
         }
 
         let quantile_fields = vec![
@@ -744,7 +690,7 @@ impl SummaryDataPointColumns {
             Field::new(
                 consts::START_TIME_UNIX_NANO,
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
+                true,
             ),
             Field::new(
                 consts::TIME_UNIX_NANO,
@@ -794,83 +740,44 @@ impl SummaryDataPointColumns {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn push_start_time(
-    col: &mut NullableColumn<arrow::datatypes::TimestampNanosecondType>,
+fn empty_record_batch() -> Result<RecordBatch, arrow::error::ArrowError> {
+    RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        vec![],
+        &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
+    )
+}
+
+/// Write `value` into `vec` at `index`. Appends if `index == vec.len()`,
+/// otherwise overwrites.
+fn write_or_push<T>(vec: &mut Vec<T>, index: usize, value: T) {
+    if index == vec.len() {
+        vec.push(value);
+    } else {
+        vec[index] = value;
+    }
+}
+
+fn write_start_time(
+    col: &mut NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
+    index: usize,
     value: u64,
 ) {
     if value == 0 {
-        col.push_null();
+        col.write_null(index);
     } else {
-        col.push_value(value as i64);
+        col.write_value(index, value as i64);
     }
 }
 
-fn set_start_time(
-    col: &mut NullableColumn<arrow::datatypes::TimestampNanosecondType>,
-    row: usize,
-    value: u64,
-) {
-    if value == 0 {
-        col.set_null(row);
-    } else {
-        col.set_value(row, value as i64);
-    }
-}
-
-fn push_number_value(
-    int_col: &mut NullableColumn<Int64Type>,
-    double_col: &mut NullableColumn<Float64Type>,
-    value: Option<Value>,
+fn write_optional_f64(
+    col: &mut NullableColumnBuilder<Float64Type>,
+    index: usize,
+    value: Option<f64>,
 ) {
     match value {
-        Some(Value::Integer(v)) => {
-            int_col.push_value(v);
-            double_col.push_null();
-        }
-        Some(Value::Double(v)) => {
-            int_col.push_null();
-            double_col.push_value(v);
-        }
-        None => {
-            int_col.push_null();
-            double_col.push_null();
-        }
-    }
-}
-
-fn set_number_value(
-    int_col: &mut NullableColumn<Int64Type>,
-    double_col: &mut NullableColumn<Float64Type>,
-    row: usize,
-    value: Option<Value>,
-) {
-    match value {
-        Some(Value::Integer(v)) => {
-            int_col.set_value(row, v);
-            double_col.set_null(row);
-        }
-        Some(Value::Double(v)) => {
-            int_col.set_null(row);
-            double_col.set_value(row, v);
-        }
-        None => {
-            int_col.set_null(row);
-            double_col.set_null(row);
-        }
-    }
-}
-
-fn push_optional_f64(col: &mut NullableColumn<Float64Type>, value: Option<f64>) {
-    match value {
-        Some(v) => col.push_value(v),
-        None => col.push_null(),
-    }
-}
-
-fn set_optional_f64(col: &mut NullableColumn<Float64Type>, row: usize, value: Option<f64>) {
-    match value {
-        Some(v) => col.set_value(row, v),
-        None => col.set_null(row),
+        Some(v) => col.write_value(index, v),
+        None => col.write_null(index),
     }
 }
 

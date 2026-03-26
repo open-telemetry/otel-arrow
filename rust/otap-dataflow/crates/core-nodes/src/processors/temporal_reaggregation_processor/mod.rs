@@ -31,7 +31,7 @@ use otap_df_telemetry::metrics::MetricSet;
 
 mod aggregate;
 mod config;
-mod data_points;
+mod data_point_builder;
 mod identity;
 mod metrics;
 
