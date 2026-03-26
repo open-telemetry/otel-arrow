@@ -528,7 +528,8 @@ where
     Ok(otap_batch)
 }
 
-fn append_attribute_value<T, KV>(
+/// Append a single attribute key-value pair to an [`AttributesRecordBatchBuilder`].
+pub fn append_attribute_value<T, KV>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
     kv: &KV,
 ) -> Result<()>

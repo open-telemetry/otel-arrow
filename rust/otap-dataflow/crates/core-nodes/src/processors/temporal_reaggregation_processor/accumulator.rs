@@ -9,7 +9,11 @@
 //! batch from the accumulated state.
 
 use hashbrown::HashMap;
-use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::encode::append_attribute_value;
+use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
+use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otap::common::OtapAttributeView;
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
@@ -34,8 +38,6 @@ use super::identity::{
 // Aggregatability check
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if this metric type should be aggregated (buffered and
-/// flushed on timer), `false` if it should be passed through unchanged.
 fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
     let data_type = metric_id.data_type;
     let temporality = metric_id.aggregation_temporality;
@@ -62,6 +64,23 @@ fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Metadata stored alongside OTAP IDs
+// ---------------------------------------------------------------------------
+
+/// Metadata for a resource, indexed by OTAP resource ID.
+struct ResourceMeta {
+    schema_url: Vec<u8>,
+    dropped_attributes_count: u32,
+}
+
+/// Metadata for a scope, indexed by OTAP scope ID.
+struct ScopeMeta {
+    name: Vec<u8>,
+    version: Vec<u8>,
+    dropped_attributes_count: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Stream state
 // ---------------------------------------------------------------------------
 
@@ -85,15 +104,10 @@ enum DpType {
 // ---------------------------------------------------------------------------
 
 /// Accumulates metrics data over a collection interval.
-///
-/// Resources, scopes, and metric definitions are deduplicated by identity.
-/// Data points are stored in SOA format with random-access overwrite so that
-/// only the latest data point per stream is retained.
 pub struct MetricAggregator {
-    /// Reusable buffer for attribute hashing. Stored as `'static` and
-    /// recycled to the local lifetime within each `ingest()` call.
     hash_buf: AttributeHashBuffer<OtapAttributeView<'static>>,
 
+    // Identity maps
     resource_ids: HashMap<ResourceId, u16>,
     next_resource_id: u16,
     scope_ids: HashMap<ScopeId<'static>, u16>,
@@ -101,12 +115,29 @@ pub struct MetricAggregator {
     metric_ids: HashMap<MetricId<'static>, u16>,
     next_metric_id: u16,
 
+    // Metadata indexed by OTAP ID
+    resource_meta: Vec<ResourceMeta>,
+    scope_meta: Vec<ScopeMeta>,
+
+    // Metric-level builder (append-only)
+    metrics_builder: MetricsRecordBatchBuilder,
+
+    // Attribute builders (append-only)
+    resource_attrs_builder: AttributesRecordBatchBuilder<u16>,
+    scope_attrs_builder: AttributesRecordBatchBuilder<u16>,
+    ndp_attrs_builder: AttributesRecordBatchBuilder<u32>,
+    hdp_attrs_builder: AttributesRecordBatchBuilder<u32>,
+    ehdp_attrs_builder: AttributesRecordBatchBuilder<u32>,
+    summary_attrs_builder: AttributesRecordBatchBuilder<u32>,
+
+    // Stream tracking
     stream_map: HashMap<StreamId<'static>, StreamState>,
     next_ndp_id: u32,
     next_hdp_id: u32,
     next_ehdp_id: u32,
     next_sdp_id: u32,
 
+    // Data point SOA storage
     number_dps: NumberDataPointColumns,
     histogram_dps: HistogramDataPointColumns,
     exp_histogram_dps: ExpHistogramDataPointColumns,
@@ -131,6 +162,17 @@ impl MetricAggregator {
             next_ehdp_id: 0,
             next_sdp_id: 0,
 
+            resource_meta: Vec::new(),
+            scope_meta: Vec::new(),
+
+            metrics_builder: MetricsRecordBatchBuilder::new(),
+            resource_attrs_builder: AttributesRecordBatchBuilder::new(),
+            scope_attrs_builder: AttributesRecordBatchBuilder::new(),
+            ndp_attrs_builder: AttributesRecordBatchBuilder::new(),
+            hdp_attrs_builder: AttributesRecordBatchBuilder::new(),
+            ehdp_attrs_builder: AttributesRecordBatchBuilder::new(),
+            summary_attrs_builder: AttributesRecordBatchBuilder::new(),
+
             number_dps: NumberDataPointColumns::new(),
             histogram_dps: HistogramDataPointColumns::new(),
             exp_histogram_dps: ExpHistogramDataPointColumns::new(),
@@ -142,8 +184,6 @@ impl MetricAggregator {
     // Attribute hashing
     // -----------------------------------------------------------------------
 
-    /// Compute an [`AttributeHash`] from an attribute iterator, recycling the
-    /// internal buffer to match the iterator's local lifetime.
     fn compute_otap_attr_hash<'v>(
         &mut self,
         attrs: impl Iterator<Item = OtapAttributeView<'v>>,
@@ -159,7 +199,6 @@ impl MetricAggregator {
     // Ingestion
     // -----------------------------------------------------------------------
 
-    /// Process one incoming OTAP metrics view.
     pub fn ingest(&mut self, view: OtapMetricsView<'_>) {
         for resource_metrics in view.resources() {
             let Some(resource) = resource_metrics.resource() else {
@@ -168,7 +207,11 @@ impl MetricAggregator {
 
             let attrs = self.compute_otap_attr_hash(resource.attributes());
             let resource_id = resource_id_of(attrs);
-            let otap_resource_id = self.process_resource(resource_id, &resource);
+            let otap_resource_id = self.process_resource(
+                resource_id,
+                &resource,
+                resource_metrics.schema_url().unwrap_or(b""),
+            );
 
             for scope_metrics in resource_metrics.scopes() {
                 let Some(scope) = scope_metrics.scope() else {
@@ -177,6 +220,7 @@ impl MetricAggregator {
 
                 let attrs = self.compute_otap_attr_hash(scope.attributes());
                 let scope_id = scope_id_of(resource_id, &scope, attrs);
+                let scope_schema_url = scope_metrics.schema_url();
                 let otap_scope_id = self.process_scope(scope_id.clone(), &scope);
 
                 for metric in scope_metrics.metrics() {
@@ -185,7 +229,7 @@ impl MetricAggregator {
                     };
 
                     if !is_aggregatable(&metric_id) {
-                        // TODO (Stage 3b): Build passthrough batch.
+                        // TODO: Build passthrough batch.
                         continue;
                     }
 
@@ -194,6 +238,7 @@ impl MetricAggregator {
                         &metric,
                         otap_resource_id,
                         otap_scope_id,
+                        scope_schema_url,
                     );
 
                     let Some(data) = metric.data() else {
@@ -206,7 +251,7 @@ impl MetricAggregator {
                                 for dp in gauge.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_number_dp_with_id(
+                                    self.ingest_number_dp(
                                         &dp,
                                         stream_id,
                                         otap_metric_id,
@@ -220,7 +265,7 @@ impl MetricAggregator {
                                 for dp in sum.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_number_dp_with_id(
+                                    self.ingest_number_dp(
                                         &dp,
                                         stream_id,
                                         otap_metric_id,
@@ -234,11 +279,7 @@ impl MetricAggregator {
                                 for dp in hist.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_histogram_dp_with_id(
-                                        &dp,
-                                        stream_id,
-                                        otap_metric_id,
-                                    );
+                                    self.ingest_histogram_dp(&dp, stream_id, otap_metric_id);
                                 }
                             }
                         }
@@ -247,11 +288,7 @@ impl MetricAggregator {
                                 for dp in exp.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_exp_histogram_dp_with_id(
-                                        &dp,
-                                        stream_id,
-                                        otap_metric_id,
-                                    );
+                                    self.ingest_exp_histogram_dp(&dp, stream_id, otap_metric_id);
                                 }
                             }
                         }
@@ -260,7 +297,7 @@ impl MetricAggregator {
                                 for dp in summary.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_summary_dp_with_id(&dp, stream_id, otap_metric_id);
+                                    self.ingest_summary_dp(&dp, stream_id, otap_metric_id);
                                 }
                             }
                         }
@@ -274,13 +311,76 @@ impl MetricAggregator {
     // Flush
     // -----------------------------------------------------------------------
 
-    /// Flush accumulated state into an [`OtapArrowRecords`] batch and reset.
     pub fn flush(&mut self) -> Option<OtapArrowRecords> {
         if self.is_empty() {
             return None;
         }
+
+        let mut records = OtapArrowRecords::Metrics(Metrics::default());
+
+        // Metrics table
+        if let Ok(rb) = self.metrics_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::UnivariateMetrics, rb);
+            }
+        }
+
+        // Attribute tables
+        if let Ok(rb) = self.resource_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::ResourceAttrs, rb);
+            }
+        }
+        if let Ok(rb) = self.scope_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::ScopeAttrs, rb);
+            }
+        }
+
+        // Data point tables
+        if let Ok(rb) = self.number_dps.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::NumberDataPoints, rb);
+            }
+        }
+        if let Ok(rb) = self.ndp_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::NumberDpAttrs, rb);
+            }
+        }
+        if let Ok(rb) = self.histogram_dps.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::HistogramDataPoints, rb);
+            }
+        }
+        if let Ok(rb) = self.hdp_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::HistogramDpAttrs, rb);
+            }
+        }
+        if let Ok(rb) = self.exp_histogram_dps.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::ExpHistogramDataPoints, rb);
+            }
+        }
+        if let Ok(rb) = self.ehdp_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::ExpHistogramDpAttrs, rb);
+            }
+        }
+        if let Ok(rb) = self.summary_dps.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::SummaryDataPoints, rb);
+            }
+        }
+        if let Ok(rb) = self.summary_attrs_builder.finish() {
+            if rb.num_rows() > 0 {
+                let _ = records.set(ArrowPayloadType::SummaryDpAttrs, rb);
+            }
+        }
+
         self.clear();
-        todo!("Stage 3b: assemble OtapArrowRecords from accumulated state")
+        Some(records)
     }
 
     pub fn stream_count(&self) -> usize {
@@ -295,60 +395,128 @@ impl MetricAggregator {
     // Identity processing
     // -----------------------------------------------------------------------
 
-    /// Get or assign an OTAP resource ID. On a miss, records the new ID and
-    /// writes the resource to the builder (stubbed until Stage 3b).
-    fn process_resource<R: ResourceView>(&mut self, resource_id: ResourceId, _view: &R) -> u16 {
+    fn process_resource<R: ResourceView>(
+        &mut self,
+        resource_id: ResourceId,
+        view: &R,
+        schema_url: &[u8],
+    ) -> u16 {
         if let Some(&id) = self.resource_ids.get(&resource_id) {
             return id;
         }
         let id = self.next_resource_id;
         self.next_resource_id += 1;
-        // TODO (Stage 3b): Write resource row and attributes to builders.
+
+        // Write resource attributes
+        for attr in view.attributes() {
+            self.resource_attrs_builder.append_parent_id(&id);
+            let _ = append_attribute_value(&mut self.resource_attrs_builder, &attr);
+        }
+
+        // Store metadata for use when writing metric rows
+        self.resource_meta.push(ResourceMeta {
+            schema_url: schema_url.to_vec(),
+            dropped_attributes_count: view.dropped_attributes_count(),
+        });
+
         _ = self.resource_ids.insert(resource_id, id);
         id
     }
 
-    /// Get or assign an OTAP scope ID. On a miss, records the new ID and
-    /// writes the scope to the builder (stubbed until Stage 3b).
     fn process_scope<S: InstrumentationScopeView>(
         &mut self,
         scope_id: ScopeId<'_>,
-        _view: &S,
+        view: &S,
     ) -> u16 {
         if let Some(&id) = self.scope_ids.get(&ScopeIdRef(&scope_id)) {
             return id;
         }
         let id = self.next_scope_id;
         self.next_scope_id += 1;
-        // TODO (Stage 3b): Write scope row and attributes to builders.
+
+        // Write scope attributes
+        for attr in view.attributes() {
+            self.scope_attrs_builder.append_parent_id(&id);
+            let _ = append_attribute_value(&mut self.scope_attrs_builder, &attr);
+        }
+
+        // Store metadata for use when writing metric rows
+        self.scope_meta.push(ScopeMeta {
+            name: view.name().unwrap_or(b"").to_vec(),
+            version: view.version().unwrap_or(b"").to_vec(),
+            dropped_attributes_count: view.dropped_attributes_count(),
+        });
+
         _ = self.scope_ids.insert(scope_id.into_owned(), id);
         id
     }
 
-    /// Get or assign an OTAP metric ID. On a miss, records the new ID and
-    /// writes the metric to the builder (stubbed until Stage 3b).
     fn process_metric<M: MetricView>(
         &mut self,
         metric_id: MetricId<'_>,
-        _view: &M,
-        _otap_resource_id: u16,
-        _otap_scope_id: u16,
+        view: &M,
+        otap_resource_id: u16,
+        otap_scope_id: u16,
+        scope_schema_url: &[u8],
     ) -> u16 {
         if let Some(&id) = self.metric_ids.get(&MetricIdRef(&metric_id)) {
             return id;
         }
         let id = self.next_metric_id;
         self.next_metric_id += 1;
-        // TODO (Stage 3b): Write metric row to builder with resource/scope IDs.
+
+        // Look up stored metadata
+        let resource_meta = &self.resource_meta[otap_resource_id as usize];
+        let scope_meta = &self.scope_meta[otap_scope_id as usize];
+
+        // Write metric row
+        self.metrics_builder.append_id(id);
+        self.metrics_builder
+            .resource
+            .append_id_n(otap_resource_id, 1);
+        self.metrics_builder
+            .resource
+            .append_schema_url_n(Some(&resource_meta.schema_url), 1);
+        self.metrics_builder
+            .resource
+            .append_dropped_attributes_count_n(resource_meta.dropped_attributes_count, 1);
+        self.metrics_builder.scope.append_id_n(otap_scope_id, 1);
+        self.metrics_builder
+            .scope
+            .append_name_n(Some(&scope_meta.name), 1);
+        self.metrics_builder
+            .scope
+            .append_version_n(Some(&scope_meta.version), 1);
+        self.metrics_builder
+            .scope
+            .append_dropped_attributes_count_n(scope_meta.dropped_attributes_count, 1);
+        self.metrics_builder
+            .append_scope_schema_url_n(scope_schema_url, 1);
+        self.metrics_builder.append_metric_type(metric_id.data_type);
+        self.metrics_builder.append_name(view.name());
+        self.metrics_builder.append_description(view.description());
+        self.metrics_builder.append_unit(view.unit());
+
+        let agg_temp =
+            if metric_id.aggregation_temporality == AggregationTemporality::Unspecified as u8 {
+                None
+            } else {
+                Some(metric_id.aggregation_temporality as i32)
+            };
+        self.metrics_builder
+            .append_aggregation_temporality(agg_temp);
+        self.metrics_builder
+            .append_is_monotonic(Some(metric_id.is_monotonic));
+
         _ = self.metric_ids.insert(metric_id.into_owned(), id);
         id
     }
 
     // -----------------------------------------------------------------------
-    // Data point ingestion (pre-computed stream ID)
+    // Data point ingestion
     // -----------------------------------------------------------------------
 
-    fn ingest_number_dp_with_id<V: NumberDataPointView>(
+    fn ingest_number_dp<V: NumberDataPointView>(
         &mut self,
         dp: &V,
         stream_id: StreamId<'_>,
@@ -365,6 +533,13 @@ impl MetricAggregator {
             let dp_id = self.next_ndp_id;
             self.next_ndp_id += 1;
             let row_index = self.number_dps.push(dp_id, otap_metric_id, dp);
+
+            // Write dp attributes (once per stream)
+            for attr in dp.attributes() {
+                self.ndp_attrs_builder.append_parent_id(&dp_id);
+                let _ = append_attribute_value(&mut self.ndp_attrs_builder, &attr);
+            }
+
             _ = self.stream_map.insert(
                 stream_id.into_owned(),
                 StreamState {
@@ -376,7 +551,7 @@ impl MetricAggregator {
         }
     }
 
-    fn ingest_histogram_dp_with_id<V: HistogramDataPointView>(
+    fn ingest_histogram_dp<V: HistogramDataPointView>(
         &mut self,
         dp: &V,
         stream_id: StreamId<'_>,
@@ -392,6 +567,12 @@ impl MetricAggregator {
             let dp_id = self.next_hdp_id;
             self.next_hdp_id += 1;
             let row_index = self.histogram_dps.push(dp_id, otap_metric_id, dp);
+
+            for attr in dp.attributes() {
+                self.hdp_attrs_builder.append_parent_id(&dp_id);
+                let _ = append_attribute_value(&mut self.hdp_attrs_builder, &attr);
+            }
+
             _ = self.stream_map.insert(
                 stream_id.into_owned(),
                 StreamState {
@@ -403,7 +584,7 @@ impl MetricAggregator {
         }
     }
 
-    fn ingest_exp_histogram_dp_with_id<V: ExponentialHistogramDataPointView>(
+    fn ingest_exp_histogram_dp<V: ExponentialHistogramDataPointView>(
         &mut self,
         dp: &V,
         stream_id: StreamId<'_>,
@@ -419,6 +600,12 @@ impl MetricAggregator {
             let dp_id = self.next_ehdp_id;
             self.next_ehdp_id += 1;
             let row_index = self.exp_histogram_dps.push(dp_id, otap_metric_id, dp);
+
+            for attr in dp.attributes() {
+                self.ehdp_attrs_builder.append_parent_id(&dp_id);
+                let _ = append_attribute_value(&mut self.ehdp_attrs_builder, &attr);
+            }
+
             _ = self.stream_map.insert(
                 stream_id.into_owned(),
                 StreamState {
@@ -430,7 +617,7 @@ impl MetricAggregator {
         }
     }
 
-    fn ingest_summary_dp_with_id<V: SummaryDataPointView>(
+    fn ingest_summary_dp<V: SummaryDataPointView>(
         &mut self,
         dp: &V,
         stream_id: StreamId<'_>,
@@ -446,6 +633,12 @@ impl MetricAggregator {
             let dp_id = self.next_sdp_id;
             self.next_sdp_id += 1;
             let row_index = self.summary_dps.push(dp_id, otap_metric_id, dp);
+
+            for attr in dp.attributes() {
+                self.summary_attrs_builder.append_parent_id(&dp_id);
+                let _ = append_attribute_value(&mut self.summary_attrs_builder, &attr);
+            }
+
             _ = self.stream_map.insert(
                 stream_id.into_owned(),
                 StreamState {
@@ -474,6 +667,20 @@ impl MetricAggregator {
         self.next_hdp_id = 0;
         self.next_ehdp_id = 0;
         self.next_sdp_id = 0;
+
+        self.resource_meta.clear();
+        self.scope_meta.clear();
+
+        // Note: pdata builders don't have clear() -- they're consumed by finish().
+        // After flush(), finish() has already been called, so they're in a fresh state.
+        // We reinitialize them to be safe.
+        self.metrics_builder = MetricsRecordBatchBuilder::new();
+        self.resource_attrs_builder = AttributesRecordBatchBuilder::new();
+        self.scope_attrs_builder = AttributesRecordBatchBuilder::new();
+        self.ndp_attrs_builder = AttributesRecordBatchBuilder::new();
+        self.hdp_attrs_builder = AttributesRecordBatchBuilder::new();
+        self.ehdp_attrs_builder = AttributesRecordBatchBuilder::new();
+        self.summary_attrs_builder = AttributesRecordBatchBuilder::new();
 
         self.number_dps.clear();
         self.histogram_dps.clear();

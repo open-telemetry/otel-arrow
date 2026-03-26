@@ -9,8 +9,6 @@ use otap_df_config::error::Error as ConfigError;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PERIOD_SECONDS: u64 = 60;
-
-/// Minimum allowed period in milliseconds.
 const MIN_PERIOD_MILLIS: u64 = 100;
 
 fn default_period() -> Duration {
