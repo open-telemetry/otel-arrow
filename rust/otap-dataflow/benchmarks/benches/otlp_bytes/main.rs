@@ -6,6 +6,11 @@
 //! This crate benchmarks OTLP.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_pdata::otlp::ProtoBytesEncoder;
+use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otap_df_pdata::proto::OtlpProtoMessage;
+use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use prost::Message;
 use prost::bytes::BytesMut;
 
@@ -117,5 +122,32 @@ fn otlp_payload_clone(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(otlp_bytes, otlp_pdata_to_bytes_logs, otlp_payload_clone);
+/// Benchmark converting OTAP to OTLP proto bytes
+fn otap_to_bytes_logs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("OTAP to OTLP Logs");
+
+    let logs = create_logs_data();
+    let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+    let mut proto_buffer = ProtoBuffer::new();
+    let mut encoder = LogsProtoBytesEncoder::new();
+
+    _ = group.bench_function("proto encode", |b| {
+        b.iter(|| {
+            let mut batch = otap_batch.clone();
+            proto_buffer.clear();
+            encoder
+                .encode(&mut batch, &mut proto_buffer)
+                .expect("can encode proto");
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    otlp_bytes,
+    otlp_pdata_to_bytes_logs,
+    otlp_payload_clone,
+    otap_to_bytes_logs
+);
 criterion_main!(otlp_bytes);

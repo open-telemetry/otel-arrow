@@ -194,6 +194,12 @@ impl PipelineRuntimeStatus {
                     );
                 }
             }
+            EventType::Success(
+                OkEv::IngressDrainStarted
+                | OkEv::ReceiversDrained
+                | OkEv::DownstreamShutdownStarted,
+            )
+            | EventType::Error(ErrEv::DrainDeadlineReached) => {}
             EventType::Error(err) => {
                 let (reason, message) = error_reason_and_message(err, event);
                 _ = self.ready_condition.update(
@@ -447,6 +453,14 @@ impl PipelineRuntimeStatus {
             | (PipelinePhase::Running, EventType::Success(OkEv::Ready))
             | (PipelinePhase::Updating, EventType::Success(OkEv::UpdateAdmitted))
             | (PipelinePhase::RollingBack, EventType::Error(ErrEv::UpdateFailed(_)))
+            | (PipelinePhase::Starting, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Running, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Updating, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::RollingBack, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::ReceiversDrained))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::DownstreamShutdownStarted))
+            | (PipelinePhase::Draining, EventType::Error(ErrEv::DrainDeadlineReached))
             | (PipelinePhase::Draining, EventType::Request(Req::ShutdownRequested))
             | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => ApplyOutcome::NoChange,
 
@@ -522,6 +536,7 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         ErrEv::UpdateFailed(_) => ConditionReason::UpdateFailed,
         ErrEv::RollbackFailed(_) => ConditionReason::RollbackFailed,
         ErrEv::DrainError(_) => ConditionReason::DrainError,
+        ErrEv::DrainDeadlineReached => ConditionReason::DrainError,
         ErrEv::RuntimeError(_) => ConditionReason::RuntimeError,
         ErrEv::DeleteError(_) => ConditionReason::DeleteError,
     };
@@ -534,6 +549,10 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         | ErrEv::DrainError(summary)
         | ErrEv::RuntimeError(summary)
         | ErrEv::DeleteError(summary) => summary_message(summary),
+        ErrEv::DrainDeadlineReached => event
+            .message
+            .clone()
+            .or_else(|| Some("Drain deadline reached before natural completion.".to_string())),
     });
 
     (reason, message)

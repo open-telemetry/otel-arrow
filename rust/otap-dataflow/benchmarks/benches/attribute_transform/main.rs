@@ -4,8 +4,8 @@
 //! Benchmarks for functions that transform attributes
 
 use arrow::array::{
-    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder,
-    StringDictionaryBuilder, UInt8Builder, UInt16Builder,
+    Array, ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder,
+    StringDictionaryBuilder, UInt8Array, UInt8Builder, UInt16Builder,
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -39,14 +39,18 @@ fn generate_native_keys_attr_batch(
         let attr_key = key_gen(i);
         keys_arr.append_value(attr_key);
     }
+    let keys_arr = keys_arr.finish();
 
+    let type_arr = UInt8Array::from_iter_values(std::iter::repeat_n(
+        AttributeValueType::Empty as u8,
+        keys_arr.len(),
+    ));
     RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            consts::ATTRIBUTE_KEY,
-            DataType::Utf8,
-            false,
-        )])),
-        vec![Arc::new(keys_arr.finish())],
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+        ])),
+        vec![Arc::new(type_arr), Arc::new(keys_arr)],
     )
     .expect("expect no error")
 }
@@ -69,12 +73,20 @@ fn generate_dict_keys_attribute_batch(
         Arc::new(keys_dict_values_arr.finish()),
     );
 
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        consts::ATTRIBUTE_KEY,
-        DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-        false,
-    )]));
-    RecordBatch::try_new(schema, vec![Arc::new(keys_arr)]).expect("expect no error")
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            false,
+        ),
+    ]));
+    let type_arr = UInt8Array::from_iter_values(std::iter::repeat_n(
+        AttributeValueType::Empty as u8,
+        keys_arr.len(),
+    ));
+    RecordBatch::try_new(schema, vec![Arc::new(type_arr), Arc::new(keys_arr)])
+        .expect("expect no error")
 }
 
 fn bench_transform_attributes(c: &mut Criterion) {

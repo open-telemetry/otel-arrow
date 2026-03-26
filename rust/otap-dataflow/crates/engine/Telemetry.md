@@ -77,7 +77,6 @@ emitted via `otel_*` log macros.
 | `pipeline.draining.deadline_exceeded` | `warn` | Draining deadline exceeded; pipeline shutdown is forced. | `crates/engine/src/pipeline_ctrl.rs` |
 | `pipeline.draining.ignored_start_timer` | `debug` | `StartTimer` ignored during shutdown draining. | `crates/engine/src/pipeline_ctrl.rs` |
 | `pipeline.draining.ignored_start_telemetry_timer` | `debug` | `StartTelemetryTimer` ignored during shutdown draining. | `crates/engine/src/pipeline_ctrl.rs` |
-| `pipeline.draining.ignored_delay_data` | `warn` | `DelayData` ignored during shutdown draining. | `crates/engine/src/pipeline_ctrl.rs` |
 | `pipeline.metrics.reporting.fail` | `warn` | Reporting pipeline internal metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `tokio.metrics.reporting.fail` | `warn` | Reporting Tokio runtime metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `channel.metrics.reporting.fail` | `warn` | Reporting channel metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |

@@ -125,7 +125,7 @@ impl Context {
     /// Used to decide whether an ack/nack should be sent to the controller.
     ///
     /// TODO: The assumption here is that any stack with frames should be
-    /// sent to the pipeline controller, though there are a odd cases where
+    /// sent to the runtime control manager, though there are odd cases where
     /// it is not required (e.g., only SOURCE_TAGGING). This could also be
     /// tightened by differentiating whether an Ack or Nack is impending.
     #[must_use]
@@ -682,7 +682,7 @@ mod test {
 
     use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_channel::mpsc::Channel as LocalChannel;
-    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::control::runtime_ctrl_msg_channel;
     use otap_df_engine::effect_handler::SourceTagging;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
@@ -707,7 +707,7 @@ mod test {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
@@ -798,7 +798,7 @@ mod test {
         let _ = senders.insert("a".into(), SharedSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
@@ -888,7 +888,7 @@ mod test {
         let _ = senders.insert("a".into(), SharedSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
@@ -1036,7 +1036,7 @@ mod test {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
@@ -1066,7 +1066,7 @@ mod test {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
@@ -1098,7 +1098,7 @@ mod test {
         let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
@@ -1129,7 +1129,7 @@ mod test {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = LocalReceiverEffectHandler::new(
             NodeId {

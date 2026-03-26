@@ -4,7 +4,11 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
+use crate::control::{
+    AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
+    RuntimeCtrlMsgSender,
+};
 use crate::error::Error;
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
@@ -43,10 +47,13 @@ impl SourceTagging {
 pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
-    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
+    pub(crate) runtime_ctrl_msg_sender: Option<RuntimeCtrlMsgSender<PData>>,
+    pub(crate) pipeline_completion_msg_sender: Option<PipelineCompletionMsgSender<PData>>,
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// Optional node-scoped metrics for completions routed by this effect handler.
+    pub(crate) completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     /// The outgoing message source tagging mode.
     pub(crate) source_tag: SourceTagging,
     /// Precomputed node interests derived from metric level.
@@ -58,24 +65,42 @@ impl<PData> EffectHandlerCore<PData> {
     pub(crate) const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         Self {
             node_id,
-            pipeline_ctrl_msg_sender: None,
+            runtime_ctrl_msg_sender: None,
+            pipeline_completion_msg_sender: None,
             metrics_reporter,
+            completion_emission_metrics: None,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
         }
     }
 
-    /// Sets the pipeline control message sender for this effect handler.
-    pub fn set_pipeline_ctrl_msg_sender(
+    /// Sets the runtime control message sender for this effect handler.
+    pub fn set_runtime_ctrl_msg_sender(
         &mut self,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
     ) {
-        self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+        self.runtime_ctrl_msg_sender = Some(runtime_ctrl_msg_sender);
+    }
+
+    /// Sets the pipeline result message sender for this effect handler.
+    pub fn set_pipeline_completion_msg_sender(
+        &mut self,
+        pipeline_completion_msg_sender: PipelineCompletionMsgSender<PData>,
+    ) {
+        self.pipeline_completion_msg_sender = Some(pipeline_completion_msg_sender);
     }
 
     /// Sets whether outgoing messages need source node tagging.
     pub fn set_source_tagging(&mut self, value: SourceTagging) {
         self.source_tag = value;
+    }
+
+    /// Sets the optional node-scoped completion-emission metrics handle.
+    pub fn set_completion_emission_metrics(
+        &mut self,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+    ) {
+        self.completion_emission_metrics = completion_emission_metrics;
     }
 
     /// Returns outgoing messages source tagging mode.
@@ -229,16 +254,27 @@ impl<PData> EffectHandlerCore<PData> {
         self.metrics_reporter.report(metrics)
     }
 
-    /// Re-usable function to send a pipeline control message. This returns a reference
+    /// Re-usable function to send a runtime control message. This returns a reference
     /// to the sender to place in a cancelation, for example.
-    async fn send_pipeline_ctrl_msg(
+    async fn send_runtime_ctrl_msg(
         &self,
-        msg: PipelineControlMsg<PData>,
-    ) -> Result<PipelineCtrlMsgSender<PData>, SendError<PipelineControlMsg<PData>>> {
-        let pipeline_ctrl_msg_sender = self.pipeline_ctrl_msg_sender.clone()
+        msg: RuntimeControlMsg<PData>,
+    ) -> Result<RuntimeCtrlMsgSender<PData>, SendError<RuntimeControlMsg<PData>>> {
+        let runtime_ctrl_msg_sender = self.runtime_ctrl_msg_sender.clone()
             .expect("[Internal Error] Node request sender not set. This is a bug in the pipeline engine implementation.");
-        pipeline_ctrl_msg_sender.send(msg).await?;
-        Ok(pipeline_ctrl_msg_sender)
+        runtime_ctrl_msg_sender.send(msg).await?;
+        Ok(runtime_ctrl_msg_sender)
+    }
+
+    /// Re-usable function to send a pipeline result message.
+    async fn send_pipeline_completion_msg(
+        &self,
+        msg: PipelineCompletionMsg<PData>,
+    ) -> Result<PipelineCompletionMsgSender<PData>, SendError<PipelineCompletionMsg<PData>>> {
+        let pipeline_completion_msg_sender = self.pipeline_completion_msg_sender.clone()
+            .expect("[Internal Error] Node return sender not set. This is a bug in the pipeline engine implementation.");
+        pipeline_completion_msg_sender.send(msg).await?;
+        Ok(pipeline_completion_msg_sender)
     }
 
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
@@ -249,19 +285,19 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self
-            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTimer {
+        let runtime_ctrl_msg_sender = self
+            .send_runtime_ctrl_msg(RuntimeControlMsg::StartTimer {
                 node_id: self.node_id.index,
                 duration,
             })
             .await
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: e.to_string(),
             })?;
 
         Ok(TimerCancelHandle {
             node_id: self.node_id.index,
-            pipeline_ctrl_msg_sender,
+            runtime_ctrl_msg_sender,
         })
     }
 
@@ -271,23 +307,23 @@ impl<PData> EffectHandlerCore<PData> {
         &self,
         duration: Duration,
     ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
-        let pipeline_ctrl_msg_sender = self
-            .send_pipeline_ctrl_msg(PipelineControlMsg::StartTelemetryTimer {
+        let runtime_ctrl_msg_sender = self
+            .send_runtime_ctrl_msg(RuntimeControlMsg::StartTelemetryTimer {
                 node_id: self.node_id.index,
                 duration,
             })
             .await
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: e.to_string(),
             })?;
 
         Ok(TelemetryTimerCancelHandle {
             node_id: self.node_id.clone(),
-            pipeline_ctrl_msg_sender,
+            runtime_ctrl_msg_sender,
         })
     }
 
-    /// Send an AckMsg to the pipeline controller for context unwinding.
+    /// Send an AckMsg to the runtime control manager for context unwinding.
     /// This will skip if there are no frames.
     ///
     /// TODO: Note that callers are able to directly invoke route_ack() and route_nack()
@@ -298,10 +334,17 @@ impl<PData> EffectHandlerCore<PData> {
         PData: crate::Unwindable,
     {
         if ack.accepted.has_frames() {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { ack })
+            self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverAck { ack })
                 .await
-                .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
+                .map(|_| {
+                    if let Some(metrics) = &self.completion_emission_metrics {
+                        let mut metrics = metrics
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        metrics.record_notify_ack_routed();
+                    }
+                })
+                .map_err(|e| Error::RuntimeMsgError {
                     error: e.to_string(),
                 })
         } else {
@@ -309,17 +352,24 @@ impl<PData> EffectHandlerCore<PData> {
         }
     }
 
-    /// Send a NackMsg to the pipeline controller for context unwinding.
+    /// Send a NackMsg to the runtime control manager for context unwinding.
     /// Same semantics as `route_ack()`.
     pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
     {
         if nack.refused.has_frames() {
-            self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { nack })
+            self.send_pipeline_completion_msg(PipelineCompletionMsg::DeliverNack { nack })
                 .await
-                .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
+                .map(|_| {
+                    if let Some(metrics) = &self.completion_emission_metrics {
+                        let mut metrics = metrics
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        metrics.record_notify_nack_routed();
+                    }
+                })
+                .map_err(|e| Error::RuntimeMsgError {
                     error: e.to_string(),
                 })
         } else {
@@ -329,7 +379,7 @@ impl<PData> EffectHandlerCore<PData> {
 
     /// Delay a message.
     pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.send_pipeline_ctrl_msg(PipelineControlMsg::DelayData {
+        self.send_runtime_ctrl_msg(RuntimeControlMsg::DelayData {
             node_id: self.node_id().index,
             when,
             data,
@@ -338,9 +388,22 @@ impl<PData> EffectHandlerCore<PData> {
         .map(|_| ())
         .map_err(|e| -> PData {
             match e.inner() {
-                PipelineControlMsg::DelayData { data, .. } => *data,
+                RuntimeControlMsg::DelayData { data, .. } => *data,
                 _ => unreachable!(),
             }
+        })
+    }
+
+    /// Notifies the runtime control manager that this receiver has completed
+    /// ingress drain.
+    pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
+        self.send_runtime_ctrl_msg(RuntimeControlMsg::ReceiverDrained {
+            node_id: self.node_id().index,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::RuntimeMsgError {
+            error: e.to_string(),
         })
     }
 }
@@ -348,14 +411,14 @@ impl<PData> EffectHandlerCore<PData> {
 /// Handle to cancel a running timer.
 pub struct TimerCancelHandle<PData> {
     node_id: usize,
-    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+    runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
 }
 
 impl<PData> TimerCancelHandle<PData> {
     /// Cancels the timer.
-    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
-        self.pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::CancelTimer {
+    pub async fn cancel(self) -> Result<(), SendError<RuntimeControlMsg<PData>>> {
+        self.runtime_ctrl_msg_sender
+            .send(RuntimeControlMsg::CancelTimer {
                 node_id: self.node_id,
             })
             .await
@@ -365,14 +428,14 @@ impl<PData> TimerCancelHandle<PData> {
 /// Handle to cancel a running telemetry timer.
 pub struct TelemetryTimerCancelHandle<PData> {
     node_id: NodeId,
-    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+    runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
 }
 
 impl<PData> TelemetryTimerCancelHandle<PData> {
     /// Cancels the telemetry collection timer.
-    pub async fn cancel(self) -> Result<(), SendError<PipelineControlMsg<PData>>> {
-        self.pipeline_ctrl_msg_sender
-            .send(PipelineControlMsg::CancelTelemetryTimer {
+    pub async fn cancel(self) -> Result<(), SendError<RuntimeControlMsg<PData>>> {
+        self.runtime_ctrl_msg_sender
+            .send(RuntimeControlMsg::CancelTelemetryTimer {
                 node_id: self.node_id.index,
                 _temp: std::marker::PhantomData,
             })

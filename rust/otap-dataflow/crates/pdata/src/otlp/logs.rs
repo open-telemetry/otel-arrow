@@ -819,4 +819,92 @@ mod test {
 
         assert_eq!(result, expected);
     }
+
+    #[test]
+    fn test_proto_encode_when_id_columns_not_sorted() {
+        let logs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::EVENT_NAME, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 4, 2, 3, 1])),
+                Arc::new(StringArray::from_iter_values([
+                    "hello", "arrow", "otel", "parquet", "quebec",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let log_attrs_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([3, 4, 2, 1, 2, 0, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    7,
+                ))),
+                Arc::new(StringArray::from_iter_values([
+                    "k1", "k1", "k2", "k1", "k1", "k3", "k2",
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "v1", "v2", "v3", "v4", "v5", "v6", "v7",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch
+            .set(ArrowPayloadType::Logs, logs_record_batch)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, log_attrs_batch)
+            .unwrap();
+        let mut result_buf = ProtoBuffer::new();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![
+                    LogRecord::build()
+                        .event_name("hello")
+                        .attributes(vec![KeyValue::new("k3", AnyValue::new_string("v6"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("quebec")
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_string("v4"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("otel")
+                        .attributes(vec![
+                            KeyValue::new("k2", AnyValue::new_string("v3")),
+                            KeyValue::new("k1", AnyValue::new_string("v5")),
+                        ])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("parquet")
+                        .attributes(vec![
+                            KeyValue::new("k1", AnyValue::new_string("v1")),
+                            KeyValue::new("k2", AnyValue::new_string("v7")),
+                        ])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("arrow")
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_string("v2"))])
+                        .finish(),
+                ],
+            )],
+        )]);
+        assert_eq!(result, expected);
+    }
 }

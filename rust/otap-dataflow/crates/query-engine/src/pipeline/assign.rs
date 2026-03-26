@@ -1609,13 +1609,13 @@ mod test {
             LogRecord::build()
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("hello"))])
                 .finish(),
+            // no event attribute, result should be ""..
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .event_name("replaceme")
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("world"))])
                 .finish(),
-            // no event attribute, result should be ""..
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         let result = exec_logs_pipeline::<P>(
@@ -1628,9 +1628,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].event_name, "hello");
-        assert_eq!(logs_records[1].event_name, "world");
+        assert_eq!(logs_records[1].event_name, "");
         assert_eq!(logs_records[2].event_name, "");
-        assert_eq!(logs_records[3].event_name, "");
+        assert_eq!(logs_records[3].event_name, "world");
     }
 
     #[tokio::test]
@@ -1649,12 +1649,12 @@ mod test {
                 .severity_number(2)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(1))])
                 .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .severity_number(3)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(2))])
                 .finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         // kind of a weird expression in practice, but this is just checking if the expr evaluates
@@ -1668,9 +1668,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].severity_number, 25);
-        assert_eq!(logs_records[1].severity_number, 35);
+        assert_eq!(logs_records[1].severity_number, 0);
         assert_eq!(logs_records[2].severity_number, 0);
-        assert_eq!(logs_records[3].severity_number, 0);
+        assert_eq!(logs_records[3].severity_number, 35);
     }
 
     #[tokio::test]

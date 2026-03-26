@@ -220,7 +220,7 @@ where
             }
         }
         ScalarExpression::Convert(c) => {
-            return execute_convert_scalar_expression(execution_context, c);
+            return execute_convert_scalar_expression(execution_context, c, selection_options);
         }
         ScalarExpression::Length(l) => {
             let inner_value =
@@ -652,7 +652,7 @@ where
                             }
                             Ok(None) => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    selection_options.selector_not_found_diagnostic_level.clone(),
+                                    selection_options.selector_not_found_diagnostic_level,
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -701,7 +701,7 @@ where
                                 }
                                 Ok(None) => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        selection_options.selector_not_found_diagnostic_level.clone(),
+                                        selection_options.selector_not_found_diagnostic_level,
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );
@@ -778,7 +778,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                             }
                             None => {
                                 execution_context.add_diagnostic_if_enabled(
-                                    selection_options.selector_not_found_diagnostic_level.clone(),
+                                    selection_options.selector_not_found_diagnostic_level,
                                     expression,
                                     || format!("Could not find map key '{}' specified in accessor expression", map_key.get_value()),
                                 );
@@ -819,7 +819,7 @@ fn select_from_value<'a, 'b, TRecord: Record>(
                                 }
                                 None => {
                                     execution_context.add_diagnostic_if_enabled(
-                                        selection_options.selector_not_found_diagnostic_level.clone(),
+                                        selection_options.selector_not_found_diagnostic_level,
                                         expression,
                                         || format!("Could not find array index '{index}' specified in accessor expression"),
                                     );

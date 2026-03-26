@@ -135,7 +135,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
         }
 
         let execution_context = ExecutionContext::<TRecord>::new(
-            self.engine.diagnostic_level.clone(),
+            self.engine.diagnostic_level,
             &self.engine.external_function_implementations,
             self.pipeline,
             &self.global_variables,
@@ -201,7 +201,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             self.pipeline,
             self.diagnostics,
             process_summaries(
-                self.engine.diagnostic_level.clone(),
+                self.engine.diagnostic_level,
                 &self.engine.external_function_implementations,
                 &self.global_variables,
                 self.pipeline,
@@ -219,7 +219,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
     ) -> RecordSetEngineResult<'a, TRecord> {
         let diagnostic_level = record
             .get_diagnostic_level()
-            .unwrap_or(self.engine.diagnostic_level.clone());
+            .unwrap_or(self.engine.diagnostic_level);
 
         let execution_context = ExecutionContext::new(
             diagnostic_level,
@@ -351,7 +351,7 @@ fn process_summaries<'a>(
             let summaries = Summaries::new(1);
 
             let execution_context = ExecutionContext::new(
-                diagnostic_level.clone(),
+                diagnostic_level,
                 external_function_implementations,
                 pipeline,
                 global_variables,
@@ -385,7 +385,7 @@ fn process_summaries<'a>(
             }
 
             let results = process_summaries(
-                diagnostic_level.clone(),
+                diagnostic_level,
                 external_function_implementations,
                 global_variables,
                 pipeline,
