@@ -35,7 +35,7 @@
 
 use arrow::array::{
     Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
-    StructArray, UInt16Array,
+    StructArray, UInt16Array, UInt32Array,
 };
 use arrow::buffer::ScalarBuffer;
 use arrow::compute::max;
@@ -56,6 +56,7 @@ use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::error::Error as PdataError;
+use otap_df_pdata::otap::transform::upsert_attributes::EMPTY_ATTRS_RECORD_BATCH;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{
     otap::{
@@ -71,6 +72,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ops::Deref;
 use std::sync::Arc;
 
 mod metrics;
@@ -331,7 +333,15 @@ impl AttributesProcessor {
                     .get_parent_batch_ids(payload_ty, records)?
                     .unwrap_or(Arc::new(UInt16Array::new_null(0)) as ArrayRef);
 
-                if let Some(rb) = records.get(payload_ty) {
+                let mut rb = records.get(payload_ty);
+
+                if self.transform_may_create_new_attrs() && id_col.len() > 0 && rb.is_none() {
+                    // we need to insert some new attributes, but the current attribute record
+                    // batch doesn't exist! pass in a placeholder ...
+                    rb = Some(EMPTY_ATTRS_RECORD_BATCH.deref());
+                }
+
+                if let Some(rb) = rb {
                     let (rb, stats) = transform_attributes_with_stats(rb, &id_col, &self.transform)
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
@@ -350,6 +360,23 @@ impl AttributesProcessor {
         }
 
         Ok((deleted_total, renamed_total, inserted_total, upserted_total))
+    }
+
+    fn transform_may_create_new_attrs(&self) -> bool {
+        let transform_inserts = self
+            .transform
+            .insert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+        let transform_upserts = self
+            .transform
+            .upsert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+
+        return transform_inserts || transform_upserts;
     }
 
     /// Gets the ID column to which the parent_id column in the attributes record batch (identified
@@ -415,39 +442,43 @@ impl AttributesProcessor {
         }
         .cloned();
 
-        let transform_inserts = self
-            .transform
-            .insert
-            .as_ref()
-            .map(|i| !i.is_empty())
-            .unwrap_or_default();
-        let transform_upserts = self
-            .transform
-            .upsert
-            .as_ref()
-            .map(|i| !i.is_empty())
-            .unwrap_or_default();
-
+        // create / fill nulls in the ID column if we need to..
+        //
         // We only require the IDs to be present if there are inserts or upserts to be done.
         // However in the case of resource/scope, if the ID column is null it means there were
         // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
         // skip filling in the ID column if that's the case.
-        let id_required = (transform_inserts || transform_upserts) && !is_struct_id_column;
-
-        match id_column.as_ref() {
-            Some(existing_id_col) => {
-                if id_required && existing_id_col.null_count() > 0 {
-                    let new_ids = try_fill_null_ids(existing_id_col)?;
+        if self.transform_may_create_new_attrs() && !is_struct_id_column {
+            match id_column.as_ref() {
+                Some(existing_id_col) => {
+                    if existing_id_col.null_count() > 0 {
+                        // fill nulls in the existing ID column
+                        let new_ids = try_fill_null_ids(existing_id_col)?;
+                        let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                        otap_batch
+                            .set(parent_payload_type, new_parent_batch)
+                            .unwrap();
+                        id_column = Some(new_ids);
+                    }
+                }
+                None => {
+                    // create new ID column
+                    let new_ids: ArrayRef = match parent_payload_type {
+                        ArrowPayloadType::Logs
+                        | ArrowPayloadType::Spans
+                        | ArrowPayloadType::MultivariateMetrics
+                        | ArrowPayloadType::UnivariateMetrics => Arc::new(
+                            UInt16Array::from_iter_values(0..parent_batch.num_rows() as u16),
+                        ),
+                        _ => Arc::new(UInt32Array::from_iter_values(
+                            0..parent_batch.num_rows() as u32,
+                        )),
+                    };
                     let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
                     otap_batch
                         .set(parent_payload_type, new_parent_batch)
                         .unwrap();
                     id_column = Some(new_ids);
-                }
-            }
-            None => {
-                if id_required {
-                    todo!("create new ID column")
                 }
             }
         }
@@ -1121,7 +1152,11 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_where_root_needs_nulls_filled_in_id_column() {
+    fn test_insert_where_needs_nulls_filled_in_id_column() {
+        // in this case, the second log record will have a null in the ID column because
+        // there's no attributes associated with it. So we'll need to fill in this null
+        // so when we add the new attribute, the parent_id column in the attributes table
+        // will have something to point at
         let input = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -1186,6 +1221,75 @@ mod tests {
                         KeyValue::new("a", AnyValue::new_string("b")),
                         KeyValue::new("b", AnyValue::new_string("val"))
                     ]
+                );
+
+                let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
+                assert_eq!(
+                    log_1.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_where_no_existing_attrs() {
+        let input = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_0 = &decoded.resource_logs[0].scope_logs[0].log_records[0];
+                assert_eq!(
+                    log_0.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
                 );
 
                 let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
