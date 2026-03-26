@@ -33,7 +33,13 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-use arrow::array::{ArrayRef, StructArray, UInt16Array};
+use arrow::array::{
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
+    StructArray, UInt16Array,
+};
+use arrow::buffer::ScalarBuffer;
+use arrow::compute::max;
+use arrow::datatypes::{ArrowNativeType, DataType, Field, Schema, UInt16Type, UInt32Type};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -49,6 +55,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{
     otap::{
@@ -321,7 +328,7 @@ impl AttributesProcessor {
                 // TODO minor optimization is to check if rb.get is None and continue so we
                 // don't end up filling in an ID column where it's not needed
                 let id_col = self
-                    .get_parent_batch_ids(payload_ty, records)
+                    .get_parent_batch_ids(payload_ty, records)?
                     .unwrap_or(Arc::new(UInt16Array::new_null(0)) as ArrayRef);
 
                 if let Some(rb) = records.get(payload_ty) {
@@ -355,7 +362,7 @@ impl AttributesProcessor {
         &self,
         attrs_payload_type: ArrowPayloadType,
         otap_batch: &mut OtapArrowRecords,
-    ) -> Option<ArrayRef> {
+    ) -> Result<Option<ArrayRef>, EngineError> {
         let parent_payload_type = match attrs_payload_type {
             ArrowPayloadType::LogAttrs
             | ArrowPayloadType::MetricAttrs
@@ -377,15 +384,20 @@ impl AttributesProcessor {
             }
             _ => {
                 // passed payload type wasn't for attributes, no associated ID column
-                return None;
+                return Ok(None);
             }
         };
 
-        let parent_batch = otap_batch.get(parent_payload_type)?;
+        let parent_batch = match otap_batch.get(parent_payload_type) {
+            Some(rb) => rb,
+            None => return Ok(None),
+        };
 
         // get the ID column
+        let mut is_struct_id_column = false;
         let mut id_column = match attrs_payload_type {
             ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs => {
+                is_struct_id_column = true;
                 let struct_col_name = match attrs_payload_type {
                     ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
                     ArrowPayloadType::ScopeAttrs => consts::SCOPE,
@@ -403,7 +415,7 @@ impl AttributesProcessor {
         }
         .cloned();
 
-        let transfom_inserts = self
+        let transform_inserts = self
             .transform
             .insert
             .as_ref()
@@ -415,12 +427,22 @@ impl AttributesProcessor {
             .as_ref()
             .map(|i| !i.is_empty())
             .unwrap_or_default();
-        let id_required = transfom_inserts || transform_upserts;
+
+        // We only require the IDs to be present if there are inserts or upserts to be done.
+        // However in the case of resource/scope, if the ID column is null it means there were
+        // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
+        // skip filling in the ID column if that's the case.
+        let id_required = (transform_inserts || transform_upserts) && !is_struct_id_column;
 
         match id_column.as_ref() {
-            Some(id_column) => {
-                if id_required && id_column.null_count() > 0 {
-                    todo!("fill in the nulls in the ID column")
+            Some(existing_id_col) => {
+                if id_required && existing_id_col.null_count() > 0 {
+                    let new_ids = try_fill_null_ids(existing_id_col)?;
+                    let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                    otap_batch
+                        .set(parent_payload_type, new_parent_batch)
+                        .unwrap();
+                    id_column = Some(new_ids);
                 }
             }
             None => {
@@ -430,7 +452,7 @@ impl AttributesProcessor {
             }
         }
 
-        id_column
+        Ok(id_column)
     }
 }
 
@@ -553,6 +575,108 @@ fn engine_err(msg: &str) -> EngineError {
     EngineError::PdataConversionError {
         error: msg.to_string(),
     }
+}
+
+fn try_fill_null_ids(id_column: &ArrayRef) -> Result<ArrayRef, EngineError> {
+    match id_column.data_type() {
+        DataType::UInt16 => {
+            // safety: we've checked the type
+            let id_column = id_column
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast to primitive");
+            let new_ids = try_fill_null_ids_primitive::<UInt16Type>(id_column)?;
+            Ok(Arc::new(new_ids))
+        }
+        DataType::UInt32 => {
+            // safety: we've checked the type
+            let id_column = id_column
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast to primitive");
+            let new_ids = try_fill_null_ids_primitive::<UInt32Type>(id_column)?;
+            Ok(Arc::new(new_ids))
+        }
+        dt => {
+            return Err(PdataError::InvalidIdColumnType {
+                data_type: dt.clone(),
+            }
+            .into());
+        }
+    }
+}
+
+fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
+    id_column: &PrimitiveArray<T>,
+) -> Result<PrimitiveArray<T>, EngineError> {
+    let Some(nulls) = id_column.nulls() else {
+        return Ok(id_column.clone());
+    };
+    let mut curr_max = max(id_column);
+    let one = T::default_value()
+        .add_checked(T::Native::from_usize(1).unwrap())
+        // safety: adding zero to one will not overflow
+        .expect("add zero to one");
+
+    // TODO not sure the type will be necessary once we remove the unwrap in this?
+    let mut get_next_id = || -> Result<<T as ArrowPrimitiveType>::Native, EngineError> {
+        Ok(match curr_max.as_mut() {
+            Some(id) => {
+                // TODO don't unwrap this
+                *id = id.add_checked(one).unwrap();
+                *id
+            }
+            None => {
+                let zero = T::default_value();
+                curr_max = Some(zero);
+                zero
+            }
+        })
+    };
+
+    let mut new_ids = id_column.values().to_vec();
+
+    let mut last_valid_segment_end = 0;
+
+    for (valid_start, valid_end) in nulls.valid_slices() {
+        for i in last_valid_segment_end..valid_start {
+            let next_id = get_next_id()?;
+            new_ids[i] = next_id;
+        }
+        last_valid_segment_end = valid_end;
+    }
+
+    // fill in the last segment
+    for i in last_valid_segment_end..id_column.len() {
+        let next_id = get_next_id()?;
+        new_ids[i] = next_id;
+    }
+
+    Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
+}
+
+fn upsert_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
+    let schema = record_batch.schema();
+    let fields = schema.fields();
+    let index = fields.find(consts::ID).map(|(i, _)| i);
+    let mut fields = fields.to_vec();
+    let mut columns = record_batch.columns().to_vec();
+
+    if let Some(index) = index {
+        columns[index] = id_column;
+    } else {
+        fields.push(Arc::new(Field::new(
+            consts::ID,
+            id_column.data_type().clone(),
+            true,
+        )));
+        columns.push(id_column);
+    }
+
+    // safety: the ID column we're inserting should have the same length as the existing batch
+    // because it has been constructed from the original batch just with nulls filled in, so
+    // this construction should not fail
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("can build record batch")
 }
 
 /// Factory function to create an AttributesProcessor.
@@ -992,6 +1116,83 @@ mod tests {
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(!log_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_where_root_needs_nulls_filled_in_id_column() {
+        let input = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("a", AnyValue::new_string("b"))])
+                            .finish(),
+                        LogRecord::build().finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_0 = &decoded.resource_logs[0].scope_logs[0].log_records[0];
+                assert_eq!(
+                    log_0.attributes,
+                    vec![
+                        KeyValue::new("a", AnyValue::new_string("b")),
+                        KeyValue::new("b", AnyValue::new_string("val"))
+                    ]
+                );
+
+                let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
+                assert_eq!(
+                    log_1.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
             })
             .validate(|_| async move {});
     }
