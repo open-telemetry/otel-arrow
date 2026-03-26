@@ -28,6 +28,7 @@ use crate::OtapArrowRecords;
 use crate::arrays::{NullableArrayAccessor, StringArrayAccessor, get_required_array, get_u8_array};
 use crate::error::{Error, Result};
 use crate::otap::filter::IdBitmap;
+use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
 use crate::otap::transform::upsert_attributes::{
     AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, EMPTY_U32_ATTRS_RECORD_BATCH,
 };
@@ -978,7 +979,7 @@ pub fn apply_attribute_transform(
         }
     };
 
-    let parent_batch = match otap_batch.get(parent_payload_type) {
+    let mut parent_batch = match otap_batch.get(parent_payload_type) {
         Some(rb) => rb,
         None => {
             // No parent record batch, which means there's nothing to which the attributes
@@ -986,6 +987,18 @@ pub fn apply_attribute_transform(
             return Ok(compute_stats.then_some(TransformStats::default()));
         }
     };
+
+    // If we're going to be applying insert/upsert, then we'll need an ID column and we'll need it
+    // not to be delta encoded so we can get the plain IDs for which attributes need to be inserted
+    if transform.may_create_new_attributes() {
+        let parent_batch_delta_removed =
+            remove_transport_optimized_encodings(parent_payload_type, parent_batch)?;
+        otap_batch.set(parent_payload_type, parent_batch_delta_removed)?;
+        // safety: won't return None because we've just set the record batch for this payload type
+        parent_batch = otap_batch
+            .get(parent_payload_type)
+            .expect("payload type set")
+    }
 
     // get the ID column
     let mut is_struct_id_column = false;
@@ -3155,7 +3168,11 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
+    use crate::proto::OtlpProtoMessage;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::schema::{FieldExt, get_field_metadata};
+    use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
     #[test]
@@ -3832,6 +3849,67 @@ mod test {
 
         let expected = UInt16Array::from(vec![Some(1), Some(2), None, Some(3), Some(4), None]);
         assert_eq!(transformed_column, &expected);
+    }
+
+    #[test]
+    fn test_apply_attribute_transform_handles_transport_optimized_encoding_on_parent() {
+        let input = vec![
+            LogRecord::build()
+                .event_name("event 2")
+                .attributes(vec![KeyValue::new("v1", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 2")
+                .attributes(vec![KeyValue::new("v1", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 3")
+                .attributes(vec![KeyValue::new("v1", AnyValue::new_string("c"))])
+                .finish(),
+        ];
+        let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
+        otap_batch.encode_transport_optimized().unwrap();
+
+        _ = apply_attribute_transform(
+            &mut otap_batch,
+            ArrowPayloadType::LogAttrs,
+            &AttributesTransform::default().with_insert(InsertTransform::new(
+                [("b".into(), LiteralValue::Int(5))].into(),
+            )),
+            false,
+        )
+        .unwrap();
+
+        let as_otlp = otap_to_otlp(&otap_batch);
+        let OtlpProtoMessage::Logs(logs_data) = as_otlp else {
+            panic!("invalid decode result {:?}", as_otlp)
+        };
+
+        let logs = &logs_data.resource_logs[0].scope_logs[0].log_records;
+
+        assert_eq!(
+            logs[0].attributes,
+            vec![
+                KeyValue::new("v1", AnyValue::new_string("a")),
+                KeyValue::new("b", AnyValue::new_int(5))
+            ]
+        );
+
+        assert_eq!(
+            logs[1].attributes,
+            vec![
+                KeyValue::new("v1", AnyValue::new_string("b")),
+                KeyValue::new("b", AnyValue::new_int(5))
+            ]
+        );
+
+        assert_eq!(
+            logs[2].attributes,
+            vec![
+                KeyValue::new("v1", AnyValue::new_string("c")),
+                KeyValue::new("b", AnyValue::new_int(5))
+            ]
+        );
     }
 
     #[test]
