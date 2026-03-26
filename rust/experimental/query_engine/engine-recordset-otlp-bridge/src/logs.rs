@@ -35,7 +35,7 @@ impl RecordSet<LogRecord> for ExportLogsServiceRequest {
 
 impl Record for LogRecord {
     fn get_diagnostic_level(&self) -> Option<RecordSetEngineDiagnosticLevel> {
-        self.diagnostic_level.clone()
+        self.diagnostic_level
     }
 }
 
