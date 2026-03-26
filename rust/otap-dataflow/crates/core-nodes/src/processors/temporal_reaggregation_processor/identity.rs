@@ -22,7 +22,6 @@
 //! [`into_owned()`] when they need to be stored.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 use hashbrown::Equivalent;
 use otap_df_pdata_views::views::common::{
@@ -32,76 +31,6 @@ use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramView, HistogramView,
     MetricView, SumView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-
-pub type ResourceIdAssigner = U16IdAssigner<ResourceId>;
-pub type ScopeIdAssigner = U16IdAssigner<ScopeId<'static>>;
-pub type MetricIdAssigner = U16IdAssigner<MetricId<'static>>;
-pub type DataPointIdAssigner = U32IdAssigner<StreamId<'static>>;
-
-pub struct U16IdAssigner<T> {
-    ids: HashMap<T, u16>,
-    next_id: u16,
-}
-
-impl<T> U16IdAssigner<T>
-where
-    T: core::hash::Hash + Eq + Clone,
-{
-    pub fn new() -> Self {
-        Self {
-            ids: HashMap::new(),
-            next_id: 0,
-        }
-    }
-
-    pub fn get_or_assign(&mut self, key: &T) -> u16 {
-        if let Some(&id) = self.ids.get(key) {
-            return id;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        _ = self.ids.insert(key.clone(), id);
-        id
-    }
-
-    pub fn clear(&mut self) {
-        self.ids.clear();
-        self.next_id = 0;
-    }
-}
-
-pub struct U32IdAssigner<T> {
-    ids: HashMap<T, u32>,
-    next_id: u32,
-}
-
-impl<T> U32IdAssigner<T>
-where
-    T: core::hash::Hash + Eq + Clone,
-{
-    pub fn new() -> Self {
-        Self {
-            ids: HashMap::new(),
-            next_id: 0,
-        }
-    }
-
-    fn get_or_assign(&mut self, key: &T) -> u32 {
-        if let Some(&id) = self.ids.get(key) {
-            return id;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        _ = self.ids.insert(key.clone(), id);
-        id
-    }
-
-    pub fn clear(&mut self) {
-        self.ids.clear();
-        self.next_id = 0;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // View bridge functions
