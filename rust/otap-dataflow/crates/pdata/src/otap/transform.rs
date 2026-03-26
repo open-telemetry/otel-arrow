@@ -4,31 +4,36 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::{AddAssign, Range};
+use std::ops::{AddAssign, Deref, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, MutableArrayData,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt16Array, UInt32Array,
-    make_array,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, DictionaryArray,
+    MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
+    UInt16Array, UInt32Array, make_array,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{SortColumn, and, cast, filter, not};
+use arrow::compute::{SortColumn, and, cast, filter, max, not};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type, UInt32Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, Schema, UInt8Type, UInt16Type,
+    UInt32Type,
 };
 use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 
+use crate::OtapArrowRecords;
 use crate::arrays::{NullableArrayAccessor, StringArrayAccessor, get_required_array, get_u8_array};
 use crate::error::{Error, Result};
 use crate::otap::filter::IdBitmap;
-use crate::otap::transform::upsert_attributes::AttributeUpsert;
+use crate::otap::transform::upsert_attributes::{
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, EMPTY_U32_ATTRS_RECORD_BATCH,
+};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::otlp::common::AnyValueArrays;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -831,6 +836,21 @@ impl AttributesTransform {
         self
     }
 
+    fn may_create_new_attrs(&self) -> bool {
+        let transform_inserts = self
+            .insert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+        let transform_upserts = self
+            .upsert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+
+        return transform_inserts || transform_upserts;
+    }
+
     /// Validates the attribute transform operation. The current rule is that no key can be
     /// duplicated in any of the passed values. This is done to avoid any ambiguity about how
     /// to apply the transformation. For example, if the following passed
@@ -917,6 +937,264 @@ pub struct TransformStats {
     pub inserted_entries: u64,
     /// Exact number of attribute entries updated by upsert rules
     pub upserted_entries: u64,
+}
+
+/// Applies the supplied transformation to the OTAP batch, transforming the attributes specified by
+/// the payload type.
+///
+/// If the payload type does not represent an attributes record batch, no work will be done.
+///
+/// If `compute_stats` is `true``, this will return statistics about the rows that were
+/// transformed. If this argument is `false``, the returned value will be `None`.
+///
+pub fn apply_attribute_transform(
+    otap_batch: &mut OtapArrowRecords,
+    attrs_payload_type: ArrowPayloadType,
+    transform: &AttributesTransform,
+    compute_stats: bool,
+) -> Result<Option<TransformStats>> {
+    // try to get the record batch which is the parent of the attributes
+    let parent_payload_type = match attrs_payload_type {
+        ArrowPayloadType::LogAttrs
+        | ArrowPayloadType::MetricAttrs
+        | ArrowPayloadType::SpanAttrs
+        | ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs => otap_batch.root_payload_type(),
+
+        ArrowPayloadType::SpanEventAttrs => ArrowPayloadType::SpanEvents,
+        ArrowPayloadType::SpanLinkAttrs => ArrowPayloadType::SpanLinks,
+
+        ArrowPayloadType::NumberDpAttrs => ArrowPayloadType::NumberDataPoints,
+        ArrowPayloadType::NumberDpExemplarAttrs => ArrowPayloadType::NumberDpExemplars,
+        ArrowPayloadType::SummaryDpAttrs => ArrowPayloadType::SummaryDataPoints,
+        ArrowPayloadType::HistogramDpAttrs => ArrowPayloadType::HistogramDataPoints,
+        ArrowPayloadType::HistogramDpExemplarAttrs => ArrowPayloadType::HistogramDpExemplars,
+        ArrowPayloadType::ExpHistogramDpAttrs => ArrowPayloadType::ExpHistogramDataPoints,
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => ArrowPayloadType::ExpHistogramDpExemplars,
+        _ => {
+            // what we've been passed is not an attributes payload type, so no transform to apply
+            return Ok(compute_stats.then_some(TransformStats::default()));
+        }
+    };
+
+    let parent_batch = match otap_batch.get(parent_payload_type) {
+        Some(rb) => rb,
+        None => {
+            // No parent record batch, which means there's nothing to which the attributes
+            // being transformed can be assigned. Simply do nothing
+            return Ok(compute_stats.then_some(TransformStats::default()));
+        }
+    };
+
+    // get the ID column
+    let mut is_struct_id_column = false;
+    let id_column = match attrs_payload_type {
+        ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs => {
+            is_struct_id_column = true;
+            let struct_col_name = if attrs_payload_type == ArrowPayloadType::ResourceAttrs {
+                consts::RESOURCE
+            } else {
+                consts::SCOPE
+            };
+
+            parent_batch
+                .column_by_name(struct_col_name)
+                .and_then(|s| s.as_any().downcast_ref::<StructArray>())
+                .and_then(|s| s.column_by_name(consts::ID))
+        }
+        _ => parent_batch.column_by_name(consts::ID),
+    }
+    .cloned();
+
+    // create / fill nulls in the ID column if we need to..
+    //
+    // We only require the IDs to be present if there are inserts or upserts to be done.
+    // However in the case of resource/scope, if the ID column is null it means there were
+    // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
+    // skip filling in the ID column if that's the case.
+    let id_column: ArrayRef = if transform.may_create_new_attrs() && !is_struct_id_column {
+        match id_column.as_ref() {
+            Some(existing_id_col) => {
+                if existing_id_col.null_count() > 0 {
+                    // fill nulls in the existing ID column
+                    let new_ids = try_fill_null_ids(existing_id_col)?;
+                    let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                    otap_batch
+                        .set(parent_payload_type, new_parent_batch)
+                        .unwrap();
+                    new_ids
+                } else {
+                    // no need to fill in nulls b/c there aren't any
+                    Arc::clone(existing_id_col)
+                }
+            }
+            None => {
+                // create new ID column
+                let new_ids: ArrayRef = match parent_payload_type {
+                    ArrowPayloadType::Logs
+                    | ArrowPayloadType::Spans
+                    | ArrowPayloadType::MultivariateMetrics
+                    | ArrowPayloadType::UnivariateMetrics => Arc::new(
+                        UInt16Array::from_iter_values(0..parent_batch.num_rows() as u16),
+                    ),
+                    _ => Arc::new(UInt32Array::from_iter_values(
+                        0..parent_batch.num_rows() as u32,
+                    )),
+                };
+                let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                otap_batch
+                    .set(parent_payload_type, new_parent_batch)
+                    .unwrap();
+                new_ids
+            }
+        }
+    } else {
+        match id_column {
+            Some(id_column) => id_column,
+            None => {
+                // return an empty placeholder ID column, with the correct type
+                match parent_payload_type {
+                    ArrowPayloadType::Logs
+                    | ArrowPayloadType::Spans
+                    | ArrowPayloadType::MultivariateMetrics
+                    | ArrowPayloadType::UnivariateMetrics => Arc::new(UInt16Array::new_null(0)),
+                    _ => Arc::new(UInt32Array::new_null(0)),
+                }
+            }
+        }
+    };
+
+    let mut attrs_record_batch = otap_batch.get(attrs_payload_type);
+    if attrs_record_batch.is_none() && id_column.len() > 0 && transform.may_create_new_attrs() {
+        // we need to insert some new attributes, but the current attribute record
+        // batch doesn't exist! pass in a placeholder ...
+        attrs_record_batch = Some(if id_column.data_type() == &DataType::UInt16 {
+            EMPTY_U16_ATTRS_RECORD_BATCH.deref()
+        } else {
+            EMPTY_U32_ATTRS_RECORD_BATCH.deref()
+        })
+    }
+
+    let stats = if let Some(attrs_record_batch) = attrs_record_batch {
+        // apply the transformation
+        let (new_attrs_record_batch, stats) =
+            transform_attributes_impl(attrs_record_batch, &id_column, transform, compute_stats)?;
+
+        if new_attrs_record_batch.num_rows() > 0 {
+            // replace the attribute record batch
+            otap_batch.set(attrs_payload_type, new_attrs_record_batch)?;
+        } else {
+            // remove batch because all the attributes were deleted
+            otap_batch.remove(attrs_payload_type);
+        }
+        compute_stats.then_some(stats)
+    } else {
+        // no existing attributes, and no new ones would created by the transform, so we do nothing
+        compute_stats.then_some(TransformStats::default())
+    };
+
+    Ok(stats)
+}
+
+fn try_fill_null_ids(id_column: &ArrayRef) -> Result<ArrayRef> {
+    match id_column.data_type() {
+        DataType::UInt16 => {
+            // safety: we've checked the type
+            let id_column = id_column
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast to primitive");
+            let new_ids = try_fill_null_ids_primitive::<UInt16Type>(id_column)?;
+            Ok(Arc::new(new_ids))
+        }
+        DataType::UInt32 => {
+            // safety: we've checked the type
+            let id_column = id_column
+                .as_any()
+                .downcast_ref()
+                .expect("can downcast to primitive");
+            let new_ids = try_fill_null_ids_primitive::<UInt32Type>(id_column)?;
+            Ok(Arc::new(new_ids))
+        }
+        dt => {
+            return Err(Error::InvalidIdColumnType {
+                data_type: dt.clone(),
+            });
+        }
+    }
+}
+
+fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
+    id_column: &PrimitiveArray<T>,
+) -> Result<PrimitiveArray<T>> {
+    let Some(nulls) = id_column.nulls() else {
+        return Ok(id_column.clone());
+    };
+    let mut curr_max = max(id_column);
+    let one = T::default_value()
+        .add_checked(T::Native::from_usize(1).unwrap())
+        // safety: adding zero to one will not overflow
+        .expect("add zero to one");
+
+    // TODO not sure the type will be necessary once we remove the unwrap in this?
+    let mut get_next_id = || -> Result<<T as ArrowPrimitiveType>::Native> {
+        Ok(match curr_max.as_mut() {
+            Some(id) => {
+                // TODO don't unwrap this
+                *id = id.add_checked(one).unwrap();
+                *id
+            }
+            None => {
+                let zero = T::default_value();
+                curr_max = Some(zero);
+                zero
+            }
+        })
+    };
+
+    let mut new_ids = id_column.values().to_vec();
+
+    let mut last_valid_segment_end = 0;
+
+    for (valid_start, valid_end) in nulls.valid_slices() {
+        for i in last_valid_segment_end..valid_start {
+            let next_id = get_next_id()?;
+            new_ids[i] = next_id;
+        }
+        last_valid_segment_end = valid_end;
+    }
+
+    // fill in the last segment
+    for i in last_valid_segment_end..id_column.len() {
+        let next_id = get_next_id()?;
+        new_ids[i] = next_id;
+    }
+
+    Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
+}
+
+fn upsert_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
+    let schema = record_batch.schema();
+    let fields = schema.fields();
+    let index = fields.find(consts::ID).map(|(i, _)| i);
+    let mut fields = fields.to_vec();
+    let mut columns = record_batch.columns().to_vec();
+
+    if let Some(index) = index {
+        columns[index] = id_column;
+    } else {
+        fields.push(Arc::new(Field::new(
+            consts::ID,
+            id_column.data_type().clone(),
+            true,
+        )));
+        columns.push(id_column);
+    }
+
+    // safety: the ID column we're inserting should have the same length as the existing batch
+    // because it has been constructed from the original batch just with nulls filled in, so
+    // this construction should not fail
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("can build record batch")
 }
 
 /// Apply an [`AttributesTransform`] to an attributes [`RecordBatch`] and return both the
@@ -6687,9 +6965,7 @@ mod test {
 /// Get the value type for a parent ID column from a schema field, handling both primitive and
 /// dictionary-encoded types.
 /// Returns the underlying primitive type (UInt16 or UInt32).
-fn get_parent_id_value_type_from_schema(
-    schema: &arrow::datatypes::Schema,
-) -> Result<Option<DataType>> {
+fn get_parent_id_value_type_from_schema(schema: &Schema) -> Result<Option<DataType>> {
     let Some((_, field)) = schema.column_with_name(consts::PARENT_ID) else {
         return Ok(None);
     };

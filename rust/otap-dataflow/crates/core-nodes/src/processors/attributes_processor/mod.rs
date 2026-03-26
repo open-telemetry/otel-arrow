@@ -33,13 +33,6 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, PrimitiveArray, RecordBatch,
-    StructArray, UInt16Array, UInt32Array,
-};
-use arrow::buffer::ScalarBuffer;
-use arrow::compute::max;
-use arrow::datatypes::{ArrowNativeType, DataType, Field, Schema, UInt16Type, UInt32Type};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -55,24 +48,19 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::error::Error as PdataError;
-use otap_df_pdata::otap::transform::upsert_attributes::EMPTY_ATTRS_RECORD_BATCH;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{
-    otap::{
-        OtapArrowRecords,
-        transform::{
-            AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-            UpsertTransform, transform_attributes_with_stats,
-        },
+use otap_df_pdata::otap::transform::apply_attribute_transform;
+use otap_df_pdata::otap::{
+    OtapArrowRecords,
+    transform::{
+        AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
+        UpsertTransform,
     },
-    schema::consts,
 };
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::ops::Deref;
 use std::sync::Arc;
 
 mod metrics;
@@ -326,164 +314,17 @@ impl AttributesProcessor {
         if !self.is_noop() {
             let payloads = self.attrs_payloads(signal);
             for &payload_ty in payloads {
-                // TODO optimize the allocation / Arc drop here for cases there is no ID?
-                // TODO minor optimization is to check if rb.get is None and continue so we
-                // don't end up filling in an ID column where it's not needed
-                let id_col = self
-                    .get_parent_batch_ids(payload_ty, records)?
-                    .unwrap_or(Arc::new(UInt16Array::new_null(0)) as ArrayRef);
+                let stats = apply_attribute_transform(records, payload_ty, &self.transform, true)?
+                    .unwrap_or_default();
 
-                let mut rb = records.get(payload_ty);
-
-                if self.transform_may_create_new_attrs() && id_col.len() > 0 && rb.is_none() {
-                    // we need to insert some new attributes, but the current attribute record
-                    // batch doesn't exist! pass in a placeholder ...
-                    rb = Some(EMPTY_ATTRS_RECORD_BATCH.deref());
-                }
-
-                if let Some(rb) = rb {
-                    let (rb, stats) = transform_attributes_with_stats(rb, &id_col, &self.transform)
-                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                    deleted_total += stats.deleted_entries;
-                    renamed_total += stats.renamed_entries;
-                    inserted_total += stats.inserted_entries;
-                    upserted_total += stats.upserted_entries;
-                    if rb.num_rows() == 0 {
-                        records.remove(payload_ty);
-                    } else {
-                        records
-                            .set(payload_ty, rb)
-                            .map_err(|e| engine_err(&format!("failed to set payload: {e}")))?;
-                    }
-                }
+                deleted_total += stats.deleted_entries;
+                renamed_total += stats.renamed_entries;
+                inserted_total += stats.inserted_entries;
+                upserted_total += stats.upserted_entries;
             }
         }
 
         Ok((deleted_total, renamed_total, inserted_total, upserted_total))
-    }
-
-    fn transform_may_create_new_attrs(&self) -> bool {
-        let transform_inserts = self
-            .transform
-            .insert
-            .as_ref()
-            .map(|i| !i.is_empty())
-            .unwrap_or_default();
-        let transform_upserts = self
-            .transform
-            .upsert
-            .as_ref()
-            .map(|i| !i.is_empty())
-            .unwrap_or_default();
-
-        return transform_inserts || transform_upserts;
-    }
-
-    /// Gets the ID column to which the parent_id column in the attributes record batch (identified
-    /// by the passed payload type) is associated.
-    ///
-    /// If the ID column does not exist, or if there are nulls, and the transform being applied
-    /// requires a non-null column, the column may be created and/or modified to fill nulls.
-    /// Attribute inserts and upserts require nulls to be filled in.
-    fn get_parent_batch_ids(
-        &self,
-        attrs_payload_type: ArrowPayloadType,
-        otap_batch: &mut OtapArrowRecords,
-    ) -> Result<Option<ArrayRef>, EngineError> {
-        let parent_payload_type = match attrs_payload_type {
-            ArrowPayloadType::LogAttrs
-            | ArrowPayloadType::MetricAttrs
-            | ArrowPayloadType::SpanAttrs
-            | ArrowPayloadType::ResourceAttrs
-            | ArrowPayloadType::ScopeAttrs => otap_batch.root_payload_type(),
-
-            ArrowPayloadType::SpanEventAttrs => ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::SpanLinkAttrs => ArrowPayloadType::SpanLinks,
-
-            ArrowPayloadType::NumberDpAttrs => ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::NumberDpExemplarAttrs => ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::SummaryDpAttrs => ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDpAttrs => ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::HistogramDpExemplarAttrs => ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpAttrs => ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
-                ArrowPayloadType::ExpHistogramDpExemplars
-            }
-            _ => {
-                // passed payload type wasn't for attributes, no associated ID column
-                return Ok(None);
-            }
-        };
-
-        let parent_batch = match otap_batch.get(parent_payload_type) {
-            Some(rb) => rb,
-            None => return Ok(None),
-        };
-
-        // get the ID column
-        let mut is_struct_id_column = false;
-        let mut id_column = match attrs_payload_type {
-            ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs => {
-                is_struct_id_column = true;
-                let struct_col_name = match attrs_payload_type {
-                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
-                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
-                    _ => {
-                        unreachable!("")
-                    }
-                };
-
-                parent_batch
-                    .column_by_name(struct_col_name)
-                    .and_then(|s| s.as_any().downcast_ref::<StructArray>())
-                    .and_then(|s| s.column_by_name(consts::ID))
-            }
-            _ => parent_batch.column_by_name(consts::ID),
-        }
-        .cloned();
-
-        // create / fill nulls in the ID column if we need to..
-        //
-        // We only require the IDs to be present if there are inserts or upserts to be done.
-        // However in the case of resource/scope, if the ID column is null it means there were
-        // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
-        // skip filling in the ID column if that's the case.
-        if self.transform_may_create_new_attrs() && !is_struct_id_column {
-            match id_column.as_ref() {
-                Some(existing_id_col) => {
-                    if existing_id_col.null_count() > 0 {
-                        // fill nulls in the existing ID column
-                        let new_ids = try_fill_null_ids(existing_id_col)?;
-                        let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
-                        otap_batch
-                            .set(parent_payload_type, new_parent_batch)
-                            .unwrap();
-                        id_column = Some(new_ids);
-                    }
-                }
-                None => {
-                    // create new ID column
-                    let new_ids: ArrayRef = match parent_payload_type {
-                        ArrowPayloadType::Logs
-                        | ArrowPayloadType::Spans
-                        | ArrowPayloadType::MultivariateMetrics
-                        | ArrowPayloadType::UnivariateMetrics => Arc::new(
-                            UInt16Array::from_iter_values(0..parent_batch.num_rows() as u16),
-                        ),
-                        _ => Arc::new(UInt32Array::from_iter_values(
-                            0..parent_batch.num_rows() as u32,
-                        )),
-                    };
-                    let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
-                    otap_batch
-                        .set(parent_payload_type, new_parent_batch)
-                        .unwrap();
-                    id_column = Some(new_ids);
-                }
-            }
-        }
-
-        Ok(id_column)
     }
 }
 
@@ -600,114 +441,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
         }
     }
     set
-}
-
-fn engine_err(msg: &str) -> EngineError {
-    EngineError::PdataConversionError {
-        error: msg.to_string(),
-    }
-}
-
-fn try_fill_null_ids(id_column: &ArrayRef) -> Result<ArrayRef, EngineError> {
-    match id_column.data_type() {
-        DataType::UInt16 => {
-            // safety: we've checked the type
-            let id_column = id_column
-                .as_any()
-                .downcast_ref()
-                .expect("can downcast to primitive");
-            let new_ids = try_fill_null_ids_primitive::<UInt16Type>(id_column)?;
-            Ok(Arc::new(new_ids))
-        }
-        DataType::UInt32 => {
-            // safety: we've checked the type
-            let id_column = id_column
-                .as_any()
-                .downcast_ref()
-                .expect("can downcast to primitive");
-            let new_ids = try_fill_null_ids_primitive::<UInt32Type>(id_column)?;
-            Ok(Arc::new(new_ids))
-        }
-        dt => {
-            return Err(PdataError::InvalidIdColumnType {
-                data_type: dt.clone(),
-            }
-            .into());
-        }
-    }
-}
-
-fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
-    id_column: &PrimitiveArray<T>,
-) -> Result<PrimitiveArray<T>, EngineError> {
-    let Some(nulls) = id_column.nulls() else {
-        return Ok(id_column.clone());
-    };
-    let mut curr_max = max(id_column);
-    let one = T::default_value()
-        .add_checked(T::Native::from_usize(1).unwrap())
-        // safety: adding zero to one will not overflow
-        .expect("add zero to one");
-
-    // TODO not sure the type will be necessary once we remove the unwrap in this?
-    let mut get_next_id = || -> Result<<T as ArrowPrimitiveType>::Native, EngineError> {
-        Ok(match curr_max.as_mut() {
-            Some(id) => {
-                // TODO don't unwrap this
-                *id = id.add_checked(one).unwrap();
-                *id
-            }
-            None => {
-                let zero = T::default_value();
-                curr_max = Some(zero);
-                zero
-            }
-        })
-    };
-
-    let mut new_ids = id_column.values().to_vec();
-
-    let mut last_valid_segment_end = 0;
-
-    for (valid_start, valid_end) in nulls.valid_slices() {
-        for i in last_valid_segment_end..valid_start {
-            let next_id = get_next_id()?;
-            new_ids[i] = next_id;
-        }
-        last_valid_segment_end = valid_end;
-    }
-
-    // fill in the last segment
-    for i in last_valid_segment_end..id_column.len() {
-        let next_id = get_next_id()?;
-        new_ids[i] = next_id;
-    }
-
-    Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
-}
-
-fn upsert_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
-    let schema = record_batch.schema();
-    let fields = schema.fields();
-    let index = fields.find(consts::ID).map(|(i, _)| i);
-    let mut fields = fields.to_vec();
-    let mut columns = record_batch.columns().to_vec();
-
-    if let Some(index) = index {
-        columns[index] = id_column;
-    } else {
-        fields.push(Arc::new(Field::new(
-            consts::ID,
-            id_column.data_type().clone(),
-            true,
-        )));
-        columns.push(id_column);
-    }
-
-    // safety: the ID column we're inserting should have the same length as the existing batch
-    // because it has been constructed from the original batch just with nulls filled in, so
-    // this construction should not fail
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("can build record batch")
 }
 
 /// Factory function to create an AttributesProcessor.
@@ -837,6 +570,10 @@ mod tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+    };
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1296,6 +1033,189 @@ mod tests {
                 assert_eq!(
                     log_1.attributes,
                     vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_attrs_with_u32_parent_ids() {
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_sum(Sum::new(
+                                0,
+                                true,
+                                vec![
+                                    // The relationship between number datapoints and their
+                                    // attributes involves a u32 ID for id/parent_id columns
+                                    NumberDataPoint::build()
+                                        .value_int(1)
+                                        .attributes(vec![KeyValue::new(
+                                            "existing",
+                                            AnyValue::new_int(514),
+                                        )])
+                                        .finish(),
+                                    NumberDataPoint::build().value_int(2).finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+
+                let metric_0 = &decoded.resource_metrics[0].scope_metrics[0].metrics[0];
+                let Data::Sum(sum) = metric_0.data.as_ref().unwrap() else {
+                    panic!("invalid data {:?}", metric_0.data)
+                };
+                assert_eq!(
+                    sum.data_points,
+                    vec![
+                        NumberDataPoint::build()
+                            .value_int(1)
+                            .attributes(vec![
+                                KeyValue::new("existing", AnyValue::new_int(514)),
+                                KeyValue::new("b", AnyValue::new_string("val"))
+                            ])
+                            .finish(),
+                        NumberDataPoint::build()
+                            .value_int(2)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                    ]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_attrs_with_u32_parent_ids_no_existing_attrs() {
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_sum(Sum::new(
+                                0,
+                                true,
+                                vec![
+                                    NumberDataPoint::build().value_int(1).finish(),
+                                    NumberDataPoint::build().value_int(2).finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+
+                let metric_0 = &decoded.resource_metrics[0].scope_metrics[0].metrics[0];
+                let Data::Sum(sum) = metric_0.data.as_ref().unwrap() else {
+                    panic!("invalid data {:?}", metric_0.data)
+                };
+                assert_eq!(
+                    sum.data_points,
+                    vec![
+                        NumberDataPoint::build()
+                            .value_int(1)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                        NumberDataPoint::build()
+                            .value_int(2)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                    ]
                 );
             })
             .validate(|_| async move {});

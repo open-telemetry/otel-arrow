@@ -39,9 +39,21 @@ const SMALLVEC_SIZE: usize = 16;
 
 /// Empty placeholder record batch used when assigning attributes in cases where there is not a
 /// pre-existing attributes record batch
-pub static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
+pub static EMPTY_U16_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
     RecordBatch::new_empty(Arc::new(Schema::new(vec![
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(
+            consts::ATTRIBUTE_KEY,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            false,
+        ),
+    ])))
+});
+
+pub static EMPTY_U32_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
+    RecordBatch::new_empty(Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt32, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(
             consts::ATTRIBUTE_KEY,
@@ -460,6 +472,7 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
     }
 
     let result = make_array(mutable.freeze());
+
     Ok((
         field
             .as_ref()

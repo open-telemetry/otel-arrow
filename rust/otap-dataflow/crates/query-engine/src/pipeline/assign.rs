@@ -37,7 +37,7 @@ use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
 use otap_df_pdata::otap::transform::upsert_attributes::{
-    AttributeUpsert, EMPTY_ATTRS_RECORD_BATCH, upsert_attributes,
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
 };
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -387,7 +387,7 @@ impl AssignPipelineStage {
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
             Some(attrs_batch) => attrs_batch,
-            None => EMPTY_ATTRS_RECORD_BATCH.deref(),
+            None => EMPTY_U16_ATTRS_RECORD_BATCH.deref(),
         };
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
