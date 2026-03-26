@@ -29,43 +29,18 @@ use otap_df_pdata::OtapPayload;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_telemetry::metrics::MetricSet;
 
-mod accumulator;
+mod aggregate;
 mod config;
 mod data_points;
 mod identity;
 mod metrics;
 
-use self::accumulator::MetricAggregator;
+use self::aggregate::MetricAggregator;
 use self::config::Config;
 use self::metrics::TemporalReaggregationMetrics;
 
 /// The URN for the temporal reaggregation processor.
 pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:temporal_reaggregation";
-
-/// The temporal reaggregation processor.
-pub struct TemporalReaggregationProcessor {
-    metrics: MetricSet<TemporalReaggregationMetrics>,
-    collection_period: Duration,
-    /// Whether the periodic flush timer has been started.
-    timer_started: bool,
-    /// Accumulates metrics data over the collection interval.
-    accumulator: MetricAggregator,
-}
-
-/// Factory function to create a [`TemporalReaggregationProcessor`].
-pub fn create_temporal_reaggregation_processor(
-    pipeline_ctx: PipelineContext,
-    node: NodeId,
-    node_config: Arc<NodeUserConfig>,
-    processor_config: &ProcessorConfig,
-) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    Ok(ProcessorWrapper::local(
-        TemporalReaggregationProcessor::from_config(pipeline_ctx, &node_config.config)?,
-        node,
-        node_config,
-        processor_config,
-    ))
-}
 
 /// Register the temporal reaggregation processor as an OTAP processor factory.
 #[allow(unsafe_code)]
@@ -83,51 +58,29 @@ pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otap_df_engine::ProcessorFa
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
-impl TemporalReaggregationProcessor {
-    /// Creates a new processor from a configuration JSON value.
-    pub fn from_config(
-        pipeline_ctx: PipelineContext,
-        config: &serde_json::Value,
-    ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
-        let config: Config =
-            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
-                error: e.to_string(),
-            })?;
-        config.validate()?;
-        Ok(Self {
-            metrics,
-            collection_period: config.period,
-            timer_started: false,
-            accumulator: MetricAggregator::new(),
-        })
-    }
+/// Factory function to create a [`TemporalReaggregationProcessor`].
+pub fn create_temporal_reaggregation_processor(
+    pipeline_ctx: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    Ok(ProcessorWrapper::local(
+        TemporalReaggregationProcessor::from_config(pipeline_ctx, &node_config.config)?,
+        node,
+        node_config,
+        processor_config,
+    ))
+}
 
-    /// Starts the periodic flush timer if it has not already been started.
-    async fn ensure_timer_started(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        if !self.timer_started {
-            let _handle = effect_handler
-                .start_periodic_timer(self.collection_period)
-                .await?;
-            self.timer_started = true;
-        }
-        Ok(())
-    }
-
-    /// Flush accumulated metrics and send downstream.
-    async fn flush(
-        &mut self,
-        effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        if let Some(batch) = self.accumulator.flush() {
-            let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(batch));
-            effect_handler.send_message_with_source_node(pdata).await?;
-        }
-        Ok(())
-    }
+/// The temporal reaggregation processor.
+pub struct TemporalReaggregationProcessor {
+    metrics: MetricSet<TemporalReaggregationMetrics>,
+    collection_period: Duration,
+    /// Whether the periodic flush timer has been started.
+    timer_started: bool,
+    /// Accumulates metrics data over the collection interval.
+    accumulator: MetricAggregator,
 }
 
 #[async_trait(?Send)]
@@ -176,6 +129,53 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 _ => Ok(()),
             },
         }
+    }
+}
+
+impl TemporalReaggregationProcessor {
+    /// Creates a new processor from a configuration JSON value.
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
+        let config: Config =
+            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
+        config.validate()?;
+        Ok(Self {
+            metrics,
+            collection_period: config.period,
+            timer_started: false,
+            accumulator: MetricAggregator::new(),
+        })
+    }
+
+    /// Starts the periodic flush timer if it has not already been started.
+    async fn ensure_timer_started(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if !self.timer_started {
+            let _handle = effect_handler
+                .start_periodic_timer(self.collection_period)
+                .await?;
+            self.timer_started = true;
+        }
+        Ok(())
+    }
+
+    /// Flush accumulated metrics and send downstream.
+    async fn flush(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if let Some(batch) = self.accumulator.finish() {
+            let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(batch));
+            effect_handler.send_message_with_source_node(pdata).await?;
+        }
+        Ok(())
     }
 }
 
