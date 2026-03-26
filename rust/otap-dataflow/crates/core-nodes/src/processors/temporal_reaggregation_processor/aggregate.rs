@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 use otap_df_pdata::encode::append_attribute_value;
 use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
 use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
-use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
+use otap_df_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otap::common::OtapAttributeView;
@@ -24,10 +24,11 @@ use otap_df_pdata_views::views::metrics::{
     SummaryDataPointView, SummaryView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
+use otap_df_telemetry::otel_warn;
 
-use super::data_points::{
-    ExpHistogramDataPointColumns, HistogramDataPointColumns, NumberDataPointColumns,
-    SummaryDataPointColumns,
+use super::data_point_builder::{
+    ExpHistogramDataPointBuilder, HistogramDataPointBuilder, NumberDataPointBuilder,
+    SummaryDataPointBuilder,
 };
 use super::identity::{
     AttributeHash, AttributeHashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef,
@@ -73,10 +74,10 @@ pub struct MetricAggregator {
     next_sdp_id: u32,
 
     // Data point SOA storage
-    number_dps: NumberDataPointColumns,
-    histogram_dps: HistogramDataPointColumns,
-    exp_histogram_dps: ExpHistogramDataPointColumns,
-    summary_dps: SummaryDataPointColumns,
+    number_dps: NumberDataPointBuilder,
+    histogram_dps: HistogramDataPointBuilder,
+    exp_histogram_dps: ExpHistogramDataPointBuilder,
+    summary_dps: SummaryDataPointBuilder,
 }
 
 impl MetricAggregator {
@@ -108,10 +109,10 @@ impl MetricAggregator {
             ehdp_attrs_builder: AttributesRecordBatchBuilder::new(),
             summary_attrs_builder: AttributesRecordBatchBuilder::new(),
 
-            number_dps: NumberDataPointColumns::new(),
-            histogram_dps: HistogramDataPointColumns::new(),
-            exp_histogram_dps: ExpHistogramDataPointColumns::new(),
-            summary_dps: SummaryDataPointColumns::new(),
+            number_dps: NumberDataPointBuilder::new(),
+            histogram_dps: HistogramDataPointBuilder::new(),
+            exp_histogram_dps: ExpHistogramDataPointBuilder::new(),
+            summary_dps: SummaryDataPointBuilder::new(),
         }
     }
 
@@ -222,68 +223,64 @@ impl MetricAggregator {
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
 
-        if let Ok(rb) = self.metrics_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::UnivariateMetrics, rb);
-            }
-        }
-        if let Ok(rb) = self.resource_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::ResourceAttrs, rb);
-            }
-        }
-        if let Ok(rb) = self.scope_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::ScopeAttrs, rb);
-            }
-        }
-        if let Ok(rb) = self.number_dps.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::NumberDataPoints, rb);
-            }
-        }
-        if let Ok(rb) = self.ndp_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::NumberDpAttrs, rb);
-            }
-        }
-        if let Ok(rb) = self.histogram_dps.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::HistogramDataPoints, rb);
-            }
-        }
-        if let Ok(rb) = self.hdp_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::HistogramDpAttrs, rb);
-            }
-        }
-        if let Ok(rb) = self.exp_histogram_dps.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::ExpHistogramDataPoints, rb);
-            }
-        }
-        if let Ok(rb) = self.ehdp_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::ExpHistogramDpAttrs, rb);
-            }
-        }
-        if let Ok(rb) = self.summary_dps.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::SummaryDataPoints, rb);
-            }
-        }
-        if let Ok(rb) = self.summary_attrs_builder.finish() {
-            if rb.num_rows() > 0 {
-                let _ = records.set(ArrowPayloadType::SummaryDpAttrs, rb);
-            }
-        }
+        finish_into(
+            self.metrics_builder.finish(),
+            ArrowPayloadType::UnivariateMetrics,
+            &mut records,
+        );
+        finish_into(
+            self.resource_attrs_builder.finish(),
+            ArrowPayloadType::ResourceAttrs,
+            &mut records,
+        );
+        finish_into(
+            self.scope_attrs_builder.finish(),
+            ArrowPayloadType::ScopeAttrs,
+            &mut records,
+        );
+        finish_into(
+            self.number_dps.finish(),
+            ArrowPayloadType::NumberDataPoints,
+            &mut records,
+        );
+        finish_into(
+            self.ndp_attrs_builder.finish(),
+            ArrowPayloadType::NumberDpAttrs,
+            &mut records,
+        );
+        finish_into(
+            self.histogram_dps.finish(),
+            ArrowPayloadType::HistogramDataPoints,
+            &mut records,
+        );
+        finish_into(
+            self.hdp_attrs_builder.finish(),
+            ArrowPayloadType::HistogramDpAttrs,
+            &mut records,
+        );
+        finish_into(
+            self.exp_histogram_dps.finish(),
+            ArrowPayloadType::ExpHistogramDataPoints,
+            &mut records,
+        );
+        finish_into(
+            self.ehdp_attrs_builder.finish(),
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            &mut records,
+        );
+        finish_into(
+            self.summary_dps.finish(),
+            ArrowPayloadType::SummaryDataPoints,
+            &mut records,
+        );
+        finish_into(
+            self.summary_attrs_builder.finish(),
+            ArrowPayloadType::SummaryDpAttrs,
+            &mut records,
+        );
 
         self.clear();
         Some(records)
-    }
-
-    pub fn stream_count(&self) -> usize {
-        self.stream_map.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -315,6 +312,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_resource_id;
+        debug_assert!(id < u16::MAX, "resource ID overflow");
         self.next_resource_id += 1;
 
         for attr in view.attributes() {
@@ -340,6 +338,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_scope_id;
+        debug_assert!(id < u16::MAX, "scope ID overflow");
         self.next_scope_id += 1;
 
         for attr in view.attributes() {
@@ -369,6 +368,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_metric_id;
+        debug_assert!(id < u16::MAX, "metric ID overflow");
         self.next_metric_id += 1;
 
         let resource_meta = &self.resource_meta[otap_resource_id as usize];
@@ -489,7 +489,7 @@ impl MetricAggregator {
         let time = dp.time_unix_nano();
         if let Some(state) = self.stream_map.get_mut(&StreamIdRef(&stream_id)) {
             if time > state.time_unix_nano {
-                self.exp_histogram_dps.overwrite(state.dp_row_index, dp);
+                self.exp_histogram_dps.replace(state.dp_row_index, dp);
                 state.time_unix_nano = time;
             }
         } else {
@@ -625,4 +625,36 @@ fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
     }
 
     false
+}
+
+/// Finish building a record batch and set it on the output records.
+///
+/// Logs a warning if building or setting fails so errors are not silently
+/// swallowed.
+fn finish_into(
+    result: Result<arrow::array::RecordBatch, arrow::error::ArrowError>,
+    payload_type: ArrowPayloadType,
+    records: &mut OtapArrowRecords,
+) {
+    match result {
+        Ok(rb) if rb.num_rows() > 0 => {
+            if let Err(e) = records.set(payload_type, rb) {
+                otel_warn!(
+                    "temporal_reaggregation.flush.set_payload_failed",
+                    payload_type = ?payload_type,
+                    error = %e,
+                    message = "Failed to set payload on output batch; data will be dropped"
+                );
+            }
+        }
+        Ok(_) => {} // empty batch, nothing to do
+        Err(e) => {
+            otel_warn!(
+                "temporal_reaggregation.flush.build_batch_failed",
+                payload_type = ?payload_type,
+                error = %e,
+                message = "Failed to build Arrow record batch; data will be dropped"
+            );
+        }
+    }
 }
