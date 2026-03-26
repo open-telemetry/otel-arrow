@@ -24,17 +24,12 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
 
-#[cfg(all(
-    not(windows),
-    feature = "jemalloc",
-    feature = "mimalloc",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
-     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
-);
+#[cfg(feature = "dhat-heap")]
+use {
+    std::sync::{LazyLock, Mutex},
+    dhat::Profiler,
+    ctrlc,
+};
 
 // Crypto provider features are mutually exclusive.
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
@@ -78,11 +73,37 @@ use mimalloc::MiMalloc;
 #[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+// =======================
+// dhat (profiling) — wins everywhere when enabled
+// =======================
+#[cfg(all(
+    feature = "dhat-heap",
+    not(any(test, doc, clippy))
+))]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
+
+// =======================
+// Windows default: mimalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    not(feature = "dhat-heap"),
+    feature = "mimalloc",
+    not(any(test, doc, clippy))
+))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
+// =======================
+// Linux default: jemalloc (only if dhat-heap is OFF)
+// =======================
+#[cfg(all(
+    not(feature = "dhat-heap"),
+    feature = "jemalloc",
+    not(windows),
+    not(feature = "mimalloc"),
+    not(any(test, doc, clippy))
+))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -290,7 +311,22 @@ fn validate_engine_components(
     Ok(())
 }
 
+#[cfg(feature = "dhat-heap")]
+static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "dhat-heap")]
+    ctrlc::set_handler(|| {
+        if let Ok(mut guard) = DHAT_PROFILER.lock() {
+            // This triggers the drop and the file write
+            guard.take(); 
+        }
+        std::process::exit(130);
+    })?;
+    #[cfg(feature = "dhat-heap")]
+    {
+        let mut profiler = DHAT_PROFILER.lock().unwrap();
+        *profiler = Some(dhat::Profiler::new_heap());
+    }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()

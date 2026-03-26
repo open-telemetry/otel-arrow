@@ -41,6 +41,9 @@ serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 sysinfo.workspace = true
+dhat = { workspace = true, optional = true }
+ctrlc = { workspace = true, optional = true }
+
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -86,8 +89,10 @@ ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
 criterion = "0.8.0"
+ctrlc = "3"
 data-encoding = "2.9.0"
 datafusion = { version = "51.0.0", default-features = false }
+dhat = "0.3.3"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
@@ -217,6 +222,12 @@ aws = ["otap-df-otap/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+dhat-heap = [
+    "dep:dhat",
+    "dep:ctrlc",
+]
+
+
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
@@ -299,6 +310,10 @@ missing_crate_level_docs = "deny"
 
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
+
+[profile.profiling]
+inherits = "release"
+debug = 2
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
 #[profile.release]
