@@ -2709,19 +2709,55 @@ fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
     upsert_attributes::upsert_attributes::<T>(&attrs_record_batch, &attr_upsert_args)
 }
 
+/// push the values from the array into the vec. Returns an error if the passed array
+/// does not contain values of this primitive type
 fn populate_parent_id_vec<T: ArrowPrimitiveType>(
     parent_id_vec: &mut Vec<T::Native>,
-    arr: &ArrayRef,
+    id_column: &ArrayRef,
 ) -> Result<()> {
-    match arr.data_type() {
-        DataType::Dictionary(k, _) => {
-            todo!("handle dictionary")
-        }
-        _ => {
-            if let Some(as_native) = arr.as_any().downcast_ref::<PrimitiveArray<T>>() {
+    match id_column.data_type() {
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    // safety: we've checked the type
+                    .expect("can downcast to dict");
+                let ids = dict_arr
+                    .downcast_dict::<PrimitiveArray<T>>()
+                    .ok_or_else(|| Error::InvalidIdColumnType {
+                        data_type: id_column.data_type().clone(),
+                    })?;
+
+                parent_id_vec.extend(ids.into_iter().flatten());
+            }
+            DataType::UInt16 => {
+                let dict_arr = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    // safety: we've checked the type
+                    .expect("can downcast to dict");
+                let ids = dict_arr
+                    .downcast_dict::<PrimitiveArray<T>>()
+                    .ok_or_else(|| Error::InvalidIdColumnType {
+                        data_type: id_column.data_type().clone(),
+                    })?;
+
+                parent_id_vec.extend(ids.into_iter().flatten());
+            }
+            _ => {
+                return Err(Error::InvalidIdColumnType {
+                    data_type: id_column.data_type().clone(),
+                });
+            }
+        },
+        dt => {
+            if let Some(as_native) = id_column.as_any().downcast_ref::<PrimitiveArray<T>>() {
                 parent_id_vec.extend(as_native.iter().flatten())
             } else {
-                todo!("error it's an invalid type")
+                return Err(Error::InvalidIdColumnType {
+                    data_type: dt.clone(),
+                });
             }
         }
     }
@@ -2729,6 +2765,7 @@ fn populate_parent_id_vec<T: ArrowPrimitiveType>(
     Ok(())
 }
 
+/// set the bitmap to true for each ID in the passed ID column.
 fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) -> Result<()> {
     parent_id_set.clear();
     match id_column.data_type() {
@@ -2737,9 +2774,9 @@ fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) ->
                 .as_any()
                 .downcast_ref::<UInt16Array>()
                 // safety: we've checked the type
-                .expect("can downcast ot u16");
-            if let Some(nulls) = id_column.nulls() {
-                todo!("handle the nulls in the ID column")
+                .expect("can downcast to u16");
+            if id_column.nulls().is_some() {
+                parent_id_set.populate(id_column.iter().flatten().map(|i| i as u32));
             } else {
                 parent_id_set.populate(id_column.values().iter().map(|i| *i as u32));
             }
@@ -2749,16 +2786,52 @@ fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) ->
                 .as_any()
                 .downcast_ref::<UInt32Array>()
                 // safety: we've checked the type
-                .expect("can downcast ot u16");
-            if let Some(nulls) = id_column.nulls() {
-                todo!("handle the nulls in the ID column")
+                .expect("can downcast to u32");
+            if id_column.nulls().is_some() {
+                parent_id_set.populate(id_column.iter().flatten());
             } else {
                 parent_id_set.populate(id_column.values().iter().map(|i| *i));
             }
         }
-        _ => {
-            // TODO also need to handle dicts
-            todo!("invalid type")
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    // safety: we've checked the type
+                    .expect("can downcast to dict");
+
+                let ids = dict_arr.downcast_dict::<UInt32Array>().ok_or_else(|| {
+                    Error::InvalidIdColumnType {
+                        data_type: id_column.data_type().clone(),
+                    }
+                })?;
+                parent_id_set.populate(ids.into_iter().flatten());
+            }
+            DataType::UInt16 => {
+                let dict_arr = id_column
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    // safety: we've checked the type
+                    .expect("can downcast to dict");
+
+                let ids = dict_arr.downcast_dict::<UInt32Array>().ok_or_else(|| {
+                    Error::InvalidIdColumnType {
+                        data_type: id_column.data_type().clone(),
+                    }
+                })?;
+                parent_id_set.populate(ids.into_iter().flatten());
+            }
+            _ => {
+                return Err(Error::InvalidIdColumnType {
+                    data_type: id_column.data_type().clone(),
+                });
+            }
+        },
+        dt => {
+            return Err(Error::InvalidIdColumnType {
+                data_type: dt.clone(),
+            });
         }
     }
 
@@ -6803,6 +6876,151 @@ mod insert_tests {
     }
 
     #[test]
+    fn test_insert_handles_nulls_in_id_column() {
+        // Schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "env".into(),
+                LiteralValue::Str("prod".into()),
+            )]))),
+            upsert: None,
+        };
+
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
+        let (result, stats) =
+            transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
+
+        assert_eq!(stats.inserted_entries, 2);
+
+        assert_eq!(result.num_rows(), 3);
+
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "k1");
+        assert_eq!(keys.value(1), "env");
+        assert_eq!(keys.value(2), "env");
+
+        // Check values
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        let vals = vals.downcast_dict::<StringArray>().unwrap();
+        assert_eq!(vals.value(0), "v1");
+        assert_eq!(vals.value(1), "prod");
+        assert_eq!(vals.value(2), "prod");
+    }
+
+    #[test]
+    fn test_insert_handles_u32_dict_ids_column() {
+        fn do_test(dict_key_type: DataType) {
+            // Schema
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::PARENT_ID,
+                    DataType::Dictionary(
+                        Box::new(dict_key_type.clone()),
+                        Box::new(DataType::UInt32),
+                    ),
+                    false,
+                ),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]));
+
+            let parent_ids = cast(
+                &UInt32Array::from_iter_values(vec![0]),
+                &DataType::Dictionary(Box::new(dict_key_type), Box::new(DataType::UInt32)),
+            )
+            .unwrap();
+            let input = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(parent_ids),
+                    Arc::new(UInt8Array::from_iter_values(vec![
+                        AttributeValueType::Str as u8,
+                    ])),
+                    Arc::new(StringArray::from_iter_values(vec!["k1"])),
+                    Arc::new(StringArray::from_iter_values(vec!["v1"])),
+                ],
+            )
+            .unwrap();
+
+            let tx = AttributesTransform {
+                rename: None,
+                delete: None,
+                insert: Some(InsertTransform::new(BTreeMap::from([(
+                    "env".into(),
+                    LiteralValue::Str("prod".into()),
+                )]))),
+                upsert: None,
+            };
+
+            let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
+            let (result, stats) =
+                transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
+
+            assert_eq!(stats.upserted_entries, 2);
+
+            assert_eq!(result.num_rows(), 3);
+
+            let keys = result
+                .column_by_name(consts::ATTRIBUTE_KEY)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(keys.value(0), "k1");
+            assert_eq!(keys.value(1), "env");
+            assert_eq!(keys.value(2), "env");
+
+            // Check values
+            let vals = result
+                .column_by_name(consts::ATTRIBUTE_STR)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .unwrap();
+            let vals = vals.downcast_dict::<StringArray>().unwrap();
+            assert_eq!(vals.value(0), "v1");
+            assert_eq!(vals.value(1), "prod");
+            assert_eq!(vals.value(2), "prod");
+        }
+
+        do_test(DataType::UInt8);
+        do_test(DataType::UInt16);
+    }
+
+    #[test]
     fn test_insert_attributes_with_delete() {
         // Schema
         let schema = Arc::new(Schema::new(vec![
@@ -7770,7 +7988,7 @@ mod upsert_tests {
     }
 
     #[test]
-    fn test_insert_attributes_targeting_new_ids() {
+    fn test_upsert_attributes_targeting_new_ids() {
         // Schema
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -7831,6 +8049,151 @@ mod upsert_tests {
         assert_eq!(vals.value(0), "v1");
         assert_eq!(vals.value(1), "prod");
         assert_eq!(vals.value(2), "prod");
+    }
+
+    #[test]
+    fn test_upsert_handles_nulls_in_id_column() {
+        // Schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: None,
+            upsert: Some(UpsertTransform::new(BTreeMap::from([(
+                "env".into(),
+                LiteralValue::Str("prod".into()),
+            )]))),
+        };
+
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
+        let (result, stats) =
+            transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
+
+        assert_eq!(stats.upserted_entries, 2);
+
+        assert_eq!(result.num_rows(), 3);
+
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "k1");
+        assert_eq!(keys.value(1), "env");
+        assert_eq!(keys.value(2), "env");
+
+        // Check values
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        let vals = vals.downcast_dict::<StringArray>().unwrap();
+        assert_eq!(vals.value(0), "v1");
+        assert_eq!(vals.value(1), "prod");
+        assert_eq!(vals.value(2), "prod");
+    }
+
+    #[test]
+    fn test_upsert_handles_u32_dict_ids_column() {
+        fn do_test(dict_key_type: DataType) {
+            // Schema
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::PARENT_ID,
+                    DataType::Dictionary(
+                        Box::new(dict_key_type.clone()),
+                        Box::new(DataType::UInt32),
+                    ),
+                    false,
+                ),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]));
+
+            let parent_ids = cast(
+                &UInt32Array::from_iter_values(vec![0]),
+                &DataType::Dictionary(Box::new(dict_key_type), Box::new(DataType::UInt32)),
+            )
+            .unwrap();
+            let input = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(parent_ids),
+                    Arc::new(UInt8Array::from_iter_values(vec![
+                        AttributeValueType::Str as u8,
+                    ])),
+                    Arc::new(StringArray::from_iter_values(vec!["k1"])),
+                    Arc::new(StringArray::from_iter_values(vec!["v1"])),
+                ],
+            )
+            .unwrap();
+
+            let tx = AttributesTransform {
+                rename: None,
+                delete: None,
+                insert: None,
+                upsert: Some(UpsertTransform::new(BTreeMap::from([(
+                    "env".into(),
+                    LiteralValue::Str("prod".into()),
+                )]))),
+            };
+
+            let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
+            let (result, stats) =
+                transform_attributes_with_stats(&input, &ids, &tx).expect("transform failed");
+
+            assert_eq!(stats.upserted_entries, 2);
+
+            assert_eq!(result.num_rows(), 3);
+
+            let keys = result
+                .column_by_name(consts::ATTRIBUTE_KEY)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(keys.value(0), "k1");
+            assert_eq!(keys.value(1), "env");
+            assert_eq!(keys.value(2), "env");
+
+            // Check values
+            let vals = result
+                .column_by_name(consts::ATTRIBUTE_STR)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .unwrap();
+            let vals = vals.downcast_dict::<StringArray>().unwrap();
+            assert_eq!(vals.value(0), "v1");
+            assert_eq!(vals.value(1), "prod");
+            assert_eq!(vals.value(2), "prod");
+        }
+
+        do_test(DataType::UInt8);
+        do_test(DataType::UInt16);
     }
 
     #[test]
