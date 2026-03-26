@@ -8,7 +8,14 @@ project-level [CONTRIBUTING][] document.
 
 ## OTAP-Dataflow Development Process
 
-Run `cargo xtask check` to check the structure of the project.
+Use the xtask commands below depending on the stage of development:
+
+- Run `cargo xtask quick-check` for faster local iteration while working on
+  Rust changes.
+- Run `cargo xtask check-benches` when bench targets or bench-only code
+  changes.
+- Run `cargo xtask check` before sending changes. This is the full validation
+  suite and remains the required final check.
 
 ## Telemetry and logging
 

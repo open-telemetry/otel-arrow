@@ -34,6 +34,18 @@ After modifying any Rust file, run a quick compile check on the affected crate:
 cd rust/otap-dataflow && cargo check -p <crate_name>
 ```
 
+For broader iterative validation while you are still working, you can also run:
+
+```bash
+cd rust/otap-dataflow && cargo xtask quick-check
+```
+
+If you touched bench targets or bench-only code, you can validate them with:
+
+```bash
+cd rust/otap-dataflow && cargo xtask check-benches
+```
+
 ## Before finalizing changes
 
 When all changes are ready, run the full check suite:
