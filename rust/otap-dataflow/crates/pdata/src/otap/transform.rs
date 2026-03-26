@@ -700,6 +700,18 @@ pub enum LiteralValue {
     Str(String),
 }
 
+impl From<&LiteralValue> for ScalarValue {
+    fn from(value: &LiteralValue) -> Self {
+        match value {
+            // TODO find a way to avoid the clone?
+            LiteralValue::Str(str) => Self::Utf8(Some(str.into())),
+            LiteralValue::Int(int) => Self::Int64(Some(*int)),
+            LiteralValue::Double(float) => Self::Float64(Some(*float)),
+            LiteralValue::Bool(b) => Self::Boolean(Some(*b)),
+        }
+    }
+}
+
 pub struct InsertTransform {
     pub(super) entries: BTreeMap<String, LiteralValue>,
 }
@@ -1190,29 +1202,12 @@ pub fn transform_attributes_impl(
     if num_inserts + num_upserts > 0 {
         // TODO we could materialize parent_ids way down here where it's actually neeeded ...
 
-        let mut upserts = Vec::with_capacity(num_inserts + num_upserts);
+        let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts);
 
         let mut parent_id_set = IdBitmap::new();
-        match id_column.data_type() {
-            DataType::UInt16 => {
-                let id_column = id_column
-                    .as_any()
-                    .downcast_ref::<UInt16Array>()
-                    // safety: we've checked the type
-                    .expect("can downcast ot u16");
-                if let Some(nulls) = id_column.nulls() {
-                    todo!("handle the nulls in the ID column")
-                } else {
-                    parent_id_set.populate(id_column.values().iter().map(|i| *i as u32));
-                }
-            }
-            _ => {
-                todo!("need test cases for all the others")
-            }
-        }
-
-        let key_column = get_required_array(&attrs_record_batch_cow, consts::ATTRIBUTE_KEY)?;
-        let parent_ids_col = get_required_array(&attrs_record_batch_cow, consts::PARENT_ID)?;
+        populate_parent_id_set(&mut parent_id_set, id_column)?;
+        let key_column = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
+        let parent_ids_col = get_required_array(&rb, consts::PARENT_ID)?;
 
         let mut existing_id_set = IdBitmap::new();
 
@@ -1223,16 +1218,11 @@ pub fn transform_attributes_impl(
                     eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
                 // TODO no unwrap (pretty sure we can expect ...)
                 let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
-                let existing_parent_ids_u16 = existing_parent_ids
-                    .as_any()
-                    .downcast_ref::<UInt16Array>()
-                    .unwrap(); // TODO can't actually unwrap this
-                existing_id_set
-                    .populate(existing_parent_ids_u16.values().iter().map(|i| *i as u32));
+                populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
 
                 // TODO - any way to reuse this?
                 let mut parent_ids =
-                    Vec::with_capacity(id_column.len() - existing_id_set.len() as usize);
+                    Vec::with_capacity((parent_id_set.len() - existing_id_set.len()) as usize);
                 for id in parent_id_set.iter() {
                     if existing_id_set.contains(id) {
                         continue;
@@ -1242,25 +1232,59 @@ pub fn transform_attributes_impl(
 
                 stats.inserted_entries += parent_ids.len() as u64;
 
-                let new_value = ColumnarValue::Scalar(match insert_literal {
-                    // TODO find a way to avoid the clone?
-                    LiteralValue::Str(str) => ScalarValue::Utf8(Some(str.into())),
-                    LiteralValue::Int(int) => ScalarValue::Int64(Some(*int)),
-                    LiteralValue::Double(float) => ScalarValue::Float64(Some(*float)),
-                    LiteralValue::Bool(b) => ScalarValue::Boolean(Some(*b)),
-                });
-
-                upserts.push(AttributeUpsert {
+                attr_upsert_args.push(AttributeUpsert {
                     attrs_key: &attrs_key,
-                    existing_key_mask: BooleanArray::new(BooleanBuffer::new_set(0), None),
-                    new_values: new_value,
+                    existing_key_mask: BooleanArray::new(
+                        BooleanBuffer::new_unset(existing_key_mask.len()),
+                        None,
+                    ),
+                    new_values: ColumnarValue::Scalar(insert_literal.into()),
+                    upsert_parent_ids: UInt16Array::from(parent_ids),
+                })
+            }
+        }
+
+        if let Some(upserts) = transform.upsert.as_ref() {
+            for (attrs_key, upsert_literal) in &upserts.entries {
+                // TODO no unwrap
+                let existing_key_mask =
+                    eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
+                // TODO no unwrap (pretty sure we can expect ...)
+                let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+                populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
+
+                let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
+                for id in existing_parent_ids
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+                {
+                    parent_ids.push(id);
+                }
+                for id in parent_id_set.iter() {
+                    if existing_id_set.contains(id) {
+                        continue;
+                    }
+                    parent_ids.push(id as u16);
+                }
+
+                stats.upserted_entries += parent_ids.len() as u64;
+
+                println!("existing_key_mask = {existing_key_mask:?}");
+                println!("parent_ids = {parent_ids:?}");
+                attr_upsert_args.push(AttributeUpsert {
+                    attrs_key: &attrs_key,
+                    existing_key_mask,
+                    new_values: ColumnarValue::Scalar(upsert_literal.into()),
                     upsert_parent_ids: UInt16Array::from(parent_ids),
                 })
             }
         }
 
         // TODO need actual error
-        rb = upsert_attributes::upsert_attributes(&rb, &upserts)?;
+        rb = upsert_attributes::upsert_attributes(&rb, &attr_upsert_args)?;
     }
 
     Ok((rb, stats))
@@ -2665,6 +2689,42 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
         Ok(indices)
     }
+}
+
+fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) -> Result<()> {
+    parent_id_set.clear();
+    match id_column.data_type() {
+        DataType::UInt16 => {
+            let id_column = id_column
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                // safety: we've checked the type
+                .expect("can downcast ot u16");
+            if let Some(nulls) = id_column.nulls() {
+                todo!("handle the nulls in the ID column")
+            } else {
+                parent_id_set.populate(id_column.values().iter().map(|i| *i as u32));
+            }
+        }
+        DataType::UInt32 => {
+            let id_column = id_column
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                // safety: we've checked the type
+                .expect("can downcast ot u16");
+            if let Some(nulls) = id_column.nulls() {
+                todo!("handle the nulls in the ID column")
+            } else {
+                parent_id_set.populate(id_column.values().iter().map(|i| *i));
+            }
+        }
+        _ => {
+            // TODO also need to handle dicts
+            todo!("invalid type")
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -6903,13 +6963,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        // let ids: ArrayRef:
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -6963,12 +7018,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7024,12 +7075,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 4);
         assert_eq!(result.num_rows(), 5); // 1 original + 4 inserted
@@ -7079,12 +7126,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
@@ -7134,12 +7177,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No inserts because key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -7193,12 +7232,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Only 1 insert (new_key), existing_key should be skipped
         assert_eq!(stats.inserted_entries, 1);
@@ -7227,12 +7262,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No parents to insert into
         assert_eq!(stats.inserted_entries, 0);
@@ -7286,12 +7317,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // 1 + 1 + 2 = 4 inserts
         assert_eq!(stats.inserted_entries, 4);
@@ -7335,12 +7362,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 2);
         assert_eq!(result.num_rows(), 4);
@@ -7385,12 +7408,8 @@ mod insert_tests {
             upsert: None,
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::new_null(0)) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No inserts because key already exists
         assert_eq!(stats.inserted_entries, 0);
@@ -7401,7 +7420,9 @@ mod insert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
         assert_eq!(vals.value(0), "original");
     }
@@ -7448,12 +7469,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Should have upserted 1 entry (insert, since key didn't exist)
         assert_eq!(stats.upserted_entries, 1);
@@ -7506,12 +7523,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Should have upserted 1 entry (update, since key already existed)
         assert_eq!(stats.upserted_entries, 1);
@@ -7531,7 +7544,9 @@ mod upsert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
         assert_eq!(vals.value(0), "updated_value");
     }
@@ -7573,12 +7588,8 @@ mod upsert_tests {
             ]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Should have upserted 4 entries (2 parents * 2 keys)
         assert_eq!(stats.upserted_entries, 4);
@@ -7643,12 +7654,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -7657,7 +7664,9 @@ mod upsert_tests {
             .column_by_name(consts::ATTRIBUTE_INT)
             .unwrap()
             .as_any()
-            .downcast_ref::<Int64Array>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<Int64Array>()
             .unwrap();
         assert_eq!(int_vals.value(0), 100);
     }
@@ -7696,12 +7705,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -7749,12 +7754,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -7807,12 +7808,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(stats.upserted_entries, 1);
@@ -7830,7 +7827,9 @@ mod upsert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
 
         let key_val_pairs: Vec<(&str, &str)> = (0..keys.len())
@@ -7878,12 +7877,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.deleted_entries, 1);
         assert_eq!(stats.upserted_entries, 1);
@@ -7939,12 +7934,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.upserted_entries, 2);
         assert_eq!(result.num_rows(), 2);
@@ -7953,7 +7944,9 @@ mod upsert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
         // Both should have the updated value
         assert_eq!(vals.value(0), "updated");
@@ -7982,12 +7975,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No parents exist, so nothing to upsert
         assert_eq!(stats.upserted_entries, 0);
@@ -8040,12 +8029,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         assert_eq!(stats.upserted_entries, 1);
         assert_eq!(result.num_rows(), 1);
@@ -8118,12 +8103,8 @@ mod upsert_tests {
             )]))),
         };
 
-        let (result, stats) = transform_attributes_with_stats(
-            &input,
-            &(Arc::new(UInt16Array::from_iter_values([0])) as ArrayRef),
-            &tx,
-        )
-        .unwrap();
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
+        let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // Verify data correctness: should have 4 rows
         // parent 0: "a"="2" (upserted)
@@ -8141,7 +8122,9 @@ mod upsert_tests {
             .column_by_name(consts::ATTRIBUTE_STR)
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap()
+            .downcast_dict::<StringArray>()
             .unwrap();
 
         // "b" should be gone
