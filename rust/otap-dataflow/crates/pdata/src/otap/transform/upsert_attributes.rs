@@ -804,12 +804,9 @@ fn merge_key_column<T: ArrowPrimitiveType>(
                 .expect("key column is StringArray");
             merge_key_column_plain(field, existing_str, &insert_keys, total_output_rows)
         }
-        other => {
-            // TODO need return the error for this
-            todo!("TODO")
-        } // other => Err(Error::ExecutionError {
-          //     cause: format!("unexpected key column type: {other:?}"),
-          // }),
+        other => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("invalid data type for attributes key column {other:?}"),
+        }),
     }
 }
 
@@ -860,7 +857,7 @@ fn merge_key_column_dict(
                     actual: dict.values().data_type().clone(),
                 })?
         }
-        other => {
+        _ => {
             return Err(Error::UnsupportedDictionaryKeyType {
                 expect_oneof: vec![DataType::UInt8, DataType::UInt16],
                 actual: key_type.clone(),
@@ -882,8 +879,9 @@ fn merge_key_column_dict(
                 let new_idx = existing_cardinality + novel_keys.len();
                 if new_idx >= 65535 {
                     // Overflow u16: fall back to plain Utf8.
-                    // TODO - NO UNWRAP NEED ERROR
-                    let decoded = cast(existing_col, &DataType::Utf8).unwrap();
+                    // safety: here we know we're casting Dict<_, Utf8> to UTf8 which will not
+                    // return an error
+                    let decoded = cast(existing_col, &DataType::Utf8).expect("can cast to plain");
                     let decoded_str = decoded
                         .as_any()
                         .downcast_ref::<StringArray>()
@@ -1165,8 +1163,11 @@ fn merge_value_column<T: ArrowPrimitiveType>(
                 .new_values_scalar
                 .expect("is scalar")
                 .to_array()
-                // TODO NO UNWRAP NEED ERROR
-                .unwrap(),
+                // safety: if we're here, we've already confirmed that the scalar type is valid for
+                // assignment to one of our attribute values columns. Only certain scalar types
+                // will fail when being converted into an array of length one, but none of those
+                // for which we use as value types are among this group, so this is safe to expect
+                .expect("can convert to single length array"),
         };
         let is_scalar = resolved_upsert.new_values_array.is_none();
         let arr = decode_to_plain(&arr)?;
@@ -1328,11 +1329,17 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
         }
         let (arr, is_scalar) = match &r.new_values_array {
             Some(arr) => (Arc::clone(arr), false),
-            // safety: OK to expect here because when we construct resolved upsert, we set either
-            // the new_values_array as Some or new_values_scalar to Some, never neither
-            // TODO NO UNWRAP NEED ERROR
             None => (
-                r.new_values_scalar.expect("is scalar").to_array().unwrap(),
+                r.new_values_scalar
+                    // safety: OK to expect here because when we construct resolved upsert, we set either
+                    // the new_values_array as Some or new_values_scalar to Some, never neither
+                    .expect("is scalar")
+                    .to_array()
+                    // safety: if we're here, we've already confirmed that the scalar type is valid for
+                    // assignment to one of our attribute values columns. Only certain scalar types
+                    // will fail when being converted into an array of length one, but none of those
+                    // for which we use as value types are among this group, so this is safe to expect
+                    .expect("can convert to single length array"),
                 true,
             ),
         };
@@ -1684,12 +1691,12 @@ fn array_value_as_bytes(arr: &ArrayRef, idx: usize) -> Result<Option<&[u8]>> {
                 .expect("is binary");
             Ok(Some(bin_arr.value(idx)))
         }
-        other => {
-            // TODO need error
-            todo!("need error")
-        } // other => Err(Error::ExecutionError {
-          //     cause: format!("Invalid type for byte conversion {other:?}"),
-          // }),
+        // we return this error type because the function is called in the context of trying
+        // to intern values for the dictionary
+        other => Err(Error::UnsupportedDictionaryValueType {
+            expect_oneof: vec![DataType::Utf8, DataType::Int64, DataType::Binary],
+            actual: other.clone(),
+        }),
     }
 }
 
@@ -1761,7 +1768,6 @@ fn merge_values_with_unified_dict<T: ArrowPrimitiveType>(
                 match &unified.existing_keys {
                     Some(existing_keys) => {
                         if let Some(existing_nulls) = &unified.existing_nulls {
-                            // TODO will this make things slow? We should rerun the bench
                             mark_existing_nulls(
                                 &mut nulls,
                                 existing_nulls,
@@ -1958,10 +1964,17 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
         }
         let arr = match &r.new_values_array {
             Some(arr) => Arc::clone(arr),
-            // safety: OK to expect here because when we construct resolved upsert, we set either
-            // the new_values_array as Some or new_values_scalar to Some, never neither
-            // TODO need error no unwrap
-            None => r.new_values_scalar.expect("scalar").to_array().unwrap(),
+            None => r
+                .new_values_scalar
+                // safety: OK to expect here because when we construct resolved upsert, we set either
+                // the new_values_array as Some or new_values_scalar to Some, never neither
+                .expect("scalar")
+                .to_array()
+                // safety: if we're here, we've already confirmed that the scalar type is valid for
+                // assignment to one of our attribute values columns. Only certain scalar types
+                // will fail when being converted into an array of length one, but none of those
+                // for which we use as value types are among this group, so this is safe to expect
+                .expect("can convert to single length array"),
         };
         let is_scalar = r.new_values_array.is_none();
         // Decode to plain (non-dict) for primitive merge.
