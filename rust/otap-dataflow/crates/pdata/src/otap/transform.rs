@@ -708,11 +708,10 @@ pub enum LiteralValue {
 impl From<&LiteralValue> for ScalarValue {
     fn from(value: &LiteralValue) -> Self {
         match value {
-            // TODO find a way to avoid the clone?
-            LiteralValue::Str(str) => Self::Utf8(Some(str.into())),
-            LiteralValue::Int(int) => Self::Int64(Some(*int)),
-            LiteralValue::Double(float) => Self::Float64(Some(*float)),
             LiteralValue::Bool(b) => Self::Boolean(Some(*b)),
+            LiteralValue::Double(float) => Self::Float64(Some(*float)),
+            LiteralValue::Int(int) => Self::Int64(Some(*int)),
+            LiteralValue::Str(str) => Self::Utf8(Some(str.into())),
         }
     }
 }
@@ -836,19 +835,19 @@ impl AttributesTransform {
         self
     }
 
-    fn may_create_new_attrs(&self) -> bool {
-        let transform_inserts = self
+    fn may_create_new_attributes(&self) -> bool {
+        let does_inserts = self
             .insert
             .as_ref()
             .map(|i| !i.is_empty())
             .unwrap_or_default();
-        let transform_upserts = self
+        let does_upserts = self
             .upsert
             .as_ref()
-            .map(|i| !i.is_empty())
+            .map(|u| !u.is_empty())
             .unwrap_or_default();
 
-        return transform_inserts || transform_upserts;
+        return does_inserts || does_upserts;
     }
 
     /// Validates the attribute transform operation. The current rule is that no key can be
@@ -1012,13 +1011,13 @@ pub fn apply_attribute_transform(
     // However in the case of resource/scope, if the ID column is null it means there were
     // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
     // skip filling in the ID column if that's the case.
-    let id_column: ArrayRef = if transform.may_create_new_attrs() && !is_struct_id_column {
+    let id_column: ArrayRef = if transform.may_create_new_attributes() && !is_struct_id_column {
         match id_column.as_ref() {
             Some(existing_id_col) => {
                 if existing_id_col.null_count() > 0 {
                     // fill nulls in the existing ID column
                     let new_ids = try_fill_null_ids(existing_id_col)?;
-                    let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                    let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
                     otap_batch
                         .set(parent_payload_type, new_parent_batch)
                         .unwrap();
@@ -1041,7 +1040,7 @@ pub fn apply_attribute_transform(
                         0..parent_batch.num_rows() as u32,
                     )),
                 };
-                let new_parent_batch = upsert_id_column(parent_batch, new_ids.clone());
+                let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
                 otap_batch
                     .set(parent_payload_type, new_parent_batch)
                     .unwrap();
@@ -1064,8 +1063,11 @@ pub fn apply_attribute_transform(
         }
     };
 
+    // TODO if the ID column has transport optimized encoding, we need to remove it.
+
     let mut attrs_record_batch = otap_batch.get(attrs_payload_type);
-    if attrs_record_batch.is_none() && id_column.len() > 0 && transform.may_create_new_attrs() {
+    if attrs_record_batch.is_none() && id_column.len() > 0 && transform.may_create_new_attributes()
+    {
         // we need to insert some new attributes, but the current attribute record
         // batch doesn't exist! pass in a placeholder ...
         attrs_record_batch = Some(if id_column.data_type() == &DataType::UInt16 {
@@ -1136,12 +1138,12 @@ fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
         // safety: adding zero to one will not overflow
         .expect("add zero to one");
 
-    // TODO not sure the type will be necessary once we remove the unwrap in this?
     let mut get_next_id = || -> Result<<T as ArrowPrimitiveType>::Native> {
         Ok(match curr_max.as_mut() {
             Some(id) => {
-                // TODO don't unwrap this
-                *id = id.add_checked(one).unwrap();
+                *id = id
+                    .add_checked(one)
+                    .map_err(|e| Error::Batching { source: e })?;
                 *id
             }
             None => {
@@ -1173,7 +1175,7 @@ fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
     Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
 }
 
-fn upsert_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
+fn replace_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
     let schema = record_batch.schema();
     let fields = schema.fields();
     let index = fields.find(consts::ID).map(|(i, _)| i);
@@ -1221,8 +1223,14 @@ pub fn transform_attributes_with_stats(
     transform_attributes_impl(attrs_record_batch, id_column, transform, true)
 }
 
-// TODO need to comment on why the ID column argument is passed (and comment in all the places
-// in which you've drilled it in)
+/// Apply the transform to the attributes record batch
+///
+/// Parameters:
+/// - `attrs_record_batch` - the record batch on which to apply the transform
+/// - `id_column` - the ID column from the parent record batch. This is used to determine the
+///   unique list of all IDs when creating new attributes during insert/upsert operations.
+/// - `transform` - the attribute transform to apply
+/// - `compute_stats` - whether to populate the transform stats`
 pub fn transform_attributes_impl(
     attrs_record_batch: &RecordBatch,
     id_column: &ArrayRef,
@@ -1399,7 +1407,6 @@ pub fn transform_attributes_impl(
                 }
             };
 
-            // TODO - fix this comment it's kind of confusing ....
             // if all rows have been removed (all attributes deleted) just return empty RecordBatch
             // NOTE: If we have inserts, we might still return rows even if all existing were deleted.
             // But here we just produce the "remaining" batch. Inserts are appended later.
@@ -1477,7 +1484,7 @@ pub fn transform_attributes_impl(
     if needs_insert || needs_upsert {
         let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;
         rb = if parent_ids_col.data_type() == &DataType::UInt16 {
-            do_inserts_and_upserts::<UInt16Type>(
+            apply_inserts_and_upserts::<UInt16Type>(
                 insert_transform,
                 upsert_transform,
                 id_column,
@@ -1485,7 +1492,7 @@ pub fn transform_attributes_impl(
                 &mut stats,
             )?
         } else {
-            do_inserts_and_upserts::<UInt32Type>(
+            apply_inserts_and_upserts::<UInt32Type>(
                 insert_transform,
                 upsert_transform,
                 id_column,
@@ -1707,10 +1714,6 @@ fn transform_keys(
                     curr_total_offset_adjustment -=
                         (deleted_val_len * transform_range.range.len()) as i32;
                 }
-                KeyTransformRangeType::Upsert => {
-                    // do nothing
-                    // TODO - maybe we should just delete this variant of the enum
-                }
             }
 
             prev_range_index_end = transform_range.end();
@@ -1838,10 +1841,7 @@ where
         || dict_values_transform_result
             .transform_ranges
             .iter()
-            .any(|range| {
-                range.range_type == KeyTransformRangeType::Delete
-                    || range.range_type == KeyTransformRangeType::Upsert
-            });
+            .any(|range| range.range_type == KeyTransformRangeType::Delete);
     let dict_key_transform_ranges = if compute_dict_key_transform_ranges {
         dict_value_transform_ranges_to_key_ranges(
             dict_arr,
@@ -2065,9 +2065,6 @@ fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange])
         match range.range_type {
             KeyTransformRangeType::Delete => count_delete += range.len(),
             KeyTransformRangeType::Replace => count_rename += range.len(),
-            KeyTransformRangeType::Upsert => {
-                // TODO maybe this enum variant should just be deleted
-            }
         }
     }
 
@@ -2108,7 +2105,6 @@ fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyT
 enum KeyTransformRangeType {
     Replace,
     Delete,
-    Upsert,
 }
 
 /// Specifies a range of the attribute's "key" colum that had a transformation applied to it.
@@ -2209,10 +2205,7 @@ fn transform_ranges_to_keep_ranges(
     let mut count_delete_ranges = 0;
     for (start, end) in transform_ranges
         .iter()
-        .filter(|r| {
-            r.range_type == KeyTransformRangeType::Delete
-                || r.range_type == KeyTransformRangeType::Upsert
-        })
+        .filter(|r| r.range_type == KeyTransformRangeType::Delete)
         .map(|r| (r.start(), r.end()))
     {
         count_delete_ranges += 1;
@@ -2575,7 +2568,7 @@ fn should_remove_transport_optimized_encoding(
                     }
                 }
             }
-            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
+            KeyTransformRangeType::Delete => {
                 if let Some(prev) = prev_neighbour.as_ref() {
                     if let Some(next) = next_neighbour.as_ref() {
                         let delete_joins = are_neighbours_with_delta_encoded_parent_ids(
@@ -2649,7 +2642,7 @@ fn find_previous_neighbour_post_transform(
                     replacement_idx: Some(range.idx),
                 });
             }
-            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
+            KeyTransformRangeType::Delete => {
                 index = range.start();
                 if index == 0 {
                     return None;
@@ -2711,7 +2704,7 @@ fn find_next_neighbour_post_transform(
                     replacement_idx: Some(range.idx),
                 });
             }
-            KeyTransformRangeType::Delete | KeyTransformRangeType::Upsert => {
+            KeyTransformRangeType::Delete => {
                 index = range.end() - 1;
                 if index >= len - 1 {
                     return None;
@@ -2899,7 +2892,7 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
     }
 }
 
-fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
+fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
     insert_transform: Option<&InsertTransform>,
     upsert_transform: Option<&UpsertTransform>,
     id_column: &ArrayRef,
@@ -2925,21 +2918,30 @@ fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
 
     if let Some(inserts) = insert_transform {
         for (attrs_key, insert_literal) in &inserts.entries {
-            // TODO no unwrap
-            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
-            // TODO no unwrap (pretty sure we can expect ...)
-            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+            let existing_key_mask =
+                eq(&key_column, &StringArray::new_scalar(&attrs_key)).map_err(|_| {
+                    Error::UnsupportedStringColumnType {
+                        data_type: key_column.data_type().clone(),
+                    }
+                })?;
+            // safety: filter will not return an error here because the existing_key_mask will be
+            // the same length is the parent_id column because it was created by calling eq on a
+            // different column, which would have the same length
+            let existing_parent_ids =
+                filter(&parent_ids_col, &existing_key_mask).expect("can filter");
             populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
 
-            // TODO - any way to reuse this?
             let mut parent_ids =
                 Vec::with_capacity((parent_id_set.len() - existing_id_set.len()) as usize);
             for id in parent_id_set.iter() {
                 if existing_id_set.contains(id) {
                     continue;
                 }
-                // TODO no unwrap here (pretty sure we can expect)
-                parent_ids.push(T::Native::from_usize(id as usize).unwrap());
+                // safety: we're converting a value that would have been one of the existing IDs
+                // into the type of the ID, which means this value can fit so this shouldn't error
+                parent_ids.push(
+                    T::Native::from_usize(id as usize).expect("can convert usize to ID type"),
+                );
             }
 
             stats.inserted_entries += parent_ids.len() as u64;
@@ -2958,10 +2960,17 @@ fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
 
     if let Some(upserts) = upsert_transform {
         for (attrs_key, upsert_literal) in &upserts.entries {
-            // TODO no unwrap
-            let existing_key_mask = eq(&key_column, &StringArray::new_scalar(&attrs_key)).unwrap();
-            // TODO no unwrap (pretty sure we can expect ...)
-            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask).unwrap();
+            let existing_key_mask =
+                eq(&key_column, &StringArray::new_scalar(&attrs_key)).map_err(|_| {
+                    Error::UnsupportedStringColumnType {
+                        data_type: key_column.data_type().clone(),
+                    }
+                })?;
+            // safety: filter will not return an error here because the existing_key_mask will be
+            // the same length is the parent_id column because it was created by calling eq on a
+            // different column, which would have the same length
+            let existing_parent_ids =
+                filter(&parent_ids_col, &existing_key_mask).expect("can filter");
             populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
 
             let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
@@ -2970,7 +2979,11 @@ fn do_inserts_and_upserts<T: ArrowPrimitiveType>(
                 if existing_id_set.contains(id) {
                     continue;
                 }
-                parent_ids.push(T::Native::from_usize(id as usize).unwrap());
+                // safety: we're converting a value that would have been one of the existing IDs
+                // into the type of the ID, which means this value can fit so this shouldn't error
+                parent_ids.push(
+                    T::Native::from_usize(id as usize).expect("can convert usize to ID type"),
+                );
             }
 
             stats.upserted_entries += parent_ids.len() as u64;

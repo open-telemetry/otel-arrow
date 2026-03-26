@@ -268,8 +268,13 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
     }
 
     let output_schema = Arc::new(Schema::new(output_fields));
-    // TODO no unwrap (I think we can expect here)
-    Ok(RecordBatch::try_new(output_schema, output_columns).unwrap())
+    let result = RecordBatch::try_new(output_schema, output_columns).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("Unexpected result from upsert attribute transformation: {e:?}"),
+        }
+    })?;
+
+    Ok(result)
 }
 
 /// Resolve the OTAP attribute value type and target value column name from a data type.
@@ -292,12 +297,9 @@ fn resolve_attr_type_and_col_name(
         DataType::Int64 => Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT))),
         DataType::Float64 => Ok((AttributeValueType::Double, Some(consts::ATTRIBUTE_DOUBLE))),
         DataType::Binary => Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES))),
-        other => {
-            // TODO - need an error for this
-            todo!("TODO")
-        } // other => Err(Error:: {
-          //     cause: format!("unsupported attribute value type: {other:?}"),
-          // }),
+        _ => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("unexpected attribute value type {:?}", logical_type),
+        }),
     }
 }
 
@@ -401,8 +403,8 @@ fn build_combined_mask<T: ArrowPrimitiveType>(
 ) -> Result<BooleanArray> {
     let mut combined = resolved[0].mask.clone();
     for upsert in &resolved[1..] {
-        // TODO no unwrap (I think we can expect here)
-        combined = arrow::compute::or(&combined, upsert.mask).unwrap();
+        combined = arrow::compute::or(&combined, upsert.mask)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?
     }
     Ok(combined)
 }
@@ -503,12 +505,16 @@ fn merge_parent_id_column_dict<T: ArrowPrimitiveType>(
                     .expect("can downcast to dict");
                 dict_arr.values()
             }
-            _ => {
-                todo!("invalid type")
+            other => {
+                return Err(Error::UnsupportedStringDictKeyType {
+                    data_type: other.clone(),
+                });
             }
         },
         _ => {
-            todo!("return error b/c we shouldn't have been called if not dict")
+            return Err(Error::InvalidIdColumnType {
+                data_type: existing_col.data_type().clone(),
+            });
         }
     };
 
@@ -534,7 +540,9 @@ fn merge_parent_id_column_dict<T: ArrowPrimitiveType>(
             .upsert_parent_ids
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .unwrap() // TODO need return error here that passed invalid arg
+            .ok_or_else(|| Error::InvalidIdColumnType {
+                data_type: existing_col.data_type().clone(),
+            })?
             .slice(r.num_updates, r.num_inserts);
 
         for val in inserts.iter() {
