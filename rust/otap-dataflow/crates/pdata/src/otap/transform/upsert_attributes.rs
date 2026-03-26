@@ -15,8 +15,9 @@ use smallvec::{SmallVec, smallvec};
 use crate::otlp::attributes::AttributeValueType;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayData, ArrayRef, BooleanArray, BooleanBufferBuilder, DictionaryArray,
-    MutableArrayData, RecordBatch, StringArray, UInt8Array, UInt16Array, make_array,
+    Array, ArrayData, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder,
+    DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch, StringArray, UInt8Array,
+    UInt16Array, make_array,
 };
 use arrow::buffer::{MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{SlicesIterator, cast};
@@ -51,7 +52,7 @@ const SMALLVEC_SIZE: usize = 16;
 /// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
 /// for enforcing it (typically at the planner level). Passing duplicate keys results in undefined
 /// behavior and may result in duplicate attributes.
-pub struct AttributeUpsert<'a> {
+pub struct AttributeUpsert<'a, T: ArrowPrimitiveType> {
     /// The attribute key being upserted (e.g., "http.method").
     pub attrs_key: &'a str,
     /// Boolean mask over existing rows: `true` where key matches `attrs_key`.
@@ -59,17 +60,17 @@ pub struct AttributeUpsert<'a> {
     /// New values to assign (scalar broadcasts or per-parent array).
     pub new_values: ColumnarValue,
     /// Parent IDs: updates first, then inserts. Length = num_updates + num_inserts.
-    pub upsert_parent_ids: UInt16Array,
+    pub upsert_parent_ids: PrimitiveArray<T>,
 }
 
 /// Pre-computed per-upsert state derived from an [`AttributeUpsert`].
-struct ResolvedUpsert<'a> {
+struct ResolvedUpsert<'a, T: ArrowPrimitiveType> {
     attrs_key: &'a str,
     mask: &'a BooleanArray,
     target_col_name: Option<&'static str>,
     new_values_array: Option<ArrayRef>,
     new_values_scalar: Option<&'a ScalarValue>,
-    upsert_parent_ids: &'a UInt16Array,
+    upsert_parent_ids: &'a PrimitiveArray<T>,
     num_updates: usize,
     num_inserts: usize,
 
@@ -98,15 +99,15 @@ struct ResolvedUpsert<'a> {
 /// A new `RecordBatch` with the same schema as `existing_attrs` (potentially with new value
 /// columns added), containing all non-updated (passthrough) rows, updated rows, and newly
 /// inserted rows. Insert rows are appended in upsert order at the tail of the [`RecordBatch`]
-pub fn upsert_attributes(
+pub fn upsert_attributes<T: ArrowPrimitiveType>(
     existing_attrs: &RecordBatch,
-    upserts: &[AttributeUpsert<'_>],
+    upserts: &[AttributeUpsert<'_, T>],
 ) -> Result<RecordBatch> {
     let num_existing = existing_attrs.num_rows();
 
     // Resolve each upsert: determine type, target column, extract values, compute counts, and
     // other properties used to create the final result.
-    let resolved: SmallVec<[ResolvedUpsert<'_>; SMALLVEC_SIZE]> = upserts
+    let resolved: SmallVec<[ResolvedUpsert<'_, T>; SMALLVEC_SIZE]> = upserts
         .iter()
         .map(|u| {
             let data_type = u.new_values.data_type();
@@ -289,7 +290,10 @@ struct OwnershipRun {
 ///
 /// Since upsert masks are mutually exclusive (each row has one key), at most one upsert can
 /// own any given row.
-fn build_row_owners(num_existing: usize, resolved: &[ResolvedUpsert<'_>]) -> Vec<OwnershipRun> {
+fn build_row_owners<T: ArrowPrimitiveType>(
+    num_existing: usize,
+    resolved: &[ResolvedUpsert<'_, T>],
+) -> Vec<OwnershipRun> {
     if num_existing == 0 {
         return Vec::new();
     }
@@ -362,7 +366,9 @@ fn build_row_owners(num_existing: usize, resolved: &[ResolvedUpsert<'_>]) -> Vec
 }
 
 /// Build a combined boolean mask that is the OR of all upsert masks.
-fn build_combined_mask(resolved: &[ResolvedUpsert<'_>]) -> Result<BooleanArray> {
+fn build_combined_mask<T: ArrowPrimitiveType>(
+    resolved: &[ResolvedUpsert<'_, T>],
+) -> Result<BooleanArray> {
     let mut combined = resolved[0].mask.clone();
     for upsert in &resolved[1..] {
         // TODO no unwrap (I think we can expect here)
@@ -376,10 +382,10 @@ fn build_combined_mask(resolved: &[ResolvedUpsert<'_>]) -> Result<BooleanArray> 
 ///
 /// Uses `MutableArrayData` to copy the existing column and each upsert's insert portion
 /// directly into a single output buffer — no intermediate slices or concat allocations.
-fn merge_parent_id_column(
+fn merge_parent_id_column<T: ArrowPrimitiveType>(
     field: &Field,
     existing_col: &ArrayRef,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     total_num_inserts: usize,
 ) -> Result<(Field, ArrayRef)> {
     if total_num_inserts == 0 {
@@ -423,10 +429,10 @@ fn merge_parent_id_column(
 /// For owned runs: fill with the owning upsert's type discriminant.
 /// For insert rows: append each upsert's type discriminant
 /// For any null values in the type data being updated/inserted, we set the type to Empty.
-fn merge_type_column(
+fn merge_type_column<T: ArrowPrimitiveType>(
     field: &Field,
     existing_col: &ArrayRef,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     row_owners: &[OwnershipRun],
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
@@ -536,10 +542,10 @@ fn merge_type_column(
 /// Existing rows are unchanged (updates already have the correct key). Insert rows append each
 /// upsert's key. This handles converting the key to correctly sized dictionary/native array if
 /// any new keys would cause overflow.
-fn merge_key_column(
+fn merge_key_column<T: ArrowPrimitiveType>(
     field: &Field,
     existing_col: &ArrayRef,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
     let total_num_inserts: usize = resolved.iter().map(|r| r.num_inserts).sum();
@@ -859,10 +865,10 @@ fn append_strings(existing: &StringArray, new_values: &[&str]) -> ArrayRef {
 }
 
 /// Merge an existing value column.
-fn merge_value_column(
+fn merge_value_column<T: ArrowPrimitiveType>(
     field: &Field,
     existing_col: &ArrayRef,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     row_owners: &[OwnershipRun],
     combined_mask: &mut Option<BooleanArray>,
     col_name: &str,
@@ -1072,14 +1078,12 @@ struct UnifiedDictMulti {
 ///
 /// Scalars are handled efficiently — only one value is added to the dict, producing an
 /// `ActiveKeys::Scalar(key)` that the merge phase can broadcast without expansion.
-fn try_build_unified_dict_multi(
+fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
     existing_col: Option<&ArrayRef>,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     col_name: &str,
 ) -> Result<Option<UnifiedDictMulti>> {
     const MAX_DICT_CARDINALITY: usize = 65535;
-
-    println!("existing col = {:?}", existing_col);
 
     // Map from value (bytes) to unified dict index
     let mut value_to_idx: HashMap<Option<&[u8]>, u16> = HashMap::new();
@@ -1462,11 +1466,11 @@ fn array_value_as_bytes(arr: &ArrayRef, idx: usize) -> Result<Option<&[u8]>> {
 
 /// Merge keys from a [`UnifiedDictMulti`] using ownership runs, producing new dictionary keys,
 /// then create the new values column as a dict encoded array.
-fn merge_values_with_unified_dict(
+fn merge_values_with_unified_dict<T: ArrowPrimitiveType>(
     field: &Field,
     row_owners: &[OwnershipRun],
     unified: &UnifiedDictMulti,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
     let mut output_keys: Vec<u16> = Vec::with_capacity(total_output_rows);
@@ -1686,9 +1690,9 @@ fn values_column_supports_dictionary_encoding(col_name: &str) -> bool {
 /// Strategy: if dictionary encoding is supported for the column, try to build a unified
 /// dictionary first. If that succeeds (cardinality fits in u16), use the dict path. If it
 /// fails (overflow) or dict encoding is not supported, fall back to primitive merge.
-fn create_new_value_column_batched(
+fn create_new_value_column_batched<T: ArrowPrimitiveType>(
     target_col_name: &str,
-    resolved: &[ResolvedUpsert<'_>],
+    resolved: &[ResolvedUpsert<'_, T>],
     row_owners: &[OwnershipRun],
     total_output_rows: usize,
 ) -> Result<(Field, ArrayRef)> {
@@ -2048,7 +2052,7 @@ mod tests {
         parent_ids: &'a UInt16Array,
         num_updates: usize,
         num_inserts: usize,
-    ) -> ResolvedUpsert<'a> {
+    ) -> ResolvedUpsert<'a, UInt16Type> {
         ResolvedUpsert {
             attrs_key,
             mask,

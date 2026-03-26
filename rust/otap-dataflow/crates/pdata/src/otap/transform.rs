@@ -7262,7 +7262,7 @@ mod insert_tests {
             upsert: None,
         };
 
-        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
+        let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
         let (result, stats) = transform_attributes_with_stats(&input, &ids, &tx).unwrap();
 
         // No parents to insert into
