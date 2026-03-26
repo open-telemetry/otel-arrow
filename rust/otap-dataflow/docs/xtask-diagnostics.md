@@ -173,3 +173,23 @@ versus "cooler".
   real hotspot.
 - `unknown test binary` means a `cargo test` result line could not be matched
   back to a preceding `Running ...` line.
+
+## Future improvements
+
+If we decide to depend on nightly-only capabilities in the future, the
+diagnostics could become more precise.
+
+Potential improvements include:
+
+- per-test-case timings instead of only per-test-binary timings
+- richer machine-readable test output, which would reduce the need to infer
+  timing data from human-oriented `cargo test` text output
+- deeper compiler attribution for expensive crates, for example more detailed
+  breakdowns of frontend work, macro expansion, or query-heavy compilation
+  phases
+- optional deeper compiler profiling for a small set of selected hotspots when
+  the stable Cargo timing reports are not explanatory enough
+
+We intentionally do not rely on those features today because the current
+implementation is designed to work on stable Rust without extra toolchain
+requirements.

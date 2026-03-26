@@ -69,8 +69,8 @@ pub fn print_help() -> anyhow::Result<()> {
 Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`.
 
 Tasks:
-  - check [--diagnostics]: Run the full check suite (format, clippy all-targets, full tests). The optional diagnostics flag prints end-of-run timing and hotspot summaries.
-  - quick-check: Faster developer check (format, clippy on libs/bins/tests, compile test targets without running them).
+  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
+  - quick-check: Run a faster iterative subset: structure check, cargo fmt --all, cargo clippy --workspace --lib --bins --tests, and cargo test --workspace --lib --bins --tests --no-run. This is not a replacement for `cargo xtask check`.
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files

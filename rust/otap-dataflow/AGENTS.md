@@ -40,6 +40,14 @@ For broader iterative validation while you are still working, you can also run:
 cd rust/otap-dataflow && cargo xtask quick-check
 ```
 
+This is an iterative subset only:
+
+- it runs structure checks, `cargo fmt --all`, and clippy on
+  `--workspace --lib --bins --tests`
+- it only compiles test targets with `cargo test --workspace --lib --bins
+  --tests --no-run`
+- it does not replace the final full `cargo xtask check`
+
 If you touched bench targets or bench-only code, you can validate them with:
 
 ```bash
@@ -64,5 +72,11 @@ When all changes are ready, run the full check suite:
 cd rust/otap-dataflow && cargo xtask check
 ```
 
-This runs formatting, clippy, structure checks, and tests.
+This is the required full validation path. It runs:
+
+- structure checks
+- `cargo fmt --all`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+
 Fix any warnings or errors before committing.
