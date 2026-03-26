@@ -7,6 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::slice;
 use std::sync::{Arc, LazyLock};
 
 use arrow::util::bit_iterator::BitSliceIterator;
@@ -17,7 +18,7 @@ use crate::schema::consts;
 use arrow::array::{
     Array, ArrayData, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder,
     DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch, StringArray, UInt8Array,
-    UInt16Array, make_array,
+    UInt16Array, UInt32Array, make_array,
 };
 use arrow::buffer::{MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::{SlicesIterator, cast};
@@ -406,6 +407,24 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
         return Ok((field.as_ref().clone(), Arc::clone(existing_col)));
     }
 
+    // merge as dict if type is dict and all the values would fit
+    if matches!(existing_col.data_type(), DataType::Dictionary(_, _)) {
+        if let Some(merged_dict_column) =
+            merge_parent_id_column_dict(existing_col, resolved, total_num_inserts)?
+        {
+            return Ok((
+                Field::new(
+                    consts::PARENT_ID,
+                    merged_dict_column.data_type().clone(),
+                    false,
+                ),
+                merged_dict_column,
+            ));
+        }
+    }
+
+    // fall back to native parent ID
+
     let num_existing = existing_col.len();
     let total_output_rows = num_existing + total_num_inserts;
 
@@ -435,6 +454,168 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
 
     let result = make_array(mutable.freeze());
     Ok((field.as_ref().clone(), result))
+}
+
+fn merge_parent_id_column_dict<T: ArrowPrimitiveType>(
+    existing_col: &ArrayRef,
+    resolved: &[ResolvedUpsert<'_, T>],
+    total_num_inserts: usize,
+) -> Result<Option<ArrayRef>> {
+    let existing_dict_values = match existing_col.data_type() {
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = existing_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .expect("can downcast to dict");
+                dict_arr.values()
+            }
+            DataType::UInt16 => {
+                let dict_arr = existing_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .expect("can downcast to dict");
+                dict_arr.values()
+            }
+            _ => {
+                todo!("invalid type")
+            }
+        },
+        _ => {
+            todo!("return error b/c we shouldn't have been called if not dict")
+        }
+    };
+
+    let existing_dict_values_primitive = existing_dict_values
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .ok_or_else(|| Error::InvalidIdColumnType {
+            data_type: existing_col.data_type().clone(),
+        })?;
+
+    // build a mapping of the existing dictionary keys
+    let mut value_to_index = HashMap::with_capacity(existing_dict_values_primitive.len());
+    for (i, val) in existing_dict_values_primitive.iter().enumerate() {
+        if let Some(val) = val {
+            _ = value_to_index.insert(val, i);
+        }
+    }
+
+    let mut new_keys = Vec::with_capacity(total_num_inserts);
+    let mut new_values = Vec::new();
+    for r in resolved.iter() {
+        let inserts = r
+            .upsert_parent_ids
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap() // TODO need return error here that passed invalid arg
+            .slice(r.num_updates, r.num_inserts);
+
+        for val in inserts.iter() {
+            if let Some(val) = val {
+                let key = match value_to_index.get(&val) {
+                    Some(key) => *key,
+                    None => {
+                        new_values.push(val);
+                        let new_key = value_to_index.len();
+                        if new_key >= 65535 {
+                            return Ok(None);
+                        }
+                        _ = value_to_index.insert(val, new_key);
+                        new_key
+                    }
+                };
+                new_keys.push(key)
+            } else {
+                return Err(Error::NullParentId);
+            }
+        }
+    }
+
+    let result_values = if new_values.len() > 0 {
+        let mut new_dict_values = Vec::with_capacity(existing_dict_values.len() + new_values.len());
+        new_dict_values.extend_from_slice(existing_dict_values_primitive.values());
+        new_dict_values.extend_from_slice(&new_values);
+        Arc::new(UInt32Array::new(ScalarBuffer::from(new_dict_values), None))
+    } else {
+        Arc::clone(existing_dict_values)
+    };
+
+    let result = if value_to_index.len() <= 256 {
+        let mut new_dict_keys = Vec::with_capacity(existing_col.len() + total_num_inserts);
+        match existing_col.data_type() {
+            DataType::Dictionary(k, _) => match k.as_ref() {
+                DataType::UInt8 => {
+                    let dict_arr = existing_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can downcast to dict");
+                    new_dict_keys.extend_from_slice(dict_arr.keys().values());
+                }
+                DataType::UInt16 => {
+                    let dict_arr = existing_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can downcast to dict");
+                    new_dict_keys.extend(dict_arr.keys().values().iter().map(|k| *k as u8));
+                }
+                _ => {
+                    // safety: we've checked the type of existing column above and we know it is
+                    // not any other type but those matched above
+                    unreachable!("unreachable type")
+                }
+            },
+            _ => {
+                // safety: we've checked the type of existing column above and we know it is not
+                // any other type but those matched above
+                unreachable!("unreachable type")
+            }
+        };
+
+        new_dict_keys.extend(new_keys.into_iter().map(|k| k as u8));
+        Arc::new(DictionaryArray::new(
+            UInt8Array::from(new_dict_keys),
+            result_values,
+        )) as ArrayRef
+    } else {
+        let mut new_dict_keys = Vec::with_capacity(existing_col.len() + total_num_inserts);
+        match existing_col.data_type() {
+            DataType::Dictionary(k, _) => match k.as_ref() {
+                DataType::UInt8 => {
+                    let dict_arr = existing_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can downcast to dict");
+                    new_dict_keys.extend(dict_arr.keys().values().iter().map(|k| *k as u16));
+                }
+                DataType::UInt16 => {
+                    let dict_arr = existing_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can downcast to dict");
+                    new_dict_keys.extend_from_slice(dict_arr.keys().values());
+                }
+                _ => {
+                    // safety: we've checked the type of existing column above and we know it is
+                    // not any other type but those matched above
+                    unreachable!("unreachable type")
+                }
+            },
+            _ => {
+                // safety: we've checked the type of existing column above and we know it is not
+                // any other type but those matched above
+                unreachable!("unreachable type")
+            }
+        };
+
+        new_dict_keys.extend(new_keys.into_iter().map(|k| k as u16));
+        Arc::new(DictionaryArray::new(
+            UInt16Array::from(new_dict_keys),
+            result_values,
+        )) as ArrayRef
+    };
+
+    Ok(Some(result))
 }
 
 /// Merge the `type` column for a batched upsert.
