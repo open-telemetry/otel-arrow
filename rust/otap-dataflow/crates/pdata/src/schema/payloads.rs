@@ -887,7 +887,7 @@ mod number_data_points {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: INT_VALUE,
@@ -987,7 +987,7 @@ mod summary_data_points {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: FLAGS,
@@ -1080,7 +1080,7 @@ mod histogram_data_points {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: FLAGS,
@@ -1203,7 +1203,7 @@ mod exp_histogram_data_points {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: FLAGS,
