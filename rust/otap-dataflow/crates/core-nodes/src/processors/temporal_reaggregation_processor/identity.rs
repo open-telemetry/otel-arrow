@@ -22,6 +22,7 @@
 //! [`into_owned()`] when they need to be stored.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use otap_df_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
@@ -31,6 +32,75 @@ use otap_df_pdata_views::views::metrics::{
     MetricView, SumView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
+
+pub type ResourceIdAssigner = U16IdAssigner<ResourceId>;
+pub type ScopeIdAssigner = U16IdAssigner<ScopeId<'static>>;
+pub type MetricIdAssigner = U16IdAssigner<MetricId<'static>>;
+pub type DataPointIdAssigner = U32IdAssigner<StreamId<'static>>;
+
+pub struct U16IdAssigner<T> {
+    ids: HashMap<T, u16>,
+    next_id: u16,
+}
+
+impl<T> U16IdAssigner<T>
+where
+    T: core::hash::Hash + Eq + Clone,
+{
+    pub fn new() -> Self {
+        Self {
+            ids: HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    pub fn get_or_assign(&mut self, key: &T) -> u16 {
+        if let Some(&id) = self.ids.get(key) {
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.ids.insert(key.clone(), id);
+        id
+    }
+
+    pub fn clear(&mut self) {
+        self.ids.clear();
+        self.next_id = 0;
+    }
+}
+
+pub struct U32IdAssigner<T> {
+    ids: HashMap<T, u32>,
+    next_id: u32,
+}
+
+impl<T> U32IdAssigner<T>
+where
+    T: core::hash::Hash + Eq + Clone,
+{
+    pub fn new() -> Self {
+        Self {
+            ids: HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    fn get_or_assign(&mut self, key: &T) -> u32 {
+        if let Some(&id) = self.ids.get(key) {
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.ids.insert(key.clone(), id);
+        id
+    }
+
+    pub fn clear(&mut self) {
+        self.ids.clear();
+        self.next_id = 0;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // View bridge functions
@@ -226,26 +296,24 @@ pub struct ResourceId {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AttributeHash([u8; 16]);
 
-/// Reusable buffer for computing [`AttributeHash`] values without repeated
-/// heap allocations. The internal byte buffer is cleared and reused on each
+/// Reusable byte buffer for computing [`AttributeHash`] values without
+/// repeated heap allocations. The buffer is cleared and reused on each
 /// call to [`AttributeHash::of`].
+/// Reusable buffer for computing [`AttributeHash`] values without repeated
+/// heap allocations. Both the serialization buffer (`buf`) and the entries
+/// vec are cleared and reused on each call to [`AttributeHash::of`].
 pub struct AttributeHashBuffer<A> {
     buf: Vec<u8>,
     entries: Vec<A>,
 }
 
 impl<A> AttributeHashBuffer<A> {
-    /// Create a new buffer with a reasonable initial capacity.
+    /// Create a new empty buffer.
     pub fn new() -> Self {
         Self {
             buf: Vec::new(),
             entries: Vec::new(),
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.buf.clear();
-        self.entries.clear();
     }
 
     /// Consume this buffer and produce one with a different element type,
@@ -258,11 +326,17 @@ impl<A> AttributeHashBuffer<A> {
     /// only in a lifetime parameter).
     pub fn recycle<B>(mut self) -> AttributeHashBuffer<B> {
         self.entries.clear();
-        let new_entries: Vec<B> = self.entries.into_iter().map(|_| unreachable!()).collect();
         AttributeHashBuffer {
             buf: self.buf,
-            entries: new_entries,
+            entries: self.entries.into_iter().map(|_| unreachable!()).collect(),
         }
+    }
+
+    /// Returns the raw pointer and capacity of the entries allocation.
+    /// Used in tests to verify that `recycle` reuses the allocation.
+    #[cfg(test)]
+    fn entries_alloc(&self) -> (usize, usize) {
+        (self.entries.as_ptr() as usize, self.entries.capacity())
     }
 }
 
@@ -303,7 +377,8 @@ impl AttributeHash {
         buf: &mut AttributeHashBuffer<A>,
         attrs: impl Iterator<Item = A>,
     ) -> Self {
-        buf.clear();
+        buf.entries.clear();
+        buf.buf.clear();
         buf.entries.extend(attrs);
 
         if buf.entries.is_empty() {
