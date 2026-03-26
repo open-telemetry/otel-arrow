@@ -26,7 +26,7 @@
 //! anyway. Figuring out under what circumstances it's better to use dictionaries
 //! here needs investigation.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     Array, ArrowPrimitiveType, BooleanBufferBuilder, Float64Array, Int32Array, ListArray,
@@ -34,7 +34,7 @@ use arrow::array::{
     UInt64Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema, TimeUnit};
+use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
 use otap_df_pdata::schema::consts;
 use otap_df_pdata_views::views::metrics::{
     BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView, NumberDataPointView,
@@ -115,7 +115,7 @@ impl<T: ArrowPrimitiveType> NullableColumnBuilder<T> {
 pub struct NumberDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: Vec<i64>,
     pub time_unix_nano: Vec<i64>,
     pub int_value: NullableColumnBuilder<Int64Type>,
     pub double_value: NullableColumnBuilder<Float64Type>,
@@ -127,7 +127,7 @@ impl NumberDataPointBuilder {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumnBuilder::new(),
+            start_time_unix_nano: Vec::new(),
             time_unix_nano: Vec::new(),
             int_value: NullableColumnBuilder::new(),
             double_value: NullableColumnBuilder::new(),
@@ -148,10 +148,10 @@ impl NumberDataPointBuilder {
     }
 
     fn write<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
-        write_start_time(
+        write_or_push(
             &mut self.start_time_unix_nano,
             row,
-            dp.start_time_unix_nano(),
+            dp.start_time_unix_nano() as i64,
         );
         write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
 
@@ -178,30 +178,14 @@ impl NumberDataPointBuilder {
             return empty_record_batch();
         }
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::INT_VALUE, DataType::Int64, true),
-            Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-        ]));
-
         RecordBatch::try_new(
-            schema,
+            Self::SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
-                Arc::new(self.start_time_unix_nano.finish()),
+                Arc::new(TimestampNanosecondArray::from(std::mem::take(
+                    &mut self.start_time_unix_nano,
+                ))),
                 Arc::new(TimestampNanosecondArray::from(std::mem::take(
                     &mut self.time_unix_nano,
                 ))),
@@ -221,12 +205,32 @@ impl NumberDataPointBuilder {
         self.double_value.clear();
         self.flags.clear();
     }
+
+    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(consts::INT_VALUE, DataType::Int64, true),
+            Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+            Field::new(consts::FLAGS, DataType::UInt32, false),
+        ]))
+    });
 }
 
 pub struct HistogramDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: Vec<i64>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
     pub sum: NullableColumnBuilder<Float64Type>,
@@ -242,7 +246,7 @@ impl HistogramDataPointBuilder {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumnBuilder::new(),
+            start_time_unix_nano: Vec::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
             sum: NullableColumnBuilder::new(),
@@ -267,10 +271,10 @@ impl HistogramDataPointBuilder {
     }
 
     fn write<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        write_start_time(
+        write_or_push(
             &mut self.start_time_unix_nano,
             row,
-            dp.start_time_unix_nano(),
+            dp.start_time_unix_nano() as i64,
         );
         write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
         write_or_push(&mut self.count, row, dp.count());
@@ -291,42 +295,14 @@ impl HistogramDataPointBuilder {
             return empty_record_batch();
         }
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-            Field::new(
-                consts::HISTOGRAM_BUCKET_COUNTS,
-                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                false,
-            ),
-            Field::new(
-                consts::HISTOGRAM_EXPLICIT_BOUNDS,
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
-            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
-        ]));
-
         RecordBatch::try_new(
-            schema,
+            Self::SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
-                Arc::new(self.start_time_unix_nano.finish()),
+                Arc::new(TimestampNanosecondArray::from(std::mem::take(
+                    &mut self.start_time_unix_nano,
+                ))),
                 Arc::new(TimestampNanosecondArray::from(std::mem::take(
                     &mut self.time_unix_nano,
                 ))),
@@ -354,12 +330,44 @@ impl HistogramDataPointBuilder {
         self.min.clear();
         self.max.clear();
     }
+
+    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+            Field::new(
+                consts::HISTOGRAM_BUCKET_COUNTS,
+                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+                false,
+            ),
+            Field::new(
+                consts::HISTOGRAM_EXPLICIT_BOUNDS,
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+                false,
+            ),
+            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+            Field::new(consts::FLAGS, DataType::UInt32, false),
+            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+        ]))
+    });
 }
 
 pub struct ExpHistogramDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: Vec<i64>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
     pub sum: NullableColumnBuilder<Float64Type>,
@@ -380,7 +388,7 @@ impl ExpHistogramDataPointBuilder {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumnBuilder::new(),
+            start_time_unix_nano: Vec::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
             sum: NullableColumnBuilder::new(),
@@ -416,10 +424,10 @@ impl ExpHistogramDataPointBuilder {
     }
 
     fn write_view<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        write_start_time(
+        write_or_push(
             &mut self.start_time_unix_nano,
             row,
-            dp.start_time_unix_nano(),
+            dp.start_time_unix_nano() as i64,
         );
         write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
         write_or_push(&mut self.count, row, dp.count());
@@ -448,52 +456,6 @@ impl ExpHistogramDataPointBuilder {
         if self.id.is_empty() {
             return empty_record_batch();
         }
-
-        let buckets_fields = vec![
-            Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
-            Field::new(
-                consts::EXP_HISTOGRAM_BUCKET_COUNTS,
-                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                false,
-            ),
-        ];
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
-            Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
-            Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
-            Field::new(
-                consts::EXP_HISTOGRAM_POSITIVE,
-                DataType::Struct(buckets_fields.clone().into()),
-                false,
-            ),
-            Field::new(
-                consts::EXP_HISTOGRAM_NEGATIVE,
-                DataType::Struct(buckets_fields.into()),
-                false,
-            ),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
-            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
-            Field::new(
-                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
-                DataType::Float64,
-                true,
-            ),
-        ]));
 
         let positive = StructArray::from(vec![
             (
@@ -538,11 +500,13 @@ impl ExpHistogramDataPointBuilder {
         self.negative_bucket_counts.clear();
 
         RecordBatch::try_new(
-            schema,
+            Self::SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
-                Arc::new(self.start_time_unix_nano.finish()),
+                Arc::new(TimestampNanosecondArray::from(std::mem::take(
+                    &mut self.start_time_unix_nano,
+                ))),
                 Arc::new(TimestampNanosecondArray::from(std::mem::take(
                     &mut self.time_unix_nano,
                 ))),
@@ -578,12 +542,62 @@ impl ExpHistogramDataPointBuilder {
         self.max.clear();
         self.zero_threshold.clear();
     }
+
+    const BUCKETS_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
+        Fields::from(vec![
+            Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
+            Field::new(
+                consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+                false,
+            ),
+        ])
+    });
+
+    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+            Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
+            Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
+            Field::new(
+                consts::EXP_HISTOGRAM_POSITIVE,
+                DataType::Struct(Self::BUCKETS_FIELDS.clone()),
+                false,
+            ),
+            Field::new(
+                consts::EXP_HISTOGRAM_NEGATIVE,
+                DataType::Struct(Self::BUCKETS_FIELDS.clone()),
+                false,
+            ),
+            Field::new(consts::FLAGS, DataType::UInt32, false),
+            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+            Field::new(
+                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+                DataType::Float64,
+                true,
+            ),
+        ]))
+    });
 }
 
 pub struct SummaryDataPointBuilder {
     pub id: Vec<u32>,
     pub parent_id: Vec<u16>,
-    pub start_time_unix_nano: NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
+    pub start_time_unix_nano: Vec<i64>,
     pub time_unix_nano: Vec<i64>,
     pub count: Vec<u64>,
     pub sum: Vec<f64>,
@@ -596,7 +610,7 @@ impl SummaryDataPointBuilder {
         Self {
             id: Vec::new(),
             parent_id: Vec::new(),
-            start_time_unix_nano: NullableColumnBuilder::new(),
+            start_time_unix_nano: Vec::new(),
             time_unix_nano: Vec::new(),
             count: Vec::new(),
             sum: Vec::new(),
@@ -618,10 +632,10 @@ impl SummaryDataPointBuilder {
     }
 
     fn write<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
-        write_start_time(
+        write_or_push(
             &mut self.start_time_unix_nano,
             row,
-            dp.start_time_unix_nano(),
+            dp.start_time_unix_nano() as i64,
         );
         write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
         write_or_push(&mut self.count, row, dp.count());
@@ -640,11 +654,6 @@ impl SummaryDataPointBuilder {
         if self.id.is_empty() {
             return empty_record_batch();
         }
-
-        let quantile_fields = vec![
-            Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
-            Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
-        ];
 
         // Build the quantiles list of structs
         let mut offsets = Vec::with_capacity(self.quantiles.len() + 1);
@@ -673,46 +682,21 @@ impl SummaryDataPointBuilder {
             ),
         ]);
         let quantile_list = ListArray::new(
-            Arc::new(Field::new(
-                "item",
-                DataType::Struct(quantile_fields.into()),
-                false,
-            )),
+            Self::QUANTILE_LIST_FIELD.clone(),
             OffsetBuffer::new(ScalarBuffer::from(offsets)),
             Arc::new(quantile_struct),
             None,
         );
         self.quantiles.clear();
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
-            Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
-            Field::new(
-                consts::SUMMARY_QUANTILE_VALUES,
-                quantile_list.data_type().clone(),
-                false,
-            ),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-        ]));
-
         RecordBatch::try_new(
-            schema,
+            Self::SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
-                Arc::new(self.start_time_unix_nano.finish()),
+                Arc::new(TimestampNanosecondArray::from(std::mem::take(
+                    &mut self.start_time_unix_nano,
+                ))),
                 Arc::new(TimestampNanosecondArray::from(std::mem::take(
                     &mut self.time_unix_nano,
                 ))),
@@ -734,6 +718,46 @@ impl SummaryDataPointBuilder {
         self.quantiles.clear();
         self.flags.clear();
     }
+
+    const QUANTILE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
+        Fields::from(vec![
+            Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
+            Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+        ])
+    });
+
+    const QUANTILE_LIST_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
+        Arc::new(Field::new(
+            "item",
+            DataType::Struct(Self::QUANTILE_FIELDS.clone()),
+            false,
+        ))
+    });
+
+    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
+            Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
+            Field::new(
+                consts::SUMMARY_QUANTILE_VALUES,
+                DataType::List(Self::QUANTILE_LIST_FIELD.clone()),
+                false,
+            ),
+            Field::new(consts::FLAGS, DataType::UInt32, false),
+        ]))
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -755,18 +779,6 @@ fn write_or_push<T>(vec: &mut Vec<T>, index: usize, value: T) {
         vec.push(value);
     } else {
         vec[index] = value;
-    }
-}
-
-fn write_start_time(
-    col: &mut NullableColumnBuilder<arrow::datatypes::TimestampNanosecondType>,
-    index: usize,
-    value: u64,
-) {
-    if value == 0 {
-        col.write_null(index);
-    } else {
-        col.write_value(index, value as i64);
     }
 }
 
