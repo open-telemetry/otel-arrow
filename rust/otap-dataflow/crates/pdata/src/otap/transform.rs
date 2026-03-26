@@ -721,23 +721,26 @@ impl InsertTransform {
     pub const fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
         Self { entries }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// An upsert transform inserts a new attribute if the key doesn't exist for a given parent,
 /// or updates the existing attribute's value if the key already exists.
 pub struct UpsertTransform {
     pub(super) entries: BTreeMap<String, LiteralValue>,
-    pub(super) target_bytes: Vec<Vec<u8>>,
 }
 
 impl UpsertTransform {
     #[must_use]
     pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
-        let target_bytes = entries.keys().map(|k| k.as_bytes().to_vec()).collect();
-        Self {
-            entries,
-            target_bytes,
-        }
+        Self { entries }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -1189,13 +1192,9 @@ pub fn transform_attributes_impl(
 
     // handle upserts or inserts
     let insert_transform = transform.insert.as_ref();
-    let needs_insert = insert_transform
-        .map(|i| !i.entries.is_empty())
-        .unwrap_or_default();
+    let needs_insert = insert_transform.map(|i| !i.is_empty()).unwrap_or_default();
     let upsert_transform = transform.upsert.as_ref();
-    let needs_upsert = upsert_transform
-        .map(|u| !u.entries.is_empty())
-        .unwrap_or_default();
+    let needs_upsert = upsert_transform.map(|u| !u.is_empty()).unwrap_or_default();
 
     if needs_insert || needs_upsert {
         let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;

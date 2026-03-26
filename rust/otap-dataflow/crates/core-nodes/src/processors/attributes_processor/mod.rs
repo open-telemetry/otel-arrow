@@ -33,7 +33,7 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-use arrow::array::{ArrayRef, UInt16Array};
+use arrow::array::{ArrayRef, StructArray, UInt16Array};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -49,14 +49,17 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::otap::{
-    OtapArrowRecords,
-    transform::{
-        AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-        UpsertTransform, transform_attributes_with_stats,
-    },
-};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::{
+    otap::{
+        OtapArrowRecords,
+        transform::{
+            AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
+            UpsertTransform, transform_attributes_with_stats,
+        },
+    },
+    schema::consts,
+};
 use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -314,9 +317,14 @@ impl AttributesProcessor {
         if !self.is_noop() {
             let payloads = self.attrs_payloads(signal);
             for &payload_ty in payloads {
+                // TODO optimize the allocation / Arc drop here for cases there is no ID?
+                // TODO minor optimization is to check if rb.get is None and continue so we
+                // don't end up filling in an ID column where it's not needed
+                let id_col = self
+                    .get_parent_batch_ids(payload_ty, records)
+                    .unwrap_or(Arc::new(UInt16Array::new_null(0)) as ArrayRef);
+
                 if let Some(rb) = records.get(payload_ty) {
-                    // TODO need to call this with the ID column from the parent record batch
-                    let id_col = Arc::new(UInt16Array::new_null(0)) as ArrayRef;
                     let (rb, stats) = transform_attributes_with_stats(rb, &id_col, &self.transform)
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
@@ -335,6 +343,94 @@ impl AttributesProcessor {
         }
 
         Ok((deleted_total, renamed_total, inserted_total, upserted_total))
+    }
+
+    /// Gets the ID column to which the parent_id column in the attributes record batch (identified
+    /// by the passed payload type) is associated.
+    ///
+    /// If the ID column does not exist, or if there are nulls, and the transform being applied
+    /// requires a non-null column, the column may be created and/or modified to fill nulls.
+    /// Attribute inserts and upserts require nulls to be filled in.
+    fn get_parent_batch_ids(
+        &self,
+        attrs_payload_type: ArrowPayloadType,
+        otap_batch: &mut OtapArrowRecords,
+    ) -> Option<ArrayRef> {
+        let parent_payload_type = match attrs_payload_type {
+            ArrowPayloadType::LogAttrs
+            | ArrowPayloadType::MetricAttrs
+            | ArrowPayloadType::SpanAttrs
+            | ArrowPayloadType::ResourceAttrs
+            | ArrowPayloadType::ScopeAttrs => otap_batch.root_payload_type(),
+
+            ArrowPayloadType::SpanEventAttrs => ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinkAttrs => ArrowPayloadType::SpanLinks,
+
+            ArrowPayloadType::NumberDpAttrs => ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::NumberDpExemplarAttrs => ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::SummaryDpAttrs => ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDpAttrs => ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::HistogramDpExemplarAttrs => ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpAttrs => ArrowPayloadType::ExpHistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+                ArrowPayloadType::ExpHistogramDpExemplars
+            }
+            _ => {
+                // passed payload type wasn't for attributes, no associated ID column
+                return None;
+            }
+        };
+
+        let parent_batch = otap_batch.get(parent_payload_type)?;
+
+        // get the ID column
+        let mut id_column = match attrs_payload_type {
+            ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs => {
+                let struct_col_name = match attrs_payload_type {
+                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                    _ => {
+                        unreachable!("")
+                    }
+                };
+
+                parent_batch
+                    .column_by_name(struct_col_name)
+                    .and_then(|s| s.as_any().downcast_ref::<StructArray>())
+                    .and_then(|s| s.column_by_name(consts::ID))
+            }
+            _ => parent_batch.column_by_name(consts::ID),
+        }
+        .cloned();
+
+        let transfom_inserts = self
+            .transform
+            .insert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+        let transform_upserts = self
+            .transform
+            .upsert
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or_default();
+        let id_required = transfom_inserts || transform_upserts;
+
+        match id_column.as_ref() {
+            Some(id_column) => {
+                if id_required && id_column.null_count() > 0 {
+                    todo!("fill in the nulls in the ID column")
+                }
+            }
+            None => {
+                if id_required {
+                    todo!("create new ID column")
+                }
+            }
+        }
+
+        id_column
     }
 }
 
