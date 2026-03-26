@@ -9,7 +9,8 @@
 use crate::Interests;
 use crate::config::ReceiverConfig;
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+    Controllable, NodeControlMsg, RuntimeCtrlMsgReceiver, pipeline_completion_msg_channel,
+    runtime_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -53,7 +54,7 @@ impl<PData> TestContext<PData> {
         self.control_sender
             .send(msg)
             .await
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: e.to_string(),
             })
     }
@@ -108,7 +109,7 @@ impl<PData> NotSendValidateContext<PData> {
         self.control_sender
             .send(msg)
             .await
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: e.to_string(),
             })
     }
@@ -181,10 +182,10 @@ pub struct ValidationPhase<PData> {
     /// Join handle for the running the test task
     run_test_handle: tokio::task::JoinHandle<()>,
 
-    // ToDo implement support for pipeline control messages in a future PR.
+    // ToDo implement support for runtime-control messages in a future PR.
     #[allow(unused_variables)]
     #[allow(dead_code)]
-    pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
+    runtime_ctrl_msg_receiver: RuntimeCtrlMsgReceiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -268,7 +269,9 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 )
             }
         };
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(10);
 
         self.receiver
             .set_pdata_sender(node_id, "".into(), pdata_sender)
@@ -282,7 +285,12 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             let terminal_state = self
                 .receiver
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .expect("Receiver event loop failed");
 
@@ -306,7 +314,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             control_sender: control_sender_for_validation,
             run_receiver_handle,
             run_test_handle,
-            pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
+            runtime_ctrl_msg_receiver: runtime_ctrl_msg_rx,
         }
     }
 }
@@ -339,7 +347,7 @@ impl<PData> ValidationPhase<PData> {
             pdata_receiver,
             run_receiver_handle,
             run_test_handle,
-            pipeline_ctrl_msg_receiver: _,
+            runtime_ctrl_msg_receiver: _,
             control_sender,
         } = self;
 

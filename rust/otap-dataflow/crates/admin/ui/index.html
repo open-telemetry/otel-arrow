@@ -88,6 +88,7 @@
                       <th>Ready</th>
                       <th>Running Cores</th>
                       <th>Total Cores</th>
+                      <th>Latest Event</th>
                       <th>Top Reason</th>
                     </tr>
                   </thead>
@@ -199,6 +200,7 @@
           <span>View</span>
           <select id="view-select" class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-slate-200 focus:border-sky-400 focus:outline-none">
             <option value="general" selected>General</option>
+            <option value="control">Control plane</option>
             <option value="tokio">Tokio runtime</option>
           </select>
         </label>
@@ -327,6 +329,132 @@
           </div>
           <div class="text-xs text-slate-400 mt-2">
             Unpark/s: <span id="tokio-unpark-rate" class="font-mono">n/a</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-panel-control" class="mt-6 hidden">
+      <!-- Shared runtime-control and completion-path signals for the selected pipeline/core scope. -->
+      <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div id="card-control-drain" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Drain state
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="control-drain-state" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.drain.active">receiver-first drain progress</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Pending receivers: <span id="control-drain-pending-receivers" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Selected runtimes: <span id="control-drain-instance-count" class="font-mono">0</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Deadline forced: <span id="control-drain-deadline-forced" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="control-drain">
+            <canvas id="pipeChartControlDrain"></canvas>
+          </div>
+        </div>
+
+        <div id="card-control-backlog" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Backlog
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="control-runtime-pending-sends" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.runtime.pending_sends.buffered">runtime ctrl buffered</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Completion buffered: <span id="control-completion-pending-sends" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Delayed data queued: <span id="control-delayed-data-queued" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Timers active: <span id="control-timers-active" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="control-backlog">
+            <canvas id="pipeChartControlBacklog"></canvas>
+          </div>
+        </div>
+
+        <div id="card-control-runtime-flow" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Runtime activity
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="control-delayed-data-sent-rate" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.runtime.delayed_data.sent.rate">delayed wakeups/s</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Timer ticks/s: <span id="control-timer-tick-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Telemetry wakeups/s: <span id="control-collect-telemetry-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Returned during drain/s: <span id="control-delay-return-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="control-runtime-flow">
+            <canvas id="pipeChartControlRuntimeFlow"></canvas>
+          </div>
+        </div>
+
+        <div id="card-control-completion-ingress" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Completion ingress
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="control-deliver-ack-rate" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.completion.deliver_ack.received.rate">acks into dispatcher/s</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Deliver nack/s: <span id="control-deliver-nack-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Ack attempted/s: <span id="control-ack-attempt-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Nack attempted/s: <span id="control-nack-attempt-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="control-completion-ingress">
+            <canvas id="pipeChartCompletionIngress"></canvas>
+          </div>
+        </div>
+
+        <div id="card-control-completion-delivery" class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Completion delivery
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span id="control-ack-delivered-rate" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.completion.ack.delivered.rate">acks delivered/s</span></span>
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            Nack delivered/s: <span id="control-nack-delivered-rate" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Ack dropped: <span id="control-ack-dropped" class="font-mono">n/a</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">
+            Nack dropped: <span id="control-nack-dropped" class="font-mono">n/a</span>
+          </div>
+          <div class="metric-card-chart hidden" data-chart="control-completion-delivery">
+            <canvas id="pipeChartCompletionDelivery"></canvas>
+          </div>
+        </div>
+
+        <div class="card rounded-2xl p-4 shadow-lg">
+          <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+            Recent lifecycle events
+          </div>
+          <div id="control-events-title" class="text-sm font-semibold text-slate-100">Selected pipeline</div>
+          <div id="control-events-meta" class="mt-1 text-xs text-slate-400">No runtime status snapshot yet.</div>
+          <div id="control-events-list" class="control-events-list mt-4">
+            <div class="control-event-empty">No recent runtime events.</div>
           </div>
         </div>
       </div>

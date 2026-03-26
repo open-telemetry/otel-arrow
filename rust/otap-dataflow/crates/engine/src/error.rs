@@ -127,9 +127,9 @@ pub enum TypedError<T> {
     #[error("A channel error occurred: {0}")]
     ChannelSendError(SendError<T>),
 
-    /// A wrapper for the pipeline control message send errors.
-    #[error("A pipeline control channel error occurred: {0}")]
-    PipelineControlMsgError(SendError<T>),
+    /// A wrapper for send errors on the runtime channels.
+    #[error("A runtime channel error occurred: {0}")]
+    RuntimeMsgError(SendError<T>),
 
     /// A wrapper for the node control message send errors.
     #[error("A node control message send error occurred in node {node_id}: {error}")]
@@ -153,7 +153,7 @@ impl<T: Sized> From<TypedError<T>> for Error {
             TypedError::ChannelSendError(e) => Error::ChannelSendError {
                 error: e.to_string(),
             },
-            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
+            TypedError::RuntimeMsgError(e) => Error::RuntimeMsgError {
                 error: e.to_string(),
             },
             TypedError::NodeControlMsgSendError { node_id, error } => {
@@ -185,9 +185,9 @@ pub enum Error {
         error: String,
     },
 
-    /// A wrapper for the pipeline control message send errors.
-    #[error("A control channel error occurred: {error}")]
-    PipelineControlMsgError {
+    /// A wrapper for send errors on the runtime channels.
+    #[error("A runtime channel error occurred: {error}")]
+    RuntimeMsgError {
         /// The reason (e.g., channel closed)
         error: String,
     },
@@ -494,7 +494,7 @@ impl Error {
             Error::PdataConversionError { .. } => "PdataConversionError",
             Error::PdataReceiverNotSupported => "PdataReceiverNotSupported",
             Error::PdataSenderNotSupported => "PdataSenderNotSupported",
-            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+            Error::RuntimeMsgError { .. } => "RuntimeMsgError",
             Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
             Error::ProcessorError { .. } => "ProcessorError",
             Error::ProtoEncodeError { .. } => "ProtoEncodeError",

@@ -37,7 +37,7 @@ use otap_df_engine::control::{AckMsg, NackMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterMessageChannel, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
@@ -611,7 +611,7 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl Exporter<OtapPdata> for GenevaExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterMessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
@@ -705,7 +705,7 @@ mod tests {
 
     use bytes::Bytes;
     use otap_df_engine::Interests;
-    use otap_df_engine::control::PipelineControlMsg;
+    use otap_df_engine::control::PipelineCompletionMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use std::time::{Duration, Instant};
@@ -857,10 +857,10 @@ mod tests {
             .run_validation(|mut ctx, result| async move {
                 result.expect("success");
 
-                let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                let mut pipeline_rx = ctx.take_pipeline_completion_receiver().unwrap();
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
-                        PipelineControlMsg::DeliverAck { ack } => {
+                        PipelineCompletionMsg::DeliverAck { ack } => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
@@ -898,10 +898,10 @@ mod tests {
             .run_validation(|mut ctx, result| async move {
                 result.expect("success");
 
-                let mut pipeline_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                let mut pipeline_rx = ctx.take_pipeline_completion_receiver().unwrap();
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
-                        PipelineControlMsg::DeliverNack { nack } => {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);

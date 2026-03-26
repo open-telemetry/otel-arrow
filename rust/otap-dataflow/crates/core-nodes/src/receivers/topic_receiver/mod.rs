@@ -236,6 +236,8 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         let telemetry_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
+        let mut draining_reason: Option<String> = None;
+        let mut drained_notified = false;
 
         let run_result: Result<(), Error> = async {
             loop {
@@ -290,6 +292,18 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     );
                                 }
                             }
+                            Ok(NodeControlMsg::DrainIngress { reason, .. }) => {
+                                if !drained_notified {
+                                    // TopicReceiver does not hold a separate wait_for_result
+                                    // backlog like OTLP/OTAP receivers. Once ingress is marked as
+                                    // draining, the runtime can consider the receiver drained
+                                    // immediately; later topic deliveries are rejected/nacked
+                                    // below instead of being admitted into the pipeline.
+                                    draining_reason = Some(reason);
+                                    effect_handler.notify_receiver_drained().await?;
+                                    drained_notified = true;
+                                }
+                            }
                             Ok(NodeControlMsg::Nack(nack)) => {
                                 if ack_propagation_mode != TopicAckPropagationMode::Auto {
                                     metrics
@@ -340,6 +354,34 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                     recv = subscription.recv() => {
                         match recv {
                             Ok(RecvItem::Message(env)) => {
+                                if let Some(reason) = draining_reason.as_deref() {
+                                    // DrainIngress was already acknowledged to the runtime, so any
+                                    // message delivered after that point must be bounced at the
+                                    // topic boundary rather than forwarded into the pipeline.
+                                    if ack_propagation_mode == TopicAckPropagationMode::Auto
+                                        && env.tracked
+                                    {
+                                        match subscription.nack(env.id, reason) {
+                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                            Err(Error::MessageNotTracked) => {
+                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                            }
+                                            Err(e) => {
+                                                metrics.bridge_runtime_failures.add(1);
+                                                otel_warn!(
+                                                    "topic_receiver.drain_ingress_reject_failed",
+                                                    node = receiver_id.name.as_ref(),
+                                                    topic = config.topic.as_ref(),
+                                                    error = e.to_string(),
+                                                    message = "Failed to reject topic message while receiver was draining ingress"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    tokio::task::consume_budget().await;
+                                    continue;
+                                }
+
                                 // Topic hop is a transport boundary: reset in-process
                                 // Ack/Nack routing context before forwarding.
                                 // Use source-tag-aware send so fan-in wiring can attribute source node.
@@ -427,7 +469,8 @@ mod tests {
     use otap_df_config::topic::TopicAckPropagationMode;
     use otap_df_engine::config::ReceiverConfig;
     use otap_df_engine::control::{
-        AckMsg, Controllable, NodeControlMsg, pipeline_ctrl_msg_channel,
+        AckMsg, Controllable, NodeControlMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::message::Sender as PDataSender;
@@ -546,12 +589,15 @@ mod tests {
                 .expect("receiver output channel should be wired");
 
             let receiver_ctrl = receiver.control_sender();
-            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
-                        pipeline_ctrl_tx,
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )
@@ -641,12 +687,15 @@ mod tests {
                 )
                 .expect("receiver output channel should be wired");
 
-            let (pipeline_ctrl_tx, _pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let receiver_task = tokio::task::spawn_local(async move {
                 receiver
                     .start(
-                        pipeline_ctrl_tx,
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
                         metrics_reporter,
                         otap_df_engine::Interests::empty(),
                     )

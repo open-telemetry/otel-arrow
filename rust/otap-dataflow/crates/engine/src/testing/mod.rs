@@ -25,7 +25,10 @@ use std::sync::atomic::AtomicUsize;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod dst;
 pub mod exporter;
+pub mod liveness;
 pub mod node;
 pub mod processor;
 pub mod receiver;

@@ -42,7 +42,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
@@ -675,15 +675,12 @@ impl HttpHandler {
                     return Err(internal_error());
                 };
 
-                let (key, rx) = {
-                    let mut guard = state.0.lock();
-                    match guard.allocate(|| oneshot::channel()) {
-                        None => {
-                            self.metrics.lock().rejected_requests.inc();
-                            return Err(service_unavailable());
-                        }
-                        Some(pair) => pair,
+                let (key, rx) = match state.allocate_slot() {
+                    None => {
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(service_unavailable());
                     }
+                    Some(pair) => pair,
                 };
 
                 // Register calldata in the context.
@@ -766,7 +763,7 @@ struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        self.state.0.lock().cancel(self.key);
+        self.state.cancel_slot(self.key);
     }
 }
 
@@ -943,7 +940,7 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -960,7 +957,7 @@ mod tests {
         let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
         let mut senders = HashMap::new();
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler =
             EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);

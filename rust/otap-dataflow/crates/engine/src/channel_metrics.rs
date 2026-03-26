@@ -75,7 +75,7 @@ pub struct ChannelReceiverMetrics {
     pub capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed requests, owned exclusively by the pipeline controller.
+/// Ack/nack metrics for consumed requests, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(name = "node.consumer")]
@@ -98,7 +98,7 @@ pub struct ConsumedMetrics {
     pub consumed_refused: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced requests, owned exclusively by the pipeline controller.
+/// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(name = "node.producer")]

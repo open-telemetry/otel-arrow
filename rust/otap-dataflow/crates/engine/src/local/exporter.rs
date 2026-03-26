@@ -37,7 +37,7 @@ use crate::Interests;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::MessageChannel;
+use crate::message::ExporterMessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
@@ -69,7 +69,7 @@ pub trait Exporter<PData> {
     ///
     /// Exporters are expected to process both internal control messages and pipeline data messages,
     /// prioritizing control messages over data messages. This prioritization guarantee is ensured
-    /// by the `MessageChannel` implementation.
+    /// by the `ExporterMessageChannel` implementation.
     ///
     /// # Parameters
     ///
@@ -86,7 +86,7 @@ pub trait Exporter<PData> {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<PData>,
+        msg_chan: ExporterMessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
 }
@@ -148,7 +148,7 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the pipeline controller for context unwinding.
+    /// Send an Ack to the runtime control manager for context unwinding.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
@@ -156,7 +156,7 @@ impl<PData> EffectHandler<PData> {
         self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to the pipeline controller for context unwinding.
+    /// Send a Nack to the runtime control manager for context unwinding.
     pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,

@@ -443,7 +443,9 @@ mod test {
     use otap_df_config::{PortName, node::NodeUserConfig};
     use otap_df_engine::{
         context::ControllerContext,
-        control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
+        control::{
+            PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        },
         effect_handler::SourceTagging,
         local::message::LocalSender,
         message::Sender,
@@ -1185,8 +1187,11 @@ mod test {
                 let (outbound_context2, _) = error_port_rx.recv().await.unwrap().into_parts();
                 let (outbound_context3, _) = info_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // now we'll Ack the outbound messages and ensure that we eventually emit an ack
                 // for the inbound message
@@ -1194,21 +1199,21 @@ mod test {
                     .await
                     .unwrap();
                 // no ack b/c not all outbound are ack'd
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 send_ack(&mut ctx, outbound_context2, SignalType::Logs)
                     .await
                     .unwrap();
                 // still no ack b/c not all outbound are ack'd
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 send_ack(&mut ctx, outbound_context3, SignalType::Logs)
                     .await
                     .unwrap();
                 // now we've ack'd all three outbound, so it should emit an Ack message
-                let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let ack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match ack_msg {
-                    PipelineControlMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
                         let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                     }
@@ -1236,6 +1241,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1262,15 +1273,18 @@ mod test {
                 // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // simulate an Ack coming from the message that got sent on the default output port
                 send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 // simulate a Nack coming from the message that got routed
                 send_nack(
@@ -1284,9 +1298,9 @@ mod test {
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
                 // routed messages was Nack'd
-                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let nack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
@@ -1315,6 +1329,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1341,8 +1361,11 @@ mod test {
                 // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // simulate an Nack coming from the message that got sent on the default output port
                 send_nack(
@@ -1354,7 +1377,7 @@ mod test {
                 .await
                 .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 // simulate a Ack coming from the message that got routed
                 send_ack(&mut ctx, outbound_ctx_routed, SignalType::Logs)
@@ -1363,9 +1386,9 @@ mod test {
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
                 // messages sent on the default output port were Nack'd
-                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let nack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
@@ -1400,6 +1423,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1431,8 +1460,11 @@ mod test {
                 // insufficient outbound slots
                 assert!(error_port_rx.is_empty());
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // because there's only one outbound message, if this message gets Ack'd, we should
                 // then Nack the inbound batch b/c some part of it was not processed
@@ -1440,9 +1472,9 @@ mod test {
                     .await
                     .unwrap();
 
-                let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
+                let nack_msg = pipeline_completion_rx.try_recv().unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
@@ -1478,6 +1510,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1566,6 +1604,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
