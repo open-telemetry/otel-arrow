@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.98"
+serde.workspace = true
+serde_json.workspace = true
 toml = "0.8.22"
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 prost-build = { version = "0.14" }
