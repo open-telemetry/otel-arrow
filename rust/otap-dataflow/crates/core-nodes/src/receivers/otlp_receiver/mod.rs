@@ -1853,6 +1853,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        any(windows),
+        ignore = "Skipping on Windows due to flakiness"
+    )]
     #[test]
     fn test_otlp_receiver_ack() {
         let test_runtime = TestRuntime::new();
