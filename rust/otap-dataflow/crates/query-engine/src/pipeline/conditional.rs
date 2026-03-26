@@ -796,6 +796,32 @@ mod test {
             .downcast_ref::<UInt16Array>()
             .unwrap();
         assert_eq!(id_column, &UInt16Array::from_iter_values([0, 4, 2, 1, 3]));
+
+        let result = otap_to_logs_data(result);
+        // ensure the attributes are still properly assigned
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("world"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("world"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+        ];
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected);
     }
 
     #[tokio::test]
