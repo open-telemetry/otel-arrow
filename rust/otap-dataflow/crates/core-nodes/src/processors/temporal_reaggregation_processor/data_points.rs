@@ -83,46 +83,6 @@ impl<T: ArrowPrimitiveType> NullableColumn<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build ListArray from Vec<Vec<T>>
-// ---------------------------------------------------------------------------
-
-fn build_list_u64(data: &[Vec<u64>], field_name: &str) -> ListArray {
-    let mut offsets = Vec::with_capacity(data.len() + 1);
-    let mut values = Vec::new();
-    offsets.push(0i32);
-    for row in data {
-        values.extend_from_slice(row);
-        offsets.push(values.len() as i32);
-    }
-    let values_array = UInt64Array::from(values);
-    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(offsets));
-    ListArray::new(
-        Arc::new(Field::new(field_name, DataType::UInt64, false)),
-        offsets_buffer,
-        Arc::new(values_array),
-        None,
-    )
-}
-
-fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
-    let mut offsets = Vec::with_capacity(data.len() + 1);
-    let mut values = Vec::new();
-    offsets.push(0i32);
-    for row in data {
-        values.extend_from_slice(row);
-        offsets.push(values.len() as i32);
-    }
-    let values_array = Float64Array::from(values);
-    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(offsets));
-    ListArray::new(
-        Arc::new(Field::new(field_name, DataType::Float64, false)),
-        offsets_buffer,
-        Arc::new(values_array),
-        None,
-    )
-}
-
-// ---------------------------------------------------------------------------
 // NumberDataPointColumns
 // ---------------------------------------------------------------------------
 
@@ -912,4 +872,40 @@ fn set_optional_f64(col: &mut NullableColumn<Float64Type>, row: usize, value: Op
         Some(v) => col.set_value(row, v),
         None => col.set_null(row),
     }
+}
+
+fn build_list_u64(data: &[Vec<u64>], field_name: &str) -> ListArray {
+    let mut offsets = Vec::with_capacity(data.len() + 1);
+    let mut values = Vec::new();
+    offsets.push(0i32);
+    for row in data {
+        values.extend_from_slice(row);
+        offsets.push(values.len() as i32);
+    }
+    let values_array = UInt64Array::from(values);
+    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(offsets));
+    ListArray::new(
+        Arc::new(Field::new(field_name, DataType::UInt64, false)),
+        offsets_buffer,
+        Arc::new(values_array),
+        None,
+    )
+}
+
+fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
+    let mut offsets = Vec::with_capacity(data.len() + 1);
+    let mut values = Vec::new();
+    offsets.push(0i32);
+    for row in data {
+        values.extend_from_slice(row);
+        offsets.push(values.len() as i32);
+    }
+    let values_array = Float64Array::from(values);
+    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(offsets));
+    ListArray::new(
+        Arc::new(Field::new(field_name, DataType::Float64, false)),
+        offsets_buffer,
+        Arc::new(values_array),
+        None,
+    )
 }
