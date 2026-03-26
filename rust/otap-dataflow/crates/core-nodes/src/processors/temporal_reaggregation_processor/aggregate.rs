@@ -35,69 +35,6 @@ use super::identity::{
 };
 
 // ---------------------------------------------------------------------------
-// Aggregatability check
-// ---------------------------------------------------------------------------
-
-fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
-    let data_type = metric_id.data_type;
-    let temporality = metric_id.aggregation_temporality;
-    let monotonic = metric_id.is_monotonic;
-
-    if data_type == DataType::Gauge as u8 || data_type == DataType::Summary as u8 {
-        return true;
-    }
-
-    if data_type == DataType::Sum as u8
-        && temporality == AggregationTemporality::Cumulative as u8
-        && monotonic
-    {
-        return true;
-    }
-
-    if (data_type == DataType::Histogram as u8 || data_type == DataType::ExponentialHistogram as u8)
-        && temporality == AggregationTemporality::Cumulative as u8
-    {
-        return true;
-    }
-
-    false
-}
-
-// ---------------------------------------------------------------------------
-// Metadata stored alongside OTAP IDs
-// ---------------------------------------------------------------------------
-
-/// Metadata for a resource, indexed by OTAP resource ID.
-struct ResourceMeta {
-    schema_url: Vec<u8>,
-    dropped_attributes_count: u32,
-}
-
-/// Metadata for a scope, indexed by OTAP scope ID.
-struct ScopeMeta {
-    name: Vec<u8>,
-    version: Vec<u8>,
-    dropped_attributes_count: u32,
-}
-
-// ---------------------------------------------------------------------------
-// Stream state
-// ---------------------------------------------------------------------------
-
-struct StreamState {
-    dp_row_index: usize,
-    time_unix_nano: u64,
-}
-
-#[derive(Clone, Copy)]
-enum DpType {
-    Number,
-    Histogram,
-    ExponentialHistogram,
-    Summary,
-}
-
-// ---------------------------------------------------------------------------
 // MetricAggregator
 // ---------------------------------------------------------------------------
 
@@ -178,25 +115,7 @@ impl MetricAggregator {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Attribute hashing
-    // -----------------------------------------------------------------------
-
-    fn compute_otap_attr_hash<'v>(
-        &mut self,
-        attrs: impl Iterator<Item = OtapAttributeView<'v>>,
-    ) -> AttributeHash {
-        let hash_buf = std::mem::replace(&mut self.hash_buf, AttributeHashBuffer::new());
-        let mut hash_buf: AttributeHashBuffer<OtapAttributeView<'_>> = hash_buf.recycle();
-        let hash = AttributeHash::of(&mut hash_buf, attrs);
-        self.hash_buf = hash_buf.recycle();
-        hash
-    }
-
-    // -----------------------------------------------------------------------
-    // Ingestion
-    // -----------------------------------------------------------------------
-
+    /// Process one incoming OTAP metrics view.
     pub fn ingest(&mut self, view: OtapMetricsView<'_>) {
         for resource_metrics in view.resources() {
             let Some(resource) = resource_metrics.resource() else {
@@ -295,6 +214,7 @@ impl MetricAggregator {
         }
     }
 
+    /// Flush accumulated state into an [`OtapArrowRecords`] batch and reset.
     pub fn finish(&mut self) -> Option<OtapArrowRecords> {
         if self.is_empty() {
             return None;
@@ -302,14 +222,11 @@ impl MetricAggregator {
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
 
-        // Metrics table
         if let Ok(rb) = self.metrics_builder.finish() {
             if rb.num_rows() > 0 {
                 let _ = records.set(ArrowPayloadType::UnivariateMetrics, rb);
             }
         }
-
-        // Attribute tables
         if let Ok(rb) = self.resource_attrs_builder.finish() {
             if rb.num_rows() > 0 {
                 let _ = records.set(ArrowPayloadType::ResourceAttrs, rb);
@@ -320,8 +237,6 @@ impl MetricAggregator {
                 let _ = records.set(ArrowPayloadType::ScopeAttrs, rb);
             }
         }
-
-        // Data point tables
         if let Ok(rb) = self.number_dps.finish() {
             if rb.num_rows() > 0 {
                 let _ = records.set(ArrowPayloadType::NumberDataPoints, rb);
@@ -376,8 +291,19 @@ impl MetricAggregator {
     }
 
     // -----------------------------------------------------------------------
-    // Identity processing
+    // Private: called by ingest
     // -----------------------------------------------------------------------
+
+    fn compute_otap_attr_hash<'v>(
+        &mut self,
+        attrs: impl Iterator<Item = OtapAttributeView<'v>>,
+    ) -> AttributeHash {
+        let hash_buf = std::mem::replace(&mut self.hash_buf, AttributeHashBuffer::new());
+        let mut hash_buf: AttributeHashBuffer<OtapAttributeView<'_>> = hash_buf.recycle();
+        let hash = AttributeHash::of(&mut hash_buf, attrs);
+        self.hash_buf = hash_buf.recycle();
+        hash
+    }
 
     fn process_resource<R: ResourceView>(
         &mut self,
@@ -391,13 +317,11 @@ impl MetricAggregator {
         let id = self.next_resource_id;
         self.next_resource_id += 1;
 
-        // Write resource attributes
         for attr in view.attributes() {
             self.resource_attrs_builder.append_parent_id(&id);
             let _ = append_attribute_value(&mut self.resource_attrs_builder, &attr);
         }
 
-        // Store metadata for use when writing metric rows
         self.resource_meta.push(ResourceMeta {
             schema_url: schema_url.to_vec(),
             dropped_attributes_count: view.dropped_attributes_count(),
@@ -418,13 +342,11 @@ impl MetricAggregator {
         let id = self.next_scope_id;
         self.next_scope_id += 1;
 
-        // Write scope attributes
         for attr in view.attributes() {
             self.scope_attrs_builder.append_parent_id(&id);
             let _ = append_attribute_value(&mut self.scope_attrs_builder, &attr);
         }
 
-        // Store metadata for use when writing metric rows
         self.scope_meta.push(ScopeMeta {
             name: view.name().unwrap_or(b"").to_vec(),
             version: view.version().unwrap_or(b"").to_vec(),
@@ -449,11 +371,9 @@ impl MetricAggregator {
         let id = self.next_metric_id;
         self.next_metric_id += 1;
 
-        // Look up stored metadata
         let resource_meta = &self.resource_meta[otap_resource_id as usize];
         let scope_meta = &self.scope_meta[otap_scope_id as usize];
 
-        // Write metric row
         self.metrics_builder.append_id(id);
         self.metrics_builder
             .resource
@@ -496,10 +416,6 @@ impl MetricAggregator {
         id
     }
 
-    // -----------------------------------------------------------------------
-    // Data point ingestion
-    // -----------------------------------------------------------------------
-
     fn ingest_number_dp<V: NumberDataPointView>(
         &mut self,
         dp: &V,
@@ -517,7 +433,6 @@ impl MetricAggregator {
             self.next_ndp_id += 1;
             let row_index = self.number_dps.push(dp_id, otap_metric_id, dp);
 
-            // Write dp attributes (once per stream)
             for attr in dp.attributes() {
                 self.ndp_attrs_builder.append_parent_id(&dp_id);
                 let _ = append_attribute_value(&mut self.ndp_attrs_builder, &attr);
@@ -630,7 +545,7 @@ impl MetricAggregator {
     }
 
     // -----------------------------------------------------------------------
-    // Reset
+    // Private: called by finish
     // -----------------------------------------------------------------------
 
     fn clear(&mut self) {
@@ -650,9 +565,6 @@ impl MetricAggregator {
         self.resource_meta.clear();
         self.scope_meta.clear();
 
-        // Note: pdata builders don't have clear() -- they're consumed by finish().
-        // After flush(), finish() has already been called, so they're in a fresh state.
-        // We reinitialize them to be safe.
         self.metrics_builder = MetricsRecordBatchBuilder::new();
         self.resource_attrs_builder = AttributesRecordBatchBuilder::new();
         self.scope_attrs_builder = AttributesRecordBatchBuilder::new();
@@ -666,4 +578,51 @@ impl MetricAggregator {
         self.exp_histogram_dps.clear();
         self.summary_dps.clear();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+struct ResourceMeta {
+    schema_url: Vec<u8>,
+    dropped_attributes_count: u32,
+}
+
+struct ScopeMeta {
+    name: Vec<u8>,
+    version: Vec<u8>,
+    dropped_attributes_count: u32,
+}
+
+struct StreamState {
+    dp_row_index: usize,
+    time_unix_nano: u64,
+}
+
+/// Returns `true` if this metric type should be aggregated (buffered and
+/// flushed on timer), `false` if it should be passed through unchanged.
+fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
+    let data_type = metric_id.data_type;
+    let temporality = metric_id.aggregation_temporality;
+    let monotonic = metric_id.is_monotonic;
+
+    if data_type == DataType::Gauge as u8 || data_type == DataType::Summary as u8 {
+        return true;
+    }
+
+    if data_type == DataType::Sum as u8
+        && temporality == AggregationTemporality::Cumulative as u8
+        && monotonic
+    {
+        return true;
+    }
+
+    if (data_type == DataType::Histogram as u8 || data_type == DataType::ExponentialHistogram as u8)
+        && temporality == AggregationTemporality::Cumulative as u8
+    {
+        return true;
+    }
+
+    false
 }
