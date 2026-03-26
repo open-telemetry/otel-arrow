@@ -46,6 +46,16 @@ If you touched bench targets or bench-only code, you can validate them with:
 cd rust/otap-dataflow && cargo xtask check-benches
 ```
 
+If you need to troubleshoot slow checks or identify compile and test hotspots,
+you can run:
+
+```bash
+cd rust/otap-dataflow && cargo xtask check --diagnostics
+```
+
+Interpretation guidance for this output is documented in
+[`docs/xtask-diagnostics.md`](docs/xtask-diagnostics.md).
+
 ## Before finalizing changes
 
 When all changes are ready, run the full check suite:

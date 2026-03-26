@@ -14,6 +14,9 @@ Use the xtask commands below depending on the stage of development:
   Rust changes.
 - Run `cargo xtask check-benches` when bench targets or bench-only code
   changes.
+- Run `cargo xtask check --diagnostics` when you need a timing-oriented summary
+  of slow check phases, compile hotspots, or test binaries. See
+  [docs/xtask-diagnostics.md](docs/xtask-diagnostics.md).
 - Run `cargo xtask check` before sending changes. This is the full validation
   suite and remains the required final check.
 
