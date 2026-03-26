@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_logs() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_multiple_messages() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_shutdown_with_no_buffered_data() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_timer_tick_increments_flush_counter() {
-        let (rt, proc) = create_processor(json!({}));
+        let (rt, proc) = try_create_processor(json!({})).unwrap();
 
         rt.set_processor(proc)
             .run_test(move |mut ctx| async move {
