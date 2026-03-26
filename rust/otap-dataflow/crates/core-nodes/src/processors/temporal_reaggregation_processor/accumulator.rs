@@ -86,8 +86,6 @@ struct ScopeMeta {
 
 struct StreamState {
     dp_row_index: usize,
-    #[allow(dead_code)]
-    dp_type: DpType,
     time_unix_nano: u64,
 }
 
@@ -251,12 +249,7 @@ impl MetricAggregator {
                                 for dp in gauge.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_number_dp(
-                                        &dp,
-                                        stream_id,
-                                        otap_metric_id,
-                                        DpType::Number,
-                                    );
+                                    self.ingest_number_dp(&dp, stream_id, otap_metric_id);
                                 }
                             }
                         }
@@ -265,12 +258,7 @@ impl MetricAggregator {
                                 for dp in sum.data_points() {
                                     let attrs = self.compute_otap_attr_hash(dp.attributes());
                                     let stream_id = stream_id_of(metric_id.clone(), attrs);
-                                    self.ingest_number_dp(
-                                        &dp,
-                                        stream_id,
-                                        otap_metric_id,
-                                        DpType::Number,
-                                    );
+                                    self.ingest_number_dp(&dp, stream_id, otap_metric_id);
                                 }
                             }
                         }
@@ -307,11 +295,7 @@ impl MetricAggregator {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Flush
-    // -----------------------------------------------------------------------
-
-    pub fn flush(&mut self) -> Option<OtapArrowRecords> {
+    pub fn finish(&mut self) -> Option<OtapArrowRecords> {
         if self.is_empty() {
             return None;
         }
@@ -521,7 +505,6 @@ impl MetricAggregator {
         dp: &V,
         stream_id: StreamId<'_>,
         otap_metric_id: u16,
-        dp_type: DpType,
     ) {
         let time = dp.time_unix_nano();
         if let Some(state) = self.stream_map.get_mut(&StreamIdRef(&stream_id)) {
@@ -544,7 +527,6 @@ impl MetricAggregator {
                 stream_id.into_owned(),
                 StreamState {
                     dp_row_index: row_index,
-                    dp_type,
                     time_unix_nano: time,
                 },
             );
@@ -577,7 +559,6 @@ impl MetricAggregator {
                 stream_id.into_owned(),
                 StreamState {
                     dp_row_index: row_index,
-                    dp_type: DpType::Histogram,
                     time_unix_nano: time,
                 },
             );
@@ -610,7 +591,6 @@ impl MetricAggregator {
                 stream_id.into_owned(),
                 StreamState {
                     dp_row_index: row_index,
-                    dp_type: DpType::ExponentialHistogram,
                     time_unix_nano: time,
                 },
             );
@@ -643,7 +623,6 @@ impl MetricAggregator {
                 stream_id.into_owned(),
                 StreamState {
                     dp_row_index: row_index,
-                    dp_type: DpType::Summary,
                     time_unix_nano: time,
                 },
             );
