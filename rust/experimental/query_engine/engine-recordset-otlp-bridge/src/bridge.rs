@@ -301,29 +301,31 @@ pub fn process_export_logs_service_request_using_pipeline(
         }
 
         if has_summaries {
+            let schema = get_log_record_schema();
             let mut log_records = Vec::new();
 
             for summary in final_results.summaries.included_summaries {
                 let diagnostics = summary.diagnostics;
 
                 let mut log_record = if let Some(map) = summary.map {
-                    let mut attributes: Vec<(Box<str>, AnyValue)> =
-                        Vec::with_capacity(map.len() + 1);
+                    let mut log_record = LogRecord::new();
 
-                    attributes.extend(
-                        map.take_values()
-                            .drain()
-                            .map(|(key, value)| (key, value.into())),
-                    );
+                    let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(map.len());
 
-                    LogRecord::new().with_attributes(attributes)
+                    for (key, value) in map.take_values().drain() {
+                        push_value(&schema, &mut log_record, &mut attributes, key, value);
+                    }
+
+                    log_record.with_attributes(attributes)
                 } else {
+                    let mut log_record = LogRecord::new();
+
                     let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
-                        summary.aggregation_values.len() + summary.group_by_values.len() + 1,
+                        summary.aggregation_values.len() + summary.group_by_values.len(),
                     );
 
                     for (key, value) in summary.group_by_values {
-                        attributes.push((key, value.into()));
+                        push_value(&schema, &mut log_record, &mut attributes, key, value);
                     }
 
                     for (key, value) in summary.aggregation_values {
@@ -331,39 +333,41 @@ pub fn process_export_logs_service_request_using_pipeline(
                             SummaryAggregation::Average { count, sum } => {
                                 let avg = sum.to_double() / count as f64;
 
-                                attributes.push((
+                                push_value(
+                                    &schema,
+                                    &mut log_record,
+                                    &mut attributes,
                                     key,
-                                    AnyValue::Native(OtlpAnyValue::DoubleValue(
-                                        DoubleValueStorage::new(avg),
-                                    )),
-                                ));
+                                    OwnedValue::Double(DoubleValueStorage::new(avg)),
+                                );
                             }
                             SummaryAggregation::Count(v) => {
-                                attributes.push((
+                                push_value(
+                                    &schema,
+                                    &mut log_record,
+                                    &mut attributes,
                                     key,
-                                    AnyValue::Native(OtlpAnyValue::IntValue(
-                                        IntegerValueStorage::new(v as i64),
-                                    )),
-                                ));
+                                    OwnedValue::Integer(IntegerValueStorage::new(v as i64)),
+                                );
                             }
                             SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
-                                attributes.push((key, v.into()));
+                                push_value(&schema, &mut log_record, &mut attributes, key, v);
                             }
                             SummaryAggregation::Sum(v) => {
                                 let v = match v {
-                                    SummaryValue::Double(d) => AnyValue::Native(
-                                        OtlpAnyValue::DoubleValue(DoubleValueStorage::new(d)),
-                                    ),
-                                    SummaryValue::Integer(i) => AnyValue::Native(
-                                        OtlpAnyValue::IntValue(IntegerValueStorage::new(i)),
-                                    ),
+                                    SummaryValue::Double(d) => {
+                                        OwnedValue::Double(DoubleValueStorage::new(d))
+                                    }
+                                    SummaryValue::Integer(i) => {
+                                        OwnedValue::Integer(IntegerValueStorage::new(i))
+                                    }
                                 };
-                                attributes.push((key, v));
+                                push_value(&schema, &mut log_record, &mut attributes, key, v);
                             }
                         }
                     }
 
-                    LogRecord::new().with_attributes(attributes)
+                    log_record.with_attributes(attributes)
                 };
 
                 handle_diagnostics(
@@ -401,6 +405,20 @@ pub fn process_export_logs_service_request_using_pipeline(
         dropped_records,
         dropped_record_count,
     })
+}
+
+fn push_value(
+    schema: &ParserMapSchema,
+    log_record: &mut LogRecord,
+    attributes: &mut Vec<(Box<str>, AnyValue)>,
+    key: Box<str>,
+    value: OwnedValue,
+) {
+    if let Some(_) = schema.get_schema_for_key(schema.normalize_key(&key)) {
+        log_record.set(&key, ResolvedValue::Computed(value));
+    } else {
+        attributes.push((key, value.into()));
+    }
 }
 
 fn build_parser_options(options: &mut BridgeOptions) -> Result<ParserOptions, ParserError> {
@@ -777,6 +795,193 @@ mod tests {
 
         assert_eq!(1, response.included_record_count);
         assert_eq!(1, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary_field_mapping() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_severity_text("INFO".into()))
+                    .with_log_record(LogRecord::new().with_severity_text("WARN".into())),
+            ),
+        );
+
+        let pipeline = parse_kql_query_into_pipeline(
+            "source | summarize Count = count() by severityText",
+            None,
+        )
+        .unwrap();
+
+        let mut response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(2, response.included_record_count);
+        assert_eq!(2, response.dropped_record_count);
+
+        let response_otlp = response.included_records.as_mut().unwrap();
+
+        let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
+
+        response_summaries.sort_by(|l, r| {
+            let l = l
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            let r = r
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            l.cmp(r)
+        });
+
+        assert_eq!(
+            Some("INFO"),
+            response_summaries[0]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[0]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+
+        assert_eq!(
+            Some("WARN"),
+            response_summaries[1]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[1]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary_field_mapping_post_pipeline() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_severity_text("INFO".into()))
+                    .with_log_record(LogRecord::new().with_severity_text("WARN".into())),
+            ),
+        );
+
+        let pipeline =
+            parse_kql_query_into_pipeline("source | summarize Count = count() by severityText | extend body = 'hello world', attr1 = 'goodbye world'", None).unwrap();
+
+        let mut response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(2, response.included_record_count);
+        assert_eq!(2, response.dropped_record_count);
+
+        let response_otlp = response.included_records.as_mut().unwrap();
+
+        let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
+
+        response_summaries.sort_by(|l, r| {
+            let l = l
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            let r = r
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            l.cmp(r)
+        });
+
+        assert_eq!(
+            Some("INFO"),
+            response_summaries[0]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[0]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "hello world".into()
+            ))),
+            response_summaries[0].body.as_ref().map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "goodbye world".into()
+            ))),
+            response_summaries[0]
+                .attributes
+                .get("attr1")
+                .map(|v| v.to_value())
+        );
+
+        assert_eq!(
+            Some("WARN"),
+            response_summaries[1]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[1]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "hello world".into()
+            ))),
+            response_summaries[1].body.as_ref().map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "goodbye world".into()
+            ))),
+            response_summaries[1]
+                .attributes
+                .get("attr1")
+                .map(|v| v.to_value())
+        );
 
         let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
