@@ -95,6 +95,7 @@ futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
+hashbrown = { version = "0.16", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"

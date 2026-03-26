@@ -31,6 +31,7 @@ blake3.workspace = true
 byte-unit.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+hashbrown.workspace = true
 data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
 futures.workspace = true
