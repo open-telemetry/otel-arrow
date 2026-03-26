@@ -1,402 +1,665 @@
 # Pipeline Engine
 
-Status: **WIP**
-
 ## Introduction
 
-The term pipeline is used here to represent an interconnection of nodes forming
-a Directed Acyclic Graph (DAG). The inputs of a pipeline are called receivers,
-the intermediate processing nodes are called processors, and the output nodes
-are referred to as exporters.
+The `otap-df-engine` crate is the in-core execution engine for OTAP Dataflow.
+It is responsible for running pipeline nodes, wiring bounded channels, routing
+runtime messages, and enforcing the engine's drain and shutdown behavior inside
+one pipeline runtime.
 
-Messages flowing through a pipeline are generically referred to as pdata (i.e.
-Pipeline Data). An OTLP message or an OTAP message are examples of pdata types.
-This pipeline framework is generic over pdata, which means:
+The engine is not the whole process. In this project, the process-level
+controller and the in-core engine have distinct responsibilities:
 
-- It is possible to instantiate an OTLP pipeline, an OTAP pipeline, or even a
-  pipeline designed to support another type of pdata.
-- It is not possible to support multiple pdata types within a single pipeline.
-  However, a fourth type of component, called a connector, can be used to bridge
-  two pipelines and enable interoperability between different pdata types.
+- `Controller`: Resolves configuration, allocates cores, creates topic
+  bindings, spawns per-core pipeline runtimes, and drives pipeline lifecycle
+  from admin or process-level events.
+- `Engine`: Runs receivers, processors, exporters, channels, timers,
+  completion unwinding, and graceful drain/shutdown inside one pipeline
+  runtime on one core.
 
-This terminology aligns well with the concepts introduced in the OTEL Go
-Collector.
+This README documents the current `OtapPdata`-based engine used by OTAP
+Dataflow. It focuses on the runtime model that contributors and advanced users
+need to understand when working on the engine or reasoning about pipeline
+behavior.
+
+## Core Concepts
+
+- `DAG`: A directed acyclic graph of nodes and connections describing one
+  pipeline.
+- `Pipeline`: The configured DAG itself.
+- `Pipeline runtime`: One instantiated copy of a pipeline running on one
+  assigned core. A pipeline configured on `n` cores produces `n` pipeline
+  runtimes.
+- `Receiver / ingress`: A node that admits external work into the DAG and
+  produces `pdata` for downstream nodes.
+- `Processor`: A node that consumes `pdata`, transforms it, and may emit zero,
+  one, or many downstream `pdata` messages.
+- `Exporter / egress`: A node that consumes `pdata` and terminates the
+  in-process DAG path.
+- `pdata`: The data unit flowing on the forward path. In this project, `pdata`
+  means `OtapPdata`.
+- `Ack/Nack / completion`: The completion state of an in-flight `pdata`
+  request. Completion traffic travels on the return path and is surfaced as
+  `Ack` or `Nack` control messages.
+- `Hyper-edge`: A runtime wiring unit that groups compatible logical
+  connections onto one bounded underlying `pdata` channel.
+- `Topic`: A named in-process transport used to connect pipelines without a
+  direct DAG edge. Topic receiver/exporter nodes bridge between a pipeline
+  runtime and the topic runtime.
 
 ## Architecture
 
-A list of the design principles followed by this project can be found
-[in /docs](../../docs/design-principles.md). More specifically, the pipeline
-engine
-implemented in this crate follows a share-nothing, thread-per-core approach. In
-particular, one instance of the pipeline engine is created per core. This
-engine:
+A list of the design principles followed by this project can be found in
+[`../../docs/design-principles.md`](../../docs/design-principles.md). More
+specifically, the engine implemented in this crate follows a share-nothing,
+thread-per-core approach:
 
-- Is based on a single-threaded async runtime
-- Avoids synchronization mechanisms whenever possible
-- Declares async traits as `?Send`, providing `!Send` implementations and
-  futures whenever practical
-- Relies on listening sockets configured with the `SO_REUSEPORT` option,
-  allowing the OS to handle connection load balancing
-- May share immutable data between cores, but ideally only within a single NUMA
-  node
+- one single-threaded async runtime per assigned core
+- one pipeline runtime per deployed pipeline per assigned core
+- no implicit work stealing or cross-core scheduling in the hot data path
+- bounded channels and explicit backpressure instead of unbounded buffering
+- `?Send`-friendly traits so local, `!Send` implementations can avoid
+  synchronization when possible
+- listener setup that can rely on `SO_REUSEPORT` where the platform supports it
 
-These design principles focus on achieving high performance, predictability, and
-maintainability in an observability gateway implemented in Rust. Targeting a
-single-threaded async runtime reduces complexity, enhances cache locality, and
-lowers overhead. Favoring `!Send` futures and declaring async traits as `?Send`
-maximizes flexibility and allows performance gains by avoiding unnecessary
-synchronization. Minimizing synchronization primitives prevents contention and
-overhead, thus ensuring consistently low latency. Avoiding unbounded channels
-and data structures protects against unpredictable resource consumption,
-maintaining stable performance. Finally, limiting external dependencies reduces
-complexity, security risks, and maintenance effort, further streamlining the
-gateway's operation and reliability.
+This split matters operationally. The controller decides where and when
+pipelines run; the engine decides how a single pipeline runtime behaves once it
+is running on a core.
 
-## Control Messages
+One configured pipeline can therefore produce several independent pipeline
+runtimes. Each runtime owns its own nodes, bounded channels, timers, runtime
+control state, and completion unwinding state. Immutable resources can be shared,
+but hot mutable data-path state stays local to the runtime.
 
-The pipeline engine supports two types of control messages:
+The controller can also assign multiple pipeline runtimes to the same core in
+some circumstances. This can happen intentionally when different pipeline
+configurations are consolidated onto the same core set, and it can also happen
+transiently during rollout-style lifecycle events such as live reconfiguration
+when overlapping old and new runtimes are expected to coexist for a period.
 
-1. **Node Control Messages**: These messages are emitted by the engine to
-   control the behavior of individual nodes in the pipeline, such as
-   reconfiguration, stopping a specific node, a timer tick, or even an
-   acknowledgment message emitted by a downstream node.
-2. **Pipeline Control Messages**: These messages are emitted by individual
-   nodes to control certain subsystems of the pipeline engine, such as
-   starting or stopping.
+### Topics Across Pipelines
 
-Note: Each node in a pipeline can receive node control messages, which must be
-handled with priority.
+Topics are the engine-supported way to connect pipelines without direct DAG
+edges. Topic declaration, validation, mode inference, capability checks, and
+cycle checks happen during controller startup. Each pipeline runtime then
+receives a `TopicSet` with pipeline-scoped bindings, and topic exporter/receiver
+nodes bridge between the DAG and the topic runtime. See
+[`../../docs/topic-architecture.md`](../../docs/topic-architecture.md) for the
+full topic-specific architecture.
+
+Operationally, topics play three main roles in the system:
+
+- they decouple pipelines that together form one larger logical flow, which
+  makes it possible to evolve or reconfigure one part of that flow without
+  necessarily interrupting another part. A common pattern is to separate an
+  ingress-oriented pipeline from a downstream processing-and-export pipeline so
+  the latter can change independently while ingress listeners and network
+  connections stay stable
+- they provide the cross-pipeline delivery pattern required by the topology,
+  whether that means balanced delivery, broadcast delivery, or a mixed topic
+  serving both kinds of consumers. The example configurations use this for
+  scenarios such as multitenant isolation, best-effort tap pipelines, and
+  mixed-criticality processing paths
+- they can carry tracked publish outcomes across the topic hop, so Ack/Nack
+  propagation can be bridged across pipelines when the topic binding and node
+  configuration enable it
+
+## OtapPdata
+
+`OtapPdata` is the `pdata` type used by the engine in this project.
+
+At a high level, `OtapPdata` can carry:
+
+- OTLP bytes batches, typically represented as `OtlpProtoBytes`
+- OTAP Arrow batches, typically represented as `OtapArrowRecords`
+
+This distinction is important for performance. The engine does not require
+every ingress path to deserialize OTLP bytes into the OTAP in-memory
+representation immediately. Some receivers, processors, and exporters can route,
+forward, inspect, or translate requests while still operating on OTLP bytes.
+Conversion to OTAP records happens on demand when a component actually needs the
+decoded representation.
+
+That lets the runtime preserve a zero- or low-deserialization path where
+possible while still supporting components that need OTAP Arrow batches for
+batching, transformation, encoding, or export.
+
+## Runtime Channels and Message Families
+
+The engine uses bounded channels only.
+
+At runtime, compatible DAG connections are grouped into hyper-edges, and each
+hyper-edge is wired onto one bounded underlying `pdata` channel. With ordinary
+multi-destination `one_of` wiring, multiple consumers on the same hyper-edge
+compete on that shared channel. Generic hyper-edge broadcast fan-out is not
+implemented at the channel-wiring level, but explicit broadcast-style fan-out
+inside a pipeline is supported through the dedicated fanout processor.
+
+Each pipeline runtime uses three channel families:
+
+1. **`pdata` channels**
+   These carry only `pdata`. Receivers and processors produce onto them;
+   processors and exporters consume them.
+2. **Node-control channels**
+   There is one bounded node-control channel per node. Receivers consume this
+   channel in competition with their external ingress sources and are expected
+   to prioritize control. Processors and exporters consume node control together
+   with `pdata` through role-specific message channels.
+3. **Pipeline runtime channels**
+   Each pipeline runtime owns two bounded shared MPSC channels:
+   - a **runtime-control channel** for timers, delayed-data requests,
+     receiver-drain notifications, and shutdown requests, consumed by
+     `RuntimeCtrlMsgManager`
+   - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`,
+     consumed by `PipelineCompletionMsgDispatcher`
+
+### Why Runtime-Control and Completion Are Split
+
+The split between the runtime-control channel and the pipeline-completion
+channel is there to protect liveness.
+
+These two message families have different jobs:
+
+- runtime-control traffic keeps the runtime itself progressing: timers,
+  delayed-data wakeups, receiver drain notifications, and shutdown
+  orchestration
+- completion traffic unwinds the outcome of already admitted work: `Ack` and
+  `Nack` delivery back to the closest interested upstream node
+
+If both flows share one bounded queue, a burst in one category can crowd out
+the other. That is especially dangerous because nodes publish onto these paths
+from inside their own async loops. Once that shared queue is full, producers
+can block in `send().await`, which can amplify backpressure and, in some
+topologies, contribute to circular wait.
+
+A realistic example looks like this:
+
+```text
+# An OTLP receiver admits requests with wait_for_result enabled.
+# A retry/fanout processor forwards pdata downstream and temporarily closes
+# admission while it waits for outstanding completions to reduce its inflight
+# count.
+# An exporter hits a temporary outage and emits a burst of DeliverNack.
+# The processor also needs to enqueue StartTimer / DelayData to retry work.
+#
+# If DeliverNack, StartTimer, DelayData, and Shutdown all share one bounded
+# channel, the DeliverNack burst can fill it first.
+# Then:
+# - the exporter can block trying to publish more completion traffic
+# - the processor can block trying to publish retry/timer work
+# - receiver drain / shutdown work can be delayed behind completion churn
+# - the processor may stay closed to pdata because the control work needed to
+#   reopen or retry is stuck behind the same queue
+# - backpressure propagates upstream and admitted requests stop making forward
+#   progress
+#
+# With separate channels:
+# - runtime-control traffic stays live even under heavy Ack/Nack churn
+# - Ack/Nack unwinding stays live even while timers or delayed-data requests
+#   are busy
+# - one path being saturated no longer prevents the other from draining
+```
+
+`ProcessorMessageChannel` and `ExporterMessageChannel` both prefer control over
+`pdata`, but neither gives control absolute priority. After a bounded burst of
+control messages, the channel forces one `pdata` receive attempt when node-level
+admission allows it, so control storms do not starve the forward data path.
+
+`recv_when(...)` is the receive-side primitive that enforces that admission
+control. When the guard is `false`, `pdata` stays queued while control messages
+continue to be delivered, which lets a node reduce in-flight state and surface
+backpressure upstream.
+
+Processors and exporters use that mechanism differently. Processors do not
+usually call `recv_when(...)` themselves because the engine owns their receive
+loop. Instead, a processor exposes `accept_pdata()`, and the engine feeds that
+policy into `ProcessorMessageChannel::recv_when(...)` on the processor's
+behalf. Exporters own their run loops directly, so they call
+`ExporterMessageChannel::recv()` or `ExporterMessageChannel::recv_when(...)`
+themselves. The two mechanisms therefore serve the same admission-control goal
+at different layers: `accept_pdata()` is the processor-side readiness hook,
+while `recv_when(...)` is the channel primitive used by self-driven exporter
+loops.
+
+The shutdown contract is also role-specific. `ProcessorMessageChannel`
+continues to honor closed admission during shutdown, so a processor that keeps
+`accept_pdata() == false` until the deadline may still strand buffered `pdata`.
+`ExporterMessageChannel` is different: once shutdown is latched, it still
+force-drains already buffered channel data even if the exporter has temporarily
+closed normal admission.
+
+The current message families are:
+
+- **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
+  `CollectTelemetry`, `DelayedData`, `DrainIngress`, `Shutdown`
+- **Runtime control messages**: `StartTimer`, `CancelTimer`,
+  `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
+  `ReceiverDrained`, `Shutdown`
+- **Pipeline completion messages**: `DeliverAck`, `DeliverNack`
+
+## Runtime Message Dynamics
+
+The runtime has five concurrent message paths that together explain most engine
+behavior:
+
+1. **Forward `pdata` flow**
+   Receivers admit external work and emit `OtapPdata` on `pdata` channels.
+   Processors and exporters then consume that `pdata` through
+   `ProcessorMessageChannel` and `ExporterMessageChannel`.
+
+2. **Node-control delivery**
+   Receivers consume node control in competition with external ingress. By
+   contrast, processors and exporters consume node control and `pdata` through
+   their role-specific message channels, which give control preferred but
+   bounded-fair treatment.
+
+3. **Runtime-control flow**
+   Nodes send timer requests, delayed-data requests, `ReceiverDrained`, and
+   runtime `Shutdown` requests to the runtime-control channel. That channel is
+   consumed by `RuntimeCtrlMsgManager`, which handles orchestration and turns
+   due work back into node-control messages.
+
+4. **Ack/Nack completion flow**
+   Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on
+   the pipeline-completion channel. `PipelineCompletionMsgDispatcher` consumes
+   that channel,
+   unwinds the caller subscription stack stored in `pdata`, and delivers
+   `Ack`/`Nack` node-control messages to the closest interested upstream node.
+
+5. **Drain and shutdown flow**
+   Graceful shutdown enters through `RuntimeControlMsg::Shutdown`. The runtime
+   first sends `DrainIngress` to receivers, waits for `ReceiverDrained`, then
+   sends downstream `Shutdown`. Drain propagates as receivers stop admitting new
+   work, drop their forward senders, and downstream `pdata` channels gradually
+   empty and close. The later sections on Ack/Nack delivery and graceful
+   shutdown cover this in more detail.
+
+## Runtime Properties
+
+The runtime is organized around a small set of guarantees:
+
+- **Isolated control paths:** runtime orchestration and Ack/Nack unwinding use
+  separate bounded runtime channels and dedicated runtime components.
+- **Bounded progress under load:** control remains responsive while `pdata`,
+  timer expiry, telemetry collection, and delayed-data resumption still make
+  progress under sustained control traffic.
+- **Explicit node-level admission control:** processors can temporarily pause
+  `pdata` delivery through `accept_pdata()`, and exporters can apply the same
+  pattern in their run loops with `ExporterMessageChannel::recv_when(false)`.
+  The engine uses two entry points because processor receive loops are
+  engine-owned while exporter receive loops are node-owned. During shutdown,
+  exporters still drain already buffered channel data, while processors keep
+  their current stricter admission semantics.
+- **Receiver-first graceful drain:** graceful shutdown drains ingress first,
+  then shuts down downstream consumers after receivers report
+  `ReceiverDrained`.
+- **Producer-visible completion semantics for `wait_for_result`:** receivers
+  that expose downstream completion to telemetry producers can only provide a
+  useful contract if those producers act on the result. Upstream senders are
+  expected to treat temporary failures as retryable and resend with an
+  appropriate backoff policy, while permanent refusals should not be retried.
+  The engine reports completion; it does not persist or replay those upstream
+  requests on the producer's behalf.
+- **Bounded memory and surfaced backpressure:** all communication paths remain
+  bounded, so pressure appears in the relevant channel family rather than being
+  hidden behind unbounded queues.
 
 ## Effect Handlers
 
-### Concept and Purpose
+Effect handlers are the node-facing abstraction for performing engine-managed
+side effects. They let receivers, processors, and exporters interact with the
+runtime without owning the runtime internals directly.
 
-Effect handlers are a core abstraction that provide a clean interface for
-pipeline components (receivers, processors, and exporters) to perform side
-effects such as sending messages, opening sockets, or managing other resources.
-They hide the implementation details of these operations, abstracting away the
-specific async runtime and platform details from the implementers of these
-nodes.
+In practice, effect handlers are how nodes:
 
-This abstraction allows the engine to control how these side effects are
-actually performed, while providing a consistent interface for component
-developers. There are two implementations of effect handlers:
+- send `pdata` to downstream ports
+- subscribe to Ack/Nack interests on the forward path
+- emit Ack/Nack outcomes onto the pipeline-completion channel
+- schedule or cancel timers on the runtime-control channel
+- return delayed data
+- report `ReceiverDrained`
+- create listeners and sockets with engine-defined socket options
 
-1. **NotSendEffectHandler (!Send)**: The default and preferred implementation.
-   These handlers use `Rc` internally for reference counting and work with
-   components that don't need to be sent across thread boundaries. This aligns
-   with the project's single-threaded, thread-per-core design philosophy.
+The codebase exposes two families of effect handlers:
 
-2. **SendEffectHandler (Send)**: An alternate implementation for components that
-   need to integrate with libraries requiring `Send` bounds. These handlers use
-   `Arc` internally.
+1. **Local effect handlers (`!Send`)**
+   These are the default and preferred path. They align with the engine's
+   single-threaded runtime model and avoid synchronization overhead where the
+   component and its futures do not need to be `Send`.
 
-### Why Different Effect Handlers Were Introduced
+2. **Shared effect handlers (`Send`)**
+   These exist for integrations that require `Send`-bound components or futures,
+   such as Tonic-based receivers and similar libraries.
 
-The dual effect handler approach was introduced to address several challenges:
-
-1. **Abstracting Engine Implementation**: Effect handlers decouple the node
-   implementations from the specifics of how messages are sent between nodes,
-   allowing the engine to evolve independently from the components.
-
-2. **Library Integration**: Some external libraries (e.g. Tonic) don't yet
-   support `?Send` trait declarations (see
-   [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)). The
-   type-level declaration with `SendEffectHandler` provides a pathway to
-   integrate such libraries. For nodes that don't need to be `Send`, there's no
-   synchronization overhead.
-
-3. **Unified Interface with Type-Level Requirements**: Components parameterize
-   their effect handler type in their interface, allowing them to declare their
-   specific requirements at the type level while maintaining a consistent API.
-
-### Preferred Implementation Approach
-
-For this project, **`NotSendEffectHandler` is the preferred and recommended
-approach** for most components.
-
-`SendEffectHandler` exists primarily as an escape hatch for specific
-implementations that must interact with libraries requiring `Send` traits, such
-as OTLP Receivers based on Tonic GRPC services.
+The important design point is that the effect handler is not just a message
+sender. It is the node's capability object for interacting with the engine's
+forward path, completion path, runtime-control path, and listener setup.
 
 ## Ack/Nack Delivery Mechanism
 
-The engine builds-in a mechanism for returning the success or failure
-of each data request in the pipeline. Components can opt-in to receive
-Ack (positive acknowledgement) or Nack (negative acknowledgement) node
-control messages.
+The engine includes a built-in mechanism for returning the success or failure of
+data requests through the pipeline. Components can opt in to Ack (positive
+acknowledgement) or Nack (negative acknowledgement) control messages.
 
-The data layer above the engine is responsible for the physical
-representation of the request context. The engine effect handler and
-the `<PData>` type have a cooperative calling convention, as follows:
+Ack/Nack unwinding is intentionally separated from timer and shutdown
+orchestration. Nodes publish return-path events on the pipeline-completion channel,
+and `PipelineCompletionMsgDispatcher` unwinds the caller subscription stack and
+forwards `Ack` / `Nack` node-control messages to the closest interested
+upstream node.
 
-1. Caller subscribes for a set of `Interests` before calling `send` on
-   the `&mut PData`.
-2. When notified of Ack or Nack, the component must use `notify_ack`
-   or `notify_nack` on the PData.
+The data layer above the engine is responsible for the physical representation
+of request context. The engine effect handler and `OtapPdata` cooperate through
+the following calling convention:
 
-Caller subscription state is conceptually a stack of `Interests` with
-routing information (`NodeID`) and user-defined `CallData`.
+1. A producer subscribes to a set of `Interests` before sending `pdata`.
+2. Those subscriptions are recorded as frames in the `pdata` context stack.
+3. A downstream consumer later calls `notify_ack` or `notify_nack`.
+4. The dispatcher unwinds the context stack until it finds the closest frame
+   interested in that outcome.
 
-### Interests
+### Interests, Route Data, and Return Data
 
-Interests are a 8-bit, `bitflags` crate macro-derived enum:
+`Interests` is an 8-bit flag set. The most important flags are:
 
-- `ACKS`: To subscribe to Ack messages
-- `NACKS`: To subscribe to Ack messages
-- `RETURN_DATA`: Request return of the data.
+- `ACKS`
+- `NACKS`
+- `RETURN_DATA`
 
-The `RETURN_DATA` interest supports the re-use of request data, if
-desired.
+Each subscription frame carries:
 
-### CallData
+- the interested node id
+- `RouteData` for the forward path
+- user-defined `CallData`
 
-The `CallData` type is a small, fixed-size field used to carry
-user-defined data in the caller subscription state. From the engine's
-perspective, `<PData>` is opaque, making the subscription state not
-visible. This has two important implications for the API and calling
-convention.
+When the return path is formed, the engine creates `UnwindData`, which combines
+the route metadata with the return-path timestamp.
 
-1. The engine propagates the `PData` type backwards in the pipeline in
-   the node control message using the opaque `Box<PData>`
-2. Methods to construct Ack and Nack messages, which inspect and
-   modify caller subscription state, are traits in the engine crate,
-   implemented in the data layer. Callers will use effect handler
-   extensions, `PData`-aware methods for Ack/Nack subscription and
-   notification.
-
-Because `PData` usually returns without its payload, callers are
-expected save information they want to use about the payload (e.g.,
-number of items, encoded size) before sending messages.
-
-### RETURN_DATA
-
-Since we usually want to drop the memory associated with a request on
-the Ack/Nack return path, the payload is dropped automatically unless
-`Interests::RETURN_DATA` is set.  Either way, the `PData` object
-contains the caller subscription state used on the return path so
-both Ack and Nack contain a non-optional `PData` field.
-
-In both Ack and Nack cases, the use of `RETURN_DATA` is not
-guaranteed. Components should consider the possibility of lost
-Ack/Nack messages in rare circumstances.
+By default, the payload is dropped on the return path to avoid holding request
+memory longer than necessary. If `RETURN_DATA` is set, the caller asks for the
+payload to be preserved on the return path. Even then, callers should still
+reason in terms of bounded graceful behavior rather than guaranteed payload
+recovery under every failure mode.
 
 ### Caller Subscription
 
-When a component acting as a producer sends a `<PData>` message and
-wants to be informed of the outcome via Ack/Nack, it will use a call
-sequence like:
+When a producer wants to be informed of the outcome via Ack/Nack, it uses a
+call sequence like:
 
 ```rust
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 
-// Example for a processor
 async fn process(
-    &mut Processor,
     msg: Message<OtapPdata>,
-    slots:
-    effect: &mut local::EffectHandler<OtapPdata>,
+    effect: &mut local::processor::EffectHandler<OtapPdata>,
 ) -> Result<(), EngineError> {
     match msg {
         Message::PData(mut pdata) => {
-            // Subscript to Ack/Nack
             let call_state = SomeCallData::new(...);
             effect.subscribe_to(
-                Interests::ACKS|Interests::NACKS,
+                Interests::ACKS | Interests::NACKS,
                 call_state.into(),
                 &mut pdata,
             );
-            // Send the message
             effect.send_message(pdata).await
         }
-        Message::Control(ctrl) => {
-            // See below to handle the Ack/Nack
-        }
+        Message::Control(_) => Ok(()),
     }
+}
 ```
-
-Depending on the caller, there are different ways to construct the
-`CallData`. Some components will be stateless, provided they can fit
-everything they need for Ack/Nack handling into the provided space
-with clonable data. See the core-nodes retry processor as an example of
-this approach, which stores a retry count and timestamp in the call
-data.
-
-Some components will require dedicated space that does not fit the
-calldata pattern, they will have to manage their own state. See the
-`otap_df_otap::accessory::slots::State` structure as an example that
-supports a limited number of slots for user-defined storage with a
-built-in `CallData` type.
 
 ### Caller Return
 
-When a component acting as a consumer has finished processing a
-`<PData>` message and wants to inform the next subscriber of the
-outcome via Ack/Nack, it will use a call sequence like:
+When a consumer finishes processing `pdata` and wants to return an outcome, it
+uses the consumer-side effect-handler extension:
 
 ```rust
 use otap_df_engine::ConsumerEffectHandlerExtension;
 
-// Example for an exporter
 async fn export(
-    &mut Exporter,
     msg: Message<OtapPdata>,
-    slots:
-    effect: &mut local::EffectHandler<OtapPdata>,
+    effect: &local::exporter::EffectHandler<OtapPdata>,
 ) -> Result<(), EngineError> {
     match msg {
-        Message::PData(mut pdata) => {
-            // export the data
-            // send an Ack message
+        Message::PData(pdata) => {
             effect.notify_ack(AckMsg::new(pdata)).await
         }
-    ...
+        Message::Control(_) => Ok(()),
+    }
 }
 ```
 
-Likewise, the `ConsumerEffectHandlerExtension::notify_nack` method
-tells the engine to route a Nack message. The engine never deals
-directly in forming the `AckMsg` and `NackMsg` types, as they contain
-call data "popped" from the caller subscription state. Therefore, the
-`notify_ack` and `notify_nack` extension methods construct the next
-Ack or Nack message using functions that pop subscription frames,
-identify the next subscriber by node ID, place their call data in the
-Ack or Nack, and route the control message.
+`notify_nack` works the same way, but returns a `NackMsg`. The engine does not
+invent the next unwind frame on its own; the data-layer-aware extension methods
+build the next Ack/Nack message using the context stored in `pdata`.
 
-### Handling Ack and Nack messages
+### Handling Ack and Nack Messages
 
-A typical processor with an interest in Ack or Nack will both consume
-and produce Ack/Nack messages. For example:
+A processor that subscribes to Ack/Nack will typically both consume and produce
+Ack/Nack:
 
 ```rust
-// Example for a processor
 async fn process(
-    &mut Processor,
     msg: Message<OtapPdata>,
-    slots:
-    effect: &mut local::EffectHandler<OtapPdata>,
+    effect: &mut local::processor::EffectHandler<OtapPdata>,
 ) -> Result<(), EngineError> {
     match msg {
-        Message::PData(mut pdata) => {
-            // See above to set the call data
-        }
-        Message::Control(ctrl) => {
-            match ctrl {
-                NodeControlMsg::Ack(ack) => {
-                    // Get the call data.
-                    let mycalldata: SomeCallData = ack.calldata.try_into()?;
-
-                    // Do something before returning
-
-                    // Notify the next subscriber
-                    effect.notify_ack(ack).await
-                }
-                NodeControlMsg::Nack(mut nack) => {
-                    // Get the call data.
-                    let mycalldata: SomeCallData = ack.calldata.try_into()?;
-
-                    // Do something before returning
-
-                    // Modify the Nack reason
-                    nack.reason = format!("more info: {}", nack.reason);
-
-                    // Notify the next subscriber
-                    effect.notify_nack(nack).await
-                }
-                // ...
+        Message::PData(_) => Ok(()),
+        Message::Control(ctrl) => match ctrl {
+            NodeControlMsg::Ack(ack) => {
+                let my_state: SomeCallData = ack.unwind.route.calldata.clone().try_into()?;
+                // update local state
+                effect.notify_ack(ack).await
             }
-        }
+            NodeControlMsg::Nack(mut nack) => {
+                let my_state: SomeCallData = nack.unwind.route.calldata.clone().try_into()?;
+                // update local state
+                nack.reason = format!("more info: {}", nack.reason);
+                effect.notify_nack(nack).await
+            }
+            _ => Ok(()),
+        },
     }
+}
 ```
 
-Note that without subscribing to any interest, components are
-completely bypassed on the return path. Caller subscription frames
-that are not used for lack of interest are automatically skipped
-(e.g., an Ack was delivered with only `Interests::NACKS`).
+Without a matching interest, a node is skipped on the return path. For
+topic-specific Ack/Nack bridging across topic hops, see
+[`../../docs/topic-architecture.md`](../../docs/topic-architecture.md).
 
 ## Graceful Shutdown Sequence
 
-The pipeline engine supports graceful shutdown of pipelines and their nodes.
-When a shutdown is initiated, the engine sends a shutdown control message to
-each receiver in the pipeline. Each receiver is then responsible for handling
-its own shutdown process, which may include:
+The engine supports graceful shutdown of pipeline runtimes and their nodes.
+Shutdown is initiated by sending `RuntimeControlMsg::Shutdown` to the
+runtime-control channel; it is not implemented by broadcasting `Shutdown`
+directly to every node at once.
 
-- Stopping the acceptance of new incoming connections or messages.
-- Waiting for in-flight Ack/Nack messages to be processed by downstream nodes,
-  while observing the shutdown deadline specified in the control message.
-- Cleaning up resources and performing any necessary finalization tasks.
-- Exiting the `start` method with a `TerminalState` optionally containing the
-  latest collected metrics.
+In practice, that shutdown request can enter the runtime through:
 
-When stopping (i.e. at the end of the `start` method), receivers and their
-effect handlers drop the senders of their channels. This triggers the draining
-of the channels by the downstream nodes that consume them. Once a channel is
-fully drained, it returns a shutdown message, causing the corresponding node to
-stop. This process repeats progressively downstream until it reaches the
-exporters, ensuring that all telemetry data and metrics are properly flushed
-before the pipeline fully terminates.
+- direct admin/API shutdown requests handled by the controller
+- broader process shutdown flows triggered by OS signals and translated into
+  pipeline shutdown requests
 
-![Graceful Shutdown Sequence](assets/graceful-shutdown.svg)
+When graceful shutdown starts, the runtime control manager:
 
-This shutdown process ensures that ongoing telemetry data processing is
-completed while avoiding data loss and maintaining observability integrity.
+1. Enters ingress-draining mode.
+2. Cancels recurring timers.
+3. Flushes queued delayed data back to the originating nodes as
+   `NodeControlMsg::DelayedData`.
+4. Sends `NodeControlMsg::DrainIngress` to every receiver.
+
+Each receiver is then responsible for stopping admission of new external work
+while keeping receiver-local drain state alive long enough to finish local
+cleanup. For example, an RPC receiver can keep its wait-for-result registry,
+transport shutdown, and telemetry finalization alive until it has no more
+admitted requests to resolve.
+
+Once ingress is closed and receiver-local drain work is complete, the receiver
+reports `RuntimeControlMsg::ReceiverDrained`.
+
+After all receivers have reported `ReceiverDrained`, the control manager sends
+`NodeControlMsg::Shutdown` to processors and exporters. `ProcessorMessageChannel`
+continues delivering control messages while only draining `pdata` when the
+processor reopens admission. `ExporterMessageChannel` also continues delivering
+control messages, but it force-drains already buffered input-channel `pdata`
+even if the exporter has temporarily closed normal admission. In both cases,
+the channel returns final shutdown once inputs are drained or the shutdown
+deadline is reached.
+
+As receivers exit and drop their `pdata` senders, downstream channels drain and
+close progressively toward exporters. Once a downstream input is fully drained
+or closed, the corresponding consumer receives `Shutdown` and exits its run
+loop.
+
+If the shutdown deadline expires, receivers may force-resolve remaining
+receiver-local waiters and the runtime control manager forces the remaining
+nodes to exit.
+
+When no fatal error occurs and nodes honor the shutdown deadline, this sequence
+allows the runtime to stop gracefully while preserving bounded memory and
+backpressure semantics.
 
 ## Testability
 
-All node types, as well as the pipeline engine itself, are designed for isolated
-testing. Practically, this means it's possible to test components like an OTLP
-Receiver independently, without needing to construct an entire pipeline. This
-approach facilitates rapid and precise identification of issues such as memory
-overconsumption, bottlenecks, or logical errors within individual nodes.
+All node types, as well as the pipeline engine itself, are designed for
+isolated testing. A receiver, processor, exporter, or runtime component can be
+tested without constructing a full deployed pipeline.
 
-The engine provides an extensive `testing` module containing utilities tailored
-to each pipeline component:
+The engine provides a substantial `testing` surface, including:
 
-- Defined test message types and control message counters for monitoring
-  component behavior.
-- Dedicated test contexts and runtimes specifically built for receivers,
-  processors, and exporters.
-- Single-threaded asynchronous runtime utilities aligned with the engine's
-  non-Send design philosophy.
-- Convenient helper functions for establishing and managing communication
-  channels between components.
+- component wrappers and dedicated test runtimes for receivers, processors, and
+  exporters
+- helper channels and control-message harnesses
+- validation contexts for asserting forward-path and control-path behavior
+- single-threaded async test utilities aligned with the engine's local runtime
+  model
 
-These utilities streamline the process of validating individual component
-behaviors, significantly reducing setup effort while enabling comprehensive
-testing.
+This keeps runtime behavior testable at the level where bugs usually occur:
+channel interaction, Ack/Nack unwinding, runtime-control handling, and
+component-local state transitions.
+
+For a contributor-facing overview of when to use unit tests, node harnesses,
+small pipeline liveness tests, validation scenarios, or DST, see the
+[Testing Guide](../../docs/testing-guide.md).
+
+## Deterministic Simulation Testing
+
+In addition to ordinary unit and integration tests, the engine includes a
+deterministic simulation testing (DST) layer for concurrency-sensitive runtime
+behavior.
+
+The DST approach combines:
+
+- a deterministic clock (`SimClock`) so deadlines, timer expiry, and delayed
+  data wakeups can be advanced explicitly
+- seeded interleavings so the same scenario can be replayed via `DST_SEED` or
+  expanded into a larger sweep via `DST_SEEDS`
+- real engine actors and channels rather than parallel mock semantics
+
+This is important for the control plane because many of the interesting failure
+classes are about ordering and bounded progress, not only about local business
+logic. The DST harness therefore runs real `ProcessorMessageChannel`,
+`ExporterMessageChannel`, `RuntimeCtrlMsgManager`, and
+`PipelineCompletionMsgDispatcher` logic inside the engine's single-threaded
+runtime model.
+
+The current DST scenarios cover five main families:
+
+- role-specific channel fairness and drain behavior: bounded-fair control vs
+  `pdata`, processor shutdown draining after admission reopens, exporter
+  shutdown draining of buffered `pdata`, and deadline-forced shutdown when a
+  processor keeps admission closed
+- runtime-control vs pipeline-completion progress under load: timer and delayed
+  data delivery, Ack/Nack unwinding, `RETURN_DATA`, and receiver-first shutdown
+  ordering under mixed runtime noise
+- heavy ingress / backpressure / interblock scenarios: sustained receiver
+  traffic, bounded `pdata` channels, processor admission gating and reopen,
+  mixed Ack/Nack completions, and clean drain propagation
+- explicit known-limitation coverage for processor closed admission through the
+  shutdown deadline: the DST suite documents the current case where buffered
+  `pdata` remains stranded if a processor never reopens admission before the
+  deadline
+- receiver `wait_for_result` behavior during drain and shutdown: the OTLP
+  receiver DST suite exercises Ack, temporary Nack, permanent Nack, and
+  shutdown/unavailable completion at the deadline
+
+The seed controls are:
+
+- `DST_SEED=<u64>` to replay one specific deterministic run
+- `DST_SEEDS=<n>` to append `n` generated seeds after the fixed regression
+  seeds
+
+The current DST coverage is intentionally scoped. It does not yet model
+topic-based routing, cross-pipeline Ack/Nack across topic hops, or fatal
+process failure. Those cases still rely on ordinary tests, design review, and
+future targeted coverage.
 
 ## Compile-Time Plugin System
 
-This project uses a compile-time plugin system based on the
-[`linkme`](https://docs.rs/linkme) crate to register node factories, such as
-receivers, processors, and exporters, along with their associated URNs (Uniform
-Resource Names). This mechanism enables the engine to dynamically instantiate
-nodes for specific URNs by looking up and invoking the appropriate factory at
-runtime.
+Receivers, processors, and exporters are registered through a compile-time
+plugin system built on [`linkme`](https://docs.rs/linkme). Each node type
+publishes a factory under its URN, and the engine's factory tables use those
+distributed slices to instantiate nodes at runtime.
 
-Each node type exposes a factory function, which is registered using `linkme`'s
-distributed slice feature. At startup, the engine collects all registered
-factories, allowing new node types to be added simply by implementing and
-registering a new factory. This approach provides a flexible and extensible
-foundation for building complex pipelines.
-
-Currently, this plugin infrastructure only supports built-in plugins compiled
-directly into the binary. However, the system is designed with future
-extensibility in mind. There are plans to support loading plugins via WASM,
-which would allow for dynamic, user-defined node types to be loaded at runtime
-without requiring a full rebuild of the engine.
-
-**Note:** The plugin system is still a work-in-progress. While the compile-time
-registration and dynamic instantiation of built-in nodes is functional, support
-for external (e.g. WASM-based) plugins is planned but not yet implemented.
+This gives the engine a stable runtime lookup model without requiring dynamic
+loading. The current system is compile-time only: built-in plugins are
+registered into the binary, and the controller/engine use those factory tables
+when building pipeline runtimes.
 
 ## Telemetry
 
-### Predefined Attributes
+The engine emits telemetry in terms of process, core, pipeline runtime, and
+node identity. These attributes let operators and contributors correlate engine
+metrics and events with the runtime structure described above.
 
-The pipeline engine defines a set of predefined attributes that can be used for
-labeling metrics and traces. These attributes provide context about the pipeline
-and its components, facilitating better observability and analysis.
+The `policies.telemetry.runtime_metrics` level now gates three related
+observability surfaces:
+
+- channel endpoint transport metrics
+- per-node produced/consumed outcome metrics
+- shared pipeline-scoped control-plane metrics
+
+For the shared control plane, the engine exports two pipeline metric families:
+
+- `pipeline.runtime_control`
+  This family is owned by `RuntimeCtrlMsgManager` and helps explain graceful
+  drain state, pending control-send backpressure, active timers, delayed-data
+  backlog, and whether shutdown finished naturally or was forced by deadline.
+- `pipeline.completion`
+  This family is owned by `PipelineCompletionMsgDispatcher` and helps explain
+  whether completion traffic is arriving, being delivered upstream, being
+  dropped because no frame was interested, or building up as a buffered
+  backlog.
+
+The `runtime_metrics` levels apply as follows:
+
+- `none`: disables channel endpoint, per-node outcome, and shared control-plane
+  metric export
+- `basic`: exports channel transport metrics plus the shared control-plane
+  state gauges such as `pipeline.runtime_control.drain.active`,
+  `pipeline.runtime_control.drain.pending_receivers`, and
+  `pipeline.completion.pending_sends.buffered`
+- `normal`: adds message and phase counters such as
+  `pipeline.runtime_control.shutdown.received`,
+  `pipeline.runtime_control.downstream_shutdown.sent`,
+  `pipeline.completion.deliver_ack.received`, and
+  `pipeline.completion.ack.sent`
+- `detailed`: adds the expensive summaries, including drain durations on
+  `pipeline.runtime_control` and unwind-depth distribution on
+  `pipeline.completion`
+
+Operationally, these two pipeline-scoped metric families help answer different
+questions:
+
+- if receivers appear stuck during shutdown, `pipeline.runtime_control` shows
+  whether drain is active, how many receivers are still pending, whether timer
+  or delayed-data work is still queued, and whether the shutdown deadline was
+  ultimately forced
+- if upstream callers are not seeing final Ack/Nack outcomes, `pipeline.completion`
+  shows whether completions are reaching the dispatcher, whether they are being
+  delivered to an interested frame, or whether the unwind ran out of interested
+  subscribers
+
+### Predefined Attributes
 
 | Scope    | Attribute           | Type    | Description                                                  |
 |----------|---------------------|---------|--------------------------------------------------------------|
@@ -408,3 +671,65 @@ and its components, facilitating better observability and analysis.
 | Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |
 | Node     | node_id             | string  | Node unique identifier (in scope of the pipeline).           |
 | Node     | node_type           | string  | Node type (e.g. "receiver", "processor", "exporter").        |
+
+### Drain Lifecycle Events
+
+The engine also emits a small set of pipeline-level lifecycle events around
+graceful drain:
+
+- `ShutdownRequested`: shutdown was accepted for the pipeline runtime
+- `IngressDrainStarted`: `DrainIngress` was sent to receivers
+- `ReceiversDrained`: all pending receivers reported `ReceiverDrained`
+- `DownstreamShutdownStarted`: downstream `Shutdown` was sent to non-receivers
+- `DrainDeadlineReached`: the shutdown deadline expired before natural drain
+  completion
+
+These events are intentionally low-volume. They are useful when a pipeline
+appears to stall during shutdown because they let operators distinguish between
+"ingress was never told to stop", "receivers have not drained yet", "downstream
+shutdown has already started", and "the runtime had to force completion at the
+deadline".
+
+## Failure Modes and Engine Responses
+
+The engine is designed to address a small number of important runtime failure
+classes without pretending that every failure becomes harmless:
+
+- **Bounded memory and explicit backpressure**
+  All forward-path and control-path communication remains bounded. Pressure is
+  surfaced on the relevant channel family instead of being hidden behind
+  unbounded buffering.
+
+- **Separation of orchestration and result traffic**
+  Runtime-control work and Ack/Nack unwinding travel on separate runtime paths,
+  so completion traffic does not share the same queue as timers, delayed data,
+  and receiver-drain coordination.
+
+- **Bounded-fair progress**
+  The runtime avoids absolute control priority. Control remains responsive, but
+  `pdata`, due timers, telemetry collection, and delayed-data resumption still
+  make progress under sustained control load.
+
+- **Receiver-first graceful drain**
+  Shutdown begins by stopping ingress rather than abruptly terminating the whole
+  DAG. This gives receivers a place to finish admitted work, unwind late
+  Ack/Nack outcomes, and then let downstream drain naturally.
+
+- **Explicit drain-time behavior**
+  During graceful shutdown, recurring timers are canceled, delayed data is
+  returned explicitly, and downstream shutdown is gated by `ReceiverDrained`.
+
+- **Invalid cross-pipeline topic topologies are rejected early**
+  Topic declaration and cycle validation happen before runtimes start, so the
+  engine does not need to discover topic feedback loops at runtime.
+
+These protections still live within explicit limits:
+
+- graceful shutdown is bounded by a deadline
+- fatal process failure bypasses graceful behavior
+- correctness depends on nodes honoring the runtime contracts and continuing to
+  poll while draining
+
+Those limits are intentional. The engine favors explicit contracts, bounded
+resource use, and predictable runtime behavior over hidden retries or
+unbounded buffering.

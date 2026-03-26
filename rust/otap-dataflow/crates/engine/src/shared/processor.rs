@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -230,7 +230,7 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the pipeline controller for context unwinding.
+    /// Send an Ack to the runtime control manager for context unwinding.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
@@ -238,7 +238,7 @@ impl<PData> EffectHandler<PData> {
         self.core.route_ack(ack).await
     }
 
-    /// Send a Nack to the pipeline controller for context unwinding.
+    /// Send a Nack to the runtime control manager for context unwinding.
     pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
@@ -260,16 +260,16 @@ impl<PData> EffectHandler<PData> {
         self.core.report_metrics(metrics)
     }
 
-    /// Sets the pipeline control message sender for this effect handler.
+    /// Sets the runtime control message sender for this effect handler.
     ///
     /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
     /// the engine wiring sets this automatically in `prepare_runtime`.
-    pub fn set_pipeline_ctrl_msg_sender(
+    pub fn set_runtime_ctrl_msg_sender(
         &mut self,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
     ) {
         self.core
-            .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+            .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_sender);
     }
 
     // More methods will be added in the future as needed.

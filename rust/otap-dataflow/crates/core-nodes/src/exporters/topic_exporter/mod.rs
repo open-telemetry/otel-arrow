@@ -16,7 +16,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterMessageChannel, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::topic::{
@@ -158,7 +158,7 @@ impl TopicExporter {
 impl Exporter<OtapPdata> for TopicExporter {
     async fn start(
         self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterMessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let TopicExporter {
@@ -368,7 +368,8 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::config::ExporterConfig;
     use otap_df_engine::control::{
-        Controllable, NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+        Controllable, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::local::message::LocalReceiver;
     use otap_df_engine::message::Receiver as PDataReceiver;
@@ -471,12 +472,18 @@ mod tests {
                 .expect("exporter input channel should be wired");
 
             let exporter_ctrl = exporter.control_sender();
-            let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) =
-                pipeline_ctrl_msg_channel::<OtapPdata>(32);
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
             let exporter_task = tokio::task::spawn_local(async move {
                 exporter
-                    .start(pipeline_ctrl_tx, metrics_reporter, Interests::empty())
+                    .start(
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
+                        metrics_reporter,
+                        Interests::empty(),
+                    )
                     .await
             });
 
@@ -512,11 +519,11 @@ mod tests {
 
             let delivered = tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
-                    let msg = pipeline_ctrl_rx
+                    let msg = pipeline_completion_rx
                         .recv()
                         .await
-                        .expect("pipeline control channel closed unexpectedly");
-                    if matches!(msg, PipelineControlMsg::DeliverAck { .. }) {
+                        .expect("pipeline-completion channel closed unexpectedly");
+                    if matches!(msg, PipelineCompletionMsg::DeliverAck { .. }) {
                         break msg;
                     }
                 }
@@ -524,7 +531,7 @@ mod tests {
             .await
             .expect("timed out waiting for upstream ack control");
             match delivered {
-                PipelineControlMsg::DeliverAck { ack } => {
+                PipelineCompletionMsg::DeliverAck { ack } => {
                     let (node_id, ack) =
                         next_ack(ack).expect("ack should route to exporter subscriber");
                     assert_eq!(node_id, 4242);

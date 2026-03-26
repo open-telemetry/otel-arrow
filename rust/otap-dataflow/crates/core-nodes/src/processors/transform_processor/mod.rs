@@ -38,7 +38,9 @@ use otap_df_otap::{
     accessory::slots::Key,
     pdata::{Context, OtapPdata},
 };
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::{
+    OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
+};
 use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -65,6 +67,7 @@ pub struct TransformProcessor {
     signal_scope: SignalScope,
     contexts: Contexts,
     metrics: MetricSet<Metrics>,
+    sanitize_results: bool,
 }
 
 /// Identifier for which signal types the transformation pipeline should be applied.
@@ -135,6 +138,7 @@ impl TransformProcessor {
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
+            sanitize_results: !config.skip_sanitize_result,
         })
     }
 
@@ -167,7 +171,7 @@ impl TransformProcessor {
 
         // access the batch that was the output of the call to pipeline.execute. This should
         // eventually be sent on the default output port
-        let default_otap_batch = match pipeline_result {
+        let mut default_otap_batch = match pipeline_result {
             Ok(otap_batch) => otap_batch,
             Err(e) => {
                 // clear any batches that are in the buffer to be routed, as the pipeline failed
@@ -176,6 +180,10 @@ impl TransformProcessor {
                 return Err(e);
             }
         };
+
+        if self.sanitize_results {
+            sanitize_otap_batch(&mut default_otap_batch);
+        }
 
         // TODO - there's probably some optimization we can make below where if there's only one
         // non-empty batch to be output, we don't need to change any contexts or subscriptions
@@ -237,7 +245,7 @@ impl TransformProcessor {
 
         // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
-        for (route_name, otap_batch) in router_impl.routed.drain(..) {
+        for (route_name, mut otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
             let port_name = effect_handler
                 .connected_ports()
@@ -250,6 +258,10 @@ impl TransformProcessor {
                     source_detail: format!("output port name {} not configured", route_name),
                 })?
                 .clone();
+
+            if self.sanitize_results {
+                sanitize_otap_batch(&mut otap_batch);
+            }
 
             // setup the pdata with the new outbound context
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
@@ -420,13 +432,20 @@ impl Processor<OtapPdata> for TransformProcessor {
 #[cfg(test)]
 mod test {
     use super::*;
+    use arrow::{
+        array::{DictionaryArray, StringArray},
+        compute::kernels::cmp::eq,
+        datatypes::UInt8Type,
+    };
     use otap_df_channel::mpsc::Receiver;
     use serde_json::json;
 
     use otap_df_config::{PortName, node::NodeUserConfig};
     use otap_df_engine::{
         context::ControllerContext,
-        control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
+        control::{
+            PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        },
         effect_handler::SourceTagging,
         local::message::LocalSender,
         message::Sender,
@@ -449,6 +468,7 @@ mod test {
                 trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
         },
+        schema::consts,
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
@@ -603,11 +623,21 @@ mod test {
                     .map(OtapPdata::payload)
                     .map(OtapArrowRecords::try_from)
                     .map(Result::unwrap);
-                let result = out
-                    .into_iter()
-                    .next()
-                    .map(|otap_batch| otap_to_otlp(&otap_batch))
-                    .expect("one result");
+                let otap_batch = out.into_iter().next().unwrap();
+
+                // double check the result has been "sanitized"
+                let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+                let severity_text_col = logs_batch
+                    .column_by_name(consts::SEVERITY_TEXT)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .unwrap();
+                let eq_filtered_val =
+                    eq(severity_text_col.values(), &StringArray::new_scalar("INFO")).unwrap();
+                assert_eq!(eq_filtered_val.true_count(), 0);
+
+                let result = otap_to_otlp(&otap_batch);
 
                 match result {
                     OtlpProtoMessage::Logs(logs_data) => {
@@ -912,7 +942,7 @@ mod test {
                 let default_result = out.into_iter().next().expect("one result");
                 assert_logs_records_equal(default_result, other_log_record);
 
-                // check error log record got routed to correct out pot
+                // check error log record got routed to correct out port
                 let mut routed = Vec::new();
                 while let Ok(msg) = error_port_rx.try_recv() {
                     routed.push(msg);
@@ -921,12 +951,26 @@ mod test {
                 let (_context, payload) = routed.pop().unwrap().into_parts();
                 match payload {
                     OtapPayload::OtapArrowRecords(result) => {
+                        // ensure the routed record was "sanitized"
+                        let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
+                        let severity_text_col = logs_batch
+                            .column_by_name(consts::SEVERITY_TEXT)
+                            .unwrap()
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .unwrap();
+                        let eq_filtered_val =
+                            eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
+                                .unwrap();
+                        assert_eq!(eq_filtered_val.true_count(), 0);
+
+                        // ensure the routed record equals what was expected
                         assert_logs_records_equal(result, error_log_record);
                     }
                     _ => panic!("unexpected payload type"),
                 }
 
-                // check error log record got routed to correct out pot
+                // check info log record got routed to correct out port
                 let mut routed = Vec::new();
                 while let Ok(msg) = info_port_rx.try_recv() {
                     routed.push(msg);
@@ -1143,8 +1187,11 @@ mod test {
                 let (outbound_context2, _) = error_port_rx.recv().await.unwrap().into_parts();
                 let (outbound_context3, _) = info_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // now we'll Ack the outbound messages and ensure that we eventually emit an ack
                 // for the inbound message
@@ -1152,21 +1199,21 @@ mod test {
                     .await
                     .unwrap();
                 // no ack b/c not all outbound are ack'd
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 send_ack(&mut ctx, outbound_context2, SignalType::Logs)
                     .await
                     .unwrap();
                 // still no ack b/c not all outbound are ack'd
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 send_ack(&mut ctx, outbound_context3, SignalType::Logs)
                     .await
                     .unwrap();
                 // now we've ack'd all three outbound, so it should emit an Ack message
-                let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let ack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match ack_msg {
-                    PipelineControlMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
                         let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                     }
@@ -1194,6 +1241,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1220,15 +1273,18 @@ mod test {
                 // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // simulate an Ack coming from the message that got sent on the default output port
                 send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 // simulate a Nack coming from the message that got routed
                 send_nack(
@@ -1242,9 +1298,9 @@ mod test {
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
                 // routed messages was Nack'd
-                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let nack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
@@ -1273,6 +1329,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1299,8 +1361,11 @@ mod test {
                 // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // simulate an Nack coming from the message that got sent on the default output port
                 send_nack(
@@ -1312,7 +1377,7 @@ mod test {
                 .await
                 .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
-                assert!(pipeline_ctrl_rx.is_empty());
+                assert!(pipeline_completion_rx.is_empty());
 
                 // simulate a Ack coming from the message that got routed
                 send_ack(&mut ctx, outbound_ctx_routed, SignalType::Logs)
@@ -1321,9 +1386,9 @@ mod test {
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
                 // messages sent on the default output port were Nack'd
-                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                let nack_msg = pipeline_completion_rx.recv().await.unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
@@ -1358,6 +1423,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1389,8 +1460,11 @@ mod test {
                 // insufficient outbound slots
                 assert!(error_port_rx.is_empty());
 
-                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // because there's only one outbound message, if this message gets Ack'd, we should
                 // then Nack the inbound batch b/c some part of it was not processed
@@ -1398,9 +1472,9 @@ mod test {
                     .await
                     .unwrap();
 
-                let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
+                let nack_msg = pipeline_completion_rx.try_recv().unwrap();
                 match nack_msg {
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
@@ -1436,6 +1510,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1524,6 +1604,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
                 let log_records = create_log_records(&["ERROR", "INFO"]);
                 let input = to_otap_logs(log_records);
 
@@ -1593,6 +1679,103 @@ mod test {
                     "Expected inbound slots error, got: {}",
                     err
                 );
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_skip_sanitize() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            | where severity_text != "DEBUG"
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "skip_sanitize_result": true
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let other_log_record = LogRecord::build().severity_text("DEBUG").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                error_log_record.clone(),
+                                info_log_record.clone(),
+                                other_log_record.clone(),
+                            ],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // check anything not routed get outputted to the default port
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let default_result = out.into_iter().next().expect("one result");
+                // check we skipped the sanitization on the default output
+                // check sanitization was skipped on routed record
+                let logs_batch = default_result.get(ArrowPayloadType::Logs).unwrap();
+                let severity_text_col = logs_batch
+                    .column_by_name(consts::SEVERITY_TEXT)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .unwrap();
+                let eq_filtered_val = eq(
+                    severity_text_col.values(),
+                    &StringArray::new_scalar("DEBUG"),
+                )
+                .unwrap();
+                assert_eq!(eq_filtered_val.true_count(), 1);
+
+                // check error log record got routed to correct out port
+                let mut routed = Vec::new();
+                while let Ok(msg) = error_port_rx.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                let (_context, payload) = routed.pop().unwrap().into_parts();
+                match payload {
+                    OtapPayload::OtapArrowRecords(result) => {
+                        // check sanitization was skipped on routed record
+                        let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
+                        let severity_text_col = logs_batch
+                            .column_by_name(consts::SEVERITY_TEXT)
+                            .unwrap()
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .unwrap();
+                        let eq_filtered_val =
+                            eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
+                                .unwrap();
+                        assert_eq!(eq_filtered_val.true_count(), 1);
+                    }
+                    _ => panic!("unexpected payload type"),
+                }
             })
             .validate(|_ctx| async move {})
     }

@@ -33,3 +33,9 @@ pub mod filter_processor;
 
 /// Signal type router processor.
 pub mod signal_type_router;
+
+/// Log sampling processor.
+pub mod log_sampling_processor;
+
+/// Temporal reaggregation processor.
+pub mod temporal_reaggregation_processor;

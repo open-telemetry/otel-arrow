@@ -25,7 +25,9 @@ use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
 use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{
+    RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -469,9 +471,11 @@ where
         )
         .expect("failed to build runtime pipeline");
 
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-    let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
+    let (runtime_ctrl_tx, runtime_ctrl_rx) =
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+    let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
 
@@ -517,7 +521,7 @@ where
         let deadline = Instant::now() + shutdown_deadline;
         // Try to send shutdown request. If the channel is closed, the pipeline
         // has already terminated (e.g., data generator finished), which is fine.
-        let _ = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
+        let _ = runtime_ctrl_tx_for_shutdown.try_send(RuntimeControlMsg::Shutdown {
             deadline,
             reason: "test shutdown".to_owned(),
         });
@@ -531,8 +535,11 @@ where
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
-            pipeline_ctrl_tx,
-            pipeline_ctrl_rx,
+            Duration::from_secs(1),
+            runtime_ctrl_tx,
+            runtime_ctrl_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
         )
     };
 
@@ -750,9 +757,11 @@ where
         )
         .expect("failed to build runtime pipeline");
 
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-    let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
+    let (runtime_ctrl_tx, runtime_ctrl_rx) =
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+    let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
 
@@ -803,7 +812,7 @@ where
         let snapshot = capture_durable_buffer_metrics(&capture_registry);
 
         let deadline = Instant::now() + shutdown_deadline;
-        let _ = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
+        let _ = runtime_ctrl_tx_for_shutdown.try_send(RuntimeControlMsg::Shutdown {
             deadline,
             reason: "test shutdown (metrics capture)".to_owned(),
         });
@@ -819,8 +828,11 @@ where
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
-            pipeline_ctrl_tx,
-            pipeline_ctrl_rx,
+            Duration::from_secs(1),
+            runtime_ctrl_tx,
+            runtime_ctrl_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
         )
     };
 

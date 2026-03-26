@@ -1123,6 +1123,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 }
                 NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
@@ -1366,10 +1367,12 @@ mod tests {
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{
-        AckMsg, NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+        NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
     };
     use otap_df_engine::message::Message;
     use otap_df_engine::node::Node;
+    use otap_df_engine::testing::liveness::{next_completion, next_runtime_control};
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::OtapPdata;
@@ -1683,8 +1686,11 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+                let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 // Track outputs by event position
                 let mut event_outputs: Vec<EventOutputs> = vec![
@@ -1795,12 +1801,23 @@ mod tests {
 
                         // Drain control channel for DelayData requests and acks/nacks
                         loop {
-                            match pipeline_rx.try_recv() {
-                                Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
+                            match runtime_ctrl_rx.try_recv() {
+                                Ok(RuntimeControlMsg::DelayData { when, data, .. }) => {
                                     looped += 1;
                                     pending_delay = Some((when, data));
                                 }
-                                Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
+                                Ok(_) => {
+                                    panic!("unexpected case");
+                                }
+                                Err(_) => {
+                                    break;
+                                }
+                            }
+                        }
+
+                        loop {
+                            match pipeline_completion_rx.try_recv() {
+                                Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
                                     looped += 1;
                                     if let Some((_node_id, ack)) = next_ack(ack) {
                                         let calldata: TestCallData =
@@ -1808,7 +1825,7 @@ mod tests {
                                         received_acks.push(calldata);
                                     }
                                 }
-                                Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
+                                Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
                                     looped += 1;
                                     if let Some((_node_id, nack)) = next_nack(nack) {
                                         let calldata: TestCallData = nack
@@ -1819,9 +1836,6 @@ mod tests {
                                             .expect("calldata");
                                         received_nacks.push(calldata);
                                     }
-                                }
-                                Ok(_) => {
-                                    panic!("unexpected case");
                                 }
                                 Err(_) => {
                                     break;
@@ -1994,6 +2008,268 @@ mod tests {
     fn test_timer_flush_logs_with_ack() {
         let mut datagen = DataGenerator::new(1);
         test_timer_flush(datagen.generate_logs().into(), true);
+    }
+
+    // The processor schedules one-shot DelayedData wakeups without cancelling older
+    // ones. This test proves that a stale wakeup is ignored and that the current
+    // wakeup still flushes the buffered input later.
+    #[test]
+    fn test_timer_flush_ignores_stale_delayed_wakeup() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "50ms"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let first = datagen.generate_logs();
+                let second = datagen.generate_logs();
+                let third = datagen.generate_logs();
+
+                let rec = encode_logs_otap_batch(&first).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process first input");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "first input should remain buffered"
+                );
+
+                let RuntimeControlMsg::DelayData {
+                    when: stale_when,
+                    data: stale_data,
+                    ..
+                } = next_runtime_control(
+                    &mut runtime_ctrl_rx,
+                    Duration::from_secs(1),
+                    "initial batch timer wakeup",
+                )
+                .await
+                else {
+                    panic!("expected initial DelayData");
+                };
+
+                // The second input takes the buffer over the min size, so the processor flushes
+                // before the original timer fires.
+                let rec = encode_logs_otap_batch(&second).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process second input");
+                let first_flush = ctx.drain_pdata().await;
+                assert_eq!(first_flush.len(), 1, "size flush should emit one batch");
+
+                let rec = encode_logs_otap_batch(&third).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process third input");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "new post-flush batch should remain buffered"
+                );
+
+                let RuntimeControlMsg::DelayData {
+                    when: current_when,
+                    data: current_data,
+                    ..
+                } = next_runtime_control(
+                    &mut runtime_ctrl_rx,
+                    Duration::from_secs(1),
+                    "replacement batch timer wakeup",
+                )
+                .await
+                else {
+                    panic!("expected replacement DelayData");
+                };
+
+                ctx.process(Message::Control(NodeControlMsg::DelayedData {
+                    when: stale_when,
+                    data: stale_data,
+                }))
+                .await
+                .expect("process stale delayed data");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "stale wakeup should be ignored"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::DelayedData {
+                    when: current_when,
+                    data: current_data,
+                }))
+                .await
+                .expect("process current delayed data");
+                let final_flush = ctx.drain_pdata().await;
+                assert_eq!(
+                    final_flush.len(),
+                    1,
+                    "current wakeup should flush buffered input"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 9);
+            });
+    }
+
+    // A partial batch that never reached the size threshold must still flush on
+    // Shutdown, and its downstream Ack must release the upstream completion state
+    // rather than leaving correlated requests stuck.
+    #[test]
+    fn test_shutdown_flushes_buffered_input_and_releases_completion() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 10,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let input = datagen.generate_logs();
+                let rec = encode_logs_otap_batch(&input).expect("encode logs");
+                let pdata = OtapPdata::new_default(rec.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    17,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "input should remain buffered before shutdown"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".into(),
+                }))
+                .await
+                .expect("process shutdown");
+
+                let mut outputs = ctx.drain_pdata().await;
+                assert_eq!(outputs.len(), 1, "shutdown should flush buffered batch");
+                let output = outputs.remove(0);
+
+                let (_, ack) = next_ack(AckMsg::new(output)).expect("expected ack subscriber");
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    .await
+                    .expect("process ack");
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_secs(1),
+                    "batch processor upstream completion after shutdown flush",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                        assert_eq!(node_id, 17);
+                        let calldata: TestCallData =
+                            ack.unwind.route.calldata.try_into().expect("calldata");
+                        assert_eq!(TestCallData::default(), calldata);
+                    }
+                    other => panic!("expected upstream ack after shutdown flush, got {other:?}"),
+                }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+            });
+    }
+
+    // Subscribed requests consume bounded inbound slots until downstream outcomes
+    // release them. Hitting the slot cap should return an explicit Nack instead
+    // of stalling the event loop or surfacing as an engine error.
+    #[test]
+    fn test_inbound_slot_exhaustion_surfaces_error() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 10,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s",
+            "inbound_request_limit": 1
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                for request_index in 0..2 {
+                    let input = datagen.generate_logs();
+                    let rec = encode_logs_otap_batch(&input).expect("encode logs");
+                    let pdata = OtapPdata::new_default(rec.into()).test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::new_with(request_index, 0).into(),
+                        11,
+                    );
+
+                    let result = ctx.process(Message::PData(pdata)).await;
+                    if request_index == 0 {
+                        result.expect("first subscribed request should be accepted");
+                    } else {
+                        result.expect("second request should be nacked, not fail the processor");
+                    }
+                }
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_millis(50),
+                    "expected completion nack",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        assert!(
+                            nack.reason.contains("inbound routes exhausted"),
+                            "unexpected nack reason: {}",
+                            nack.reason
+                        );
+                    }
+                    PipelineCompletionMsg::DeliverAck { .. } => {
+                        panic!("expected nack when inbound slots are exhausted")
+                    }
+                }
+            })
+            .validate(|_| async move {});
     }
 
     /// Generic test for splitting oversize batches
@@ -2415,8 +2691,8 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+                let (pipeline_tx, mut pipeline_rx) = runtime_ctrl_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(pipeline_tx);
 
                 // Create test data
                 let mut datagen = DataGenerator::new(1);
@@ -2440,7 +2716,7 @@ mod tests {
                     .expect("process otlp");
 
                 // Drain control channel for DelayData
-                while let Ok(PipelineControlMsg::DelayData { when, data, .. }) =
+                while let Ok(RuntimeControlMsg::DelayData { when, data, .. }) =
                     pipeline_rx.try_recv()
                 {
                     pending_delays.push((when, data));
@@ -2509,8 +2785,9 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut datagen = DataGenerator::new(1);
                 let logs1 = datagen.generate_logs();
@@ -2542,8 +2819,8 @@ mod tests {
                     .expect("second input succeeds (nacked, not engine error)");
 
                 let mut nack_count = 0;
-                while let Ok(msg) = pipeline_rx.try_recv() {
-                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                while let Ok(msg) = pipeline_completion_rx.try_recv() {
+                    if let PipelineCompletionMsg::DeliverNack { nack } = msg {
                         assert!(nack.reason.contains("inbound routes exhausted"));
                         nack_count += 1;
                     }
@@ -2571,8 +2848,9 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
-                let (_pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(_pipeline_tx);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut datagen = DataGenerator::new(1);
                 let logs1 = datagen.generate_logs();
@@ -2592,8 +2870,8 @@ mod tests {
                     .expect("process succeeds (nack, not engine error)");
 
                 let mut nack_count = 0;
-                while let Ok(msg) = pipeline_rx.try_recv() {
-                    if let PipelineControlMsg::DeliverNack { nack } = msg {
+                while let Ok(msg) = pipeline_completion_rx.try_recv() {
+                    if let PipelineCompletionMsg::DeliverNack { nack } = msg {
                         assert!(nack.reason.contains("outbound routes exhausted"));
                         nack_count += 1;
                     }

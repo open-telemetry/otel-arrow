@@ -33,7 +33,7 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
-use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -115,11 +115,11 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
-        core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+        core.set_runtime_ctrl_msg_sender(runtime_ctrl_msg_sender);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler { core, router }
     }
@@ -244,6 +244,11 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
+    /// Notifies the pipeline runtime that this receiver has completed ingress drain.
+    pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
+        self.core.notify_receiver_drained().await
+    }
+
     /// Reports metrics collected by the receiver.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
@@ -260,7 +265,7 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::control::pipeline_ctrl_msg_channel;
+    use crate::control::runtime_ctrl_msg_channel;
     use crate::shared::message::SharedSender;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
@@ -273,7 +278,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("recv"),
@@ -294,7 +299,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("recv"),
@@ -323,7 +328,7 @@ mod tests {
         let _ = senders.insert("a".into(), SharedSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -341,7 +346,7 @@ mod tests {
         let _ = senders.insert("a".into(), SharedSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -358,7 +363,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
@@ -378,7 +383,7 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
-        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
