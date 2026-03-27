@@ -386,7 +386,9 @@ at the end.
 - **Description**: Human-readable description of the field's purpose
 
 Note that a column is nullable if and only if it is not required. See
-[Section 4.2](#42-otap-adaptive-schemas).
+[Section 4.2](#42-otap-adaptive-schemas). A struct column may be nullable and
+have required fields. The required fields must be provided only if the row is
+not null.
 
 Note: For Columns which have a Struct type, there is one entry in the table
 representing the definition of the struct Column e.g. `resource`. Then there are
@@ -478,8 +480,8 @@ properties for the `resource` column's `id` field.
 | ------------------------ | ------------------- | ------------------- | -------- | --------------------------------------------------- | -------- | --------------------------------------------------- |
 | id                       | UInt32              | -                   | No       | [DELTA](#642-delta-encoding)                        | encoding | Link identifier (primary key)                       |
 | parent_id                | UInt16              | -                   | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#521-spans-root) `id` column |
-| trace_id                 | FixedSizeBinary(16) | -                   | No       | -                                                   | -        | Linked trace `id`                                   |
-| span_id                  | FixedSizeBinary(8)  | -                   | No       | -                                                   | -        | Linked span `id`                                    |
+| trace_id                 | FixedSizeBinary(16) | -                   | Yes      | -                                                   | -        | Linked trace `id`                                   |
+| span_id                  | FixedSizeBinary(8)  | -                   | Yes      | -                                                   | -        | Linked span `id`                                    |
 | trace_state              | Utf8                | -                   | No       | -                                                   | -        | Linked trace state                                  |
 | dropped_attributes_count | UInt32              | -                   | No       | -                                                   | -        | Number of dropped link attributes                   |
 | flags | UInt32              | UInt32                   | No       | -                                                   | -        | Span flags                   |
