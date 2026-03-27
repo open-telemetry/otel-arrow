@@ -3,23 +3,13 @@
 
 //! Semantic identity types for metrics.
 //!
-//! This module provides identity types that can determine whether two
+//! This module provides identity types which determine whether two
 //! resources, scopes, metrics, or data-point streams refer to the same
-//! logical entity. The identity hierarchy mirrors the OTLP data model:
+//! logical entity for the purpose of identifying metrics streams.
 //!
-//! ```text
-//! ResourceId   ── hash of resource attributes
-//! └── ScopeId  ── ResourceId + scope name/version/attributes
-//!     └── MetricId  ── ScopeId + metric name/unit/type/flags
-//!         └── StreamId  ── MetricId + data-point attributes
-//! ```
-//!
-//! # Zero-allocation lookups
-//!
-//! Types with string fields use [`Cow<'a, [u8]>`](std::borrow::Cow) so that
-//! they can be constructed cheaply from borrowed view data (for HashMap
-//! lookups) and then converted to owned (`'static`) instances via
-//! [`into_owned()`] when they need to be stored.
+//! In general these type use Cow to allow creating a 0 copy id from a view which
+//! can be used to index into a [hashbrown::HashMap] with a restrictive 'static
+//! lifetime thanks to the [Equivalent] trait.
 
 use std::borrow::Cow;
 
@@ -32,17 +22,10 @@ use otap_df_pdata_views::views::metrics::{
     MetricView, SumView,
 };
 
-// ---------------------------------------------------------------------------
-// View bridge functions
-// ---------------------------------------------------------------------------
-
-/// Compute a [`ResourceId`] from a pre-computed attribute hash.
 pub fn resource_id_of(attrs: AttributeHash) -> ResourceId {
     ResourceId { attrs }
 }
 
-/// Compute a [`ScopeId`] from a [`ResourceId`], a [`InstrumentationScopeView`],
-/// and a pre-computed attribute hash.
 pub fn scope_id_of<'a, S: InstrumentationScopeView>(
     resource_id: ResourceId,
     scope: &'a S,
@@ -56,12 +39,7 @@ pub fn scope_id_of<'a, S: InstrumentationScopeView>(
     }
 }
 
-/// Compute a [`MetricId`] from a [`ScopeId`] and a [`MetricView`].
-///
-/// Returns `None` if the metric has no data (nothing to aggregate).
-///
-/// The metric's data type, monotonicity, and aggregation temporality are
-/// extracted from the metric's data view.
+// Helper for computing metric id from a view.
 pub fn metric_id_of<'a, M: MetricView>(
     scope_id: ScopeId<'a>,
     metric: &'a M,
@@ -107,10 +85,6 @@ pub fn stream_id_of<'a>(metric_id: MetricId<'a>, attrs: AttributeHash) -> Stream
     }
 }
 
-// ---------------------------------------------------------------------------
-// Identity types
-// ---------------------------------------------------------------------------
-
 /// Identity of a data-point stream within a metric.
 ///
 /// A stream is a unique time series identified by the parent [`MetricId`]
@@ -139,6 +113,11 @@ impl<'a> StreamId<'a> {
 /// Incorporates the parent [`ScopeId`], the metric name, unit, data type,
 /// monotonicity flag, and aggregation temporality. The enum-typed fields
 /// are stored as `u8` to allow deriving `Hash`.
+///
+/// TODO: Consider if we want to ignore/drop/reject metrics which have the same
+/// name, but differ in any other field. Spec seems to think that consumers can
+/// do this:
+/// https://opentelemetry.io/docs/specs/otel/metrics/data-model/#opentelemetry-protocol-data-model-consumer-recommendations
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MetricId<'a> {
     pub(super) scope: ScopeId<'a>,
@@ -193,20 +172,18 @@ impl<'a> ScopeId<'a> {
 
 /// Identity of a Resource.
 ///
-/// Two resources are considered identical if and only if they have the same
-/// attribute hash. This is the root of the identity hierarchy.
+/// Two resources are considered identical if they have the same attributes.
+/// This is the root of the identity hierarchy.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId {
     pub(super) attrs: AttributeHash,
 }
 
-// ---------------------------------------------------------------------------
 // hashbrown::Equivalent wrappers
 //
 // We can't impl Equivalent<XxxId<'static>> for XxxId<'a> directly because it
 // conflicts with the blanket impl when 'a = 'static. Instead we use newtype
 // wrappers that hashbrown::HashMap::get accepts as lookup keys.
-// ---------------------------------------------------------------------------
 
 /// Wrapper for looking up a borrowed [`ScopeId`] in a
 /// `HashMap<ScopeId<'static>, _>`.
@@ -256,28 +233,16 @@ impl<'a> std::hash::Hash for StreamIdRef<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AttributeHash
-// ---------------------------------------------------------------------------
-
 /// A 128-bit hash of a set of key-value attributes.
 ///
 /// Computed by sorting attributes by key, then hashing each key-value pair
-/// with type-discriminator prefixes using xxh3_64 (two rounds to produce
-/// 128 bits). This follows the same algorithm as the Go collector's
-/// `pdatautil.MapHash`.
-///
-/// Attribute order does not affect the hash -- the keys are sorted before
-/// hashing.
+/// with type-discriminator prefixes using xxh3_128.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AttributeHash([u8; 16]);
 
 /// Reusable byte buffer for computing [`AttributeHash`] values without
 /// repeated heap allocations. The buffer is cleared and reused on each
-/// call to [`AttributeHash::of`].
-/// Reusable buffer for computing [`AttributeHash`] values without repeated
-/// heap allocations. Both the serialization buffer (`buf`) and the entries
-/// vec are cleared and reused on each call to [`AttributeHash::of`].
+/// call.
 pub struct AttributeHashBuffer<A> {
     buf: Vec<u8>,
     entries: Vec<A>,
@@ -306,13 +271,6 @@ impl<A> AttributeHashBuffer<A> {
             buf: self.buf,
             entries: self.entries.into_iter().map(|_| unreachable!()).collect(),
         }
-    }
-
-    /// Returns the raw pointer and capacity of the entries allocation.
-    /// Used in tests to verify that `recycle` reuses the allocation.
-    #[cfg(test)]
-    fn entries_alloc(&self) -> (usize, usize) {
-        (self.entries.as_ptr() as usize, self.entries.capacity())
     }
 }
 
@@ -411,8 +369,7 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
         ValueType::Empty => {
             buf.push(HashTag::Empty as u8);
         }
-        // Complex types (Array, KeyValueList) are not yet supported by the
-        // OTAP view layer. If encountered, treat as empty to avoid panics.
+        // FIXME: Views don't support these types yet either.
         ValueType::Array | ValueType::KeyValueList => {
             buf.push(HashTag::Empty as u8);
         }

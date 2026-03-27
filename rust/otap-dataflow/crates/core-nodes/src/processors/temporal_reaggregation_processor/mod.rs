@@ -95,13 +95,13 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 self.ensure_timer_started(effect_handler).await?;
 
                 match pdata.signal_type() {
+                    // TODO: Support for both view types
                     SignalType::Metrics => {
                         if let OtapPayload::OtapArrowRecords(ref records) = *pdata.payload_ref() {
                             if let Ok(view) = OtapMetricsView::try_from(records) {
                                 self.accumulator.ingest(view);
                             }
                         }
-                        // TODO (Stage 3b): Check stream overflow and flush if needed.
                     }
                     // Non-metrics signals pass through unchanged.
                     SignalType::Logs | SignalType::Traces => {
