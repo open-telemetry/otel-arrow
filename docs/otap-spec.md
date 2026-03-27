@@ -414,9 +414,9 @@ properties for the `resource` column's `id` field.
 | severity_number                   | Int32                 | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Numeric severity level                            |
 | severity_text                     | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Textual severity level                            |
 | event_name                        | Utf8                  | Dict(u8), Dict(u16) | Yes      | No       | -                            | -        | Event name                                        |
-| body                              | Struct                | -                   | Yes      | Yes      | -                            | -        | Log body                                          |
+| body                              | Struct                | -                   | Yes      | No      | -                            | -        | Log body                                          |
 | body.type                         | UInt8                 | -                   | No       | Yes      | -                            | -        | Body value type (same encoding as attribute type) |
-| body.str                          | Utf8                  | Dict(u16)           | Yes      | Yes      | -                            | -        | String body (may be empty)                        |
+| body.str                          | Utf8                  | Dict(u16)           | Yes      | No      | -                            | -        | String body (may be empty)                        |
 | body.int                          | Int64                 | Dict(u16)           | Yes      | No       | -                            | -        | Integer body (when body.type=3)                   |
 | body.double                       | Float64               | -                   | Yes      | No       | -                            | -        | Double body (when body.type=4)                    |
 | body.bool                         | Boolean               | -                   | Yes      | No       | -                            | -        | Boolean body (when body.type=2)                   |
@@ -477,6 +477,7 @@ properties for the `resource` column's `id` field.
 | span_id                  | FixedSizeBinary(8)  | -                   | Yes      | No       | -                                                   | -        | Linked span `id`                                    |
 | trace_state              | Utf8                | -                   | Yes      | No       | -                                                   | -        | Linked trace state                                  |
 | dropped_attributes_count | UInt32              | -                   | Yes      | No       | -                                                   | -        | Number of dropped link attributes                   |
+| flags | UInt32              | UInt32                   | Yes      | No       | -                                                   | -        | Span flags                   |
 
 ### 5.3 Metrics
 
@@ -508,10 +509,10 @@ properties for the `resource` column's `id` field.
 | -------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
 | id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
 | parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Start time in Unix nanoseconds                |
+| start_time_unix_nano | Timestamp(Nanosecond) | -                   | Yes       | No      | -                            | -        | Start time in Unix nanoseconds                |
 | time_unix_nano       | Timestamp(Nanosecond) | -                   | No       | Yes      | -                            | -        | Timestamp in Unix nanoseconds                 |
-| int_value            | Int64                 | -                   | No       | Yes      | -                            | -        | Integer value                                 |
-| double_value         | Float64               | -                   | No       | Yes      | -                            | -        | Double value                                  |
+| int_value            | Int64                 | -                   | Yes       | No      | -                            | -        | Integer value                                 |
+| double_value         | Float64               | -                   | Yes       | No      | -                            | -        | Double value                                  |
 | flags                | UInt32                | -                   | Yes      | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.3 SUMMARY_DATA_POINTS
@@ -521,7 +522,7 @@ properties for the `resource` column's `id` field.
 | id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
 | parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Start time in Unix nanoseconds                |
-| time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| time_unix_nano       | Timestamp(Nanosecond) | -                   | No       | Yes       | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
 | sum                  | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
 | quantile             | List(Struct)          | -                   | Yes      | No       | -                            | -        | List of quantil values                        |
@@ -536,8 +537,8 @@ properties for the `resource` column's `id` field.
 | -------------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------- | -------- | --------------------------------------------- |
 | id                   | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
 | parent_id            | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
-| start_time_unix_nano | Timestamp(Nanosecond) | -                   | No       | No       | -                            | -        | Start time in Unix nanoseconds                |
-| time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| start_time_unix_nano | Timestamp(Nanosecond) | -                   | Yes       | No       | -                            | -        | Start time in Unix nanoseconds                |
+| time_unix_nano       | Timestamp(Nanosecond) | -                   | No      | Yes       | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
 | sum                  | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
 | bucket_counts        | List(UInt64)          | -                   | Yes      | No       | -                            | -        | Count per bucket                              |
@@ -553,7 +554,7 @@ properties for the `resource` column's `id` field.
 | id                     | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding) | encoding | Data point identifier (primary key)           |
 | parent_id              | UInt16                | -                   | No       | Yes      | [DELTA](#642-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano   | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Start time in Unix nanoseconds                |
-| time_unix_nano         | Timestamp(Nanosecond) | -                   | Yes      | No       | -                            | -        | Timestamp in Unix nanoseconds                 |
+| time_unix_nano         | Timestamp(Nanosecond) | -                   | No      | Yes       | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                  | UInt64                | -                   | Yes      | No       | -                            | -        | Count of observations                         |
 | sum                    | Float64               | -                   | Yes      | No       | -                            | -        | Sum of observations                           |
 | scale                  | Int32                 | -                   | Yes      | No       | -                            | -        | Exponential histogram scale                   |
@@ -576,7 +577,7 @@ Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPL
 | -------------- | --------------------- | ------------------- | -------- | -------- | ---------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
 | id             | UInt32                | -                   | Yes      | No       | [DELTA](#642-delta-encoding)                                           | encoding | Exemplar identifier (primary key)                            |
 | parent_id      | UInt32                | Dict(u8), Dict(u16) | No       | Yes      | [QUASI-DELTA](#643-quasi-delta-encoding) (`int_value`, `double_value`) | encoding | Foreign key to the corresponding \*\_DATA_POINTS `id` column |
-| time_unix_nano | Timestamp(Nanosecond) | -                   | Yes      | No       | -                                                                      | -        | Timestamp in Unix nanoseconds                                |
+| time_unix_nano | Timestamp(Nanosecond) | -                   | No      | Yes       | -                                                                      | -        | Timestamp in Unix nanoseconds                                |
 | int_value      | Int64                 | Dict(u8), Dict(u16) | Yes      | No       | -                                                                      | -        | Integer exemplar value                                       |
 | double_value   | Float64               | -                   | Yes      | No       | -                                                                      | -        | Double exemplar value                                        |
 | span_id        | FixedSizeBinary(8)    | Dict(u8), Dict(u16) | Yes      | No       | -                                                                      | -        | Associated span id                                           |

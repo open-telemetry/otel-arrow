@@ -317,7 +317,7 @@ mod logs {
             Field {
                 name: ATTRIBUTE_TYPE,
                 data_type: DataType::Simple(UInt8),
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_STR,
@@ -383,12 +383,12 @@ mod logs {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: OBSERVED_TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: BODY,
@@ -531,7 +531,7 @@ mod spans {
             Field {
                 name: START_TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: DURATION_TIME_UNIX_NANO,
@@ -678,7 +678,7 @@ mod span_events {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: ID,
