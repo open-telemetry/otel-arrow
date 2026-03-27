@@ -29,6 +29,30 @@ pub struct LogsConfig {
     /// Logging provider configuration.
     #[serde(default = "default_providers")]
     pub providers: LoggingProviders,
+
+    /// Internal log tap configuration.
+    #[serde(default)]
+    pub tap: InternalLogTapConfig,
+}
+
+/// Configuration for the internal log tap used by admin/MCP-style consumers.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InternalLogTapConfig {
+    /// Enable the internal in-memory log tap.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Capacity of the non-blocking ingestion channel.
+    #[serde(default = "default_tap_ingest_channel_size")]
+    pub ingest_channel_size: usize,
+
+    /// Maximum number of retained log entries.
+    #[serde(default = "default_tap_max_entries")]
+    pub max_entries: usize,
+
+    /// Maximum retained bytes across all retained log entries.
+    #[serde(default = "default_tap_max_bytes")]
+    pub max_bytes: usize,
 }
 
 /// Log level for dataflow engine logs.
@@ -172,11 +196,35 @@ const fn default_providers() -> LoggingProviders {
     }
 }
 
+const fn default_tap_ingest_channel_size() -> usize {
+    256
+}
+
+const fn default_tap_max_entries() -> usize {
+    2048
+}
+
+const fn default_tap_max_bytes() -> usize {
+    16 * 1024 * 1024
+}
+
+impl Default for InternalLogTapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ingest_channel_size: default_tap_ingest_channel_size(),
+            max_entries: default_tap_max_entries(),
+            max_bytes: default_tap_max_bytes(),
+        }
+    }
+}
+
 impl Default for LogsConfig {
     fn default() -> Self {
         Self {
             level: LogLevel::default(),
             providers: default_providers(),
+            tap: InternalLogTapConfig::default(),
         }
     }
 }
@@ -204,6 +252,21 @@ impl LogsConfig {
                 error: "admin provider cannot be 'console_async' (would create feedback loop); \
                         use 'console_direct' or another mode instead"
                     .into(),
+            });
+        }
+        if self.tap.enabled && self.tap.ingest_channel_size == 0 {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.tap.ingest_channel_size must be greater than zero".into(),
+            });
+        }
+        if self.tap.enabled && self.tap.max_entries == 0 {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.tap.max_entries must be greater than zero".into(),
+            });
+        }
+        if self.tap.enabled && self.tap.max_bytes == 0 {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.tap.max_bytes must be greater than zero".into(),
             });
         }
 
@@ -269,6 +332,10 @@ mod tests {
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
         assert_eq!(config.providers.admin, ProviderMode::ConsoleDirect);
+        assert!(!config.tap.enabled);
+        assert_eq!(config.tap.ingest_channel_size, 256);
+        assert_eq!(config.tap.max_entries, 2048);
+        assert_eq!(config.tap.max_bytes, 16 * 1024 * 1024);
 
         // Serde defaults should match Rust Default
         let parsed = parse("{}");
@@ -277,6 +344,13 @@ mod tests {
         assert_eq!(parsed.providers.engine, config.providers.engine);
         assert_eq!(parsed.providers.internal, config.providers.internal);
         assert_eq!(parsed.providers.admin, config.providers.admin);
+        assert_eq!(parsed.tap.enabled, config.tap.enabled);
+        assert_eq!(
+            parsed.tap.ingest_channel_size,
+            config.tap.ingest_channel_size
+        );
+        assert_eq!(parsed.tap.max_entries, config.tap.max_entries);
+        assert_eq!(parsed.tap.max_bytes, config.tap.max_bytes);
     }
 
     #[test]
@@ -351,6 +425,23 @@ mod tests {
             };
             assert!(config.validate().is_ok());
         }
+    }
+
+    #[test]
+    fn test_validate_tap_requires_positive_limits() {
+        let mut config = LogsConfig::default();
+        config.tap.enabled = true;
+
+        config.tap.ingest_channel_size = 0;
+        assert_invalid(&config, "logs.tap.ingest_channel_size");
+
+        config.tap.ingest_channel_size = 16;
+        config.tap.max_entries = 0;
+        assert_invalid(&config, "logs.tap.max_entries");
+
+        config.tap.max_entries = 1;
+        config.tap.max_bytes = 0;
+        assert_invalid(&config, "logs.tap.max_bytes");
     }
 
     #[test]
