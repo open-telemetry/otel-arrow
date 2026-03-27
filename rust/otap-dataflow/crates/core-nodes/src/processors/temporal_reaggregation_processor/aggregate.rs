@@ -35,15 +35,14 @@ use super::identity::{
     StreamId, StreamIdRef, metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
 
-// ---------------------------------------------------------------------------
-// MetricAggregator
-// ---------------------------------------------------------------------------
-
 /// Accumulates metrics data over a collection interval.
 pub struct MetricAggregator {
+    // Reusable buffer for computing hashes.
+    // TODO: Add another one of these for otlp views
     hash_buf: AttributeHashBuffer<OtapAttributeView<'static>>,
 
-    // Identity maps
+    // These track the id in the otap batch assigned to each unique resource,
+    // scope, or metric.
     resource_ids: HashMap<ResourceId, u16>,
     next_resource_id: u16,
     scope_ids: HashMap<ScopeId<'static>, u16>,
@@ -51,14 +50,23 @@ pub struct MetricAggregator {
     metric_ids: HashMap<MetricId<'static>, u16>,
     next_metric_id: u16,
 
-    // Metadata indexed by OTAP ID
+    // Similar to the above, but for the various data point ids
+    stream_map: HashMap<StreamId<'static>, StreamState>,
+    next_ndp_id: u32,
+    next_hdp_id: u32,
+    next_ehdp_id: u32,
+    next_sdp_id: u32,
+
+    // This is additional data that corresponds to each resource/scope that
+    // needs to be set for every single row such as schema_url.
     resource_meta: Vec<ResourceMeta>,
     scope_meta: Vec<ScopeMeta>,
 
-    // Metric-level builder (append-only)
+    // Record batch builders for each of the payload types.
+    //
+    // TODO: Exemplars are not currently supported and just dropped by this
+    // processor.
     metrics_builder: MetricsRecordBatchBuilder,
-
-    // Attribute builders (append-only)
     resource_attrs_builder: AttributesRecordBatchBuilder<u16>,
     scope_attrs_builder: AttributesRecordBatchBuilder<u16>,
     ndp_attrs_builder: AttributesRecordBatchBuilder<u32>,
@@ -66,14 +74,8 @@ pub struct MetricAggregator {
     ehdp_attrs_builder: AttributesRecordBatchBuilder<u32>,
     summary_attrs_builder: AttributesRecordBatchBuilder<u32>,
 
-    // Stream tracking
-    stream_map: HashMap<StreamId<'static>, StreamState>,
-    next_ndp_id: u32,
-    next_hdp_id: u32,
-    next_ehdp_id: u32,
-    next_sdp_id: u32,
-
-    // Data point SOA storage
+    // These are custom data point specific builder types that support random
+    // writes so that we can replace old data points with newer ones.
     number_dps: NumberDataPointBuilder,
     histogram_dps: HistogramDataPointBuilder,
     exp_histogram_dps: ExpHistogramDataPointBuilder,
@@ -579,10 +581,6 @@ impl MetricAggregator {
         self.summary_dps.clear();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Supporting types
-// ---------------------------------------------------------------------------
 
 struct ResourceMeta {
     schema_url: Vec<u8>,

@@ -35,7 +35,7 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
-use otap_df_pdata::schema::consts;
+use otap_df_pdata::schema::{FieldExt, consts};
 use otap_df_pdata_views::views::metrics::{
     BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView, NumberDataPointView,
     SummaryDataPointView, Value, ValueAtQuantileView,
@@ -216,8 +216,8 @@ impl NumberDataPointBuilder {
 
 static NUMBER_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -341,8 +341,8 @@ impl HistogramDataPointBuilder {
 
 static HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -466,20 +466,12 @@ impl ExpHistogramDataPointBuilder {
 
         let positive = StructArray::from(vec![
             (
-                Arc::new(Field::new(
-                    consts::EXP_HISTOGRAM_OFFSET,
-                    DataType::Int32,
-                    false,
-                )),
+                EXP_HISTOGRAM_OFFSET_FIELD.clone(),
                 Arc::new(Int32Array::from(std::mem::take(&mut self.positive_offset)))
                     as Arc<dyn Array>,
             ),
             (
-                Arc::new(Field::new(
-                    consts::EXP_HISTOGRAM_BUCKET_COUNTS,
-                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                    false,
-                )),
+                EXP_HISTOGRAM_BUCKET_COUNTS_FIELD.clone(),
                 Arc::new(build_list_u64(&self.positive_bucket_counts, "item")) as Arc<dyn Array>,
             ),
         ]);
@@ -487,20 +479,12 @@ impl ExpHistogramDataPointBuilder {
 
         let negative = StructArray::from(vec![
             (
-                Arc::new(Field::new(
-                    consts::EXP_HISTOGRAM_OFFSET,
-                    DataType::Int32,
-                    false,
-                )),
+                EXP_HISTOGRAM_OFFSET_FIELD.clone(),
                 Arc::new(Int32Array::from(std::mem::take(&mut self.negative_offset)))
                     as Arc<dyn Array>,
             ),
             (
-                Arc::new(Field::new(
-                    consts::EXP_HISTOGRAM_BUCKET_COUNTS,
-                    DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                    false,
-                )),
+                EXP_HISTOGRAM_BUCKET_COUNTS_FIELD.clone(),
                 Arc::new(build_list_u64(&self.negative_bucket_counts, "item")) as Arc<dyn Array>,
             ),
         ]);
@@ -551,21 +535,33 @@ impl ExpHistogramDataPointBuilder {
     }
 }
 
+static EXP_HISTOGRAM_OFFSET_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
+    Arc::new(Field::new(
+        consts::EXP_HISTOGRAM_OFFSET,
+        DataType::Int32,
+        false,
+    ))
+});
+
+static EXP_HISTOGRAM_BUCKET_COUNTS_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
+    Arc::new(Field::new(
+        consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+        DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+        false,
+    ))
+});
+
 static EXP_HISTOGRAM_BUCKETS_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
     Fields::from(vec![
-        Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
-        Field::new(
-            consts::EXP_HISTOGRAM_BUCKET_COUNTS,
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-            false,
-        ),
+        Field::clone(&EXP_HISTOGRAM_OFFSET_FIELD),
+        Field::clone(&EXP_HISTOGRAM_BUCKET_COUNTS_FIELD),
     ])
 });
 
 static EXP_HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -676,15 +672,11 @@ impl SummaryDataPointBuilder {
         }
         let quantile_struct = StructArray::from(vec![
             (
-                Arc::new(Field::new(
-                    consts::SUMMARY_QUANTILE,
-                    DataType::Float64,
-                    false,
-                )),
+                SUMMARY_QUANTILE_FIELD.clone(),
                 Arc::new(Float64Array::from(q_vals)) as Arc<dyn Array>,
             ),
             (
-                Arc::new(Field::new(consts::SUMMARY_VALUE, DataType::Float64, false)),
+                SUMMARY_VALUE_FIELD.clone(),
                 Arc::new(Float64Array::from(v_vals)) as Arc<dyn Array>,
             ),
         ]);
@@ -727,10 +719,21 @@ impl SummaryDataPointBuilder {
     }
 }
 
+static SUMMARY_QUANTILE_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
+    Arc::new(Field::new(
+        consts::SUMMARY_QUANTILE,
+        DataType::Float64,
+        false,
+    ))
+});
+
+static SUMMARY_VALUE_FIELD: LazyLock<Arc<Field>> =
+    LazyLock::new(|| Arc::new(Field::new(consts::SUMMARY_VALUE, DataType::Float64, false)));
+
 static SUMMARY_QUANTILE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
     Fields::from(vec![
-        Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
-        Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+        Field::clone(&SUMMARY_QUANTILE_FIELD),
+        Field::clone(&SUMMARY_VALUE_FIELD),
     ])
 });
 
@@ -744,8 +747,8 @@ static SUMMARY_QUANTILE_LIST_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
 
 static SUMMARY_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(
             consts::START_TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, None),
