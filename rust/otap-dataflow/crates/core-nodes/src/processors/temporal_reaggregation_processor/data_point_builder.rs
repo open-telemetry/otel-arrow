@@ -151,12 +151,12 @@ impl NumberDataPointBuilder {
 
     /// Helper to write the data point's data which excludes id/parent_id
     fn write<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
-        write_or_push(
+        write_or_append(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano() as i64,
         );
-        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_append(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
 
         match dp.value() {
             Some(Value::Integer(v)) => {
@@ -173,7 +173,7 @@ impl NumberDataPointBuilder {
             }
         }
 
-        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_or_append(&mut self.flags, row, dp.flags().into_inner());
     }
 
     /// Consume all of the internal buffers to produce a record batch. If finish
@@ -278,21 +278,21 @@ impl HistogramDataPointBuilder {
     }
 
     fn write<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        write_or_push(
+        write_or_append(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano() as i64,
         );
-        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
-        write_or_push(&mut self.count, row, dp.count());
+        write_or_append(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_append(&mut self.count, row, dp.count());
         write_optional_f64(&mut self.sum, row, dp.sum());
-        write_or_push(&mut self.bucket_counts, row, dp.bucket_counts().collect());
-        write_or_push(
+        write_or_append(&mut self.bucket_counts, row, dp.bucket_counts().collect());
+        write_or_append(
             &mut self.explicit_bounds,
             row,
             dp.explicit_bounds().collect(),
         );
-        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_or_append(&mut self.flags, row, dp.flags().into_inner());
         write_optional_f64(&mut self.min, row, dp.min());
         write_optional_f64(&mut self.max, row, dp.max());
     }
@@ -431,32 +431,32 @@ impl ExpHistogramDataPointBuilder {
     }
 
     fn write<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
-        write_or_push(
+        write_or_append(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano() as i64,
         );
-        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
-        write_or_push(&mut self.count, row, dp.count());
+        write_or_append(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_append(&mut self.count, row, dp.count());
         write_optional_f64(&mut self.sum, row, dp.sum());
-        write_or_push(&mut self.scale, row, dp.scale());
-        write_or_push(&mut self.zero_count, row, dp.zero_count());
+        write_or_append(&mut self.scale, row, dp.scale());
+        write_or_append(&mut self.zero_count, row, dp.zero_count());
         let (pos_offset, pos_counts) = match dp.positive() {
             Some(b) => (b.offset(), b.bucket_counts().collect()),
             None => (0, Vec::new()),
         };
-        write_or_push(&mut self.positive_offset, row, pos_offset);
-        write_or_push(&mut self.positive_bucket_counts, row, pos_counts);
+        write_or_append(&mut self.positive_offset, row, pos_offset);
+        write_or_append(&mut self.positive_bucket_counts, row, pos_counts);
         let (neg_offset, neg_counts) = match dp.negative() {
             Some(b) => (b.offset(), b.bucket_counts().collect()),
             None => (0, Vec::new()),
         };
-        write_or_push(&mut self.negative_offset, row, neg_offset);
-        write_or_push(&mut self.negative_bucket_counts, row, neg_counts);
-        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_or_append(&mut self.negative_offset, row, neg_offset);
+        write_or_append(&mut self.negative_bucket_counts, row, neg_counts);
+        write_or_append(&mut self.flags, row, dp.flags().into_inner());
         write_optional_f64(&mut self.min, row, dp.min());
         write_optional_f64(&mut self.max, row, dp.max());
-        write_or_push(&mut self.zero_threshold, row, dp.zero_threshold());
+        write_or_append(&mut self.zero_threshold, row, dp.zero_threshold());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
@@ -635,22 +635,22 @@ impl SummaryDataPointBuilder {
     }
 
     fn write<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
-        write_or_push(
+        write_or_append(
             &mut self.start_time_unix_nano,
             row,
             dp.start_time_unix_nano() as i64,
         );
-        write_or_push(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
-        write_or_push(&mut self.count, row, dp.count());
-        write_or_push(&mut self.sum, row, dp.sum());
-        write_or_push(
+        write_or_append(&mut self.time_unix_nano, row, dp.time_unix_nano() as i64);
+        write_or_append(&mut self.count, row, dp.count());
+        write_or_append(&mut self.sum, row, dp.sum());
+        write_or_append(
             &mut self.quantiles,
             row,
             dp.quantile_values()
                 .map(|q| (q.quantile(), q.value()))
                 .collect(),
         );
-        write_or_push(&mut self.flags, row, dp.flags().into_inner());
+        write_or_append(&mut self.flags, row, dp.flags().into_inner());
     }
 
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
@@ -780,7 +780,7 @@ fn empty_record_batch() -> Result<RecordBatch, arrow::error::ArrowError> {
 
 /// Write `value` into `vec` at `index`. Appends if `index == vec.len()`,
 /// otherwise overwrites.
-fn write_or_push<T>(vec: &mut Vec<T>, index: usize, value: T) {
+fn write_or_append<T>(vec: &mut Vec<T>, index: usize, value: T) {
     if index == vec.len() {
         vec.push(value);
     } else {
