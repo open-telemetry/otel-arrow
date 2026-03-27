@@ -276,6 +276,35 @@ components:
 # Helpers
 
 
+def _reassemble_drive_letter_parts(parts: List[str]) -> List[str]:
+    """Reassemble parts split on ':' that may contain Windows drive letters.
+
+    A Windows drive letter is a single alpha character immediately followed
+    (after the split) by a segment starting with '/' or '\\'.
+
+    Examples (after split on ':'):
+        ['host', 'C', '/container', 'ro']  ->  ['host', 'C:/container', 'ro']
+        ['C', '/host', 'C', '/container']  ->  ['C:/host', 'C:/container']
+        ['host', '/container', 'ro']       ->  ['host', '/container', 'ro']  (unchanged)
+    """
+    result: List[str] = []
+    i = 0
+    while i < len(parts):
+        if (
+            len(parts[i]) == 1
+            and parts[i].isalpha()
+            and i + 1 < len(parts)
+            and parts[i + 1][:1] in ("/", "\\")
+        ):
+            # Drive letter detected - merge with the following path segment.
+            result.append(parts[i] + ":" + parts[i + 1])
+            i += 2
+        else:
+            result.append(parts[i])
+            i += 1
+    return result
+
+
 def build_volume_bindings(
     volume_mounts: Optional[List[Union[str, DockerVolumeMapping]]],
 ) -> Dict[str, Dict[str, str]]:
@@ -291,7 +320,9 @@ def build_volume_bindings(
     for vm in volume_mounts:
         if isinstance(vm, str):
             # Parse string format: /host:/container[:ro|rw]
-            parts = vm.split(":")
+            # Also supports Windows drive-letter paths, e.g.
+            #   relative/host:C:/container/path:ro
+            parts = _reassemble_drive_letter_parts(vm.split(":"))
             if len(parts) < 2 or len(parts) > 3:
                 raise ValueError(f"Invalid volume mount string: '{vm}'")
 

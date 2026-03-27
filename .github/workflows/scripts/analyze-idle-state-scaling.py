@@ -262,11 +262,11 @@ def main():
     # Find idle state result directories
     memory_data: dict[int, float] = {}
     
-    # Look for directories matching idle_state_* pattern
-    idle_dirs = list(results_base.glob("idle_state_*"))
+    # Look for directories matching idle_state_* or windows_idle_state_* pattern
+    idle_dirs = list(results_base.glob("idle_state_*")) + list(results_base.glob("windows_idle_state_*"))
     
     if not idle_dirs:
-        print("No idle state test results found (looking for idle_state_* directories)", file=sys.stderr)
+        print("No idle state test results found (looking for *idle_state_* directories)", file=sys.stderr)
         sys.exit(0)
     
     print(f"Found {len(idle_dirs)} idle state result directories", file=sys.stderr)
