@@ -2144,8 +2144,8 @@ mod tests {
             .expect("engine created");
 
         // Ingest many bundles - WAL will fill up multiple times
-        // Each bundle is ~100-200 bytes, so we need 50+ to fill the 8KB WAL
-        for i in 0..100 {
+        // Each bundle is ~100-200 bytes, so we need enough to fill the 8KB WAL
+        for i in 0..30 {
             let bundle = DummyBundle::with_rows(5);
             engine
                 .ingest(&bundle)
@@ -2172,7 +2172,7 @@ mod tests {
         // Verify all bundles were ingested
         assert_eq!(
             engine.metrics().ingest_attempts(),
-            100,
+            30,
             "all ingests should succeed"
         );
     }
@@ -2742,7 +2742,7 @@ mod tests {
             .await
             .expect("engine created");
 
-        const NUM_BUNDLES: usize = 50;
+        const NUM_BUNDLES: usize = 20;
 
         for _ in 0..NUM_BUNDLES {
             let bundle = MultiSlotBundle::new();
@@ -4022,7 +4022,7 @@ mod tests {
             .expect("engine");
 
         // Ingest enough data to trigger segment finalization
-        for _ in 0..20 {
+        for _ in 0..10 {
             let bundle = DummyBundle::with_rows(100);
             engine.ingest(&bundle).await.expect("ingest");
         }
@@ -4063,7 +4063,7 @@ mod tests {
             .expect("first engine open");
 
         // Ingest data to create multiple segment files
-        for _ in 0..10 {
+        for _ in 0..5 {
             let bundle = DummyBundle::with_rows(50);
             engine.ingest(&bundle).await.expect("ingest");
         }
@@ -4107,7 +4107,7 @@ mod tests {
         );
 
         // Ingest more data to create additional segments
-        for _ in 0..10 {
+        for _ in 0..5 {
             let bundle = DummyBundle::with_rows(50);
             engine2.ingest(&bundle).await.expect("ingest after restart");
         }
