@@ -47,7 +47,7 @@ tries formats in this order:
 
 ### Cases That Return Errors (Message Rejected)
 
-<!-- markdownlint-disable MD013 MD038 MD056 -->
+<!-- markdownlint-disable MD013 MD038 MD056 MD060 -->
 
 | # | Input Example | Error | Notes |
 | --- | --- | --- | --- |
@@ -87,7 +87,7 @@ tries formats in this order:
 | 24 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\``` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
 | 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | ```name = name\|10```, severity = empty |
 
-<!-- markdownlint-enable MD013 MD038 MD056 -->
+<!-- markdownlint-enable MD013 MD038 MD056 MD060 -->
 
 ---
 
