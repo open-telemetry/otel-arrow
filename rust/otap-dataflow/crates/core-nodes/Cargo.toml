@@ -31,6 +31,7 @@ blake3.workspace = true
 byte-unit.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+hashbrown.workspace = true
 data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
 futures.workspace = true
@@ -57,6 +58,7 @@ http.workspace = true
 async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
+xxhash-rust.workspace = true
 weaver_common = { workspace = true, optional = true }
 weaver_forge = { workspace = true, optional = true }
 weaver_resolved_schema = { workspace = true, optional = true }
