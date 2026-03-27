@@ -309,6 +309,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_resource_id;
+        // TODO: Cap the number of IDs somehow
         debug_assert!(id < u16::MAX, "resource ID overflow");
         self.next_resource_id += 1;
 
@@ -335,6 +336,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_scope_id;
+        // TODO: Cap the number of IDs
         debug_assert!(id < u16::MAX, "scope ID overflow");
         self.next_scope_id += 1;
 
@@ -365,6 +367,7 @@ impl MetricAggregator {
             return id;
         }
         let id = self.next_metric_id;
+        // TODO: Cap the number of Ids
         debug_assert!(id < u16::MAX, "metric ID overflow");
         self.next_metric_id += 1;
 
@@ -374,25 +377,25 @@ impl MetricAggregator {
         self.metrics_builder.append_id(id);
         self.metrics_builder
             .resource
-            .append_id_n(otap_resource_id, 1);
+            .append_id(Some(otap_resource_id));
         self.metrics_builder
             .resource
-            .append_schema_url_n(Some(&resource_meta.schema_url), 1);
+            .append_schema_url(Some(&resource_meta.schema_url));
         self.metrics_builder
             .resource
-            .append_dropped_attributes_count_n(resource_meta.dropped_attributes_count, 1);
-        self.metrics_builder.scope.append_id_n(otap_scope_id, 1);
+            .append_dropped_attributes_count(resource_meta.dropped_attributes_count);
+        self.metrics_builder.scope.append_id(Some(otap_scope_id));
         self.metrics_builder
             .scope
-            .append_name_n(Some(&scope_meta.name), 1);
+            .append_name(Some(&scope_meta.name));
         self.metrics_builder
             .scope
-            .append_version_n(Some(&scope_meta.version), 1);
+            .append_version(Some(&scope_meta.version));
         self.metrics_builder
             .scope
-            .append_dropped_attributes_count_n(scope_meta.dropped_attributes_count, 1);
+            .append_dropped_attributes_count(scope_meta.dropped_attributes_count);
         self.metrics_builder
-            .append_scope_schema_url_n(scope_schema_url, 1);
+            .append_scope_schema_url(scope_schema_url);
         self.metrics_builder.append_metric_type(metric_id.data_type);
         self.metrics_builder.append_name(view.name());
         self.metrics_builder.append_description(view.description());
@@ -592,28 +595,19 @@ struct StreamState {
 /// Returns `true` if this metric type should be aggregated (buffered and
 /// flushed on timer), `false` if it should be passed through unchanged.
 fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
-    let data_type = metric_id.data_type;
-    let temporality = metric_id.aggregation_temporality;
+    let Some(data_type) = DataType::from_u8(metric_id.data_type) else {
+        return false;
+    };
+
+    let cumulative = metric_id.aggregation_temporality == AggregationTemporality::Cumulative as u8;
     let monotonic = metric_id.is_monotonic;
 
-    if data_type == DataType::Gauge as u8 || data_type == DataType::Summary as u8 {
-        return true;
+    match data_type {
+        DataType::Gauge | DataType::Summary => true,
+        DataType::Sum if cumulative && monotonic => true,
+        DataType::Histogram | DataType::ExponentialHistogram if cumulative => true,
+        _ => false,
     }
-
-    if data_type == DataType::Sum as u8
-        && temporality == AggregationTemporality::Cumulative as u8
-        && monotonic
-    {
-        return true;
-    }
-
-    if (data_type == DataType::Histogram as u8 || data_type == DataType::ExponentialHistogram as u8)
-        && temporality == AggregationTemporality::Cumulative as u8
-    {
-        return true;
-    }
-
-    false
 }
 
 /// Finish building a payload type and set it on the output records.
