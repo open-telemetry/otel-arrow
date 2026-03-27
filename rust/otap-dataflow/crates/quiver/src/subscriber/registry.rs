@@ -1555,7 +1555,6 @@ mod tests {
     #[tokio::test]
     async fn next_bundle_waits_for_segment_notification() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use tokio::time::Duration as TokioDuration;
 
         let (registry, _dir) = setup_registry();
         let provider = registry.segment_provider.clone();
@@ -1581,14 +1580,15 @@ mod tests {
         });
 
         // Give consumer task time to start waiting
-        tokio::time::sleep(TokioDuration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         // Now add a segment and notify
         provider.add_segment(1, 1);
         registry_for_notify.on_segment_finalized(SegmentSeq::new(1), 1);
 
         // Consumer should complete within reasonable time
-        let result = tokio::time::timeout(TokioDuration::from_secs(10), consumer).await;
+        let result = tokio::time::timeout(Duration::from_secs(5), consumer).await;
         assert!(result.is_ok(), "consumer should complete");
         assert!(
             got_bundle.load(Ordering::Relaxed),
@@ -1607,7 +1607,7 @@ mod tests {
 
         // next_bundle with short timeout should return None
         let result = registry
-            .next_bundle(&id, Some(Duration::from_millis(100)), None)
+            .next_bundle(&id, Some(Duration::from_millis(1)), None)
             .await
             .unwrap();
         assert!(
@@ -1691,8 +1691,6 @@ mod tests {
 
     #[tokio::test]
     async fn next_bundle_cancellation_wakes_waiting_task() {
-        use tokio::time::Duration as TokioDuration;
-
         let (registry, _dir) = setup_registry();
 
         let id = SubscriberId::new("cancel-wake-test").unwrap();
@@ -1713,13 +1711,14 @@ mod tests {
         });
 
         // Give the waiter time to start waiting
-        tokio::time::sleep(TokioDuration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         // Cancel the token
         cancel.cancel();
 
         // The waiter should wake up and return Cancelled
-        let result = tokio::time::timeout(TokioDuration::from_secs(5), waiter)
+        let result = tokio::time::timeout(Duration::from_secs(5), waiter)
             .await
             .expect("waiter should complete")
             .expect("task should not panic");

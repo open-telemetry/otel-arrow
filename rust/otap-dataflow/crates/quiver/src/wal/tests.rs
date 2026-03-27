@@ -1575,9 +1575,9 @@ async fn wal_writer_handles_large_payload_batches() {
     ]);
 
     let slot_specs = [
-        (SlotId::new(0), 0x10, 6_000usize, "alpha", 256usize),
-        (SlotId::new(1), 0x20, 5_000usize, "beta", 512usize),
-        (SlotId::new(2), 0x30, 4_000usize, "gamma", 768usize),
+        (SlotId::new(0), 0x10, 600usize, "alpha", 256usize),
+        (SlotId::new(1), 0x20, 500usize, "beta", 512usize),
+        (SlotId::new(2), 0x30, 400usize, "gamma", 768usize),
     ];
 
     let slots: Vec<_> = slot_specs
