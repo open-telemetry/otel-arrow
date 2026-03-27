@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774484865181,
+  "lastUpdate": 1774571279739,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2837,6 +2837,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 92.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch",
+            "email": "mblanchard@macrosssoftware.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5ef4ab53deb943ad109a7b7423c6f3566abd1bfa",
+          "message": "[query-engine] Check schema when processing summaries back into logs in OTLP RecordSet bridge (#2441)\n\n# Changes\n\n* Check schema when converting summary records into log records in OTLP\nRecordSet bridge\n\n# Details\n\n@drewrelmas noticed if you do something like `\"source | summarize Count\n= count() by severity_text` or `\"source | summarize Count = count() |\nextend body = 'Summary record'` the data for `severity_text` or `body`\nends up on `Attributes`. This PR makes the summary code smarter to\ndetect when top-level things are set on a summary.",
+          "timestamp": "2026-03-26T17:28:26Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5ef4ab53deb943ad109a7b7423c6f3566abd1bfa"
+        },
+        "date": 1774571273227,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 93.21,
             "unit": "MB"
           }
         ]
