@@ -24,7 +24,6 @@ use otap_df_pdata_views::views::metrics::{
     SummaryDataPointView, SummaryView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::otel_warn;
 
 use super::data_point_builder::{
     ExpHistogramDataPointBuilder, HistogramDataPointBuilder, NumberDataPointBuilder,
@@ -218,80 +217,76 @@ impl MetricAggregator {
     }
 
     /// Flush accumulated state into an [`OtapArrowRecords`] batch and reset.
-    pub fn finish(&mut self) -> Option<OtapArrowRecords> {
+    pub fn finish(&mut self) -> otap_df_pdata::error::Result<Option<OtapArrowRecords>> {
         if self.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
 
-        finish_into(
+        finish_payload(
             self.metrics_builder.finish(),
             ArrowPayloadType::UnivariateMetrics,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.resource_attrs_builder.finish(),
             ArrowPayloadType::ResourceAttrs,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.scope_attrs_builder.finish(),
             ArrowPayloadType::ScopeAttrs,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.number_dps.finish(),
             ArrowPayloadType::NumberDataPoints,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.ndp_attrs_builder.finish(),
             ArrowPayloadType::NumberDpAttrs,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.histogram_dps.finish(),
             ArrowPayloadType::HistogramDataPoints,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.hdp_attrs_builder.finish(),
             ArrowPayloadType::HistogramDpAttrs,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.exp_histogram_dps.finish(),
             ArrowPayloadType::ExpHistogramDataPoints,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.ehdp_attrs_builder.finish(),
             ArrowPayloadType::ExpHistogramDpAttrs,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.summary_dps.finish(),
             ArrowPayloadType::SummaryDataPoints,
             &mut records,
-        );
-        finish_into(
+        )?;
+        finish_payload(
             self.summary_attrs_builder.finish(),
             ArrowPayloadType::SummaryDpAttrs,
             &mut records,
-        );
+        )?;
 
         self.clear();
-        Some(records)
+        Ok(Some(records))
     }
 
     pub fn is_empty(&self) -> bool {
         self.stream_map.is_empty()
     }
-
-    // -----------------------------------------------------------------------
-    // Private: called by ingest
-    // -----------------------------------------------------------------------
 
     fn compute_otap_attr_hash<'v>(
         &mut self,
@@ -546,10 +541,6 @@ impl MetricAggregator {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Private: called by finish
-    // -----------------------------------------------------------------------
-
     fn clear(&mut self) {
         self.resource_ids.clear();
         self.scope_ids.clear();
@@ -625,34 +616,18 @@ fn is_aggregatable(metric_id: &MetricId<'_>) -> bool {
     false
 }
 
-/// Finish building a record batch and set it on the output records.
-///
-/// Logs a warning if building or setting fails so errors are not silently
-/// swallowed.
-fn finish_into(
+/// Finish building a payload type and set it on the output records.
+fn finish_payload(
     result: Result<arrow::array::RecordBatch, arrow::error::ArrowError>,
     payload_type: ArrowPayloadType,
     records: &mut OtapArrowRecords,
-) {
-    match result {
-        Ok(rb) if rb.num_rows() > 0 => {
-            if let Err(e) = records.set(payload_type, rb) {
-                otel_warn!(
-                    "temporal_reaggregation.flush.set_payload_failed",
-                    payload_type = ?payload_type,
-                    error = %e,
-                    message = "Failed to set payload on output batch; data will be dropped"
-                );
-            }
-        }
-        Ok(_) => {} // empty batch, nothing to do
-        Err(e) => {
-            otel_warn!(
-                "temporal_reaggregation.flush.build_batch_failed",
-                payload_type = ?payload_type,
-                error = %e,
-                message = "Failed to build Arrow record batch; data will be dropped"
-            );
-        }
+) -> otap_df_pdata::error::Result<()> {
+    // Safety: So long as the aggregation logic is keeping arrays
+    // the same length, this operation should be infallible.
+    let rb = result.expect("Valid record batch");
+    if rb.num_rows() > 0 {
+        records.set(payload_type, rb)?;
     }
+
+    Ok(())
 }

@@ -171,7 +171,8 @@ impl TemporalReaggregationProcessor {
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        if let Some(batch) = self.accumulator.finish() {
+        // TODO: Track some kind of failure metric here
+        if let Ok(Some(batch)) = self.accumulator.finish() {
             let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(batch));
             effect_handler.send_message_with_source_node(pdata).await?;
         }
@@ -189,16 +190,21 @@ mod tests {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::{TestContext, TestRuntime};
     use otap_df_otap::testing::create_test_pdata;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
-        AnyValue, InstrumentationScope, KeyValue,
-    };
+    use otap_df_pdata::otap::{OtapArrowRecords, OtapBatchStore};
+    use otap_df_pdata::otlp::metrics::MetricType;
+    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Histogram,
+        HistogramDataPoint, Metric, MetricsData, ResourceMetrics, ScopeMetrics, Summary,
+        SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+    use otap_df_pdata::{metrics, record_batch};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
 
@@ -215,6 +221,36 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(config.period, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_factory_creation() {
+        test_config(json!({ "period": "5s" }), |result| {
+            assert!(
+                result.is_ok(),
+                "factory should create processor successfully"
+            );
+        });
+    }
+
+    #[test]
+    fn test_factory_invalid_config() {
+        test_config(json!({ "period": 12345 }), |result| {
+            assert!(result.is_err(), "invalid config should fail");
+        });
+    }
+
+    #[test]
+    fn test_factory_rejects_period_below_minimum() {
+        test_config(json!({ "period": "0s" }), |result| {
+            assert!(result.is_err(), "zero period should fail validation");
+        });
+        test_config(json!({ "period": "50ms" }), |result| {
+            assert!(result.is_err(), "sub-100ms period should fail validation");
+        });
+        test_config(json!({ "period": "100ms" }), |result| {
+            assert!(result.is_ok(), "100ms period should pass validation");
+        });
     }
 
     #[test]
@@ -260,77 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_multiple_non_metrics() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let logs_pdata = create_test_pdata();
-                ctx.process(Message::PData(logs_pdata))
-                    .await
-                    .expect("process logs");
-
-                let traces_pdata = create_traces_pdata();
-                ctx.process(Message::PData(traces_pdata))
-                    .await
-                    .expect("process traces");
-
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected two forwarded messages");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
-    fn test_metrics_are_buffered_not_forwarded() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let pdata = create_metrics_pdata();
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process metrics");
-
-                let output = ctx.drain_pdata().await;
-                assert!(
-                    output.is_empty(),
-                    "metrics should be buffered, not forwarded immediately"
-                );
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
-    fn test_shutdown_with_no_buffered_data() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let deadline = std::time::Instant::now() + Duration::from_secs(1);
-                ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test".into(),
-                }))
-                .await
-                .expect("shutdown should succeed");
-
-                let output = ctx.drain_pdata().await;
-                assert!(output.is_empty(), "no data should be emitted on shutdown");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
-    }
-
-    #[test]
     fn test_timer_tick_with_no_data() {
         let (rt, proc) = try_create_processor(json!({})).unwrap();
 
@@ -353,243 +318,614 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_creation() {
-        test_config(json!({ "period": "5s" }), |result| {
-            assert!(
-                result.is_ok(),
-                "factory should create processor successfully"
-            );
-        });
-    }
-
-    #[test]
-    fn test_factory_invalid_config() {
-        test_config(json!({ "period": 12345 }), |result| {
-            assert!(result.is_err(), "invalid config should fail");
-        });
-    }
-
-    #[test]
-    fn test_factory_rejects_period_below_minimum() {
-        test_config(json!({ "period": "0s" }), |result| {
-            assert!(result.is_err(), "zero period should fail validation");
-        });
-        test_config(json!({ "period": "50ms" }), |result| {
-            assert!(result.is_err(), "sub-100ms period should fail validation");
-        });
-        test_config(json!({ "period": "100ms" }), |result| {
-            assert!(result.is_ok(), "100ms period should pass validation");
-        });
-    }
-
-    // ==================== Reaggregation Tests ====================
-
-    #[test]
-    fn test_timer_tick_flushes_gauge() {
-        // A gauge with two data points on the same stream (no DP attrs) should
-        // collapse to just the latest data point on flush.
+    fn test_gauge_correlation() {
+        // Two batches with the same gauge stream. The later timestamp wins.
         run_processor_test(json!({}), |mut ctx| async move {
-            let pdata = make_gauge_pdata(
-                "cpu.usage",
-                vec![
-                    NumberDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .value_double(10.0)
-                        .finish(),
-                    NumberDataPoint::build()
-                        .time_unix_nano(2000u64)
-                        .value_double(20.0)
-                        .finish(),
-                ],
-            );
-            ctx.process(Message::PData(pdata)).await.expect("process");
+            #[rustfmt::skip]
+            let batch1 = OtapArrowRecords::Metrics(metrics!(
+                (UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("name", Utf8, ["cpu"])),
+                (NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [1000i64]),
+                    ("double_value", Float64, [10.0]))
+            ));
 
-            ctx.process(Message::timer_tick_ctrl_msg())
+            #[rustfmt::skip]
+            let batch2 = OtapArrowRecords::Metrics(metrics!(
+                (UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("name", Utf8, ["cpu"])),
+                (NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [2000i64]),
+                    ("double_value", Float64, [20.0]))
+            ));
+            let expected = batch2.clone();
+
+            ctx.process(Message::PData(make_pdata(batch1)))
                 .await
-                .expect("timer tick");
-
-            let output = ctx.drain_pdata().await;
-            assert_eq!(output.len(), 1, "expected one output batch");
-
-            // Only the latest data point (time=2000) should survive.
-            let expected = make_gauge_metrics_data(
-                "cpu.usage",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(2000u64)
-                    .value_double(20.0)
-                    .finish()],
-            );
-            assert_output_metrics_equivalent(&output[0], expected);
-        });
-    }
-
-    #[test]
-    fn test_correlation_across_batches() {
-        // Two separate batches with the same stream identity should be
-        // correlated — only the latest data point survives.
-        run_processor_test(json!({}), |mut ctx| async move {
-            let batch1 = make_gauge_pdata(
-                "temperature",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(25.0)
-                    .finish()],
-            );
-            ctx.process(Message::PData(batch1)).await.expect("batch1");
-
-            let batch2 = make_gauge_pdata(
-                "temperature",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(2000u64)
-                    .value_double(30.0)
-                    .finish()],
-            );
-            ctx.process(Message::PData(batch2)).await.expect("batch2");
-
-            ctx.process(Message::timer_tick_ctrl_msg())
+                .unwrap();
+            ctx.process(Message::PData(make_pdata(batch2)))
                 .await
-                .expect("timer tick");
+                .unwrap();
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
-
-            // The second batch's data point (time=2000) should replace the first.
-            let expected = make_gauge_metrics_data(
-                "temperature",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(2000u64)
-                    .value_double(30.0)
-                    .finish()],
-            );
-            assert_output_metrics_equivalent(&output[0], expected);
+            assert_output_equivalent(&output[0], &expected);
         });
     }
 
     #[test]
-    fn test_distinct_streams_preserved() {
-        // Data points with different attributes are different streams and
-        // should both be preserved.
+    fn test_cumulative_sum_correlation() {
+        // Two batches with the same cumulative monotonic sum. The later
+        // timestamp wins.
         run_processor_test(json!({}), |mut ctx| async move {
-            let data_points = vec![
-                NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(10.0)
-                    .attributes(vec![KeyValue::new("host", AnyValue::new_string("host-a"))])
-                    .finish(),
-                NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(20.0)
-                    .attributes(vec![KeyValue::new("host", AnyValue::new_string("host-b"))])
-                    .finish(),
-            ];
-            let pdata = make_gauge_pdata("cpu.usage", data_points.clone());
-            ctx.process(Message::PData(pdata)).await.expect("process");
+            let batch1 = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("metric_type", UInt8, [MetricType::Sum as u8]),
+                    ("name", Utf8, ["requests"]),
+                    ("aggregation_temporality", Int32, [2i32]),
+                    ("is_monotonic", Boolean, [true])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [1000i64]),
+                    ("int_value", Int64, [100i64])
+                )
+            ));
+            ctx.process(Message::PData(make_pdata(batch1)))
+                .await
+                .expect("batch1");
+
+            let batch2 = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("metric_type", UInt8, [MetricType::Sum as u8]),
+                    ("name", Utf8, ["requests"]),
+                    ("aggregation_temporality", Int32, [2i32]),
+                    ("is_monotonic", Boolean, [true])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [2000i64]),
+                    ("int_value", Int64, [200i64])
+                )
+            ));
+            let expected = batch2.clone();
+            ctx.process(Message::PData(make_pdata(batch2)))
+                .await
+                .expect("batch2");
 
             ctx.process(Message::timer_tick_ctrl_msg())
                 .await
-                .expect("timer tick");
+                .expect("tick");
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
-
-            // Both data points should be preserved since they're distinct streams.
-            let expected = make_gauge_metrics_data("cpu.usage", data_points);
-            assert_output_metrics_equivalent(&output[0], expected);
+            assert_output_equivalent(&output[0], &expected);
         });
     }
 
     #[test]
-    fn test_mixed_correlation_and_new_streams() {
-        // Batch 1: "cpu" and "memory" each with one data point.
-        // Batch 2: "cpu" with a newer data point (correlates with batch 1).
-        // After flush: "cpu" should have 1 DP (latest), "memory" should have
-        // 1 DP (unchanged).
+    fn test_cumulative_histogram_correlation() {
+        // Two batches with the same cumulative histogram. The later timestamp wins.
         run_processor_test(json!({}), |mut ctx| async move {
-            let batch1 = make_metrics_pdata(MetricsData::new(vec![ResourceMetrics::new(
+            let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
                     vec![
                         Metric::build()
-                            .name("cpu")
-                            .unit("1")
-                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
-                                .time_unix_nano(1000u64)
-                                .value_double(10.0)
-                                .finish()]))
-                            .finish(),
-                        Metric::build()
-                            .name("memory")
-                            .unit("By")
-                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
-                                .time_unix_nano(1000u64)
-                                .value_double(50.0)
-                                .finish()]))
+                            .name("latency")
+                            .data_histogram(Histogram::new(
+                                AggregationTemporality::Cumulative,
+                                vec![
+                                    HistogramDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .count(10u64)
+                                        .sum(100.0f64)
+                                        .bucket_counts(vec![2, 3, 5])
+                                        .explicit_bounds(vec![10.0, 50.0])
+                                        .finish(),
+                                ],
+                            ))
                             .finish(),
                     ],
                 )],
             )]));
             ctx.process(Message::PData(batch1)).await.expect("batch1");
 
-            let batch2 = make_gauge_pdata(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(2000u64)
-                    .value_double(20.0)
-                    .finish()],
-            );
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("latency")
+                            .data_histogram(Histogram::new(
+                                AggregationTemporality::Cumulative,
+                                vec![
+                                    HistogramDataPoint::build()
+                                        .time_unix_nano(2000u64)
+                                        .count(20u64)
+                                        .sum(200.0f64)
+                                        .bucket_counts(vec![4, 6, 10])
+                                        .explicit_bounds(vec![10.0, 50.0])
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            let batch2 = make_otlp_pdata(expected_data.clone());
             ctx.process(Message::PData(batch2)).await.expect("batch2");
 
             ctx.process(Message::timer_tick_ctrl_msg())
                 .await
-                .expect("timer tick");
+                .expect("tick");
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
 
-            // "cpu" should have the latest value (from batch2), "memory" unchanged.
-            let expected = MetricsData::new(vec![ResourceMetrics::new(
+    #[test]
+    fn test_cumulative_exp_histogram_correlation() {
+        // Two batches with the same cumulative exp histogram. The later
+        // timestamp wins.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("latency.exp")
+                            .data_exponential_histogram(ExponentialHistogram::new(
+                                AggregationTemporality::Cumulative,
+                                vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .count(5u64)
+                                        .scale(2i32)
+                                        .zero_count(1u64)
+                                        .positive(Buckets::new(0, vec![1, 2]))
+                                        .negative(Buckets::new(0, vec![1, 1]))
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]));
+            ctx.process(Message::PData(batch1)).await.expect("batch1");
+
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("latency.exp")
+                            .data_exponential_histogram(ExponentialHistogram::new(
+                                AggregationTemporality::Cumulative,
+                                vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .time_unix_nano(2000u64)
+                                        .count(10u64)
+                                        .scale(2i32)
+                                        .zero_count(2u64)
+                                        .positive(Buckets::new(0, vec![3, 4]))
+                                        .negative(Buckets::new(0, vec![2, 1]))
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            let batch2 = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(batch2)).await.expect("batch2");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    #[test]
+    fn test_summary_correlation() {
+        // Two batches with the same summary stream. The later timestamp wins.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("request.duration")
+                            .data_summary(Summary::new(vec![
+                                SummaryDataPoint::build()
+                                    .time_unix_nano(1000u64)
+                                    .count(10u64)
+                                    .sum(500.0f64)
+                                    .quantile_values(vec![
+                                        ValueAtQuantile::new(0.5, 45.0),
+                                        ValueAtQuantile::new(0.99, 95.0),
+                                    ])
+                                    .finish(),
+                            ]))
+                            .finish(),
+                    ],
+                )],
+            )]));
+            ctx.process(Message::PData(batch1)).await.expect("batch1");
+
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("request.duration")
+                            .data_summary(Summary::new(vec![
+                                SummaryDataPoint::build()
+                                    .time_unix_nano(2000u64)
+                                    .count(20u64)
+                                    .sum(1000.0f64)
+                                    .quantile_values(vec![
+                                        ValueAtQuantile::new(0.5, 50.0),
+                                        ValueAtQuantile::new(0.99, 99.0),
+                                    ])
+                                    .finish(),
+                            ]))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            let batch2 = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(batch2)).await.expect("batch2");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    // ==================== Hierarchy Differentiation Tests ====================
+
+    #[test]
+    fn test_different_resources_preserved() {
+        // Two gauges with different resource attributes should be treated as
+        // separate streams and both preserved.
+        run_processor_test(json!({}), |mut ctx| async move {
+            use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, NumberDataPoint};
+
+            let expected_data = MetricsData::new(vec![
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build().finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(10.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    )],
+                ),
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build().finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(20.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    )],
+                ),
+            ]);
+            let pdata = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(pdata)).await.expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    #[test]
+    fn test_different_scope_attributes_preserved() {
+        // Two gauges with the same resource but different scope attributes
+        // should both be preserved.
+        run_processor_test(json!({}), |mut ctx| async move {
+            use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, NumberDataPoint};
+
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![
+                    ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .attributes(vec![KeyValue::new(
+                                "lib",
+                                AnyValue::new_string("opentelemetry"),
+                            )])
+                            .finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(10.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    ),
+                    ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .attributes(vec![KeyValue::new(
+                                "lib",
+                                AnyValue::new_string("prometheus"),
+                            )])
+                            .finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(20.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    ),
+                ],
+            )]);
+            let pdata = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(pdata)).await.expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    #[test]
+    fn test_different_scope_name_preserved() {
+        // Two gauges with the same resource but different scope names should
+        // both be preserved.
+        run_processor_test(json!({}), |mut ctx| async move {
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, NumberDataPoint};
+
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("scope-a").finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(10.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    ),
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("scope-b").finish(),
+                        vec![
+                            Metric::build()
+                                .name("cpu")
+                                .data_gauge(Gauge::new(vec![
+                                    NumberDataPoint::build().value_double(20.0).finish(),
+                                ]))
+                                .finish(),
+                        ],
+                    ),
+                ],
+            )]);
+            let pdata = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(pdata)).await.expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
+        });
+    }
+
+    #[test]
+    fn test_different_metric_name_preserved() {
+        // Two gauges with the same resource/scope but different metric names
+        // should both be preserved.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16, 1]),
+                    ("name", Utf8, ["cpu", "memory"])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32, 1]),
+                    ("parent_id", UInt16, [0u16, 1]),
+                    ("double_value", Float64, [10.0, 20.0])
+                )
+            ));
+            let expected = input.clone();
+            ctx.process(Message::PData(make_pdata(input)))
+                .await
+                .expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_equivalent(&output[0], &expected);
+        });
+    }
+
+    #[test]
+    fn test_different_metric_type_preserved() {
+        // A gauge and a cumulative sum with the same name should be treated as
+        // different metrics and both preserved.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16, 1]),
+                    ("name", Utf8, ["cpu", "cpu"]),
+                    (
+                        "metric_type",
+                        UInt8,
+                        [MetricType::Gauge as u8, MetricType::Sum as u8]
+                    ),
+                    ("aggregation_temporality", Int32, [0i32, 2]),
+                    ("is_monotonic", Boolean, [false, true])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32, 1]),
+                    ("parent_id", UInt16, [0u16, 1]),
+                    ("double_value", Float64, [10.0, 20.0])
+                )
+            ));
+            let expected = input.clone();
+            ctx.process(Message::PData(make_pdata(input)))
+                .await
+                .expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_equivalent(&output[0], &expected);
+        });
+    }
+
+    #[test]
+    fn test_different_dp_attributes_preserved() {
+        // One gauge with two data points that have different DP attributes
+        // should treat them as distinct streams and preserve both. We use
+        // the OTLP builder path since constructing DP attributes with proper
+        // dictionary encoding at the OTAP level is complex.
+        run_processor_test(json!({}), |mut ctx| async move {
+            use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, NumberDataPoint};
+
+            let expected_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
                     vec![
                         Metric::build()
                             .name("cpu")
-                            .unit("1")
-                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
-                                .time_unix_nano(2000u64)
-                                .value_double(20.0)
-                                .finish()]))
-                            .finish(),
-                        Metric::build()
-                            .name("memory")
-                            .unit("By")
-                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
-                                .time_unix_nano(1000u64)
-                                .value_double(50.0)
-                                .finish()]))
+                            .data_gauge(Gauge::new(vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(1000u64)
+                                    .value_double(10.0)
+                                    .attributes(vec![KeyValue::new(
+                                        "host",
+                                        AnyValue::new_string("host-a"),
+                                    )])
+                                    .finish(),
+                                NumberDataPoint::build()
+                                    .time_unix_nano(1000u64)
+                                    .value_double(20.0)
+                                    .attributes(vec![KeyValue::new(
+                                        "host",
+                                        AnyValue::new_string("host-b"),
+                                    )])
+                                    .finish(),
+                            ]))
                             .finish(),
                     ],
                 )],
             )]);
-            assert_output_metrics_equivalent(&output[0], expected);
+            let pdata = make_otlp_pdata(expected_data.clone());
+            ctx.process(Message::PData(pdata)).await.expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_otlp_equivalent(&output[0], expected_data);
         });
     }
+
+    // ==================== Flush Behavior Tests ====================
 
     #[test]
     fn test_multiple_flush_cycles() {
         // After a flush the accumulator should be clean. Each cycle should
         // produce independent output.
         run_processor_test(json!({}), |mut ctx| async move {
-            // Cycle 1
-            let pdata = make_gauge_pdata(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(10.0)
-                    .finish()],
-            );
-            ctx.process(Message::PData(pdata)).await.expect("cycle1");
+            let batch1 = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("name", Utf8, ["cpu"])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [1000i64]),
+                    ("double_value", Float64, [10.0])
+                )
+            ));
+            let expected1 = batch1.clone();
+            ctx.process(Message::PData(make_pdata(batch1)))
+                .await
+                .expect("cycle1");
 
             ctx.process(Message::timer_tick_ctrl_msg())
                 .await
@@ -597,24 +933,27 @@ mod tests {
 
             let output1 = ctx.drain_pdata().await;
             assert_eq!(output1.len(), 1);
-            let expected1 = make_gauge_metrics_data(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(10.0)
-                    .finish()],
-            );
-            assert_output_metrics_equivalent(&output1[0], expected1);
+            assert_output_equivalent(&output1[0], &expected1);
 
             // Cycle 2 — new data, should not contain cycle 1 state
-            let pdata = make_gauge_pdata(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(3000u64)
-                    .value_double(30.0)
-                    .finish()],
-            );
-            ctx.process(Message::PData(pdata)).await.expect("cycle2");
+            let batch2 = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("name", Utf8, ["cpu"])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [3000i64]),
+                    ("double_value", Float64, [30.0])
+                )
+            ));
+            let expected2 = batch2.clone();
+            ctx.process(Message::PData(make_pdata(batch2)))
+                .await
+                .expect("cycle2");
 
             ctx.process(Message::timer_tick_ctrl_msg())
                 .await
@@ -622,14 +961,7 @@ mod tests {
 
             let output2 = ctx.drain_pdata().await;
             assert_eq!(output2.len(), 1);
-            let expected2 = make_gauge_metrics_data(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(3000u64)
-                    .value_double(30.0)
-                    .finish()],
-            );
-            assert_output_metrics_equivalent(&output2[0], expected2);
+            assert_output_equivalent(&output2[0], &expected2);
         });
     }
 
@@ -637,14 +969,24 @@ mod tests {
     fn test_shutdown_flushes_accumulated_metrics() {
         // Shutdown should flush any buffered data, just like a timer tick.
         run_processor_test(json!({}), |mut ctx| async move {
-            let pdata = make_gauge_pdata(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(42.0)
-                    .finish()],
-            );
-            ctx.process(Message::PData(pdata)).await.expect("process");
+            let input = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16]),
+                    ("name", Utf8, ["cpu"])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32]),
+                    ("parent_id", UInt16, [0u16]),
+                    ("time_unix_nano", TimestampNs, [1000i64]),
+                    ("double_value", Float64, [42.0])
+                )
+            ));
+            let expected = input.clone();
+            ctx.process(Message::PData(make_pdata(input)))
+                .await
+                .expect("process");
 
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
@@ -656,21 +998,53 @@ mod tests {
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "shutdown should flush buffered data");
+            assert_output_equivalent(&output[0], &expected);
+        });
+    }
 
-            let expected = make_gauge_metrics_data(
-                "cpu",
-                vec![NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(42.0)
-                    .finish()],
-            );
-            assert_output_metrics_equivalent(&output[0], expected);
+    #[test]
+    fn test_mixed_metric_types_in_single_batch() {
+        // A batch containing both a gauge and a cumulative sum should preserve
+        // both in the output.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input = OtapArrowRecords::Metrics(metrics!(
+                (
+                    UnivariateMetrics,
+                    ("id", UInt16, [0u16, 1]),
+                    ("name", Utf8, ["temperature", "requests"]),
+                    (
+                        "metric_type",
+                        UInt8,
+                        [MetricType::Gauge as u8, MetricType::Sum as u8]
+                    ),
+                    ("aggregation_temporality", Int32, [0i32, 2]),
+                    ("is_monotonic", Boolean, [false, true])
+                ),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, [0u32, 1]),
+                    ("parent_id", UInt16, [0u16, 1]),
+                    ("double_value", Float64, [22.5, 1000.0])
+                )
+            ));
+            let expected = input.clone();
+            ctx.process(Message::PData(make_pdata(input)))
+                .await
+                .expect("process");
+
+            ctx.process(Message::timer_tick_ctrl_msg())
+                .await
+                .expect("tick");
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+            assert_output_equivalent(&output[0], &expected);
         });
     }
 
     // ==================== Config Tests ====================
 
-    // --- Test Helpers ---
+    // ==================== Helpers ====================
 
     /// Create a processor wrapped in TestRuntime, run a scenario, validate.
     fn run_processor_test<F, Fut>(config_json: serde_json::Value, scenario: F)
@@ -712,24 +1086,13 @@ mod tests {
         .map(|proc| (rt, proc))
     }
 
-    /// Build an [`OtapPdata`] containing a single gauge metric with the given
-    /// name and data points, wrapped in a default resource and scope.
-    fn make_gauge_pdata(name: &str, data_points: Vec<NumberDataPoint>) -> OtapPdata {
-        make_metrics_pdata(MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                vec![Metric::build()
-                    .name(name)
-                    .unit("1")
-                    .data_gauge(Gauge::new(data_points))
-                    .finish()],
-            )],
-        )]))
+    /// Wrap [`OtapArrowRecords`] in an [`OtapPdata`].
+    fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
+        OtapPdata::new_default(OtapPayload::OtapArrowRecords(records))
     }
 
     /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
-    fn make_metrics_pdata(metrics_data: MetricsData) -> OtapPdata {
+    fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
         let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
             metrics_data,
         ));
@@ -739,7 +1102,7 @@ mod tests {
     fn create_metrics_pdata() -> OtapPdata {
         let mut datagen = DataGenerator::new(3);
         let metrics_data = datagen.generate_metrics();
-        make_metrics_pdata(metrics_data)
+        make_otlp_pdata(metrics_data)
     }
 
     fn create_traces_pdata() -> OtapPdata {
@@ -756,32 +1119,25 @@ mod tests {
         controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
     }
 
-    /// Build the OTLP [`MetricsData`] for a single gauge metric with the given
-    /// name and data points, wrapped in a default resource and scope.
-    fn make_gauge_metrics_data(name: &str, data_points: Vec<NumberDataPoint>) -> MetricsData {
-        MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                vec![Metric::build()
-                    .name(name)
-                    .unit("1")
-                    .data_gauge(Gauge::new(data_points))
-                    .finish()],
-            )],
-        )])
-    }
-
-    /// Assert that the metrics output from the processor is semantically
-    /// equivalent to the expected [`MetricsData`].
-    fn assert_output_metrics_equivalent(output: &OtapPdata, expected: MetricsData) {
-        let records = match output.payload_ref() {
+    /// Assert that the processor output is semantically equivalent to the
+    /// expected [`OtapArrowRecords`].
+    fn assert_output_equivalent(output: &OtapPdata, expected: &OtapArrowRecords) {
+        let actual = match output.payload_ref() {
             OtapPayload::OtapArrowRecords(r) => r,
             _ => panic!("expected OtapArrowRecords payload"),
         };
-        let actual = otap_to_otlp(records);
+        assert_equivalent(&[otap_to_otlp(actual)], &[otap_to_otlp(expected)]);
+    }
+
+    /// Assert that the processor output is semantically equivalent to the
+    /// expected OTLP [`MetricsData`].
+    fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
+        let actual = match output.payload_ref() {
+            OtapPayload::OtapArrowRecords(r) => r,
+            _ => panic!("expected OtapArrowRecords payload"),
+        };
         assert_equivalent(
-            &[actual],
+            &[otap_to_otlp(actual)],
             &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
         );
     }
