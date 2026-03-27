@@ -429,11 +429,9 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
             merge_parent_id_column_dict(&existing_col, resolved, total_num_inserts)?
         {
             return Ok((
-                Field::new(
-                    consts::PARENT_ID,
-                    merged_dict_column.data_type().clone(),
-                    false,
-                ),
+                field
+                    .clone()
+                    .with_data_type(merged_dict_column.data_type().clone()),
                 merged_dict_column,
             ));
         }
