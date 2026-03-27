@@ -324,24 +324,25 @@ mod tests {
             #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
-                    ("id", UInt16, [0u16]),
+                    ("id", UInt16, [0]),
+                    ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (NumberDataPoints,
-                    ("id", UInt32, [0u32]),
-                    ("parent_id", UInt16, [0u16]),
-                    ("time_unix_nano", TimestampNs, [1000i64]),
+                    ("id", UInt32, [0]),
+                    ("parent_id", UInt16, [0]),
+                    ("time_unix_nano", TimestampNs, [1000]),
                     ("double_value", Float64, [10.0]))
             ));
-
             #[rustfmt::skip]
             let batch2 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
-                    ("id", UInt16, [0u16]),
+                    ("id", UInt16, [0]),
+                    ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (NumberDataPoints,
-                    ("id", UInt32, [0u32]),
-                    ("parent_id", UInt16, [0u16]),
-                    ("time_unix_nano", TimestampNs, [2000i64]),
+                    ("id", UInt32, [0]),
+                    ("parent_id", UInt16, [0]),
+                    ("time_unix_nano", TimestampNs, [2000]),
                     ("double_value", Float64, [20.0]))
             ));
             let expected = batch2.clone();
@@ -365,45 +366,42 @@ mod tests {
         // Two batches with the same cumulative monotonic sum. The later
         // timestamp wins.
         run_processor_test(json!({}), |mut ctx| async move {
+            #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
-                (
-                    UnivariateMetrics,
-                    ("id", UInt16, [0u16]),
+                (UnivariateMetrics,
+                    ("id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Sum as u8]),
                     ("name", Utf8, ["requests"]),
-                    ("aggregation_temporality", Int32, [2i32]),
-                    ("is_monotonic", Boolean, [true])
-                ),
-                (
-                    NumberDataPoints,
+                    ("aggregation_temporality", Int32, [2]),
+                    ("is_monotonic", Boolean, [true])),
+                (NumberDataPoints,
                     ("id", UInt32, [0u32]),
                     ("parent_id", UInt16, [0u16]),
-                    ("time_unix_nano", TimestampNs, [1000i64]),
-                    ("int_value", Int64, [100i64])
-                )
+                    ("time_unix_nano", TimestampNs, [1000]),
+                    ("int_value", Int64, [100]))
             ));
+
+            #[rustfmt::skip]
+            let batch2 = OtapArrowRecords::Metrics(metrics!(
+                (UnivariateMetrics,
+                    ("id", UInt16, [0]),
+                    ("metric_type", UInt8, [MetricType::Sum as u8]),
+                    ("name", Utf8, ["requests"]),
+                    ("aggregation_temporality", Int32, [2]),
+                    ("is_monotonic", Boolean, [true])),
+                (NumberDataPoints,
+                    ("id", UInt32, [0]),
+                    ("parent_id", UInt16, [0]),
+                    ("time_unix_nano", TimestampNs, [2000]),
+                    ("int_value", Int64, [200]))
+            ));
+
+            let expected = batch2.clone();
+
             ctx.process(Message::PData(make_pdata(batch1)))
                 .await
                 .expect("batch1");
 
-            let batch2 = OtapArrowRecords::Metrics(metrics!(
-                (
-                    UnivariateMetrics,
-                    ("id", UInt16, [0u16]),
-                    ("metric_type", UInt8, [MetricType::Sum as u8]),
-                    ("name", Utf8, ["requests"]),
-                    ("aggregation_temporality", Int32, [2i32]),
-                    ("is_monotonic", Boolean, [true])
-                ),
-                (
-                    NumberDataPoints,
-                    ("id", UInt32, [0u32]),
-                    ("parent_id", UInt16, [0u16]),
-                    ("time_unix_nano", TimestampNs, [2000i64]),
-                    ("int_value", Int64, [200i64])
-                )
-            ));
-            let expected = batch2.clone();
             ctx.process(Message::PData(make_pdata(batch2)))
                 .await
                 .expect("batch2");
