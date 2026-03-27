@@ -58,47 +58,47 @@ impl<T: ArrowPrimitiveType> NullableColumnBuilder<T> {
         }
     }
 
-    pub fn push_value(&mut self, value: T::Native) {
+    pub fn append_value(&mut self, value: T::Native) {
         self.values.push(value);
         self.validity.append(true);
     }
 
-    pub fn push_null(&mut self) {
+    pub fn append_null(&mut self) {
         self.values.push(T::Native::default());
         self.validity.append(false);
-    }
-
-    pub fn set_value(&mut self, index: usize, value: T::Native) {
-        self.values[index] = value;
-        self.validity.set_bit(index, true);
-    }
-
-    pub fn set_null(&mut self, index: usize) {
-        self.values[index] = T::Native::default();
-        self.validity.set_bit(index, false);
     }
 
     /// Write a value at `index`. If `index == len`, appends; otherwise
     /// overwrites the existing entry.
     pub fn write_value(&mut self, index: usize, value: T::Native) {
         if index == self.values.len() {
-            self.push_value(value);
+            self.append_value(value);
         } else {
             self.set_value(index, value);
         }
+    }
+
+    fn set_value(&mut self, index: usize, value: T::Native) {
+        self.values[index] = value;
+        self.validity.set_bit(index, true);
+    }
+
+    fn set_null(&mut self, index: usize) {
+        self.validity.set_bit(index, false);
     }
 
     /// Write a null at `index`. If `index == len`, appends; otherwise
     /// overwrites the existing entry.
     pub fn write_null(&mut self, index: usize) {
         if index == self.values.len() {
-            self.push_null();
+            self.append_null();
         } else {
             self.set_null(index);
         }
     }
 
-    /// Convert to an Arrow [`PrimitiveArray`]. The values buffer is zero-copy.
+    /// Convert to an Arrow [`PrimitiveArray`]. The internal buffers are consumed
+    /// and replaced with new 0 size buffers.
     pub fn finish(&mut self) -> PrimitiveArray<T> {
         let values = ScalarBuffer::from(std::mem::take(&mut self.values));
         let nulls = NullBuffer::new(self.validity.finish());
@@ -135,7 +135,8 @@ impl NumberDataPointBuilder {
         }
     }
 
-    pub fn push<V: NumberDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
+    /// Append a new data point
+    pub fn append<V: NumberDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
@@ -143,10 +144,12 @@ impl NumberDataPointBuilder {
         row
     }
 
-    pub fn overwrite<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
+    /// Replace a data point's data with the given view
+    pub fn replace<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
         self.write(row, dp);
     }
 
+    /// Helper to write the data point's data which excludes id/parent_id
     fn write<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
         write_or_push(
             &mut self.start_time_unix_nano,
@@ -173,13 +176,16 @@ impl NumberDataPointBuilder {
         write_or_push(&mut self.flags, row, dp.flags().into_inner());
     }
 
+    /// Consume all of the internal buffers to produce a record batch. If finish
+    /// is successful, then this builder is in a cleared state to begin building
+    /// a new record batch.
     pub fn finish(&mut self) -> Result<RecordBatch, arrow::error::ArrowError> {
         if self.id.is_empty() {
             return empty_record_batch();
         }
 
         RecordBatch::try_new(
-            Self::SCHEMA.clone(),
+            NUMBER_DP_SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
@@ -196,6 +202,7 @@ impl NumberDataPointBuilder {
         )
     }
 
+    /// Clear all internal buffers
     pub fn clear(&mut self) {
         self.id.clear();
         self.parent_id.clear();
@@ -205,27 +212,27 @@ impl NumberDataPointBuilder {
         self.double_value.clear();
         self.flags.clear();
     }
-
-    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
-        Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::INT_VALUE, DataType::Int64, true),
-            Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-        ]))
-    });
 }
+
+static NUMBER_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::INT_VALUE, DataType::Int64, true),
+        Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+    ]))
+});
 
 pub struct HistogramDataPointBuilder {
     pub id: Vec<u32>,
@@ -258,7 +265,7 @@ impl HistogramDataPointBuilder {
         }
     }
 
-    pub fn push<V: HistogramDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
+    pub fn append<V: HistogramDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
@@ -266,7 +273,7 @@ impl HistogramDataPointBuilder {
         row
     }
 
-    pub fn overwrite<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
+    pub fn replace<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
         self.write(row, dp);
     }
 
@@ -296,7 +303,7 @@ impl HistogramDataPointBuilder {
         }
 
         RecordBatch::try_new(
-            Self::SCHEMA.clone(),
+            HISTOGRAM_DP_SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
@@ -330,39 +337,39 @@ impl HistogramDataPointBuilder {
         self.min.clear();
         self.max.clear();
     }
-
-    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
-        Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-            Field::new(
-                consts::HISTOGRAM_BUCKET_COUNTS,
-                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                false,
-            ),
-            Field::new(
-                consts::HISTOGRAM_EXPLICIT_BOUNDS,
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
-            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
-        ]))
-    });
 }
+
+static HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+        Field::new(
+            consts::HISTOGRAM_BUCKET_COUNTS,
+            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+            false,
+        ),
+        Field::new(
+            consts::HISTOGRAM_EXPLICIT_BOUNDS,
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+            false,
+        ),
+        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+        Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+    ]))
+});
 
 pub struct ExpHistogramDataPointBuilder {
     pub id: Vec<u32>,
@@ -405,7 +412,7 @@ impl ExpHistogramDataPointBuilder {
         }
     }
 
-    pub fn push<V: ExponentialHistogramDataPointView>(
+    pub fn append<V: ExponentialHistogramDataPointView>(
         &mut self,
         id: u32,
         parent_id: u16,
@@ -414,16 +421,16 @@ impl ExpHistogramDataPointBuilder {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
-        self.write_view(row, dp);
+        self.write(row, dp);
         row
     }
 
     pub fn replace<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
         // We keep the same parent_id/id here and just write the rest of the fields
-        self.write_view(row, dp);
+        self.write(row, dp);
     }
 
-    fn write_view<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
+    fn write<V: ExponentialHistogramDataPointView>(&mut self, row: usize, dp: &V) {
         write_or_push(
             &mut self.start_time_unix_nano,
             row,
@@ -500,7 +507,7 @@ impl ExpHistogramDataPointBuilder {
         self.negative_bucket_counts.clear();
 
         RecordBatch::try_new(
-            Self::SCHEMA.clone(),
+            EXP_HISTOGRAM_DP_SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
@@ -542,57 +549,57 @@ impl ExpHistogramDataPointBuilder {
         self.max.clear();
         self.zero_threshold.clear();
     }
-
-    const BUCKETS_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
-        Fields::from(vec![
-            Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
-            Field::new(
-                consts::EXP_HISTOGRAM_BUCKET_COUNTS,
-                DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-                false,
-            ),
-        ])
-    });
-
-    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
-        Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-            Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
-            Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
-            Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
-            Field::new(
-                consts::EXP_HISTOGRAM_POSITIVE,
-                DataType::Struct(Self::BUCKETS_FIELDS.clone()),
-                false,
-            ),
-            Field::new(
-                consts::EXP_HISTOGRAM_NEGATIVE,
-                DataType::Struct(Self::BUCKETS_FIELDS.clone()),
-                false,
-            ),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-            Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
-            Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
-            Field::new(
-                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
-                DataType::Float64,
-                true,
-            ),
-        ]))
-    });
 }
+
+static EXP_HISTOGRAM_BUCKETS_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
+    Fields::from(vec![
+        Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
+        Field::new(
+            consts::EXP_HISTOGRAM_BUCKET_COUNTS,
+            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
+            false,
+        ),
+    ])
+});
+
+static EXP_HISTOGRAM_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
+        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
+        Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
+        Field::new(
+            consts::EXP_HISTOGRAM_POSITIVE,
+            DataType::Struct(EXP_HISTOGRAM_BUCKETS_FIELDS.clone()),
+            false,
+        ),
+        Field::new(
+            consts::EXP_HISTOGRAM_NEGATIVE,
+            DataType::Struct(EXP_HISTOGRAM_BUCKETS_FIELDS.clone()),
+            false,
+        ),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::HISTOGRAM_MIN, DataType::Float64, true),
+        Field::new(consts::HISTOGRAM_MAX, DataType::Float64, true),
+        Field::new(
+            consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+            DataType::Float64,
+            true,
+        ),
+    ]))
+});
 
 pub struct SummaryDataPointBuilder {
     pub id: Vec<u32>,
@@ -619,7 +626,7 @@ impl SummaryDataPointBuilder {
         }
     }
 
-    pub fn push<V: SummaryDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
+    pub fn append<V: SummaryDataPointView>(&mut self, id: u32, parent_id: u16, dp: &V) -> usize {
         let row = self.id.len();
         self.id.push(id);
         self.parent_id.push(parent_id);
@@ -627,7 +634,7 @@ impl SummaryDataPointBuilder {
         row
     }
 
-    pub fn overwrite<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
+    pub fn replace<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
         self.write(row, dp);
     }
 
@@ -682,7 +689,7 @@ impl SummaryDataPointBuilder {
             ),
         ]);
         let quantile_list = ListArray::new(
-            Self::QUANTILE_LIST_FIELD.clone(),
+            SUMMARY_QUANTILE_LIST_FIELD.clone(),
             OffsetBuffer::new(ScalarBuffer::from(offsets)),
             Arc::new(quantile_struct),
             None,
@@ -690,7 +697,7 @@ impl SummaryDataPointBuilder {
         self.quantiles.clear();
 
         RecordBatch::try_new(
-            Self::SCHEMA.clone(),
+            SUMMARY_DP_SCHEMA.clone(),
             vec![
                 Arc::new(UInt32Array::from(std::mem::take(&mut self.id))),
                 Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))),
@@ -718,51 +725,47 @@ impl SummaryDataPointBuilder {
         self.quantiles.clear();
         self.flags.clear();
     }
-
-    const QUANTILE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
-        Fields::from(vec![
-            Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
-            Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
-        ])
-    });
-
-    const QUANTILE_LIST_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
-        Arc::new(Field::new(
-            "item",
-            DataType::Struct(Self::QUANTILE_FIELDS.clone()),
-            false,
-        ))
-    });
-
-    const SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
-        Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(
-                consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
-            Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
-            Field::new(
-                consts::SUMMARY_QUANTILE_VALUES,
-                DataType::List(Self::QUANTILE_LIST_FIELD.clone()),
-                false,
-            ),
-            Field::new(consts::FLAGS, DataType::UInt32, false),
-        ]))
-    });
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
+static SUMMARY_QUANTILE_FIELDS: LazyLock<Fields> = LazyLock::new(|| {
+    Fields::from(vec![
+        Field::new(consts::SUMMARY_QUANTILE, DataType::Float64, false),
+        Field::new(consts::SUMMARY_VALUE, DataType::Float64, false),
+    ])
+});
+
+static SUMMARY_QUANTILE_LIST_FIELD: LazyLock<Arc<Field>> = LazyLock::new(|| {
+    Arc::new(Field::new(
+        "item",
+        DataType::Struct(SUMMARY_QUANTILE_FIELDS.clone()),
+        false,
+    ))
+});
+
+static SUMMARY_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            consts::TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
+        Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
+        Field::new(
+            consts::SUMMARY_QUANTILE_VALUES,
+            DataType::List(SUMMARY_QUANTILE_LIST_FIELD.clone()),
+            false,
+        ),
+        Field::new(consts::FLAGS, DataType::UInt32, false),
+    ]))
+});
 
 fn empty_record_batch() -> Result<RecordBatch, arrow::error::ArrowError> {
     RecordBatch::try_new_with_options(

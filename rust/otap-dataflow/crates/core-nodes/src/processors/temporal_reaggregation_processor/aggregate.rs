@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 use otap_df_pdata::encode::append_attribute_value;
 use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
 use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
-use otap_df_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
+use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otap::common::OtapAttributeView;
@@ -425,13 +425,13 @@ impl MetricAggregator {
         let time = dp.time_unix_nano();
         if let Some(state) = self.stream_map.get_mut(&StreamIdRef(&stream_id)) {
             if time > state.time_unix_nano {
-                self.number_dps.overwrite(state.dp_row_index, dp);
+                self.number_dps.replace(state.dp_row_index, dp);
                 state.time_unix_nano = time;
             }
         } else {
             let dp_id = self.next_ndp_id;
             self.next_ndp_id += 1;
-            let row_index = self.number_dps.push(dp_id, otap_metric_id, dp);
+            let row_index = self.number_dps.append(dp_id, otap_metric_id, dp);
 
             for attr in dp.attributes() {
                 self.ndp_attrs_builder.append_parent_id(&dp_id);
@@ -457,13 +457,13 @@ impl MetricAggregator {
         let time = dp.time_unix_nano();
         if let Some(state) = self.stream_map.get_mut(&StreamIdRef(&stream_id)) {
             if time > state.time_unix_nano {
-                self.histogram_dps.overwrite(state.dp_row_index, dp);
+                self.histogram_dps.replace(state.dp_row_index, dp);
                 state.time_unix_nano = time;
             }
         } else {
             let dp_id = self.next_hdp_id;
             self.next_hdp_id += 1;
-            let row_index = self.histogram_dps.push(dp_id, otap_metric_id, dp);
+            let row_index = self.histogram_dps.append(dp_id, otap_metric_id, dp);
 
             for attr in dp.attributes() {
                 self.hdp_attrs_builder.append_parent_id(&dp_id);
@@ -495,7 +495,7 @@ impl MetricAggregator {
         } else {
             let dp_id = self.next_ehdp_id;
             self.next_ehdp_id += 1;
-            let row_index = self.exp_histogram_dps.push(dp_id, otap_metric_id, dp);
+            let row_index = self.exp_histogram_dps.append(dp_id, otap_metric_id, dp);
 
             for attr in dp.attributes() {
                 self.ehdp_attrs_builder.append_parent_id(&dp_id);
@@ -521,13 +521,13 @@ impl MetricAggregator {
         let time = dp.time_unix_nano();
         if let Some(state) = self.stream_map.get_mut(&StreamIdRef(&stream_id)) {
             if time > state.time_unix_nano {
-                self.summary_dps.overwrite(state.dp_row_index, dp);
+                self.summary_dps.replace(state.dp_row_index, dp);
                 state.time_unix_nano = time;
             }
         } else {
             let dp_id = self.next_sdp_id;
             self.next_sdp_id += 1;
-            let row_index = self.summary_dps.push(dp_id, otap_metric_id, dp);
+            let row_index = self.summary_dps.append(dp_id, otap_metric_id, dp);
 
             for attr in dp.attributes() {
                 self.summary_attrs_builder.append_parent_id(&dp_id);
