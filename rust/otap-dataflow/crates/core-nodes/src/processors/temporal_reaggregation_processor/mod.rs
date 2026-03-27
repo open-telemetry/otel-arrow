@@ -612,8 +612,6 @@ mod tests {
         });
     }
 
-    // ==================== Hierarchy Differentiation Tests ====================
-
     #[test]
     fn test_different_resources_preserved() {
         // Two gauges with different resource attributes should be treated as
