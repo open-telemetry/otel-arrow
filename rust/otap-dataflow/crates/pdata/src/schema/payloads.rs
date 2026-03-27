@@ -388,7 +388,7 @@ mod logs {
             Field {
                 name: OBSERVED_TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: true,
+                required: false,
             },
             Field {
                 name: BODY,
