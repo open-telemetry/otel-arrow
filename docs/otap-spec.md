@@ -411,7 +411,7 @@ properties for the `resource` column's `id` field.
 | scope.version                     | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope version                     |
 | scope.dropped_attributes_count    | UInt32                | -                   | No       | -                            | -        | Number of dropped scope attributes                |
 | schema_url                        | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Log schema URL                                    |
-| time_unix_nano                    | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Log timestamp in Unix nanoseconds                 |
+| time_unix_nano                    | Timestamp(Nanosecond) | -                   | No       | -                            | -        | Log timestamp in Unix nanoseconds                 |
 | observed_time_unix_nano           | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Observation timestamp in Unix nanoseconds         |
 | trace_id                          | FixedSizeBinary(16)   | Dict(u8), Dict(u16) | No       | -                            | -        | Trace id for correlation                          |
 | span_id                           | FixedSizeBinary(8)    | Dict(u8), Dict(u16) | No       | -                            | -        | Span id for correlation                           |
@@ -460,6 +460,7 @@ properties for the `resource` column's `id` field.
 | status                            | Struct                | -                   | No       | -                            | -        | Span status                           |
 | status.code                       | Int32                 | Dict(u8), Dict(u16) | No       | -                            | -        | Span status code                      |
 | status.status_message             | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Status message                        |
+| flags                             | UInt32                | -                   | No       | -                            | -        | Span flags                            |
 
 #### 5.2.2 SPAN_EVENTS
 
@@ -572,6 +573,7 @@ properties for the `resource` column's `id` field.
 | flags                  | UInt32                | -                   | No       | -                            | -        | Data point flags                              |
 | min                    | Float64               | -                   | No       | -                            | -        | Minimum value                                 |
 | max                    | Float64               | -                   | No       | -                            | -        | Maximum value                                 |
+| zero_threshold         | Float64               | -                   | No       | -                            | -        | Zero bucket threshold width                   |
 
 #### 5.3.6 NUMBER_DP_EXEMPLARS / HISTOGRAM_DP_EXEMPLARS / EXP_HISTOGRAM_DP_EXEMPLARS
 
