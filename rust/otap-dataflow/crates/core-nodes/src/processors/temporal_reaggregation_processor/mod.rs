@@ -182,7 +182,6 @@ impl TemporalReaggregationProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::future::Future;
 
     use otap_df_config::error::Error as ConfigError;
@@ -197,13 +196,9 @@ mod tests {
         Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
-    use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::views::otap::OtapMetricsView;
-    use otap_df_pdata_views::views::metrics::{
-        DataType as MetricDataType, DataView, GaugeView, MetricView, MetricsView,
-        NumberDataPointView, ResourceMetricsView, ScopeMetricsView, Value as DpValue,
-    };
+    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
 
@@ -416,10 +411,15 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "expected one output batch");
 
-            let values = collect_gauge_values(&output[0]);
-            let cpu = values.get("cpu.usage").expect("cpu.usage metric");
-            assert_eq!(cpu.len(), 1, "same-stream points should collapse to one");
-            assert_eq!(cpu[0], (2000, 20.0), "latest point should win");
+            // Only the latest data point (time=2000) should survive.
+            let expected = make_gauge_metrics_data(
+                "cpu.usage",
+                vec![NumberDataPoint::build()
+                    .time_unix_nano(2000u64)
+                    .value_double(20.0)
+                    .finish()],
+            );
+            assert_output_metrics_equivalent(&output[0], expected);
         });
     }
 
@@ -453,10 +453,15 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
 
-            let values = collect_gauge_values(&output[0]);
-            let temp = values.get("temperature").expect("temperature metric");
-            assert_eq!(temp.len(), 1, "same-stream points should collapse");
-            assert_eq!(temp[0], (2000, 30.0), "latest point should win");
+            // The second batch's data point (time=2000) should replace the first.
+            let expected = make_gauge_metrics_data(
+                "temperature",
+                vec![NumberDataPoint::build()
+                    .time_unix_nano(2000u64)
+                    .value_double(30.0)
+                    .finish()],
+            );
+            assert_output_metrics_equivalent(&output[0], expected);
         });
     }
 
@@ -465,27 +470,19 @@ mod tests {
         // Data points with different attributes are different streams and
         // should both be preserved.
         run_processor_test(json!({}), |mut ctx| async move {
-            let pdata = make_gauge_pdata(
-                "cpu.usage",
-                vec![
-                    NumberDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .value_double(10.0)
-                        .attributes(vec![KeyValue::new(
-                            "host",
-                            AnyValue::new_string("host-a"),
-                        )])
-                        .finish(),
-                    NumberDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .value_double(20.0)
-                        .attributes(vec![KeyValue::new(
-                            "host",
-                            AnyValue::new_string("host-b"),
-                        )])
-                        .finish(),
-                ],
-            );
+            let data_points = vec![
+                NumberDataPoint::build()
+                    .time_unix_nano(1000u64)
+                    .value_double(10.0)
+                    .attributes(vec![KeyValue::new("host", AnyValue::new_string("host-a"))])
+                    .finish(),
+                NumberDataPoint::build()
+                    .time_unix_nano(1000u64)
+                    .value_double(20.0)
+                    .attributes(vec![KeyValue::new("host", AnyValue::new_string("host-b"))])
+                    .finish(),
+            ];
+            let pdata = make_gauge_pdata("cpu.usage", data_points.clone());
             ctx.process(Message::PData(pdata)).await.expect("process");
 
             ctx.process(Message::timer_tick_ctrl_msg())
@@ -495,9 +492,9 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
 
-            let values = collect_gauge_values(&output[0]);
-            let cpu = values.get("cpu.usage").expect("cpu.usage metric");
-            assert_eq!(cpu.len(), 2, "distinct streams should both be preserved");
+            // Both data points should be preserved since they're distinct streams.
+            let expected = make_gauge_metrics_data("cpu.usage", data_points);
+            assert_output_metrics_equivalent(&output[0], expected);
         });
     }
 
@@ -550,15 +547,32 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
 
-            let values = collect_gauge_values(&output[0]);
-
-            let cpu = values.get("cpu").expect("cpu metric");
-            assert_eq!(cpu.len(), 1, "cpu streams should collapse");
-            assert_eq!(cpu[0], (2000, 20.0), "cpu should have latest value");
-
-            let mem = values.get("memory").expect("memory metric");
-            assert_eq!(mem.len(), 1, "memory should have one data point");
-            assert_eq!(mem[0], (1000, 50.0), "memory should be unchanged");
+            // "cpu" should have the latest value (from batch2), "memory" unchanged.
+            let expected = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("cpu")
+                            .unit("1")
+                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
+                                .time_unix_nano(2000u64)
+                                .value_double(20.0)
+                                .finish()]))
+                            .finish(),
+                        Metric::build()
+                            .name("memory")
+                            .unit("By")
+                            .data_gauge(Gauge::new(vec![NumberDataPoint::build()
+                                .time_unix_nano(1000u64)
+                                .value_double(50.0)
+                                .finish()]))
+                            .finish(),
+                    ],
+                )],
+            )]);
+            assert_output_metrics_equivalent(&output[0], expected);
         });
     }
 
@@ -583,8 +597,14 @@ mod tests {
 
             let output1 = ctx.drain_pdata().await;
             assert_eq!(output1.len(), 1);
-            let vals1 = collect_gauge_values(&output1[0]);
-            assert_eq!(vals1["cpu"][0], (1000, 10.0));
+            let expected1 = make_gauge_metrics_data(
+                "cpu",
+                vec![NumberDataPoint::build()
+                    .time_unix_nano(1000u64)
+                    .value_double(10.0)
+                    .finish()],
+            );
+            assert_output_metrics_equivalent(&output1[0], expected1);
 
             // Cycle 2 — new data, should not contain cycle 1 state
             let pdata = make_gauge_pdata(
@@ -602,12 +622,14 @@ mod tests {
 
             let output2 = ctx.drain_pdata().await;
             assert_eq!(output2.len(), 1);
-            let vals2 = collect_gauge_values(&output2[0]);
-            assert_eq!(
-                vals2["cpu"][0],
-                (3000, 30.0),
-                "cycle 2 should only contain cycle 2 data"
+            let expected2 = make_gauge_metrics_data(
+                "cpu",
+                vec![NumberDataPoint::build()
+                    .time_unix_nano(3000u64)
+                    .value_double(30.0)
+                    .finish()],
             );
+            assert_output_metrics_equivalent(&output2[0], expected2);
         });
     }
 
@@ -635,9 +657,14 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "shutdown should flush buffered data");
 
-            let values = collect_gauge_values(&output[0]);
-            let cpu = values.get("cpu").expect("cpu metric");
-            assert_eq!(cpu[0], (1000, 42.0));
+            let expected = make_gauge_metrics_data(
+                "cpu",
+                vec![NumberDataPoint::build()
+                    .time_unix_nano(1000u64)
+                    .value_double(42.0)
+                    .finish()],
+            );
+            assert_output_metrics_equivalent(&output[0], expected);
         });
     }
 
@@ -729,44 +756,33 @@ mod tests {
         controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
     }
 
-    /// Extract gauge metric data from an output [`OtapPdata`].
-    ///
-    /// Returns a map of metric name to a sorted list of `(time_unix_nano, value)`
-    /// tuples for all gauge data points in the output.
-    fn collect_gauge_values(pdata: &OtapPdata) -> BTreeMap<String, Vec<(u64, f64)>> {
-        let records = match pdata.payload_ref() {
+    /// Build the OTLP [`MetricsData`] for a single gauge metric with the given
+    /// name and data points, wrapped in a default resource and scope.
+    fn make_gauge_metrics_data(name: &str, data_points: Vec<NumberDataPoint>) -> MetricsData {
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                vec![Metric::build()
+                    .name(name)
+                    .unit("1")
+                    .data_gauge(Gauge::new(data_points))
+                    .finish()],
+            )],
+        )])
+    }
+
+    /// Assert that the metrics output from the processor is semantically
+    /// equivalent to the expected [`MetricsData`].
+    fn assert_output_metrics_equivalent(output: &OtapPdata, expected: MetricsData) {
+        let records = match output.payload_ref() {
             OtapPayload::OtapArrowRecords(r) => r,
             _ => panic!("expected OtapArrowRecords payload"),
         };
-        let view = OtapMetricsView::try_from(records).expect("valid metrics view");
-
-        let mut result: BTreeMap<String, Vec<(u64, f64)>> = BTreeMap::new();
-        for resource in view.resources() {
-            for scope in resource.scopes() {
-                for metric in scope.metrics() {
-                    let name =
-                        String::from_utf8(metric.name().to_vec()).expect("valid UTF-8 name");
-                    let data = metric.data().expect("metric should have data");
-                    if data.value_type() != MetricDataType::Gauge {
-                        continue;
-                    }
-                    let gauge = data.as_gauge().expect("gauge data");
-                    let entry = result.entry(name).or_default();
-                    for dp in gauge.data_points() {
-                        let value: f64 = match dp.value() {
-                            Some(DpValue::Double(v)) => v,
-                            Some(DpValue::Integer(v)) => v as f64,
-                            None => panic!("data point has no value"),
-                        };
-                        entry.push((dp.time_unix_nano(), value));
-                    }
-                }
-            }
-        }
-        // Sort each metric's data points by time for deterministic assertions.
-        for entries in result.values_mut() {
-            entries.sort_by_key(|(t, _)| *t);
-        }
-        result
+        let actual = otap_to_otlp(records);
+        assert_equivalent(
+            &[actual],
+            &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
+        );
     }
 }
