@@ -414,7 +414,7 @@ properties for the `resource` column's `id` field.
 | scope.dropped_attributes_count    | UInt32                | -                   | No       | -                            | -        | Number of dropped scope attributes                |
 | schema_url                        | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Log schema URL                                    |
 | time_unix_nano                    | Timestamp(Nanosecond) | -                   | No       | -                            | -        | Log timestamp in Unix nanoseconds                 |
-| observed_time_unix_nano           | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Observation timestamp in Unix nanoseconds         |
+| observed_time_unix_nano           | Timestamp(Nanosecond) | -                   | No       | -                            | -        | Observation timestamp in Unix nanoseconds         |
 | trace_id                          | FixedSizeBinary(16)   | Dict(u8), Dict(u16) | No       | -                            | -        | Trace id for correlation                          |
 | span_id                           | FixedSizeBinary(8)    | Dict(u8), Dict(u16) | No       | -                            | -        | Span id for correlation                           |
 | severity_number                   | Int32                 | Dict(u8), Dict(u16) | No       | -                            | -        | Numeric severity level                            |

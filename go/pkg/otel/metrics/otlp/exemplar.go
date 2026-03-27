@@ -151,13 +151,13 @@ func ExemplarsStoreFrom(
 			return nil, werror.Wrap(err)
 		}
 
-		if len(spanId) == 8 {
+		if spanId != nil {
+			if len(spanId) != 8 {
+				return nil, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
+			}
 			var sid pcommon.SpanID
-
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
-		} else {
-			return nil, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
 		}
 
 		traceID, err := arrowutils.FixedSizeBinaryFromRecord(record, exemplarIDs.TraceID, row)
@@ -165,13 +165,13 @@ func ExemplarsStoreFrom(
 			return nil, werror.Wrap(err)
 		}
 
-		if len(traceID) == 16 {
+		if traceID != nil {
+			if len(traceID) != 16 {
+				return nil, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
+			}
 			var tid pcommon.TraceID
-
 			copy(tid[:], traceID)
 			exemplar.SetTraceID(tid)
-		} else {
-			return nil, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
 		}
 
 		if intValue != nil {
