@@ -15,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 struct QueuedLogEvent {
-    seq: u64,
     event: LogEvent,
     estimated_bytes: usize,
 }
@@ -42,6 +41,7 @@ struct LogRetention {
     max_entries: usize,
     max_bytes: usize,
     dropped_on_retention: u64,
+    next_seq: u64,
 }
 
 impl LogRetention {
@@ -52,13 +52,16 @@ impl LogRetention {
             max_entries,
             max_bytes,
             dropped_on_retention: 0,
+            next_seq: 1,
         }
     }
 
     fn push(&mut self, item: QueuedLogEvent) {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
         let slot = RetainedLogSlot {
             event: RetainedLogEvent {
-                seq: item.seq,
+                seq,
                 event: item.event,
             },
             estimated_bytes: item.estimated_bytes,
@@ -112,7 +115,6 @@ pub struct LogQueryResult {
 /// A non-blocking reporter used on the tracing hot path.
 #[derive(Clone, Debug)]
 pub struct InternalLogTapReporter {
-    next_seq: Arc<AtomicU64>,
     dropped_on_ingest: Arc<AtomicU64>,
     tx: flume::Sender<QueuedLogEvent>,
 }
@@ -120,9 +122,7 @@ pub struct InternalLogTapReporter {
 impl InternalLogTapReporter {
     /// Queue a structured internal log event without blocking the caller.
     pub fn log(&self, event: LogEvent) {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let item = QueuedLogEvent {
-            seq,
             estimated_bytes: estimate_event_size(&event),
             event,
         };
@@ -255,7 +255,6 @@ pub fn build(
     InternalLogTapRuntime,
 ) {
     let (tx, rx) = flume::bounded(config.ingest_channel_size);
-    let next_seq = Arc::new(AtomicU64::new(1));
     let dropped_on_ingest = Arc::new(AtomicU64::new(0));
     let state = Arc::new(RwLock::new(LogRetention::new(
         config.max_entries,
@@ -263,7 +262,6 @@ pub fn build(
     )));
 
     let reporter = InternalLogTapReporter {
-        next_seq: next_seq.clone(),
         dropped_on_ingest: dropped_on_ingest.clone(),
         tx,
     };
@@ -330,17 +328,14 @@ mod tests {
         {
             let mut state = runtime.state.write();
             state.push(QueuedLogEvent {
-                seq: 1,
                 event: event_with_message("1"),
                 estimated_bytes: 1,
             });
             state.push(QueuedLogEvent {
-                seq: 2,
                 event: event_with_message("2"),
                 estimated_bytes: 1,
             });
             state.push(QueuedLogEvent {
-                seq: 3,
                 event: event_with_message("3"),
                 estimated_bytes: 1,
             });
@@ -368,12 +363,10 @@ mod tests {
         {
             let mut state = runtime.state.write();
             state.push(QueuedLogEvent {
-                seq: 1,
                 event: event_with_message("1234"),
                 estimated_bytes: 4,
             });
             state.push(QueuedLogEvent {
-                seq: 2,
                 event: event_with_message("56"),
                 estimated_bytes: 2,
             });
@@ -402,7 +395,6 @@ mod tests {
             let mut state = runtime.state.write();
             for seq in 1..=4 {
                 state.push(QueuedLogEvent {
-                    seq,
                     event: event_with_message(&seq.to_string()),
                     estimated_bytes: 1,
                 });
@@ -431,13 +423,12 @@ mod tests {
 
         {
             let mut state = runtime.state.write();
+            state.next_seq = 5;
             state.push(QueuedLogEvent {
-                seq: 5,
                 event: event_with_message("a"),
                 estimated_bytes: 1,
             });
             state.push(QueuedLogEvent {
-                seq: 6,
                 event: event_with_message("b"),
                 estimated_bytes: 1,
             });
@@ -463,13 +454,12 @@ mod tests {
 
         {
             let mut state = runtime.state.write();
+            state.next_seq = 5;
             state.push(QueuedLogEvent {
-                seq: 5,
                 event: event_with_message("a"),
                 estimated_bytes: 1,
             });
             state.push(QueuedLogEvent {
-                seq: 6,
                 event: event_with_message("b"),
                 estimated_bytes: 1,
             });
@@ -512,6 +502,35 @@ mod tests {
         assert_eq!(seqs, vec![1, 2]);
     }
 
+    #[tokio::test]
+    async fn dropped_ingest_does_not_create_sequence_gaps() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            ingest_channel_size: 1,
+            max_entries: 10,
+            max_bytes: usize::MAX,
+        };
+        let (reporter, handle, runtime) = build(&config);
+
+        reporter.log(event_with_message("accepted"));
+        reporter.log(event_with_message("dropped"));
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        runtime
+            .run(cancel)
+            .await
+            .expect("runtime should shut down cleanly");
+
+        let result = handle.query(LogQuery {
+            after: None,
+            limit: 10,
+        });
+        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
+        assert_eq!(seqs, vec![1]);
+        assert_eq!(result.dropped_on_ingest, 1);
+    }
+
     #[test]
     fn query_keeps_cursor_when_no_new_logs_are_available() {
         let config = InternalLogTapConfig {
@@ -526,7 +545,6 @@ mod tests {
             let mut state = runtime.state.write();
             for seq in 1..=4 {
                 state.push(QueuedLogEvent {
-                    seq,
                     event: event_with_message(&seq.to_string()),
                     estimated_bytes: 1,
                 });
@@ -555,7 +573,6 @@ mod tests {
             let mut state = runtime.state.write();
             for seq in 1..=4 {
                 state.push(QueuedLogEvent {
-                    seq,
                     event: event_with_message(&seq.to_string()),
                     estimated_bytes: 1,
                 });
