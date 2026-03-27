@@ -238,25 +238,29 @@ pub fn make_test_batch<S: OtapBatchStore, const N: usize>(
 /// For each field defined in the schema that's not present in the batch,
 /// adds a default-valued column of the correct type.
 fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
-    let num_rows = batch.num_rows();
     let spec = crate::schema::payloads::get(payload_type);
-    let (schema, mut columns, _) = batch.into_parts();
-    let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+    let (mut schema, mut columns, input_len) = batch.into_parts();
+    let target_len = input_len.max(1);
 
-    // For each field in the spec, if it's missing from the batch, add a default column
-    for spec_field in spec.fields() {
-        if schema.column_with_name(spec_field.name).is_none() {
-            let (arrow_dt, default_arr) = default_array(&spec_field.data_type, num_rows);
-            fields.push(Arc::new(Field::new(
-                spec_field.name,
-                arrow_dt,
-                !spec_field.required,
-            )));
-            columns.push(default_arr);
-        }
+    // If the origin record batch was empty then it doesn't matter what
+    // fields it had, we just need to set everything.
+    if input_len == 0 {
+        schema = Schema::empty().into();
     }
 
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    let mut new_fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+    let columns_to_add = spec
+        .fields()
+        .iter()
+        .filter(|f| f.required)
+        .filter(|f| schema.column_with_name(f.name).is_none());
+    for spec_field in columns_to_add {
+        let (arrow_dt, default_arr) = default_array(&spec_field.data_type, target_len);
+        new_fields.push(Arc::new(Field::new(spec_field.name, arrow_dt, false)));
+        columns.push(default_arr);
+    }
+
+    RecordBatch::try_new(Arc::new(Schema::new(new_fields)), columns)
         .expect("Failed to create completed batch")
 }
 
