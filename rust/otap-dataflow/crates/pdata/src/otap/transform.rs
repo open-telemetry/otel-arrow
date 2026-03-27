@@ -1075,8 +1075,6 @@ pub fn apply_attribute_transform(
         }
     };
 
-    // TODO if the ID column has transport optimized encoding, we need to remove it.
-
     let mut attrs_record_batch = otap_batch.get(attrs_payload_type);
     if attrs_record_batch.is_none()
         && !id_column.is_empty()
