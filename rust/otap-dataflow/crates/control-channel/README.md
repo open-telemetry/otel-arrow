@@ -151,18 +151,6 @@ Ordinary retained traffic is bounded by configuration:
 
 Lifecycle tokens do not consume ordinary bounded completion capacity.
 
-### Type-safe lifecycle control
-
-The sender API separates lifecycle acceptance from generic control sends:
-
-- `accept_drain_ingress(...)`
-- `accept_shutdown(...)`
-- `try_send(...)`
-- `send(...).await`
-
-This prevents forced lifecycle traffic from being accidentally routed through
-the ordinary bounded send path.
-
 ### Backpressure vs non-blocking send
 
 For non-lifecycle traffic, the sender exposes two modes:
@@ -186,6 +174,8 @@ Properties:
 
 - arrival order is preserved within completion traffic
 - batching reduces receive-side overhead under heavy completion load
+- protocols that support completion signals such as `Ack` and `Nack` can take
+  advantage of this batching to reduce control-plane churn
 - `completion_batch_max` bounds the size of a single emitted batch
 - completion traffic remains eligible after `DrainIngress`
 - completion traffic remains eligible after `Shutdown` until terminal progress
@@ -235,9 +225,12 @@ Properties:
 
 - `DrainIngress` and `Shutdown` are accepted through reserved lifecycle slots
 - if both are present, `DrainIngress` is delivered first
-- once drain begins, normal control work is no longer accepted
-- once shutdown begins, normal control work is no longer accepted
-- pending normal control state is cleared when drain or shutdown is accepted
+- once drain begins, ordinary non-completion control work such as `Config`,
+  `TimerTick`, and `CollectTelemetry` is no longer accepted
+- once shutdown begins, ordinary non-completion control work such as `Config`,
+  `TimerTick`, and `CollectTelemetry` is no longer accepted
+- pending ordinary non-completion control state is cleared when drain or
+  shutdown is accepted
 - completion traffic may continue draining after shutdown is accepted
 
 ### Deadline-bounded terminal progress
