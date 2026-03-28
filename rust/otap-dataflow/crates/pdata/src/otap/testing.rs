@@ -237,8 +237,13 @@ pub fn make_test_batch<S: OtapBatchStore, const N: usize>(
 ///
 /// For each field defined in the schema that's not present in the batch,
 /// adds a default-valued column of the correct type.
-fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
+#[must_use]
+pub fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
     let spec = crate::schema::payloads::get(payload_type);
+    if !spec.fields.iter().any(|f| f.required) {
+        return batch;
+    }
+
     let (mut schema, mut columns, input_len) = batch.into_parts();
     let target_len = input_len.max(1);
 
