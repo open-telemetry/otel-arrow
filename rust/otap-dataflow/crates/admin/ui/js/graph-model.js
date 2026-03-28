@@ -81,12 +81,15 @@ export function buildGraph(
     const pipelineId = attrs["pipeline.id"];
     if (pipelineId) pipelineIds.add(pipelineId);
 
-    if (set.name === "channel.sender" || set.name === "channel.receiver") {
+    if (
+      set.name === "channel.sender" ||
+      set.name === "channel.receiver" ||
+      set.name === "channel.control"
+    ) {
       if (kindFilter && !kindFilter.has(attrs["channel.kind"])) continue;
       const channelId = attrs["channel.id"];
       if (!channelId || !scopedChannelId) continue;
       let channel = channels.get(scopedChannelId);
-      const resolvedPort = resolveChannelPort(attrs);
       if (!channel) {
         channel = {
           id: scopedChannelId,
@@ -94,9 +97,18 @@ export function buildGraph(
           kind: attrs["channel.kind"],
           senders: [],
           receivers: [],
+          control: null,
         };
         channels.set(scopedChannelId, channel);
       }
+      if (set.name === "channel.control") {
+        channel.control = {
+          attrs,
+          metrics: set.metrics || [],
+        };
+        continue;
+      }
+      const resolvedPort = resolveChannelPort(attrs);
       const role = set.name === "channel.sender" ? "sender" : "receiver";
       const endpoint = {
         nodeId: scopedNodeId || "unknown",
@@ -227,6 +239,7 @@ export function buildGraph(
             id: channel.id,
             displayId: channel.displayId || channel.id,
             kind: channel.kind,
+            control: channel.control,
             sender,
             receiver,
             multiSender: senders.length > 1,

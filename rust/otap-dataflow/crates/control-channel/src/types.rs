@@ -13,27 +13,19 @@ pub enum Phase {
     /// Ordinary control delivery is active.
     #[default]
     Normal,
-    /// `DrainIngress` has been latched and best-effort control is suppressed.
-    IngressDrainLatched,
-    /// `Shutdown` has been latched and the channel is draining retained work.
-    ShutdownLatched,
+    /// `DrainIngress` has been recorded and best-effort control is suppressed.
+    IngressDrainRecorded,
+    /// `Shutdown` has been recorded and the channel is draining retained work.
+    ShutdownRecorded,
 }
 
-/// Logical control class used by queue policy and backpressure reporting.
+/// Admission class used by queue policy and backpressure reporting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ControlClass {
-    /// One of the lifecycle tokens.
-    Lifecycle,
-    /// High-frequency completion traffic.
-    Completion,
-    /// Deferred retry work.
-    DelayedData,
-    /// Timer-driven work.
-    TimerTick,
-    /// Telemetry collection work.
-    CollectTelemetry,
-    /// Configuration updates.
-    Config,
+pub enum AdmissionClass {
+    /// Backpressured retained traffic such as completion messages (`Ack`/`Nack`).
+    Backpressured,
+    /// Coalesced best-effort work such as timer and telemetry ticks.
+    BestEffort,
 }
 
 /// Configuration for a control-optimized channel instance.
@@ -43,12 +35,9 @@ pub struct ControlChannelConfig {
     pub completion_msg_capacity: usize,
     /// Maximum number of completion messages returned in a single batch.
     pub completion_batch_max: usize,
-    /// Maximum number of delayed-data messages retained in the queue.
-    pub delayed_data_capacity: usize,
-    /// Maximum number of distinct pending timer sources.
-    pub timer_sources_capacity: usize,
-    /// Maximum number of distinct pending telemetry sources.
-    pub telemetry_sources_capacity: usize,
+    /// Maximum number of completion messages delivered consecutively before the
+    /// scheduler must surface one pending non-completion event.
+    pub completion_burst_limit: usize,
 }
 
 impl Default for ControlChannelConfig {
@@ -56,9 +45,7 @@ impl Default for ControlChannelConfig {
         Self {
             completion_msg_capacity: 256,
             completion_batch_max: 32,
-            delayed_data_capacity: 64,
-            timer_sources_capacity: 8,
-            telemetry_sources_capacity: 4,
+            completion_burst_limit: 32,
         }
     }
 }
@@ -68,6 +55,9 @@ impl ControlChannelConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.completion_batch_max == 0 {
             return Err(ConfigError::ZeroCompletionBatchMax);
+        }
+        if self.completion_burst_limit == 0 {
+            return Err(ConfigError::ZeroCompletionBurstLimit);
         }
         Ok(())
     }
@@ -79,15 +69,10 @@ pub enum ConfigError {
     /// `completion_batch_max` must be strictly positive.
     #[error("completion_batch_max must be greater than zero")]
     ZeroCompletionBatchMax,
+    /// `completion_burst_limit` must be strictly positive.
+    #[error("completion_burst_limit must be greater than zero")]
+    ZeroCompletionBurstLimit,
 }
-
-/// Deduplication key for timer-tick sources within one channel instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TimerSourceId(pub u64);
-
-/// Deduplication key for telemetry-collection sources within one channel instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TelemetrySourceId(pub u64);
 
 /// Shutdown-drain lifecycle message for receivers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,25 +139,6 @@ impl<PData> NackMsg<PData> {
     }
 }
 
-/// Deferred work item retained by the control channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DelayedDataMsg<PData> {
-    /// Target wakeup time for the deferred payload.
-    pub when: Instant,
-    /// Deferred payload.
-    pub data: Box<PData>,
-}
-
-impl<PData> DelayedDataMsg<PData> {
-    /// Creates a new delayed-data wrapper.
-    pub fn new(when: Instant, data: PData) -> Self {
-        Self {
-            when,
-            data: Box::new(data),
-        }
-    }
-}
-
 /// Completion message retained inside a batched completion queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompletionMsg<PData> {
@@ -185,10 +151,6 @@ pub enum CompletionMsg<PData> {
 /// Command submitted to the control-aware channel.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlCmd<PData> {
-    /// Lifecycle drain token.
-    DrainIngress(DrainIngressMsg),
-    /// Lifecycle shutdown token.
-    Shutdown(ShutdownMsg),
     /// Completion success.
     Ack(AckMsg<PData>),
     /// Completion failure.
@@ -199,45 +161,85 @@ pub enum ControlCmd<PData> {
         config: serde_json::Value,
     },
     /// Timer-driven control work.
-    TimerTick {
-        /// Deduplication source for the timer.
-        source: TimerSourceId,
-    },
+    TimerTick,
     /// Telemetry-driven control work.
-    CollectTelemetry {
-        /// Deduplication source for telemetry collection.
-        source: TelemetrySourceId,
-    },
-    /// Delayed retry work.
-    DelayedData(DelayedDataMsg<PData>),
+    CollectTelemetry,
 }
 
-/// Event surfaced by the control-aware receiver.
+/// Event surfaced by receiver-role control channels.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ControlEvent<PData> {
+pub enum ReceiverControlEvent<PData> {
     /// Lifecycle drain token.
     DrainIngress(DrainIngressMsg),
     /// Batch of completions in arrival order.
     CompletionBatch(Vec<CompletionMsg<PData>>),
-    /// One delayed-data item.
-    DelayedData(DelayedDataMsg<PData>),
     /// Latest configuration update.
     Config {
         /// Resolved configuration payload.
         config: serde_json::Value,
     },
     /// Timer-driven control work.
-    TimerTick {
-        /// Source that requested the tick.
-        source: TimerSourceId,
-    },
+    TimerTick,
     /// Telemetry-driven control work.
-    CollectTelemetry {
-        /// Source that requested collection.
-        source: TelemetrySourceId,
-    },
+    CollectTelemetry,
     /// Terminal lifecycle token.
     Shutdown(ShutdownMsg),
+}
+
+/// Event surfaced by non-receiver node control channels.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeControlEvent<PData> {
+    /// Batch of completions in arrival order.
+    CompletionBatch(Vec<CompletionMsg<PData>>),
+    /// Latest configuration update.
+    Config {
+        /// Resolved configuration payload.
+        config: serde_json::Value,
+    },
+    /// Timer-driven control work.
+    TimerTick,
+    /// Telemetry-driven control work.
+    CollectTelemetry,
+    /// Terminal lifecycle token.
+    Shutdown(ShutdownMsg),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CoreControlEvent<PData> {
+    DrainIngress(DrainIngressMsg),
+    CompletionBatch(Vec<CompletionMsg<PData>>),
+    Config { config: serde_json::Value },
+    TimerTick,
+    CollectTelemetry,
+    Shutdown(ShutdownMsg),
+}
+
+impl<PData> ReceiverControlEvent<PData> {
+    pub(crate) fn from_core(event: CoreControlEvent<PData>) -> Self {
+        match event {
+            CoreControlEvent::DrainIngress(msg) => Self::DrainIngress(msg),
+            CoreControlEvent::CompletionBatch(batch) => Self::CompletionBatch(batch),
+            CoreControlEvent::Config { config } => Self::Config { config },
+            CoreControlEvent::TimerTick => Self::TimerTick,
+            CoreControlEvent::CollectTelemetry => Self::CollectTelemetry,
+            CoreControlEvent::Shutdown(msg) => Self::Shutdown(msg),
+        }
+    }
+}
+
+impl<PData> NodeControlEvent<PData> {
+    pub(crate) fn from_core(event: CoreControlEvent<PData>) -> Self {
+        match event {
+            CoreControlEvent::DrainIngress(_) => {
+                panic!("DrainIngress must not be delivered on node control channels")
+            }
+            CoreControlEvent::CompletionBatch(batch) => Self::CompletionBatch(batch),
+            CoreControlEvent::Config { config } => Self::Config { config },
+            CoreControlEvent::TimerTick => Self::TimerTick,
+            CoreControlEvent::CollectTelemetry => Self::CollectTelemetry,
+            CoreControlEvent::Shutdown(msg) => Self::Shutdown(msg),
+        }
+    }
 }
 
 /// Result of a successful send attempt.
@@ -249,21 +251,43 @@ pub enum SendOutcome {
     Coalesced,
     /// The command replaced an older pending item of the same class.
     Replaced,
-    /// The lifecycle token was already latched earlier in the channel lifetime.
-    DuplicateLifecycle,
     /// The command was intentionally dropped because the channel is draining.
     DroppedDuringDrain,
 }
 
-/// Send errors for the control-aware sender.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum SendError {
+/// Result of submitting a lifecycle token to the sender API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleSendResult {
+    /// The lifecycle token was accepted for the first time.
+    Accepted,
+    /// The lifecycle token had already been accepted earlier in the channel lifetime.
+    AlreadyAccepted,
+    /// The channel is closed.
+    Closed,
+}
+
+/// Non-blocking send errors for the control-aware sender.
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum TrySendError<PData> {
     /// The channel has been closed.
     #[error("control channel is closed")]
-    Closed,
+    Closed(ControlCmd<PData>),
     /// The bounded class-specific capacity has been reached.
-    #[error("control channel capacity reached for {0:?}")]
-    Full(ControlClass),
+    #[error("control channel capacity reached for {admission_class:?}")]
+    Full {
+        /// The admission class whose bounded capacity is saturated.
+        admission_class: AdmissionClass,
+        /// The command that could not be enqueued.
+        cmd: ControlCmd<PData>,
+    },
+}
+
+/// Blocking send errors for the control-aware sender.
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum SendError<PData> {
+    /// The channel closed before the command could be enqueued.
+    #[error("control channel is closed")]
+    Closed(ControlCmd<PData>),
 }
 
 /// Snapshot of queue occupancy and lifecycle state.
@@ -271,20 +295,41 @@ pub enum SendError {
 pub struct ControlChannelStats {
     /// Current lifecycle phase.
     pub phase: Phase,
+    /// Whether `DrainIngress` has been accepted at least once during the channel lifetime.
+    pub drain_ingress_recorded: bool,
+    /// Whether `Shutdown` has been accepted at least once during the channel lifetime.
+    pub shutdown_recorded: bool,
     /// Whether a drain-ingress token is still pending delivery.
     pub has_pending_drain_ingress: bool,
     /// Whether a shutdown token is still pending delivery.
     pub has_pending_shutdown: bool,
     /// Number of retained completion messages.
     pub completion_len: usize,
-    /// Number of retained delayed-data items.
-    pub delayed_len: usize,
     /// Whether a configuration update is pending.
     pub has_pending_config: bool,
-    /// Number of pending timer sources.
-    pub timer_sources_len: usize,
-    /// Number of pending telemetry sources.
-    pub telemetry_sources_len: usize,
+    /// Whether a timer tick is pending.
+    pub has_pending_timer_tick: bool,
+    /// Whether a telemetry-collection request is pending.
+    pub has_pending_collect_telemetry: bool,
+    /// Number of completion messages delivered since the last non-completion
+    /// event. This is the fairness budget currently consumed.
+    pub completion_burst_len: usize,
+    /// Total number of completion batches emitted by the receiver side.
+    pub completion_batch_emitted_total: u64,
+    /// Total number of completion messages emitted across all batches.
+    pub completion_message_emitted_total: u64,
+    /// Total number of pending config replacements.
+    pub config_replaced_total: u64,
+    /// Total number of timer ticks coalesced into an already pending tick.
+    pub timer_tick_coalesced_total: u64,
+    /// Total number of telemetry-collection requests coalesced into an already pending request.
+    pub collect_telemetry_coalesced_total: u64,
+    /// Total number of normal control events dropped during drain or shutdown.
+    pub normal_event_dropped_during_drain_total: u64,
+    /// Total number of retained completions abandoned when forced shutdown fires.
+    pub completion_abandoned_on_forced_shutdown_total: u64,
+    /// Whether the shutdown deadline has already forced terminal progress.
+    pub shutdown_forced: bool,
     /// Whether the channel is closed for new sends.
     pub closed: bool,
 }

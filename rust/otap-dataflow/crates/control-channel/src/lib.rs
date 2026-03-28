@@ -14,9 +14,9 @@ pub mod shared;
 mod types;
 
 pub use types::{
-    AckMsg, CompletionMsg, ConfigError, ControlChannelConfig, ControlChannelStats, ControlClass,
-    ControlCmd, ControlEvent, DelayedDataMsg, DrainIngressMsg, NackMsg, Phase, SendError,
-    SendOutcome, ShutdownMsg, TelemetrySourceId, TimerSourceId,
+    AckMsg, AdmissionClass, CompletionMsg, ConfigError, ControlChannelConfig, ControlChannelStats,
+    ControlCmd, DrainIngressMsg, LifecycleSendResult, NackMsg, NodeControlEvent, Phase,
+    ReceiverControlEvent, SendError, SendOutcome, ShutdownMsg, TrySendError,
 };
 
 #[cfg(test)]

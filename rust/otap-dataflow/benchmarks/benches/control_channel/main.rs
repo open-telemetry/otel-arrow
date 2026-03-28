@@ -8,11 +8,11 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_channel::mpsc;
-use otap_df_control_channel::local::{self, LocalControlReceiver, LocalControlSender};
-use otap_df_control_channel::shared::{self, SharedControlReceiver, SharedControlSender};
+use otap_df_control_channel::local::{self, LocalNodeControlReceiver, LocalNodeControlSender};
+use otap_df_control_channel::shared::{self, SharedNodeControlReceiver, SharedNodeControlSender};
 use otap_df_control_channel::{
     AckMsg as ProtoAckMsg, CompletionMsg as ProtoCompletionMsg, ControlChannelConfig, ControlCmd,
-    ControlEvent, NackMsg as ProtoNackMsg, TelemetrySourceId, TimerSourceId,
+    NackMsg as ProtoNackMsg, NodeControlEvent,
 };
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::local::message::{LocalReceiver as CurrentLocalReceiver, LocalSender};
@@ -71,9 +71,7 @@ fn proto_channel_config() -> ControlChannelConfig {
     ControlChannelConfig {
         completion_msg_capacity: CHANNEL_CAPACITY,
         completion_batch_max: COMPLETION_BATCH_MAX,
-        delayed_data_capacity: 1,
-        timer_sources_capacity: 1,
-        telemetry_sources_capacity: 1,
+        completion_burst_limit: COMPLETION_BATCH_MAX,
     }
 }
 
@@ -204,61 +202,41 @@ async fn consume_current_shared(
     observed
 }
 
-async fn send_proto_completion_local(tx: &LocalControlSender<usize>, idx: usize) {
-    loop {
-        let result = if idx.is_multiple_of(NACK_EVERY) {
-            tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
-        } else {
-            tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx)))
-        };
-
-        match result {
-            Ok(_) => break,
-            Err(otap_df_control_channel::SendError::Full(
-                otap_df_control_channel::ControlClass::Completion,
-            )) => tokio::task::yield_now().await,
-            Err(err) => panic!("unexpected prototype local send error: {err}"),
-        }
-    }
+async fn send_proto_completion_local(tx: &LocalNodeControlSender<usize>, idx: usize) {
+    let result = if idx.is_multiple_of(NACK_EVERY) {
+        tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
+            .await
+    } else {
+        tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx))).await
+    };
+    let _ = result.expect("prototype local completion send should succeed");
 }
 
-async fn send_proto_completion_shared(tx: &SharedControlSender<usize>, idx: usize) {
-    loop {
-        let result = if idx.is_multiple_of(NACK_EVERY) {
-            tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
-        } else {
-            tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx)))
-        };
-
-        match result {
-            Ok(_) => break,
-            Err(otap_df_control_channel::SendError::Full(
-                otap_df_control_channel::ControlClass::Completion,
-            )) => tokio::task::yield_now().await,
-            Err(err) => panic!("unexpected prototype shared send error: {err}"),
-        }
-    }
+async fn send_proto_completion_shared(tx: &SharedNodeControlSender<usize>, idx: usize) {
+    let result = if idx.is_multiple_of(NACK_EVERY) {
+        tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
+            .await
+    } else {
+        tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx))).await
+    };
+    let _ = result.expect("prototype shared completion send should succeed");
 }
 
-async fn produce_proto_local(tx: LocalControlSender<usize>, scenario: Scenario) {
+async fn produce_proto_local(tx: LocalNodeControlSender<usize>, scenario: Scenario) {
     for idx in 0..COMPLETION_COUNT {
         send_proto_completion_local(&tx, idx).await;
 
         if scenario.has_control_noise() {
             if idx % TIMER_EVERY == 0 {
-                let result = tx.send(ControlCmd::TimerTick {
-                    source: TimerSourceId(1),
-                });
+                let result = tx.try_send(ControlCmd::TimerTick);
                 assert!(result.is_ok(), "timer tick should not fail");
             }
             if idx % TELEMETRY_EVERY == 0 {
-                let result = tx.send(ControlCmd::CollectTelemetry {
-                    source: TelemetrySourceId(1),
-                });
+                let result = tx.try_send(ControlCmd::CollectTelemetry);
                 assert!(result.is_ok(), "telemetry tick should not fail");
             }
             if idx % CONFIG_EVERY == 0 {
-                let result = tx.send(ControlCmd::Config {
+                let result = tx.try_send(ControlCmd::Config {
                     config: serde_json::json!({ "seq": idx }),
                 });
                 assert!(result.is_ok(), "config should not fail");
@@ -267,15 +245,13 @@ async fn produce_proto_local(tx: LocalControlSender<usize>, scenario: Scenario) 
     }
 }
 
-async fn produce_proto_shared(tx: SharedControlSender<usize>, scenario: Scenario) {
+async fn produce_proto_shared(tx: SharedNodeControlSender<usize>, scenario: Scenario) {
     for idx in 0..COMPLETION_COUNT {
         send_proto_completion_shared(&tx, idx).await;
 
         if scenario.has_control_noise() {
             let timer_result = if idx % TIMER_EVERY == 0 {
-                Some(tx.send(ControlCmd::TimerTick {
-                    source: TimerSourceId(1),
-                }))
+                Some(tx.try_send(ControlCmd::TimerTick))
             } else {
                 None
             };
@@ -284,9 +260,7 @@ async fn produce_proto_shared(tx: SharedControlSender<usize>, scenario: Scenario
             }
 
             let telemetry_result = if idx % TELEMETRY_EVERY == 0 {
-                Some(tx.send(ControlCmd::CollectTelemetry {
-                    source: TelemetrySourceId(1),
-                }))
+                Some(tx.try_send(ControlCmd::CollectTelemetry))
             } else {
                 None
             };
@@ -295,7 +269,7 @@ async fn produce_proto_shared(tx: SharedControlSender<usize>, scenario: Scenario
             }
 
             let config_result = if idx % CONFIG_EVERY == 0 {
-                Some(tx.send(ControlCmd::Config {
+                Some(tx.try_send(ControlCmd::Config {
                     config: serde_json::json!({ "seq": idx }),
                 }))
             } else {
@@ -308,12 +282,12 @@ async fn produce_proto_shared(tx: SharedControlSender<usize>, scenario: Scenario
     }
 }
 
-async fn consume_proto_local(mut rx: LocalControlReceiver<usize>) -> ObservedWork {
+async fn consume_proto_local(mut rx: LocalNodeControlReceiver<usize>) -> ObservedWork {
     let mut observed = ObservedWork::default();
 
     while let Some(event) = rx.recv().await {
         match event {
-            ControlEvent::CompletionBatch(batch) => {
+            NodeControlEvent::CompletionBatch(batch) => {
                 observed.completion_batches += 1;
                 observed.completions += batch.len();
                 for completion in batch {
@@ -322,12 +296,10 @@ async fn consume_proto_local(mut rx: LocalControlReceiver<usize>) -> ObservedWor
                     }
                 }
             }
-            ControlEvent::TimerTick { .. } => observed.timer_ticks += 1,
-            ControlEvent::CollectTelemetry { .. } => observed.telemetry_ticks += 1,
-            ControlEvent::Config { .. } => observed.configs += 1,
-            ControlEvent::DrainIngress(_)
-            | ControlEvent::Shutdown(_)
-            | ControlEvent::DelayedData(_) => {
+            NodeControlEvent::TimerTick => observed.timer_ticks += 1,
+            NodeControlEvent::CollectTelemetry => observed.telemetry_ticks += 1,
+            NodeControlEvent::Config { .. } => observed.configs += 1,
+            NodeControlEvent::Shutdown(_) => {
                 panic!("unexpected event in prototype local benchmark receiver");
             }
         }
@@ -336,12 +308,12 @@ async fn consume_proto_local(mut rx: LocalControlReceiver<usize>) -> ObservedWor
     observed
 }
 
-async fn consume_proto_shared(mut rx: SharedControlReceiver<usize>) -> ObservedWork {
+async fn consume_proto_shared(mut rx: SharedNodeControlReceiver<usize>) -> ObservedWork {
     let mut observed = ObservedWork::default();
 
     while let Some(event) = rx.recv().await {
         match event {
-            ControlEvent::CompletionBatch(batch) => {
+            NodeControlEvent::CompletionBatch(batch) => {
                 observed.completion_batches += 1;
                 observed.completions += batch.len();
                 for completion in batch {
@@ -350,12 +322,10 @@ async fn consume_proto_shared(mut rx: SharedControlReceiver<usize>) -> ObservedW
                     }
                 }
             }
-            ControlEvent::TimerTick { .. } => observed.timer_ticks += 1,
-            ControlEvent::CollectTelemetry { .. } => observed.telemetry_ticks += 1,
-            ControlEvent::Config { .. } => observed.configs += 1,
-            ControlEvent::DrainIngress(_)
-            | ControlEvent::Shutdown(_)
-            | ControlEvent::DelayedData(_) => {
+            NodeControlEvent::TimerTick => observed.timer_ticks += 1,
+            NodeControlEvent::CollectTelemetry => observed.telemetry_ticks += 1,
+            NodeControlEvent::Config { .. } => observed.configs += 1,
+            NodeControlEvent::Shutdown(_) => {
                 panic!("unexpected event in prototype shared benchmark receiver");
             }
         }
@@ -391,7 +361,8 @@ async fn run_current_shared_workload(scenario: Scenario) -> ObservedWork {
 }
 
 async fn run_proto_local_workload(scenario: Scenario) -> ObservedWork {
-    let (tx, rx) = local::channel(proto_channel_config()).expect("prototype channel config valid");
+    let (tx, rx) =
+        local::node_channel(proto_channel_config()).expect("prototype channel config valid");
 
     let ((), observed) = tokio::join!(produce_proto_local(tx, scenario), consume_proto_local(rx));
     assert_eq!(observed.completions, COMPLETION_COUNT);
@@ -399,7 +370,8 @@ async fn run_proto_local_workload(scenario: Scenario) -> ObservedWork {
 }
 
 async fn run_proto_shared_workload(scenario: Scenario) -> ObservedWork {
-    let (tx, rx) = shared::channel(proto_channel_config()).expect("prototype channel config valid");
+    let (tx, rx) =
+        shared::node_channel(proto_channel_config()).expect("prototype channel config valid");
 
     let ((), observed) = tokio::join!(produce_proto_shared(tx, scenario), consume_proto_shared(rx));
     assert_eq!(observed.completions, COMPLETION_COUNT);

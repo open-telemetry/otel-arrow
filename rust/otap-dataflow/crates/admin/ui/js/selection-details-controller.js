@@ -359,7 +359,11 @@ export function createSelectionDetailsController({
       ? formatValueWithUnit(capacityMetric.value, capacityMetric.unit)
       : "n/a";
 
-    const queueDepthMetric = findMetric(channel.receiver?.metrics || [], "queue.depth");
+    const queueDepthMetric =
+      findMetric(channel.receiver?.metrics || [], "queue.depth") ||
+      (channelKind === "control"
+        ? findMetric(channel.control?.metrics || [], "completion.queued")
+        : null);
     const queueDepthValue = queueDepthMetric
       ? formatValueWithUnit(queueDepthMetric.value, queueDepthMetric.unit)
       : "n/a";
@@ -388,6 +392,7 @@ export function createSelectionDetailsController({
 
     const senderMetricsMap = metricMap(channel.sender?.metrics || []);
     const receiverMetricsMap = metricMap(channel.receiver?.metrics || []);
+    const controlMetrics = channel.control?.metrics || [];
     const channelId = edge.channelId || channel?.id || edge.id;
     const channelDisplayId = edge.channelDisplayId || channel?.displayId || channelId;
     const sourceDisplayId = edge.sourceDisplayId || senderAttrs["node.id"] || edge.source;
@@ -446,6 +451,14 @@ export function createSelectionDetailsController({
     const safeRecvRate = escapeHtml(formatRateWithUnit(recvRate, "message"));
     const safeRecvErrRate = escapeHtml(formatRateWithUnit(recvErrRate, "error"));
     const safeWindowLabel = escapeHtml(formatWindowLabel());
+    const controlMetricsBlock = controlMetrics.length
+      ? `
+        <div class="mt-6">
+          <div class="text-xs uppercase tracking-wide text-slate-400">Control Metrics</div>
+          <div class="mt-2 text-xs">${renderMetricTable(controlMetrics)}</div>
+        </div>
+      `
+      : "";
 
     edgeDetailBody.innerHTML = `
       <div class="channel-rail">
@@ -511,6 +524,7 @@ export function createSelectionDetailsController({
           <div id="channelChartLegend" class="channel-chart-legend hidden"></div>
         </div>
       </div>
+      ${controlMetricsBlock}
     `;
 
     renderChannelChart(channelId);
