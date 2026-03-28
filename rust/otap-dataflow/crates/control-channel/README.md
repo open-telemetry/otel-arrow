@@ -292,54 +292,30 @@ These snapshots are intended to map cleanly to a future engine metric set such
 as `channel.control`, attached to the existing control-channel entity rather
 than to pipeline-global runtime-control telemetry.
 
-## Integration With The Engine
+## Future Work
 
-The channel is designed to integrate into the engine as a per-node control
-channel primitive.
+### Engine integration
 
-### Intended fit
-
-The natural engine mapping is:
+The intended engine integration is:
 
 - one control channel per node
 - receiver nodes use the receiver-role API
 - non-receiver nodes use the node-role API
-- control-channel telemetry is attached to the existing control-channel entity
+- control-channel telemetry is reported as `channel.control` from the existing
+  `stats()` surface
 
-### What the channel should own
-
-The channel should own per-node queue semantics:
-
-- lifecycle acceptance for that node
-- bounded admission
-- batching
-- coalescing
-- fairness
-- deadline-bounded terminal shutdown
-
-### What the channel should not own
-
-The channel should not own pipeline-wide shutdown orchestration.
-
-That remains an engine concern:
-
-- deciding when receivers should enter `DrainIngress`
-- waiting for `ReceiverDrained`
-- deciding when downstream nodes should receive `Shutdown`
-- reporting pipeline-wide lifecycle events
-
-If the engine adopts this channel, a thin convenience layer such as
-`begin_receiver_shutdown(deadline, reason)` should live in the engine, not in
-the channel. That helper would:
+Pipeline-wide shutdown orchestration should remain in the engine, not in the
+channel. In particular, an engine-side helper such as
+`begin_receiver_shutdown(deadline, reason)` should:
 
 - accept `DrainIngress` on receiver channels
-- track receiver drain completion
+- wait for `ReceiverDrained`
 - accept downstream `Shutdown` only after receiver drain completes
 
-This keeps the channel focused on per-node semantics while preserving the
-engine's receiver-first shutdown contract.
+After integration, behavior and performance should be revalidated under
+realistic engine workloads.
 
-### Future admin UI work
+### Admin UI
 
 Once the control channel is integrated into the engine and starts emitting a
 dedicated `channel.control` metric set, the admin UI should be updated in a
@@ -360,23 +336,3 @@ The intended UI changes are:
 
 Those updates are intentionally deferred until integration time so this branch
 stays focused on the standalone channel design rather than on dormant UI code.
-
-## Future Work And Integration Plan
-
-The design is intended to stay stable while the remaining work focuses on
-integration and operationalization.
-
-The main follow-up work is:
-
-- integrate this channel into the engine as the node-control channel
-  implementation for receiver and non-receiver nodes
-- add engine-side wiring for the `channel.control` metric set derived from the
-  existing `stats()` surface
-- add the deferred admin UI work described above once those metrics are emitted
-- validate behavior and performance again after integration under realistic
-  engine workloads
-
-The crate remains standalone until that integration work happens, but the goal
-is not to keep a separate model forever. The goal is to use this crate to pin
-down the channel semantics first, then wire those semantics into the engine with
-minimal ambiguity.
