@@ -33,13 +33,16 @@ It targets the specific needs of the OTAP engine:
 The design separates policy classes that behave differently:
 
 - retained and backpressured completion traffic
-- best-effort coalesced control work
-- latest-wins configuration updates
+- best-effort coalesced control work, where duplicate signals collapse into one
+  pending token
+- latest-wins configuration updates, where the newest pending value replaces
+  the older one
 - reserved lifecycle tokens
 
 ## Design
 
-The channel keeps one queue core with role-specific public APIs.
+The channel uses one internal queue implementation with role-specific public
+APIs.
 
 ### Operational overview
 
@@ -114,19 +117,18 @@ The channel currently supports:
 - retained completion traffic:
   - `Ack`
   - `Nack`
-- latest-wins normal control:
+- latest-wins normal control, where a new pending value replaces the previous
+  one:
   - `Config`
-- coalesced best-effort normal control:
+- coalesced best-effort normal control, where duplicate signals merge into one
+  pending token:
   - `TimerTick`
   - `CollectTelemetry`
 
-Delayed resume is intentionally out of scope. It is expected to be handled by a
-different mechanism than the control channel.
-
 ### Internal model
 
-The queue core stores different control classes separately instead of forcing
-everything through one FIFO:
+Internally, that queue implementation stores control classes in separate
+slots/queues instead of forcing everything through one FIFO:
 
 - reserved lifecycle slots for `DrainIngress` and `Shutdown`
 - a bounded completion deque for `Ack` and `Nack`
