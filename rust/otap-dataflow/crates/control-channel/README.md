@@ -6,16 +6,17 @@ traffic.
 Its purpose is to provide a control-plane primitive with semantics that are
 stronger and more explicit than a generic FIFO MPSC queue:
 
-- lifecycle delivery must not depend on ordinary control backlog
+- lifecycle control such as `DrainIngress` and `Shutdown` must still be
+  accepted and delivered even when ordinary control traffic is backlogged
 - high-frequency completion traffic must remain efficient
 - low-value control noise should be coalesced instead of competing with
   correctness-critical work
 - shutdown progress must remain bounded and explicit
 - the public API should make invalid lifecycle operations hard to express
 
-Today this crate is developed standalone so its queue policy, fairness, and
-shutdown behavior can be evaluated in isolation. The design is intended for
-future engine integration.
+Here, "lifecycle control" means the per-node shutdown transitions carried by
+`DrainIngress` and `Shutdown`, as opposed to ordinary control traffic such as
+`Ack`, `Nack`, `Config`, `TimerTick`, and `CollectTelemetry`.
 
 ## Goal
 
@@ -39,6 +40,46 @@ The design separates policy classes that behave differently:
 ## Design
 
 The channel keeps one queue core with role-specific public APIs.
+
+### Operational overview
+
+```text
+receiver sender                                  receiver-side delivery
+---------------                                  ----------------------
+accept_drain_ingress() ----------------------->  DrainIngress
+accept_shutdown(deadline) -------------------->  Shutdown
+try_send/send(Ack | Nack) -------------------->  CompletionBatch(...)
+try_send/send(Config) ------------------------>  Config
+try_send/send(TimerTick) --------------------->  TimerTick
+try_send/send(CollectTelemetry) -------------->  CollectTelemetry
+
+                     +------------------------------------------------+
+                     |              Control channel core              |
+                     |------------------------------------------------|
+                     | lifecycle slots: drain_ingress, shutdown       |
+                     | retained queue: completion deque               |
+                     | latest-wins slot: config                       |
+                     | coalesced flags: timer_tick, collect_telemetry |
+                     |------------------------------------------------|
+                     | phases: Normal                                 |
+                     |         IngressDrainRecorded                   |
+                     |         ShutdownRecorded                       |
+                     |------------------------------------------------|
+                     | stats / metrics surface:                       |
+                     |   completion_len                               |
+                     |   completion_batch_emitted_total               |
+                     |   completion_message_emitted_total             |
+                     |   config_replaced_total                        |
+                     |   timer_tick_coalesced_total                   |
+                     |   collect_telemetry_coalesced_total            |
+                     |   normal_event_dropped_during_drain_total      |
+                     |   shutdown_forced                              |
+                     +------------------------------------------------+
+```
+
+The sender side submits lifecycle operations and ordinary control commands into
+separate internal classes. The receiver side observes normalized control events
+whose ordering is governed by the channel's fairness and shutdown policy.
 
 ### Role-specific APIs
 
@@ -325,15 +366,22 @@ The intended UI changes are:
 Those updates are intentionally deferred until integration time so this branch
 stays focused on the standalone channel design rather than on dormant UI code.
 
-## Current Scope
+## Future Work And Integration Plan
 
-This crate currently exists as a standalone implementation so its behavior can
-be validated before integration, but the design itself is intentionally
-long-lived:
+The design is intended to stay stable while the remaining work focuses on
+integration and operationalization.
 
-- the public API is already role-specific
-- the queue semantics are aligned with engine shutdown and fairness needs
-- the observability surface is shaped for future engine telemetry integration
+The main follow-up work is:
 
-The remaining work is not about redefining the model; it is about wiring this
-channel into the engine in a controlled way.
+- integrate this channel into the engine as the node-control channel
+  implementation for receiver and non-receiver nodes
+- add engine-side wiring for the `channel.control` metric set derived from the
+  existing `stats()` surface
+- add the deferred admin UI work described above once those metrics are emitted
+- validate behavior and performance again after integration under realistic
+  engine workloads
+
+The crate remains standalone until that integration work happens, but the goal
+is not to keep a separate model forever. The goal is to use this crate to pin
+down the channel semantics first, then wire those semantics into the engine with
+minimal ambiguity.
