@@ -303,6 +303,28 @@ the channel. That helper would:
 This keeps the channel focused on per-node semantics while preserving the
 engine's receiver-first shutdown contract.
 
+### Future admin UI work
+
+Once the control channel is integrated into the engine and starts emitting a
+dedicated `channel.control` metric set, the admin UI should be updated in a
+separate change.
+
+The intended UI changes are:
+
+- graph model:
+  - associate `channel.control` metric sets with existing control-channel edges
+    using `channel.id`
+- selection details:
+  - render a control-specific metrics block for control channels
+  - use `completion.queued` as the queue-depth fallback when generic
+    `queue.depth` is not available
+- optional charting:
+  - add selected-channel views for control-specific gauges and counters only
+    after the emitted metric names are stable
+
+Those updates are intentionally deferred until integration time so this branch
+stays focused on the standalone channel design rather than on dormant UI code.
+
 ## Current Scope
 
 This crate currently exists as a standalone implementation so its behavior can
