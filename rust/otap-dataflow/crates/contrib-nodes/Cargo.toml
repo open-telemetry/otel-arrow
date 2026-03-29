@@ -14,15 +14,15 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
-otap-df-config = { path = "../config" }
-otap-df-engine = { path = "../engine" }
-otap-df-engine-macros = { path = "../engine-macros" }
-otap-df-otap = { path = "../otap" }
-otap-df-pdata = { path = "../pdata" }
+otap-df-config = { workspace = true }
+otap-df-engine = { workspace = true }
+otap-df-engine-macros = { workspace = true }
+otap-df-otap = { workspace = true }
+otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-channel = { path = "../channel" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
+otap-df-telemetry = { workspace = true }
+otap-df-channel = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
@@ -38,8 +38,8 @@ linkme.workspace = true
 chrono = { workspace = true, optional = true }
 geneva-uploader = { version = "0.4.0", optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
-data_engine_recordset = { path = "../../../experimental/query_engine/engine-recordset", optional = true }
-data_engine_recordset_otlp_bridge = { path = "../../../experimental/query_engine/engine-recordset-otlp-bridge", optional = true }
+data_engine_recordset = { workspace = true, optional = true }
+data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
@@ -50,7 +50,7 @@ rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
-urlencoding = { version = "2", optional = true }
+urlencoding = { workspace = true, optional = true }
 
 [features]
 contrib-exporters = [
@@ -95,8 +95,8 @@ axum.workspace = true
 clap.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
 humantime.workspace = true
-otap-df-engine = { path = "../engine", features = ["test-utils"] }
-otap-df-otap = { path = "../otap", features = ["test-utils"] }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
+otap-df-otap = { workspace = true, features = ["test-utils"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
