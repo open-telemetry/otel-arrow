@@ -86,6 +86,7 @@ export function buildGraph(
       const channelId = attrs["channel.id"];
       if (!channelId || !scopedChannelId) continue;
       let channel = channels.get(scopedChannelId);
+      const resolvedPort = resolveChannelPort(attrs);
       if (!channel) {
         channel = {
           id: scopedChannelId,
@@ -96,7 +97,6 @@ export function buildGraph(
         };
         channels.set(scopedChannelId, channel);
       }
-      const resolvedPort = resolveChannelPort(attrs);
       const role = set.name === "channel.sender" ? "sender" : "receiver";
       const endpoint = {
         nodeId: scopedNodeId || "unknown",
