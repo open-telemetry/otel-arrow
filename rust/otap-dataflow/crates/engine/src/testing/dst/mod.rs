@@ -8,8 +8,8 @@
 //! deterministic time and deterministic interleavings. Rather than
 //! reimplementing shutdown, timers, or Ack/Nack unwinding in a separate
 //! simulator, the harness runs the real
-//! [`crate::message::ProcessorMessageChannel`],
-//! [`crate::message::ExporterMessageChannel`],
+//! [`crate::message::ProcessorInbox`],
+//! [`crate::message::ExporterInbox`],
 //! [`RuntimeCtrlMsgManager`], and [`PipelineCompletionMsgDispatcher`] on the
 //! same kind of single-threaded runtime used by local engine components.
 //!
