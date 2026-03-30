@@ -693,7 +693,6 @@ mod test {
     #[test]
     fn test_calling_pipeline_with_function_call() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        let metrics_reporter = runtime.metrics_reporter();
         let query = "logs | set event_name = encode(sha256(event_name), \"hex\")";
         let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
         runtime
@@ -747,13 +746,6 @@ mod test {
                         )
                     }
                 }
-
-                // Trigger telemetry snapshot
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect");
             })
             .validate(|_ctx| async move {});
     }

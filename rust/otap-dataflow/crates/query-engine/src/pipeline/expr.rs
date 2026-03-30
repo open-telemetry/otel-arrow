@@ -48,7 +48,7 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
     InvokeFunctionArgument, InvokeFunctionScalarExpression, MathScalarExpression, PipelineFunction,
@@ -58,8 +58,11 @@ use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
+use datafusion::functions::unicode::substring;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::logical_expr::{
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
+};
 use datafusion::logical_expr_common::signature::Arity;
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
@@ -72,7 +75,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME, SUBSTRING_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
@@ -419,20 +422,12 @@ impl ExprLogicalPlanner {
         };
 
         // get function scalar UDF + metadata
-        //
-        // TODO: some functions may produce different result types depending on the input type.
-        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
-        // to compute the return type from the types of the input expressions.
-        let (scalar_func, return_type, func_requires_dict_downcast) = match func_name.as_ref() {
-            ENCODE_FUNC_NAME => (encode(), ExprLogicalType::String, false),
-            SHA256_FUNC_NAME => (sha256(), ExprLogicalType::Binary, true),
-            _ => {
-                return Err(Error::InvalidPipelineError {
-                    cause: format!("Unknown function '{func_name}"),
-                    query_location: Some(invoke_function_expression.get_query_location().clone()),
-                });
+        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
+            Error::InvalidPipelineError {
+                cause: format!("Unknown function '{func_name}"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
             }
-        };
+        })?;
 
         let invoke_arg_exprs = invoke_function_expression.get_arguments();
         let num_args = invoke_arg_exprs.len();
@@ -440,7 +435,7 @@ impl ExprLogicalPlanner {
         // check that we've been passed the correct number of arguments.
         //
         // TODO: in future we could also do some additional checking here on the types
-        if let Arity::Fixed(num_params) = scalar_func.signature().type_signature.arity() {
+        if let Arity::Fixed(num_params) = df_udf.scalar_udf.signature().type_signature.arity() {
             if num_args != num_params {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -516,23 +511,70 @@ impl ExprLogicalPlanner {
                 arg_exprs.push(arg_expr.logical_expr);
             }
 
-            let logical_expr =
-                Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
+            let mut logical_expr =
+                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+
+            if let Some(data_type) = df_udf.cast_result_to {
+                logical_expr = cast(logical_expr, data_type)
+            }
 
             // TODO: currently if the source does not require removing dict encoding, there may be
             // cases where the source expression would evaluate faster on dict-encoded data. If this
             // is the case, we may wish to defer removing the dict encoding, as currently it now
             // happens eagerly when projecting the source before evaluating the expression.
             let requires_dict_downcast =
-                source_requires_dict_downcast | func_requires_dict_downcast;
+                source_requires_dict_downcast | df_udf.requires_dict_downcast;
 
             Ok(ScopedLogicalExpr {
                 logical_expr,
-                expr_type: return_type,
+                expr_type: df_udf.return_type,
                 source: source_scope,
                 requires_dict_downcast,
             })
         }
+    }
+}
+
+struct DataFusionFunctionDef {
+    scalar_udf: Arc<ScalarUDF>,
+    return_type: ExprLogicalType,
+    requires_dict_downcast: bool,
+    cast_result_to: Option<DataType>,
+}
+
+impl DataFusionFunctionDef {
+    fn new(
+        scalar_udf: Arc<ScalarUDF>,
+        return_type: ExprLogicalType,
+        requires_dict_downcast: bool,
+        cast_result_to: Option<DataType>,
+    ) -> Self {
+        Self {
+            scalar_udf,
+            return_type,
+            requires_dict_downcast,
+            cast_result_to,
+        }
+    }
+
+    fn from_func_name(func_name: &str) -> Option<Self> {
+        // TODO: some functions may produce different result types depending on the input type.
+        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
+        // to compute the return type from the types of the input expressions.
+        // TODO: some of these functions that involve expanding to dictionary, we may wish to
+        // implement our own versions that can operate directly on dictionary arrays (or fix this
+        // upstream in datafusion_functions)
+        Some(match func_name.as_ref() {
+            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            SUBSTRING_FUNC_NAME => Self::new(
+                substring(),
+                ExprLogicalType::String,
+                true,
+                Some(DataType::Utf8),
+            ),
+            _ => return None,
+        })
     }
 }
 
@@ -3075,5 +3117,67 @@ mod test {
         ]);
 
         assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_substring() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                    )),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        7,
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [PipelineFunction::new_external("substring", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1.happened").finish(),
+            LogRecord::build().event_name("event2.happened").finish(),
+            LogRecord::build().event_name("abc").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("event1"), Some("event2"), Some("abc")]);
+
+        assert_eq!(result_arr.as_ref(), &expected)
     }
 }

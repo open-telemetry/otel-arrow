@@ -11,7 +11,10 @@ rust-version.workspace = true
 [dependencies]
 arrow = { workspace = true, features = ["prettyprint"] }
 async-trait = { workspace = true }
-datafusion = { workspace = true, features = ["crypto_expressions"] }
+datafusion = { workspace = true, features = [
+    "crypto_expressions",
+    "unicode_expressions",
+] }
 futures-core = { workspace = true }
 parking_lot = { workspace = true }
 roaring = { workspace = true }

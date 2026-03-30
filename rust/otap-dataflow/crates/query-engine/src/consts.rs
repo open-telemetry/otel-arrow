@@ -8,3 +8,4 @@ pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";
+pub(crate) const SUBSTRING_FUNC_NAME: &str = "substring";
