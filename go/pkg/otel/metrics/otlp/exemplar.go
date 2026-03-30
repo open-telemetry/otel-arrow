@@ -152,9 +152,6 @@ func ExemplarsStoreFrom(
 		}
 
 		if spanId != nil {
-			if len(spanId) != 8 {
-				return nil, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
-			}
 			var sid pcommon.SpanID
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
@@ -166,9 +163,6 @@ func ExemplarsStoreFrom(
 		}
 
 		if traceID != nil {
-			if len(traceID) != 16 {
-				return nil, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
-			}
 			var tid pcommon.TraceID
 			copy(tid[:], traceID)
 			exemplar.SetTraceID(tid)
