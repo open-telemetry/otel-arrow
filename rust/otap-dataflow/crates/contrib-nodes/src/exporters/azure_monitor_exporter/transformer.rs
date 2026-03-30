@@ -343,13 +343,18 @@ impl Transformer {
     }
 
     /// Write a body AnyValueView as a JSON string directly.
-    /// For the common string case, writes raw bytes directly to avoid
-    /// the intermediate String allocation from `extract_string_value`.
+    /// For the common string case with valid UTF-8, writes raw bytes directly
+    /// to avoid the intermediate String allocation from `extract_string_value`.
+    /// Falls back to `from_utf8_lossy` for malformed input to guarantee valid JSON.
     #[inline]
     fn write_body_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
         match value.value_type() {
             ValueType::String => match value.as_string() {
-                Some(s) => Self::write_json_string(s, out),
+                Some(s) if std::str::from_utf8(s).is_ok() => Self::write_json_string(s, out),
+                Some(s) => {
+                    let lossy = String::from_utf8_lossy(s);
+                    Self::write_json_string(lossy.as_bytes(), out);
+                }
                 None => out.extend_from_slice(b"null"),
             },
             _ => {
@@ -1611,6 +1616,87 @@ mod tests {
         assert_eq!(
             json["BoolCol"], false,
             "false must be serialized as false, not null"
+        );
+    }
+
+    /// Test that invalid UTF-8 bytes in a body string produce valid JSON
+    /// (using lossy replacement) instead of invalid JSON output.
+    #[test]
+    fn test_invalid_utf8_body_produces_valid_json() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
+
+        let transformer = Transformer::new(&config);
+
+        // Construct a protobuf request with invalid UTF-8 in the body.
+        // Protobuf string fields are nominally UTF-8, but in practice
+        // the bytes can be anything when transported via byte slices.
+        let mut request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue(String::new())),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        // Encode, then patch the body bytes with invalid UTF-8.
+        // We'll set a known placeholder first, then swap the raw bytes.
+        request.resource_logs[0].scope_logs[0].log_records[0].body = Some(AnyValue {
+            value: Some(OtelAnyValueEnum::StringValue("PLACEHOLDER".into())),
+        });
+        let mut encoded = request.encode_to_vec();
+
+        // Find the placeholder bytes and replace with invalid UTF-8 sequence.
+        // \x80\xFF are not valid UTF-8 start bytes.
+        let placeholder = b"PLACEHOLDER";
+        if let Some(pos) = encoded
+            .windows(placeholder.len())
+            .position(|w| w == placeholder)
+        {
+            // Replace first 3 bytes of PLACEHOLDER with invalid UTF-8
+            encoded[pos] = 0x80;
+            encoded[pos + 1] = 0xFF;
+            encoded[pos + 2] = 0xFE;
+            // Keep remaining bytes as valid ASCII filler (same length = no protobuf reframing)
+            encoded[pos + 3] = b'o';
+            encoded[pos + 4] = b'k';
+            encoded[pos + 5] = b'_';
+            encoded[pos + 6] = b't';
+            encoded[pos + 7] = b'a';
+            encoded[pos + 8] = b'i';
+            encoded[pos + 9] = b'l';
+            encoded[pos + 10] = b'!';
+        }
+
+        let logs_view = RawLogsData::new(&encoded);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        assert_eq!(results.len(), 1, "expected one log record");
+
+        // The output MUST be valid JSON — serde_json::from_slice must not fail.
+        let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
+            panic!(
+                "invalid JSON from body with invalid UTF-8: {e}\nraw: {:?}",
+                String::from_utf8_lossy(&results[0])
+            )
+        });
+
+        // The body value must be a string (not null) and must contain the
+        // Unicode replacement character U+FFFD for the invalid bytes.
+        let body = json["Body"]
+            .as_str()
+            .expect("Body should be a JSON string");
+        assert!(
+            body.contains('\u{FFFD}'),
+            "expected replacement character in body, got: {body:?}"
         );
     }
 }
