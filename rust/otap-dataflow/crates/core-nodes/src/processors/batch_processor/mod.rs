@@ -1305,40 +1305,15 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                             }
                         };
 
-                        Ok(())
-                    }
-                    NodeControlMsg::DelayedData { data, when } => {
-                        let signal = data.signal_type();
-
-                        match self.format_for_signal_format(data.signal_format()) {
-                            Some(ActiveBatchProcessorFormatKind::Otap) => self
-                                .otap_format()
-                                .expect(
-                                    "otap batch state must exist when otap format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            Some(ActiveBatchProcessorFormatKind::Otlp) => self
-                                .otlp_format()
-                                .expect(
-                                    "otlp batch state must exist when otlp format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            None => return Err(Self::no_active_format_error()),
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
-                    NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
-                    NodeControlMsg::DrainIngress { .. } => Ok(()),
-                    NodeControlMsg::TimerTick { .. } => unreachable!(),
-                    NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+                    Ok(())
                 }
-            }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
+                NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
+                NodeControlMsg::TimerTick { .. } => unreachable!(),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
