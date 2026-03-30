@@ -518,7 +518,7 @@ mod tests {
     impl shared::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-        mut msg_chan: shared::ExporterInbox<TestMsg>,
+            mut msg_chan: shared::ExporterInbox<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
