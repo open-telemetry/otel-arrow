@@ -10,7 +10,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterMessageChannel, Message};
+use otap_df_engine::message::{ExporterInbox, Message, Receiver};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -462,7 +462,7 @@ impl AzureMonitorExporter {
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: ExporterMessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
@@ -709,14 +709,14 @@ mod tests {
     ) -> (
         mpsc::Sender<NodeControlMsg<OtapPdata>>,
         mpsc::Sender<OtapPdata>,
-        ExporterMessageChannel<OtapPdata>,
+        ExporterInbox<OtapPdata>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<OtapPdata>>::new(capacity);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<OtapPdata>::new(capacity);
         (
             control_tx,
             pdata_tx,
-            ExporterMessageChannel::new(
+            ExporterInbox::new(
                 Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
                 0,

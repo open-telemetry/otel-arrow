@@ -63,9 +63,7 @@ impl<PData> ExporterInbox<PData> {
         interests: Interests,
     ) -> Self {
         Self {
-            inner: SharedExporterInbox::new_internal(
-                control_rx, pdata_rx, node_id, interests,
-            ),
+            inner: SharedExporterInbox::new_internal(control_rx, pdata_rx, node_id, interests),
         }
     }
 }
