@@ -21,6 +21,7 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 
+otap-df-control-channel = { path = "../crates/control-channel" }
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
@@ -54,6 +55,10 @@ workspace = true
 
 [[bench]]
 name = "channel"
+harness = false
+
+[[bench]]
+name = "control_channel"
 harness = false
 
 [[bench]]
