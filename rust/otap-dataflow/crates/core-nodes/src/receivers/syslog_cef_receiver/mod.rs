@@ -209,8 +209,14 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     buf: &mut Vec<u8>,
     max_size: usize,
 ) -> std::io::Result<BoundedReadResult> {
+    // Account for data already in buf from previous cancelled reads
+    // (select! cancellation can leave partial data in buf).
+    let remaining = max_size.saturating_sub(buf.len());
+    if remaining == 0 {
+        return Ok(BoundedReadResult::Truncated);
+    }
     let n = (&mut *reader)
-        .take(max_size as u64)
+        .take(remaining as u64)
         .read_until(b'\n', buf)
         .await?;
     match n {
@@ -1620,6 +1626,37 @@ mod read_line_bounded_tests {
         let r3 = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
         assert!(matches!(r3, BoundedReadResult::Complete));
         assert_eq!(buf, b"BBBB\n");
+    }
+
+    #[tokio::test]
+    async fn pre_filled_buf_caps_at_max_size() {
+        // Simulate select! cancellation: buf already has 50 bytes from a
+        // previous cancelled read. With max_size=64, only 14 more bytes
+        // should be read, preventing buf from exceeding max_size.
+        let data = vec![b'Z'; 100]; // plenty of data, no newline
+        let mut reader = make_reader(&data).await;
+
+        // Pre-fill buf with 50 bytes (as if a cancelled read left them)
+        let mut buf = vec![b'A'; 50];
+        let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
+        assert!(matches!(result, BoundedReadResult::Truncated));
+        // buf should be exactly max_size, not 50 + 64
+        assert_eq!(buf.len(), 64);
+        // First 50 bytes are the pre-filled A's, next 14 are Z's from the reader
+        assert!(buf[..50].iter().all(|&b| b == b'A'));
+        assert!(buf[50..].iter().all(|&b| b == b'Z'));
+    }
+
+    #[tokio::test]
+    async fn pre_filled_buf_at_limit_returns_truncated_immediately() {
+        // buf is already at max_size — should return Truncated without reading
+        let mut reader = make_reader(b"should not be read\n").await;
+        let mut buf = vec![b'X'; 64];
+        let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
+        assert!(matches!(result, BoundedReadResult::Truncated));
+        assert_eq!(buf.len(), 64);
+        // Verify nothing was read from the stream
+        assert!(buf.iter().all(|&b| b == b'X'));
     }
 }
 
