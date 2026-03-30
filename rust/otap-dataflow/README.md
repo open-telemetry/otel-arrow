@@ -404,7 +404,7 @@ Note: dhat-rs is a library crate designed for heap profiling in Rust programs.
 **Build**:
 
 **Build for both CPU & Memory profiling**:
-cargo build --profile profiling --features dhat-heap --workspace
+cargo build --profile profiling --no-default-features --features dhat-heap --workspace
 
 **Build for only CPU profiling**:
 cargo build --profile profiling --workspace

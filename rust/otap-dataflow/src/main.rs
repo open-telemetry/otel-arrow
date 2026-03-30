@@ -23,13 +23,61 @@ use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
+use cfg_if::cfg_if;
+
+// -----------------------------------------------------------------------------
+// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail (non-Windows only)
+// -----------------------------------------------------------------------------
+#[cfg(all(
+    not(any(test, doc)),
+    not(clippy),
+    any(
+        all(feature = "dhat-heap", feature = "mimalloc"),
+        all(feature = "dhat-heap", feature = "jemalloc"),
+        all(feature = "jemalloc", feature = "mimalloc"),
+    )
+))]
+compile_error!(
+    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`. \
+    Example: \
+        (mimalloc): cargo build --release --no-default-features --features mimalloc. \
+        (jemalloc): cargo build --release --no-default-features --features jemalloc. \
+        (dhat): cargo build --profile profiling --no-default-features --features dhat-heap."
+);
 
 #[cfg(feature = "dhat-heap")]
 use {
     std::sync::{LazyLock, Mutex},
     dhat::Profiler,
-    ctrlc,
 };
+
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc"))]
+use tikv_jemallocator::Jemalloc;
+
+// -----------------------------------------------------------------------------
+// Global allocator selection.
+// -----------------------------------------------------------------------------
+cfg_if! {
+    // dhat (profiling) — wins everywhere when enabled
+    if #[cfg(feature = "dhat-heap")] {
+        #[global_allocator]
+        static GLOBAL: dhat::Alloc = dhat::Alloc;
+        static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
+
+    // Windows default: mimalloc
+    } else if #[cfg(feature = "mimalloc")] {
+        #[global_allocator]
+        static GLOBAL: MiMalloc = MiMalloc;
+
+    // Linux default: jemalloc
+    } else if #[cfg(all(not(windows), feature = "jemalloc"))] {
+        #[global_allocator]
+        static GLOBAL: Jemalloc = Jemalloc;
+    }
+}
 
 // Crypto provider features are mutually exclusive.
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
@@ -67,45 +115,6 @@ compile_error!(
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
 
-#[cfg(feature = "mimalloc")]
-use mimalloc::MiMalloc;
-
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
-use tikv_jemallocator::Jemalloc;
-
-// =======================
-// dhat (profiling) — wins everywhere when enabled
-// =======================
-#[cfg(all(
-    feature = "dhat-heap",
-    not(any(test, doc, clippy))
-))]
-#[global_allocator]
-static GLOBAL: dhat::Alloc = dhat::Alloc;
-
-// =======================
-// Windows default: mimalloc (only if dhat-heap is OFF)
-// =======================
-#[cfg(all(
-    not(feature = "dhat-heap"),
-    feature = "mimalloc",
-    not(any(test, doc, clippy))
-))]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
-// =======================
-// Linux default: jemalloc (only if dhat-heap is OFF)
-// =======================
-#[cfg(all(
-    not(feature = "dhat-heap"),
-    feature = "jemalloc",
-    not(windows),
-    not(feature = "mimalloc"),
-    not(any(test, doc, clippy))
-))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -311,17 +320,7 @@ fn validate_engine_components(
     Ok(())
 }
 
-#[cfg(feature = "dhat-heap")]
-static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "dhat-heap")]
-    ctrlc::set_handler(|| {
-        if let Ok(mut guard) = DHAT_PROFILER.lock() {
-            // This triggers the drop and the file write
-            guard.take(); 
-        }
-        std::process::exit(130);
-    })?;
     #[cfg(feature = "dhat-heap")]
     {
         let mut profiler = DHAT_PROFILER.lock().unwrap();
