@@ -23,8 +23,8 @@ const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 struct FieldMapping {
     /// The source field name (e.g., "time_unix_nano", "body")
     source: LogRecordField,
-    /// The destination field name in the output JSON
-    dest: String,
+    /// Pre-serialized JSON key with quotes and colon, e.g. `"TimeGenerated":`
+    dest_key_json: Vec<u8>,
 }
 
 /// Enum representing known log record fields for fast matching
@@ -78,8 +78,8 @@ struct ParsedSchema {
     scope_mapping: HashMap<String, String>,
     /// Pre-parsed log record field mappings
     field_mappings: Vec<FieldMapping>,
-    /// Pre-parsed attribute mappings (source attr -> dest field)
-    attribute_mapping: HashMap<String, String>,
+    /// Pre-parsed attribute mappings (source attr -> pre-serialized JSON key)
+    attribute_mapping: HashMap<String, Vec<u8>>,
 }
 
 impl ParsedSchema {
@@ -96,7 +96,7 @@ impl ParsedSchema {
                             .as_str()
                             .map(String::from)
                             .unwrap_or_else(|| attr_dest.to_string());
-                        _ = attribute_mapping.insert(attr_key.clone(), dest);
+                        _ = attribute_mapping.insert(attr_key.clone(), serialize_json_key(&dest));
                     }
                 }
             } else {
@@ -105,9 +105,11 @@ impl ParsedSchema {
                     .ok_or_else(|| Error::UnknownLogRecordField { field: key.clone() })?;
                 let dest = value
                     .as_str()
-                    .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?
-                    .to_string();
-                field_mappings.push(FieldMapping { source, dest });
+                    .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?;
+                field_mappings.push(FieldMapping {
+                    source,
+                    dest_key_json: serialize_json_key(dest),
+                });
             }
         }
 
@@ -118,6 +120,17 @@ impl ParsedSchema {
             attribute_mapping,
         })
     }
+}
+
+/// Pre-serialize a JSON key with quotes and trailing colon: `"key":`
+/// Called once at config parse time so the hot path can use `extend_from_slice`.
+fn serialize_json_key(key: &str) -> Vec<u8> {
+    // JSON keys from config are simple ASCII identifiers; no escaping needed in practice,
+    // but we go through write_json_string for correctness.
+    let mut buf = Vec::with_capacity(key.len() + 3); // '"' + key + '"' + ':'
+    Transformer::write_json_string_public(key.as_bytes(), &mut buf);
+    buf.push(b':');
+    buf
 }
 
 /// Converts OTLP logs to Azure Log Analytics format
@@ -228,9 +241,8 @@ impl Transformer {
                 out.push(b',');
             }
             has_field = true;
-            // Write key
-            Self::write_json_string(fm.dest.as_bytes(), out);
-            out.push(b':');
+            // Write pre-serialized key (e.g. `"TimeGenerated":`)
+            out.extend_from_slice(&fm.dest_key_json);
             // Write value directly — avoids Value allocation for simple types
             Self::write_field_value_json(fm.source, log_record, out);
         }
@@ -244,8 +256,7 @@ impl Transformer {
                             out.push(b',');
                         }
                         has_field = true;
-                        Self::write_json_string(dest.as_bytes(), out);
-                        out.push(b':');
+                        out.extend_from_slice(dest);
                         Self::write_any_value_json(&val, out);
                     }
                 }
@@ -264,12 +275,10 @@ impl Transformer {
     ) {
         match field {
             LogRecordField::TimeUnixNano => {
-                let ts = Self::format_timestamp(log_record.time_unix_nano().unwrap_or(0));
-                Self::write_json_string(ts.as_bytes(), out);
+                Self::write_timestamp_json(log_record.time_unix_nano().unwrap_or(0), out);
             }
             LogRecordField::ObservedTimeUnixNano => {
-                let ts = Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0));
-                Self::write_json_string(ts.as_bytes(), out);
+                Self::write_timestamp_json(log_record.observed_time_unix_nano().unwrap_or(0), out);
             }
             LogRecordField::TraceId => match log_record.trace_id() {
                 Some(id) => Self::write_json_hex(id, out),
@@ -289,10 +298,7 @@ impl Transformer {
                 Self::write_json_string(log_record.severity_text().unwrap_or(b""), out);
             }
             LogRecordField::Body => match log_record.body() {
-                Some(b) => {
-                    let s = Self::extract_string_value(&b);
-                    Self::write_json_string(s.as_bytes(), out);
-                }
+                Some(b) => Self::write_body_value_json(&b, out),
                 None => out.extend_from_slice(b"null"),
             },
             LogRecordField::EventName => {
@@ -336,25 +342,64 @@ impl Transformer {
         }
     }
 
+    /// Write a body AnyValueView as a JSON string directly.
+    /// For the common string case, writes raw bytes directly to avoid
+    /// the intermediate String allocation from `extract_string_value`.
+    #[inline]
+    fn write_body_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
+        match value.value_type() {
+            ValueType::String => match value.as_string() {
+                Some(s) => Self::write_json_string(s, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            _ => {
+                let s = Self::extract_string_value(value);
+                Self::write_json_string(s.as_bytes(), out);
+            }
+        }
+    }
+
+    /// Public wrapper for `write_json_string`, used by `serialize_json_key` at config time.
+    #[doc(hidden)]
+    pub fn write_json_string_public(s: &[u8], out: &mut Vec<u8>) {
+        Self::write_json_string(s, out);
+    }
+
     /// Write a JSON-escaped string with quotes directly to output bytes.
+    /// Uses bulk-copy for runs of safe bytes to minimize per-byte overhead.
     #[inline]
     fn write_json_string(s: &[u8], out: &mut Vec<u8>) {
         out.push(b'"');
-        for &b in s {
-            match b {
-                b'"' => out.extend_from_slice(b"\\\""),
-                b'\\' => out.extend_from_slice(b"\\\\"),
-                b'\n' => out.extend_from_slice(b"\\n"),
-                b'\r' => out.extend_from_slice(b"\\r"),
-                b'\t' => out.extend_from_slice(b"\\t"),
-                b if b < 0x20 => {
-                    // Control characters: \u00XX
-                    out.extend_from_slice(b"\\u00");
-                    out.push(HEX_CHARS[(b >> 4) as usize]);
-                    out.push(HEX_CHARS[(b & 0x0f) as usize]);
+        let mut start = 0;
+        for (i, &b) in s.iter().enumerate() {
+            let needs_escape = b == b'"'
+                || b == b'\\'
+                || b == b'\n'
+                || b == b'\r'
+                || b == b'\t'
+                || b < 0x20;
+            if needs_escape {
+                if start < i {
+                    out.extend_from_slice(&s[start..i]);
                 }
-                _ => out.push(b),
+                match b {
+                    b'"' => out.extend_from_slice(b"\\\""),
+                    b'\\' => out.extend_from_slice(b"\\\\"),
+                    b'\n' => out.extend_from_slice(b"\\n"),
+                    b'\r' => out.extend_from_slice(b"\\r"),
+                    b'\t' => out.extend_from_slice(b"\\t"),
+                    _ => {
+                        // Control characters: \u00XX
+                        out.extend_from_slice(b"\\u00");
+                        out.push(HEX_CHARS[(b >> 4) as usize]);
+                        out.push(HEX_CHARS[(b & 0x0f) as usize]);
+                    }
+                }
+                start = i + 1;
             }
+        }
+        if start < s.len() {
+            out.extend_from_slice(&s[start..]);
         }
         out.push(b'"');
     }
@@ -362,6 +407,7 @@ impl Transformer {
     /// Write hex-encoded bytes as a JSON string directly.
     #[inline]
     fn write_json_hex(bytes: &[u8], out: &mut Vec<u8>) {
+        out.reserve(bytes.len() * 2 + 2);
         out.push(b'"');
         for &byte in bytes {
             out.push(HEX_CHARS[(byte >> 4) as usize]);
@@ -382,6 +428,85 @@ impl Transformer {
     fn write_i64(n: i64, out: &mut Vec<u8>) {
         let mut itoa_buf = itoa::Buffer::new();
         out.extend_from_slice(itoa_buf.format(n).as_bytes());
+    }
+
+    /// Write a 2-digit zero-padded number directly to output bytes.
+    #[inline]
+    fn write_2_digits(n: u32, out: &mut Vec<u8>) {
+        out.push(b'0' + (n / 10) as u8);
+        out.push(b'0' + (n % 10) as u8);
+    }
+
+    /// Write a 4-digit zero-padded year directly to output bytes.
+    #[inline]
+    fn write_4_digits(n: u32, out: &mut Vec<u8>) {
+        out.push(b'0' + (n / 1000) as u8);
+        out.push(b'0' + ((n / 100) % 10) as u8);
+        out.push(b'0' + ((n / 10) % 10) as u8);
+        out.push(b'0' + (n % 10) as u8);
+    }
+
+    /// Write nanoseconds with dot prefix, trimming trailing zeros.
+    #[inline]
+    fn write_nanos_trimmed(nanos: u32, out: &mut Vec<u8>) {
+        out.push(b'.');
+        let mut digits = [0u8; 9];
+        let mut n = nanos;
+        for d in digits.iter_mut().rev() {
+            *d = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        let mut len = 9;
+        while len > 0 && digits[len - 1] == b'0' {
+            len -= 1;
+        }
+        out.extend_from_slice(&digits[..len]);
+    }
+
+    /// Write a JSON-quoted RFC3339 timestamp directly to the output buffer.
+    /// Avoids String allocation since RFC3339 contains no JSON-special characters.
+    #[inline]
+    fn write_timestamp_json(time_unix_nano: u64, out: &mut Vec<u8>) {
+        if time_unix_nano == 0 {
+            let ts = chrono::Utc::now().to_rfc3339();
+            Self::write_json_string(ts.as_bytes(), out);
+            return;
+        }
+        let secs = (time_unix_nano / 1_000_000_000) as i64;
+        let nanos = (time_unix_nano % 1_000_000_000) as u32;
+        match chrono::DateTime::from_timestamp(secs, nanos) {
+            Some(dt) => {
+                use chrono::{Datelike, Timelike};
+                let year = dt.year();
+                // Safety: fall back to allocating path for unusual years
+                if !(0..=9999).contains(&year) {
+                    let ts = dt.to_rfc3339();
+                    Self::write_json_string(ts.as_bytes(), out);
+                    return;
+                }
+                out.push(b'"');
+                Self::write_4_digits(year as u32, out);
+                out.push(b'-');
+                Self::write_2_digits(dt.month(), out);
+                out.push(b'-');
+                Self::write_2_digits(dt.day(), out);
+                out.push(b'T');
+                Self::write_2_digits(dt.hour(), out);
+                out.push(b':');
+                Self::write_2_digits(dt.minute(), out);
+                out.push(b':');
+                Self::write_2_digits(dt.second(), out);
+                if nanos > 0 {
+                    Self::write_nanos_trimmed(nanos, out);
+                }
+                out.extend_from_slice(b"+00:00");
+                out.push(b'"');
+            }
+            None => {
+                let ts = chrono::Utc::now().to_rfc3339();
+                Self::write_json_string(ts.as_bytes(), out);
+            }
+        }
     }
 
     /// Apply resource mapping based on configuration
@@ -431,19 +556,6 @@ impl Transformer {
             hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
         }
         hex
-    }
-
-    /// Format nanosecond timestamp to RFC3339
-    #[inline]
-    fn format_timestamp(time_unix_nano: u64) -> String {
-        if time_unix_nano == 0 {
-            return chrono::Utc::now().to_rfc3339();
-        }
-        let secs = (time_unix_nano / 1_000_000_000) as i64;
-        let nanos = (time_unix_nano % 1_000_000_000) as u32;
-        chrono::DateTime::from_timestamp(secs, nanos)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
     }
 
     /// Convert AnyValueView to serde_json::Value
@@ -781,8 +893,13 @@ mod tests {
 
     #[test]
     fn test_zero_timestamp() {
-        let timestamp = Transformer::format_timestamp(0);
-        assert!(timestamp.contains('T'));
+        let mut out = Vec::new();
+        Transformer::write_timestamp_json(0, &mut out);
+        let s = String::from_utf8(out).unwrap();
+        // Should produce a quoted RFC3339 timestamp with 'T' separator
+        assert!(s.starts_with('"'));
+        assert!(s.ends_with('"'));
+        assert!(s.contains('T'));
     }
 
     #[test]

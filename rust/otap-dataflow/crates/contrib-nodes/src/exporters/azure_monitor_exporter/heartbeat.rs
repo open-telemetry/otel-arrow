@@ -101,18 +101,6 @@ fn parse_os_version() -> (String, String) {
 }
 
 #[inline]
-fn default_heartbeat_os_major_version() -> String {
-    let (major, _) = parse_os_version();
-    major
-}
-
-#[inline]
-fn default_heartbeat_os_minor_version() -> String {
-    let (_, minor) = parse_os_version();
-    minor
-}
-
-#[inline]
 fn default_heartbeat_os_type() -> String {
     match std::env::consts::OS {
         "linux" => "Linux".to_string(),
@@ -134,6 +122,8 @@ impl Heartbeat {
             .build()
             .map_err(Error::CreateClient)?;
 
+        let (os_major, os_minor) = parse_os_version();
+
         Ok(Self {
             client: http_client,
             endpoint: format!(
@@ -145,8 +135,8 @@ impl Heartbeat {
                 computer: default_heartbeat_computer(),
                 os_type: default_heartbeat_os_type(),
                 os_name: default_heartbeat_os_name(),
-                os_major_version: default_heartbeat_os_major_version(),
-                os_minor_version: default_heartbeat_os_minor_version(),
+                os_major_version: os_major,
+                os_minor_version: os_minor,
                 version: default_heartbeat_version(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
@@ -390,14 +380,14 @@ mod tests {
 
     #[test]
     fn test_default_heartbeat_os_major_version_returns_value() {
-        let major = default_heartbeat_os_major_version();
-        assert!(!major.is_empty());
+        let (os_major, _) = parse_os_version();
+        assert!(!os_major.is_empty());
     }
 
     #[test]
     fn test_default_heartbeat_os_minor_version_returns_value() {
-        let minor = default_heartbeat_os_minor_version();
-        assert!(!minor.is_empty());
+        let (_, os_minor) = parse_os_version();
+        assert!(!os_minor.is_empty());
     }
 
     // ==================== Constants Tests ====================

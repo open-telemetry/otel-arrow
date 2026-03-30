@@ -16,7 +16,6 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_pdata_views::views::logs::LogsDataView;
 
 use super::auth::{Auth, PendingTokenRefresh};
 use super::client::LogsIngestionClientPool;
@@ -34,6 +33,7 @@ use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
+use bytes::Bytes;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -223,12 +223,12 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn handle_logs_view<T: LogsDataView>(
+    async fn handle_logs_view(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         context: Context,
         payload: OtapPayload,
-        logs_view: &T,
+        log_entries: Vec<Bytes>,
         msg_id: u64,
     ) -> Result<(), EngineError> {
         if context.may_return_payload() {
@@ -237,9 +237,6 @@ impl AzureMonitorExporter {
             self.state
                 .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
         }
-
-        // Use a generic transformer method that accepts LogsDataView
-        let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
         for log_entry in log_entries {
             let entry_len = log_entry.len();
@@ -387,29 +384,18 @@ impl AzureMonitorExporter {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
-                let payload_to_match = payload.clone();
-
-                match payload_to_match {
+                
+                let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
-                        OtapArrowRecords::Logs(otap_records) => {
-                            let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
-
+                        OtapArrowRecords::Logs(_) => {
                             let logs_view =
-                                OtapLogsView::try_from(&otap_arrow_records).map_err(|e| {
+                                OtapLogsView::try_from(otap_records).map_err(|e| {
                                     let error = Error::LogsViewCreationFailed { source: e };
                                     EngineError::InternalError {
                                         message: error.to_string(),
                                     }
                                 })?;
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
                             otel_warn!(
@@ -417,21 +403,13 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otap_arrow"
                             );
+                            None
                         }
                     },
-
                     OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             let logs_view = RawLogsData::new(bytes.as_ref());
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
@@ -440,8 +418,20 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otlp_proto"
                             );
+                            None
                         }
                     },
+                };
+
+                if let Some(log_entries) = log_entries {
+                    self.handle_logs_view(
+                        effect_handler,
+                        context,
+                        payload,
+                        log_entries,
+                        *msg_id,
+                    )
+                    .await?;
                 }
             }
 
