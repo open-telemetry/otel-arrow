@@ -1308,4 +1308,85 @@ mod test {
         // also just assert there are no attrs remaining
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
     }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_function_calls() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = encode(sha256(value), "hex")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "k1",
+                        AnyValue::new_string(
+                            "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                        ),
+                    ),
+                    KeyValue::new(
+                        "k2",
+                        AnyValue::new_string(
+                            "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+                        ),
+                    ),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_function_calls_inside_conditional() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("sensitive", AnyValue::new_string("x")),
+                    KeyValue::new("not_sensitive", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key == "sensitive") {
+                    set value = encode(sha256(value), "hex")
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "sensitive",
+                        AnyValue::new_string(
+                            "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                        ),
+                    ),
+                    KeyValue::new("not_sensitive", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
 }

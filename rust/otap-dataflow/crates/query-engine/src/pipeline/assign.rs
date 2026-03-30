@@ -3856,14 +3856,20 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_update_attr_to_result_of_function_call() {
+    async fn test_update_attr_to_hash_function_call_result_all_supported_types() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
-                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .attributes(vec![
+                    KeyValue::new("str_attr", AnyValue::new_string("y")),
+                    KeyValue::new("binary_attr", AnyValue::new_bytes(b"418")),
+                ])
                 .finish(),
         ]);
 
-        let query = "logs | extend attributes[\"x\"] = encode(sha256(attributes[\"x\"]), \"hex\")";
+        let query = r#"logs | extend 
+            attributes["str_attr"] = encode(sha256(attributes["str_attr"]), "hex"),            
+            attributes["binary_attr"] = encode(sha256(attributes["binary_attr"]), "hex")
+        "#;
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
@@ -3875,19 +3881,26 @@ mod test {
         assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
 
         let result = pipeline.execute(input).await.unwrap();
-
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
         let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
         assert_eq!(
             log_0.attributes,
-            vec![KeyValue::new(
-                "x",
-                AnyValue::new_string(
-                    "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa"
+            vec![
+                KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string(
+                        "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa"
+                    )
+                ),
+                KeyValue::new(
+                    "binary_attr",
+                    AnyValue::new_string(
+                        "4c8d5b6c695d265fb63dd73f275a21043a5887b37cb4fea0552ecc7b417c8f88"
+                    )
                 )
-            )]
+            ]
         );
     }
 }

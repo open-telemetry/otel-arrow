@@ -2837,7 +2837,6 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        // TODO refactor to use helper
         let planner = ExprLogicalPlanner {};
         let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
@@ -2913,7 +2912,6 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        // TODO refactor to use helper
         let planner = ExprLogicalPlanner {};
         let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
