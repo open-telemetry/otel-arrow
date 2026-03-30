@@ -18,7 +18,7 @@ use arrow::{
 };
 use otap_df_pdata::{
     Consumer,
-    otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages},
+    otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch},
     proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::ArrowLogsService,
@@ -233,6 +233,8 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
         ]))],
     )
     .expect("failed to build test OTAP batch record");
+
+    let record_batch = complete_batch(payload_type, record_batch);
 
     let mut otap_batch = match payload_type {
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
