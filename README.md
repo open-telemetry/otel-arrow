@@ -7,32 +7,49 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10684/badge)](https://www.bestpractices.dev/projects/10684)
 [![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=7u3gFLH54G)](https://codecov.io/gh/open-telemetry/otel-arrow)
 
-**High-performance, column-oriented telemetry pipelines for
-[OpenTelemetry](https://opentelemetry.io/), powered by [Apache
+**OTel-Arrow is building a high-performance, end-to-end
+column-oriented telemetry pipeline for
+[OpenTelemetry](https://opentelemetry.io/) based on [Apache
 Arrow](https://arrow.apache.org/).**
 
 OTel-Arrow brings the efficiency of columnar data processing to
-OpenTelemetry. We've built a production-ready wire protocol that
-dramatically reduces network overhead (Phase 1), and an end-to-end
-dataflow engine in Rust that processes telemetry at 100k+ records/sec
-on a single CPU core with minimal memory overhead (Phase 2). With 55+
-contributors, 1800+ commits, and 2300+ pull requests, the project is
-entering an exciting new chapter — and we'd love your help shaping
-what comes next.
+OpenTelemetry. We've built a [production-ready protocol
+specification](./docs/otap-spec.md) and a [Rust dataflow
+engine](./rust/otap-dataflow/README.md) that dramatically reduce
+network, memory, and CPU usage for large-scale and low-resource
+telemetry pipelines.
 
-**[Join us in `#otel-arrow` on CNCF Slack →](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
+We've built a column-oriented persistence layer for storing OTAP
 
----
+We've connected the OTAP columnar representation with the the [Apache
+Datafusion](https://datafusion.apache.org/) embedded query engine and
+the wider [Apache Parquet](https://parquet.apache.org/) ecosystem.
+We're self-instrumenting our Rust OpenTelemetry pipeline with an
+experimental OpenTelemetry SDK that emits OTAP directly, making an
+**end-to-end columnar telemetry pipeline**.
+
+Our OpenTelemetry Collector components
+[`otelarrowreceiver`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
+and
+[`otelarrowexporter`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
+in Golang have been included in the OpenTelemetry Collector-Contrib
+distribution since [release
+v0.104.0](https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0)
+in July 1, 2024.
+
+Our project has 55+ contributors, 1800+ commits, and 2300+ pull
+requests.  **[Join us in `#otel-arrow` on CNCF
+Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
 
 ## What Is OTAP?
 
 The **OpenTelemetry Protocol with Apache Arrow** (OTAP) is a
-column-oriented transport for OpenTelemetry data. Where the standard
-OTLP protocol is row-oriented and stateless, OTAP uses Apache Arrow to
-encode telemetry in a columnar form that compresses dramatically
-better, especially over long-lived streams. OTAP maintains 100%
-compatibility with the OpenTelemetry data model — it's a better
-encoding, not a different schema.
+column-oriented representation for OpenTelemetry data for use in
+memory and on the wire. Where the standard OTLP protocol is
+row-oriented, OTAP uses Apache Arrow to encode telemetry in a columnar
+form that compresses dramatically better, especially over long-lived
+streams. OTAP maintains 100% compatibility with the OpenTelemetry data
+model, with a simple, non-lossy round trip between OTLP and OTAP.
 
 Key properties:
 
