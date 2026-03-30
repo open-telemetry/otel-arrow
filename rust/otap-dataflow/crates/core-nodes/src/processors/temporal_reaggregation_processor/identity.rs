@@ -323,6 +323,7 @@ impl AttributeHash {
 
         for attr in &buf.entries {
             buf.buf.push(HashTag::Key as u8);
+            write_len(&mut buf.buf, attr.key().len());
             buf.buf.extend_from_slice(attr.key());
             write_attr_value(&mut buf.buf, attr);
         }
