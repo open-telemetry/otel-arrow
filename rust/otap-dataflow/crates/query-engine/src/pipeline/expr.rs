@@ -48,17 +48,18 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{Field, Schema};
 use data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
-    InvokeFunctionArgument, MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
-    ScalarExpression, StaticScalarExpression, StringValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, MathScalarExpression, PipelineFunction,
+    PipelineFunctionImplementation, ScalarExpression, StaticScalarExpression, StringValue,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
+use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, cast, col, lit};
+use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -300,143 +301,7 @@ impl ExprLogicalPlanner {
                 })
             }
             ScalarExpression::InvokeFunction(invoke_function_expression) => {
-                // TODO no unwrap
-                let function_id = invoke_function_expression.get_function_id();
-                let function =
-                    functions
-                        .get(function_id)
-                        .ok_or_else(|| Error::InvalidPipelineError {
-                            cause: format!("function id {function_id} not found"),
-                            query_location: Some(scalar_expression.get_query_location().clone()),
-                        })?;
-                let PipelineFunctionImplementation::External(func_name) =
-                    function.get_implementation()
-                else {
-                    return Err(Error::NotYetSupportedError {
-                        message: "Only external functions currently supported in expression".into(),
-                    });
-                };
-
-                let (scalar_func, func_requires_dict_downcast) = match func_name.as_ref() {
-                    ENCODE_FUNC_NAME => (encode(), false),
-                    SHA256_FUNC_NAME => (datafusion::functions::crypto::sha256(), true),
-                    _ => {
-                        return Err(Error::InvalidPipelineError {
-                            cause: format!("Unknown function '{func_name}"),
-                            query_location: Some(scalar_expression.get_query_location().clone()),
-                        });
-                    }
-                };
-
-                let invoke_arg_exprs = invoke_function_expression.get_arguments();
-                if invoke_arg_exprs.len() == 0 {
-                    todo!("TODO zero arg exprs");
-                } else {
-                    /// TODO comment on what this does
-                    fn maybe_combined_scope(
-                        left: LogicalExprDataSource,
-                        right: LogicalExprDataSource,
-                    ) -> Option<DataScope> {
-                        match (left, right) {
-                            (
-                                LogicalExprDataSource::DataSource(left_scope),
-                                LogicalExprDataSource::DataSource(right_scope),
-                            ) => left_scope.can_combine(&right_scope).then_some(
-                                if !left_scope.is_scalar() {
-                                    left_scope
-                                } else {
-                                    right_scope
-                                },
-                            ),
-                            _ => None,
-                        }
-                    }
-
-                    let mut arg_exprs = Vec::with_capacity(invoke_arg_exprs.len());
-                    let (mut source_scope, mut source_requires_dict_downcast) =
-                        match &invoke_arg_exprs[0] {
-                            InvokeFunctionArgument::Scalar(scalar_expr) => {
-                                let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
-                                arg_exprs.push(arg_expr.logical_expr);
-                                (arg_expr.source, arg_expr.requires_dict_downcast)
-                            }
-                            InvokeFunctionArgument::MutableValue(_) => {
-                                return Err(Error::NotYetSupportedError {
-                                message:
-                                    "Mutable value as function argument not yet supported in expression".into()
-                            });
-                            }
-                        };
-
-                    for i in 1..invoke_arg_exprs.len() {
-                        match &invoke_arg_exprs[i] {
-                            InvokeFunctionArgument::Scalar(scalar_expr) => {
-                                let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
-                                if let Some(combined_scope) =
-                                    maybe_combined_scope(arg_expr.source, source_scope)
-                                {
-                                    source_scope =
-                                        LogicalExprDataSource::DataSource(combined_scope);
-                                } else {
-                                    todo!("error")
-                                }
-                                source_requires_dict_downcast |= arg_expr.requires_dict_downcast;
-                                arg_exprs.push(arg_expr.logical_expr);
-                            }
-                            InvokeFunctionArgument::MutableValue(_) => {
-                                return Err(Error::NotYetSupportedError {
-                                message:
-                                    "Mutable value as function argument not yet supported in expression".into()
-                            });
-                            }
-                        }
-                    }
-
-                    let logical_expr =
-                        Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
-
-                    Ok(ScopedLogicalExpr {
-                        logical_expr,
-                        // TODO - this shouldn't be hard-coded?
-                        expr_type: ExprLogicalType::String,
-                        source: source_scope,
-                        requires_dict_downcast: source_requires_dict_downcast
-                            | func_requires_dict_downcast,
-                    })
-                }
-
-                // let (arg_exprs, data_scope, source_requires_dict_downcast) = match invoke_arg_exprs
-                //     .len()
-                // {
-                //     1 => match &invoke_arg_exprs[0] {
-                //         InvokeFunctionArgument::Scalar(scalar_expr) => {
-                //             let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
-                //             (
-                //                 vec![arg_expr.logical_expr],
-                //                 arg_expr.source,
-                //                 arg_expr.requires_dict_downcast,
-                //             )
-                //         }
-                //         InvokeFunctionArgument::MutableValue(_) => {
-                //             return Err(Error::NotYetSupportedError {
-                //                 message:
-                //                     "Mutable value as function argument not yet supported in expression".into()
-                //             });
-                //         }
-                //     },
-                //     num_args => {
-                //         // TODO - support functions with with different number of arguments. In
-                //         // cases where there are zero args, or when the data comes from the same
-                //         // data scope, this will be trivial. Otherwise, we will need to perform a
-                //         // some joins to align the rows for each argument
-                //         return Err(Error::NotYetSupportedError {
-                //             message: format!(
-                //                 "Only single argument functions currently supported in expression. \
-                //                     Found func invocation with {num_args} args"
-                //             ),
-                //         });
-                //     }
-                // };
+                self.plan_function_invocation(invoke_function_expression, functions)
             }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
@@ -526,6 +391,126 @@ impl ExprLogicalPlanner {
                 source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
                 expr_type,
                 requires_dict_downcast: true,
+            })
+        }
+    }
+
+    fn plan_function_invocation(
+        &self,
+        invoke_function_expression: &InvokeFunctionScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        // get function definition
+        let function_id = invoke_function_expression.get_function_id();
+        let function = functions
+            .get(function_id)
+            .ok_or_else(|| Error::InvalidPipelineError {
+                cause: format!("function id {function_id} not found"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
+            })?;
+
+        // get function name
+        let PipelineFunctionImplementation::External(func_name) = function.get_implementation()
+        else {
+            return Err(Error::NotYetSupportedError {
+                message: "Only external functions currently supported in expression".into(),
+            });
+        };
+
+        // get function scalar UDF + metadata
+        let (scalar_func, return_type, func_requires_dict_downcast) = match func_name.as_ref() {
+            ENCODE_FUNC_NAME => (encode(), ExprLogicalType::String, false),
+            SHA256_FUNC_NAME => (sha256(), ExprLogicalType::Binary, true),
+            _ => {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!("Unknown function '{func_name}"),
+                    query_location: Some(invoke_function_expression.get_query_location().clone()),
+                });
+            }
+        };
+
+        let invoke_arg_exprs = invoke_function_expression.get_arguments();
+        if invoke_arg_exprs.len() == 0 {
+            // TODO support functions with zero arguments, such as `now()`.
+            return Err(Error::NotYetSupportedError {
+                message: "Only functions with one or more arguments currently supported".into(),
+            });
+        } else {
+            // helper function for extracting scalar expression from function argument
+            fn arg_to_scalar(arg: &InvokeFunctionArgument) -> Result<&ScalarExpression> {
+                match arg {
+                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
+                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
+                        message:
+                            "Mutable value as function argument not yet supported in expression"
+                                .into(),
+                    }),
+                }
+            }
+
+            // build up the list of arguments while keeping track of the source scope and whether
+            // we need to remove dict encoding from the source columns before invoking function
+            let mut arg_exprs = Vec::with_capacity(invoke_arg_exprs.len());
+
+            let first_arg_expr =
+                self.plan_scalar_expr(arg_to_scalar(&invoke_arg_exprs[0])?, functions)?;
+            arg_exprs.push(first_arg_expr.logical_expr);
+            let mut source_scope = first_arg_expr.source;
+            let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
+
+            for i in 1..invoke_arg_exprs.len() {
+                let arg_expr =
+                    self.plan_scalar_expr(arg_to_scalar(&invoke_arg_exprs[i])?, functions)?;
+
+                // check if the data scope of the argument can be combined without doing a join.
+                // We would need to join data from different scopes if the arguments have would
+                // require it, such as in function calls like:
+                // some_func(severity_text, attributes["x"])
+                let combined_scope =
+                    match (arg_expr.source, source_scope) {
+                        (
+                            LogicalExprDataSource::DataSource(left_scope),
+                            LogicalExprDataSource::DataSource(right_scope),
+                        ) => left_scope.can_combine(&right_scope).then_some(
+                            if !left_scope.is_scalar() {
+                                left_scope
+                            } else {
+                                right_scope
+                            },
+                        ),
+                        _ => None,
+                    };
+
+                if let Some(combined_scope) = combined_scope {
+                    source_scope = LogicalExprDataSource::DataSource(combined_scope);
+                } else {
+                    // TODO - eventually we'll create a new join expr node and invoke the function
+                    // on result of the join.
+                    return Err(Error::NotYetSupportedError {
+                        message: "Functions arguments with differing data scopes not yet supported"
+                            .into(),
+                    });
+                }
+                source_requires_dict_downcast |= arg_expr.requires_dict_downcast;
+                arg_exprs.push(arg_expr.logical_expr);
+            }
+
+            let logical_expr =
+                Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
+
+            // TODO - currently if the source does not require removing dict encoding, but it
+            // is required by the function, there may be cases where the source expression would
+            // evaluate faster on dict-encoded data. If this is the case, we may wish to defer
+            // removing the dict encoding, as currently it now happens eagerly when projecting the
+            // source before evaluating the expression.
+            let requires_dict_downcast =
+                source_requires_dict_downcast | func_requires_dict_downcast;
+
+            Ok(ScopedLogicalExpr {
+                logical_expr,
+                expr_type: return_type,
+                source: source_scope,
+                requires_dict_downcast,
             })
         }
     }
@@ -927,7 +912,9 @@ impl PhysicalExprEvalResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray, UInt8Array};
+    use arrow::array::{
+        BinaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+    };
     use arrow::compute::take;
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
@@ -2857,15 +2844,26 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
         let result_vals = result.map(|result| result.values);
-        let arr = match &result_vals {
+        let result_arr = match &result_vals {
             Some(ColumnarValue::Array(arr)) => arr,
             otherwise => {
                 panic!("expected arr, got scalar {otherwise:?}")
             }
         };
 
-        println!("{arr:?}");
-        todo!("assert")
+        let expected = BinaryArray::from_iter([
+            None,
+            Some(&[
+                41, 102, 59, 154, 50, 238, 50, 194, 202, 90, 100, 81, 23, 105, 108, 224, 136, 140,
+                132, 179, 159, 143, 217, 28, 14, 196, 235, 205, 9, 2, 93, 244,
+            ]),
+            Some(&[
+                32, 45, 143, 65, 186, 8, 115, 18, 99, 6, 214, 10, 49, 12, 91, 194, 89, 140, 109,
+                30, 102, 152, 208, 151, 71, 205, 33, 139, 40, 71, 49, 226,
+            ]),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected)
     }
 
     #[test]
@@ -2922,14 +2920,19 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
         let result_vals = result.map(|result| result.values);
-        let arr = match &result_vals {
+        let result_arr = match &result_vals {
             Some(ColumnarValue::Array(arr)) => arr,
             otherwise => {
                 panic!("expected arr, got scalar {otherwise:?}")
             }
         };
 
-        println!("{arr:?}");
-        todo!("assertions")
+        let expected = StringArray::from_iter([
+            None,
+            Some("29663b9a32ee32c2ca5a645117696ce0888c84b39f8fd91c0ec4ebcd09025df4"),
+            Some("202d8f41ba0873126306d60a310c5bc2598c6d1e6698d09747cd218b284731e2"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
     }
 }
