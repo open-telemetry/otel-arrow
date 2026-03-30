@@ -3855,8 +3855,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_update_attr_to_hash_function_call_result_all_supported_types() {
+    async fn test_update_attr_to_hash_function_call_result_all_supported_types<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
@@ -3870,7 +3869,7 @@ mod test {
             attributes["str_attr"] = encode(sha256(attributes["str_attr"]), "hex"),            
             attributes["binary_attr"] = encode(sha256(attributes["binary_attr"]), "hex")
         "#;
-        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -3902,5 +3901,15 @@ mod test {
                 )
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_hash_function_call_result_all_supported_types_opl_parser() {
+        test_update_attr_to_hash_function_call_result_all_supported_types::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_hash_function_call_result_all_supported_types_kql_parser() {
+        test_update_attr_to_hash_function_call_result_all_supported_types::<KqlParser>().await
     }
 }

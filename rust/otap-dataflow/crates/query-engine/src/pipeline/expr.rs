@@ -60,6 +60,7 @@ use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::logical_expr_common::signature::Arity;
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -418,6 +419,10 @@ impl ExprLogicalPlanner {
         };
 
         // get function scalar UDF + metadata
+        //
+        // TODO: some functions may produce different result types depending on the input type.
+        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
+        // to compute the return type from the types of the input expressions.
         let (scalar_func, return_type, func_requires_dict_downcast) = match func_name.as_ref() {
             ENCODE_FUNC_NAME => (encode(), ExprLogicalType::String, false),
             SHA256_FUNC_NAME => (sha256(), ExprLogicalType::Binary, true),
@@ -430,8 +435,24 @@ impl ExprLogicalPlanner {
         };
 
         let invoke_arg_exprs = invoke_function_expression.get_arguments();
+        let num_args = invoke_arg_exprs.len();
+
+        // check that we've been passed the correct number of arguments.
+        //
+        // TODO: in future we could also do some additional checking here on the types
+        if let Arity::Fixed(num_params) = scalar_func.signature().type_signature.arity() {
+            if num_args != num_params {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "function '{func_name}' expects {num_params} arguments. Received {num_args}"
+                    ),
+                    query_location: Some(invoke_function_expression.get_query_location().clone()),
+                });
+            }
+        }
+
         if invoke_arg_exprs.len() == 0 {
-            // TODO support functions with zero arguments, such as `now()`.
+            // TODO: support functions with zero arguments, such as `now()`.
             return Err(Error::NotYetSupportedError {
                 message: "Only functions with one or more arguments currently supported".into(),
             });
@@ -484,7 +505,7 @@ impl ExprLogicalPlanner {
                 if let Some(combined_scope) = combined_scope {
                     source_scope = LogicalExprDataSource::DataSource(combined_scope);
                 } else {
-                    // TODO - eventually we'll create a new join expr node and invoke the function
+                    // TODO: eventually we'll create a new join expr node and invoke the function
                     // on result of the join.
                     return Err(Error::NotYetSupportedError {
                         message: "Functions arguments with differing data scopes not yet supported"
@@ -498,11 +519,10 @@ impl ExprLogicalPlanner {
             let logical_expr =
                 Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
 
-            // TODO - currently if the source does not require removing dict encoding, but it
-            // is required by the function, there may be cases where the source expression would
-            // evaluate faster on dict-encoded data. If this is the case, we may wish to defer
-            // removing the dict encoding, as currently it now happens eagerly when projecting the
-            // source before evaluating the expression.
+            // TODO: currently if the source does not require removing dict encoding, there may be
+            // cases where the source expression would evaluate faster on dict-encoded data. If this
+            // is the case, we may wish to defer removing the dict encoding, as currently it now
+            // happens eagerly when projecting the source before evaluating the expression.
             let requires_dict_downcast =
                 source_requires_dict_downcast | func_requires_dict_downcast;
 
@@ -2809,7 +2829,7 @@ mod test {
     }
 
     #[test]
-    fn test_function_invocation_sha256_on_root() {
+    fn test_function_invocation_sha256() {
         let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
             QueryLocation::new_fake(),
             None,
@@ -2866,7 +2886,61 @@ mod test {
     }
 
     #[test]
-    fn test_function_invocation_sha256_and_encode_on_root() {
+    fn test_function_invocation_invalid_number_of_args_handled_during_planning() {
+        let invalid_args = vec![
+            vec![], // empty args,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+            ],
+        ];
+
+        for invalid_arg_set in invalid_args {
+            let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                0,
+                invalid_arg_set,
+            ));
+
+            // expects one argument ...
+            let functions = [PipelineFunction::new_external("sha256", vec![], None)];
+
+            let planner = ExprLogicalPlanner {};
+            let err = planner
+                .plan_scalar_expr(&input_expr, &functions)
+                .unwrap_err();
+            let err_message = err.to_string();
+            assert!(
+                err_message.contains("function 'sha256' expects 1 arguments. Received "),
+                "unexpected error message: {}",
+                err_message
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_hex() {
         let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
             QueryLocation::new_fake(),
             None,
@@ -2929,6 +3003,75 @@ mod test {
             None,
             Some("29663b9a32ee32c2ca5a645117696ce0888c84b39f8fd91c0ec4ebcd09025df4"),
             Some("202d8f41ba0873126306d60a310c5bc2598c6d1e6698d09747cd218b284731e2"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_base64() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "base64",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([
+            None,
+            Some("KWY7mjLuMsLKWmRRF2ls4IiMhLOfj9kcDsTrzQkCXfQ"),
+            Some("IC2PQboIcxJjBtYKMQxbwlmMbR5mmNCXR80hiyhHMeI"),
         ]);
 
         assert_eq!(result_arr.as_ref(), &expected);
