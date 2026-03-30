@@ -56,6 +56,7 @@ use data_engine_expressions::{
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
+use datafusion::functions::encoding::encode;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, cast, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
@@ -316,6 +317,7 @@ impl ExprLogicalPlanner {
                 };
 
                 let (scalar_func, func_requires_dict_downcast) = match func_name.as_ref() {
+                    "encode" => (encode(), false),
                     "sha256" => (datafusion::functions::crypto::sha256(), true),
                     _ => {
                         return Err(Error::InvalidPipelineError {
@@ -326,50 +328,116 @@ impl ExprLogicalPlanner {
                 };
 
                 let invoke_arg_exprs = invoke_function_expression.get_arguments();
-                let (arg_exprs, data_scope, source_requires_dict_downcast) = match invoke_arg_exprs
-                    .len()
-                {
-                    1 => match &invoke_arg_exprs[0] {
-                        InvokeFunctionArgument::Scalar(scalar_expr) => {
-                            let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                if invoke_arg_exprs.len() == 0 {
+                    todo!("TODO zero arg exprs");
+                } else {
+                    /// TODO comment on what this does
+                    fn maybe_combined_scope(
+                        left: LogicalExprDataSource,
+                        right: LogicalExprDataSource,
+                    ) -> Option<DataScope> {
+                        match (left, right) {
                             (
-                                vec![arg_expr.logical_expr],
-                                arg_expr.source,
-                                arg_expr.requires_dict_downcast,
-                            )
+                                LogicalExprDataSource::DataSource(left_scope),
+                                LogicalExprDataSource::DataSource(right_scope),
+                            ) => left_scope.can_combine(&right_scope).then_some(
+                                if !left_scope.is_scalar() {
+                                    left_scope
+                                } else {
+                                    right_scope
+                                },
+                            ),
+                            _ => None,
                         }
-                        InvokeFunctionArgument::MutableValue(_) => {
-                            return Err(Error::NotYetSupportedError {
+                    }
+
+                    let mut arg_exprs = Vec::with_capacity(invoke_arg_exprs.len());
+                    let (mut source_scope, mut source_requires_dict_downcast) =
+                        match &invoke_arg_exprs[0] {
+                            InvokeFunctionArgument::Scalar(scalar_expr) => {
+                                let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                                arg_exprs.push(arg_expr.logical_expr);
+                                (arg_expr.source, arg_expr.requires_dict_downcast)
+                            }
+                            InvokeFunctionArgument::MutableValue(_) => {
+                                return Err(Error::NotYetSupportedError {
                                 message:
                                     "Mutable value as function argument not yet supported in expression".into()
                             });
+                            }
+                        };
+
+                    for i in 1..invoke_arg_exprs.len() {
+                        match &invoke_arg_exprs[i] {
+                            InvokeFunctionArgument::Scalar(scalar_expr) => {
+                                let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                                if let Some(combined_scope) =
+                                    maybe_combined_scope(arg_expr.source, source_scope)
+                                {
+                                    source_scope =
+                                        LogicalExprDataSource::DataSource(combined_scope);
+                                } else {
+                                    todo!("error")
+                                }
+                                source_requires_dict_downcast |= arg_expr.requires_dict_downcast;
+                                arg_exprs.push(arg_expr.logical_expr);
+                                // arg_exprs.push(arg_expr.logical_expr);
+                                // (arg_expr.source, arg_expr.requires_dict_downcast)
+                            }
+                            InvokeFunctionArgument::MutableValue(_) => {
+                                return Err(Error::NotYetSupportedError {
+                                message:
+                                    "Mutable value as function argument not yet supported in expression".into()
+                            });
+                            }
                         }
-                    },
-                    num_args => {
-                        // TODO - support functions with with different number of arguments. In
-                        // cases where there are zero args, or when the data comes from the same
-                        // data scope, this will be trivial. Otherwise, we will need to perform a
-                        // some joins to align the rows for each argument
-                        return Err(Error::NotYetSupportedError {
-                            message: format!(
-                                "Only single argument functions currently supported in expression. \
-                                    Found func invocation with {num_args} args"
-                            ),
-                        });
                     }
-                };
 
-                let mut logical_expr =
-                    Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
+                    let logical_expr =
+                        Expr::ScalarFunction(ScalarFunction::new_udf(scalar_func, arg_exprs));
 
-                Ok(ScopedLogicalExpr {
-                    logical_expr,
-                    // TODO - this shouldn't be hard-coded?
-                    expr_type: ExprLogicalType::String,
-                    source: data_scope,
-                    requires_dict_downcast: source_requires_dict_downcast
-                        | func_requires_dict_downcast,
-                })
+                    Ok(ScopedLogicalExpr {
+                        logical_expr,
+                        // TODO - this shouldn't be hard-coded?
+                        expr_type: ExprLogicalType::String,
+                        source: source_scope,
+                        requires_dict_downcast: source_requires_dict_downcast
+                            | func_requires_dict_downcast,
+                    })
+                }
+
+                // let (arg_exprs, data_scope, source_requires_dict_downcast) = match invoke_arg_exprs
+                //     .len()
+                // {
+                //     1 => match &invoke_arg_exprs[0] {
+                //         InvokeFunctionArgument::Scalar(scalar_expr) => {
+                //             let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                //             (
+                //                 vec![arg_expr.logical_expr],
+                //                 arg_expr.source,
+                //                 arg_expr.requires_dict_downcast,
+                //             )
+                //         }
+                //         InvokeFunctionArgument::MutableValue(_) => {
+                //             return Err(Error::NotYetSupportedError {
+                //                 message:
+                //                     "Mutable value as function argument not yet supported in expression".into()
+                //             });
+                //         }
+                //     },
+                //     num_args => {
+                //         // TODO - support functions with with different number of arguments. In
+                //         // cases where there are zero args, or when the data comes from the same
+                //         // data scope, this will be trivial. Otherwise, we will need to perform a
+                //         // some joins to align the rows for each argument
+                //         return Err(Error::NotYetSupportedError {
+                //             message: format!(
+                //                 "Only single argument functions currently supported in expression. \
+                //                     Found func invocation with {num_args} args"
+                //             ),
+                //         });
+                //     }
+                // };
             }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
@@ -2797,6 +2865,72 @@ mod test {
             }
         };
 
-        println!("{arr:?}")
+        println!("{arr:?}");
+        todo!("assert")
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_on_root() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hex",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        // TODO refactor to use helper
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        println!("{arr:?}");
+        todo!("assertions")
     }
 }
