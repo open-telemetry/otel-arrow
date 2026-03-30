@@ -9,7 +9,7 @@ use data_engine_expressions::{
 };
 use data_engine_parser_abstractions::ParserOptions;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME, SUBSTRING_FUNC_NAME};
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
@@ -23,6 +23,7 @@ pub fn default_parser_options() -> ParserOptions {
         // planning time.
         .with_external_function(SHA256_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(ENCODE_FUNC_NAME, param_placeholders(2), None)
+        .with_external_function(SUBSTRING_FUNC_NAME, param_placeholders(3), None)
 }
 
 fn param_placeholders(
