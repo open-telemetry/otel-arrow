@@ -41,7 +41,10 @@ use otap_df_otap::{
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
 };
-use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
+use otap_df_query_engine::{
+    parser::default_parser_options,
+    pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState},
+};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
@@ -116,9 +119,10 @@ impl TransformProcessor {
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
+        let parser_options = default_parser_options();
         let pipeline_expr = match &config.query {
-            Query::KqlQuery(query) => KqlParser::parse(query),
-            Query::OplQuery(query) => OplParser::parse(query),
+            Query::KqlQuery(query) => KqlParser::parse_with_options(query, parser_options),
+            Query::OplQuery(query) => OplParser::parse_with_options(query, parser_options),
         }
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("Could not parse TransformProcessor query: {e:?}"),
@@ -684,6 +688,74 @@ mod test {
                 assert_eq!(msgs_transformed, 1);
                 assert_eq!(msgs_transform_failed, 0)
             });
+    }
+
+    #[test]
+    fn test_calling_pipeline_with_function_call() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let metrics_reporter = runtime.metrics_reporter();
+        let query = "logs | set event_name = encode(sha256(event_name), \"hex\")";
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build().event_name("a").finish(),
+                    LogRecord::build().event_name("b").finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let otap_batch = out.into_iter().next().unwrap();
+                let result = otap_to_otlp(&otap_batch);
+
+                match result {
+                    OtlpProtoMessage::Logs(logs_data) => {
+                        assert_eq!(logs_data.resource_logs.len(), 1);
+                        assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                        assert_eq!(
+                            &logs_data.resource_logs[0].scope_logs[0].log_records,
+                            &[
+                                LogRecord::build().event_name("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb").finish(),
+                                LogRecord::build().event_name("3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d").finish(),
+                            ]
+                        )
+                    }
+                    invalid => {
+                        panic!(
+                            "invalid signal type from output. Expected logs, received {invalid:?}"
+                        )
+                    }
+                }
+
+                // Trigger telemetry snapshot
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect");
+            })
+            .validate(|_ctx| async move {});
     }
 
     /// Send one traces batch and one metrics batch with signals that have the same "name" values
