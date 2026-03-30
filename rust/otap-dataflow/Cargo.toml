@@ -227,6 +227,7 @@ testcontainers = "0.27"
 toml = "0.8.22"
 tonic-prost-build = "0.14"
 urlencoding = "2"
+geneva-uploader = "0.4.0"
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
