@@ -438,7 +438,10 @@ mod tests {
             ..Default::default()
         };
         config.tap.enabled = true;
-        assert_invalid(&config, "logs.tap.enabled requires at least one async log provider");
+        assert_invalid(
+            &config,
+            "logs.tap.enabled requires at least one async log provider",
+        );
 
         for providers in [
             providers(ConsoleAsync, Noop, Noop, ConsoleDirect),
@@ -453,7 +456,9 @@ mod tests {
                 },
                 ..Default::default()
             };
-            config.validate().expect("async provider should support tap");
+            config
+                .validate()
+                .expect("async provider should support tap");
         }
     }
 

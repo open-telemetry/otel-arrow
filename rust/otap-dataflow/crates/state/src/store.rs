@@ -431,13 +431,13 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
     use std::borrow::Cow;
-    use std::time::SystemTime;
     use std::time::Duration;
-    use tracing::{Event, Subscriber};
-    use tracing_subscriber::layer::{Context, Layer};
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::registry::LookupSpan;
+    use std::time::SystemTime;
     use tokio_util::sync::CancellationToken;
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::registry::LookupSpan;
 
     fn make_key(core_id: usize) -> otap_df_config::DeployedPipelineKey {
         otap_df_config::DeployedPipelineKey {
@@ -704,11 +704,13 @@ mod tests {
                 console_fallback: false,
             },
         };
-        let log_tap = log_tap::build(&otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
-            enabled: true,
-            max_entries: 8,
-            max_bytes: 1024 * 1024,
-        });
+        let log_tap = log_tap::build(
+            &otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+                enabled: true,
+                max_entries: 8,
+                max_bytes: 1024 * 1024,
+            },
+        );
         let store = ObservedStateStore::new_with_log_tap(
             &config,
             TelemetryRegistryHandle::new(),
@@ -753,11 +755,13 @@ mod tests {
                 console_fallback: false,
             },
         };
-        let log_tap = log_tap::build(&otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
-            enabled: true,
-            max_entries: 8,
-            max_bytes: 1024 * 1024,
-        });
+        let log_tap = log_tap::build(
+            &otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+                enabled: true,
+                max_entries: 8,
+                max_bytes: 1024 * 1024,
+            },
+        );
         let store = ObservedStateStore::new_with_log_tap(
             &config,
             TelemetryRegistryHandle::new(),

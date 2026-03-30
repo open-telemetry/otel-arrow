@@ -103,20 +103,13 @@ impl ProviderSetup {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => {
-                let layer = StructuredLoggingLayer::new(
-                    Some(ConsoleWriter::color()),
-                    None,
-                    context_fn,
-                );
+                let layer =
+                    StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
                 Dispatch::new(Registry::default().with(filter).with(layer))
             }
 
             ProviderSetup::InternalAsync { reporter } => {
-                let layer = StructuredLoggingLayer::new(
-                    None,
-                    Some(reporter.clone()),
-                    context_fn,
-                );
+                let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
                 Dispatch::new(Registry::default().with(filter).with(layer))
             }
         }
