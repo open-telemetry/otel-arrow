@@ -11,15 +11,18 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{Message, MessageChannel, Receiver, Sender};
+use crate::message::{Message, ProcessorMessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -100,7 +103,7 @@ pub enum ProcessorWrapperRuntime<PData> {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
         /// The message channel
-        message_channel: MessageChannel<PData>,
+        message_channel: ProcessorMessageChannel<PData>,
         /// The local effect handler
         effect_handler: local::EffectHandler<PData>,
     },
@@ -109,7 +112,7 @@ pub enum ProcessorWrapperRuntime<PData> {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
         /// Message channel
-        message_channel: MessageChannel<PData>,
+        message_channel: ProcessorMessageChannel<PData>,
         /// The shared effect handler
         effect_handler: shared::EffectHandler<PData>,
     },
@@ -330,7 +333,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = MessageChannel::new(
+                let message_channel = ProcessorMessageChannel::new(
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -365,7 +368,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = MessageChannel::new(
+                let message_channel = ProcessorMessageChannel::new(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -396,9 +399,31 @@ impl<PData> ProcessorWrapper<PData> {
     /// Start the processor and run the message processing loop.
     pub async fn start(
         self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+    ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
+    {
+        self.start_with_completion_metrics(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_completion_metrics(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -415,8 +440,14 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics.clone());
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -443,8 +474,14 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler

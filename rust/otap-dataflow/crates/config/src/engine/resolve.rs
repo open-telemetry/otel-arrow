@@ -4,9 +4,8 @@
 //! Resolution phase for [`OtelDataflowSpec`].
 
 use crate::engine::{EngineConfig, OtelDataflowSpec};
-use crate::health::HealthPolicy;
 use crate::pipeline::PipelineConfig;
-use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::policy::{Policies, ResolvedPolicies, ResourcesPolicy};
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
@@ -72,7 +71,7 @@ pub struct ResolvedPipelineConfig {
     /// Pipeline definition.
     pub pipeline: PipelineConfig,
     /// Resolved policies after hierarchy resolution.
-    pub policies: Policies,
+    pub policies: ResolvedPolicies,
     /// Pipeline role.
     pub role: ResolvedPipelineRole,
 }
@@ -108,47 +107,39 @@ impl OtelDataflowSpec {
                     .get(&pipeline_id)
                     .expect("pipeline collected during resolve must still exist in group map")
                     .clone();
-                let channel_capacity_policy = self
-                    .resolve_channel_capacity_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective channel capacity policy must resolve for existing pipeline");
-                let health_policy = self
-                    .resolve_health_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective health policy must resolve for existing pipeline");
-                let telemetry_policy = self
-                    .resolve_telemetry_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective telemetry policy must resolve for existing pipeline");
-                let resources_policy = self
-                    .resolve_resources_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective resources policy must resolve for existing pipeline");
+                let scopes: Vec<&Policies> = [
+                    pipeline.policies(),
+                    pipeline_group.policies.as_ref(),
+                    Some(&self.policies),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let policies = Policies::resolve(scopes);
                 ResolvedPipelineConfig {
                     pipeline_group_id,
                     pipeline_id,
                     pipeline,
-                    policies: Policies {
-                        channel_capacity: channel_capacity_policy,
-                        health: health_policy,
-                        telemetry: telemetry_policy,
-                        resources: Some(resources_policy),
-                    },
+                    policies,
                     role: ResolvedPipelineRole::Regular,
                 }
             })
             .collect();
 
-        if let Some(pipeline) = self.engine.observability.pipeline.clone() {
-            let channel_capacity_policy = self.resolve_observability_channel_capacity_policy();
-            let health_policy = self.resolve_observability_health_policy();
-            let telemetry_policy = self.resolve_observability_telemetry_policy();
+        if let Some(obs_pipeline) = self.engine.observability.pipeline.clone() {
+            let obs_as_policies = obs_pipeline
+                .policies
+                .as_ref()
+                .map(|p| p.clone().into_policies())
+                .unwrap_or_default();
+            let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
+            // Observability pipelines use default resources.
+            policies.resources = ResourcesPolicy::default();
             pipelines.push(ResolvedPipelineConfig {
                 pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
                 pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
-                pipeline: pipeline.into_pipeline_config(),
-                policies: Policies {
-                    channel_capacity: channel_capacity_policy,
-                    health: health_policy,
-                    telemetry: telemetry_policy,
-                    resources: Some(ResourcesPolicy::default()),
-                },
+                pipeline: obs_pipeline.into_pipeline_config(),
+                policies,
                 role: ResolvedPipelineRole::ObservabilityInternal,
             });
         }
@@ -178,168 +169,5 @@ impl OtelDataflowSpec {
             return Some(group_topic.clone());
         }
         self.topics.get(topic_name).cloned()
-    }
-
-    /// Resolves the effective channel capacity policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_channel_capacity_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<ChannelCapacityPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.channel_capacity.clone())
-            .or_else(|| {
-                pipeline_group
-                    .policies
-                    .as_ref()
-                    .map(|p| p.channel_capacity.clone())
-            })
-            .or_else(|| Some(self.policies.channel_capacity.clone()))
-    }
-
-    /// Resolves the effective health policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_health_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<HealthPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.health.clone())
-            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.health.clone()))
-            .or_else(|| Some(self.policies.health.clone()))
-    }
-
-    /// Resolves the effective runtime telemetry policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_telemetry_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<TelemetryPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.telemetry.clone())
-            .or_else(|| {
-                pipeline_group
-                    .policies
-                    .as_ref()
-                    .map(|p| p.telemetry.clone())
-            })
-            .or_else(|| Some(self.policies.telemetry.clone()))
-    }
-
-    /// Resolves the effective resources policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    ///
-    /// Importantly, a scope's `resources` is only considered when the user
-    /// **explicitly** wrote a `resources:` key in that scope's `policies:`
-    /// block.  Scopes that have a `policies:` block for *other* fields (e.g.
-    /// `channel_capacity`) but no `resources:` key deserialise `resources` as
-    /// `None` and are skipped, so the CLI `--num-cores` / `--core-id-range`
-    /// flag written to the top-level config is not silently shadowed.
-    #[must_use]
-    fn resolve_resources_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<ResourcesPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        // Walk from the most-specific scope to the top-level, stopping at the
-        // first scope that explicitly declares a resources policy.  When no scope
-        // does, fall back to the built-in default (all_cores).
-        let explicit = pipeline
-            .policies()
-            .and_then(|p| p.resources.clone())
-            .or_else(|| {
-                pipeline_group
-                    .policies
-                    .as_ref()
-                    .and_then(|p| p.resources.clone())
-            })
-            .or_else(|| self.policies.resources.clone());
-
-        Some(explicit.unwrap_or_default())
-    }
-
-    /// Resolves the effective channel capacity policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_channel_capacity_policy(&self) -> ChannelCapacityPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(
-                || self.policies.channel_capacity.clone(),
-                |p| p.channel_capacity.clone(),
-            )
-    }
-
-    /// Resolves the effective health policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_health_policy(&self) -> HealthPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.health.clone(), |p| p.health.clone())
-    }
-
-    /// Resolves the effective runtime telemetry policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_telemetry_policy(&self) -> TelemetryPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.telemetry.clone(), |p| p.telemetry.clone())
     }
 }

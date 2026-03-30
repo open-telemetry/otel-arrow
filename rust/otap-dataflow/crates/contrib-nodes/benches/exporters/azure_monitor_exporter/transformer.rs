@@ -63,6 +63,7 @@ fn create_config() -> Config {
                 ]),
             },
             azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         },
         auth: AuthConfig::default(),
     }

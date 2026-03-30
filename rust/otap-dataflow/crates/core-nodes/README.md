@@ -30,7 +30,9 @@ Each component lives in its own subfolder within a category:
         durable_buffer_processor/
         fanout_processor/
         filter_processor/
+        log_sampling_processor/
         retry_processor/
+        temporal_reaggregation_processor/
         signal_type_router/
         transform_processor/
       receivers/
@@ -123,8 +125,10 @@ Each component lives in its own subfolder within a category:
 | durable_buffer_processor | `urn:otel:processor:durable_buffer` | `src/processors/durable_buffer_processor/` |
 | fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
 | filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
+| log_sampling_processor | `urn:otel:processor:log_sampling` | `src/processors/log_sampling_processor/` |
 | retry_processor | `urn:otel:processor:retry` | `src/processors/retry_processor/` |
 | signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
+| temporal_reaggregation_processor | `urn:otel:processor:temporal_reaggregation` | `src/processors/temporal_reaggregation_processor/` |
 | transform_processor | `urn:otel:processor:transform` | `src/processors/transform_processor/` |
 
 #### attributes_processor
@@ -173,6 +177,11 @@ Each component lives in its own subfolder within a category:
 - Tracks consumed and filtered signal metrics for telemetry
 - Useful for reducing data volume before downstream processing
 
+#### log_sampling_processor
+
+- Discards a portion of incoming logs according to a configurable sampling policy
+- Useful for reducing data volume in a telemetry backend
+
 #### retry_processor
 
 - Retries downstream delivery with exponential backoff using Ack/Nack handling
@@ -188,6 +197,10 @@ Each component lives in its own subfolder within a category:
 
 - Applies KQL or OPL transformations to OTAP batches via the query engine
 - Supports routed outputs while preserving upstream Ack/Nack semantics
+
+#### temporal_reaggregation_processor
+
+- Reaggregates metrics at a lower frequency to reduce telemetry volume
 
 ### Receivers
 

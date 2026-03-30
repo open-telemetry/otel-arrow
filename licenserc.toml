@@ -17,8 +17,6 @@ includes = [
 excludes = [
     # proto files
     "**/proto/**/*",
-    # reference implementation project
-    "rust/beaubourg/**/*",
     # generated files
     "collector/cmd/otelarrowcol/**/*",
     "go/pkg/otel/arrow_record/mock/mock.go"

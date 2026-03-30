@@ -751,7 +751,7 @@
     .runtime-status-table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 820px;
+      min-width: 980px;
       font-size: 0.76rem;
       color: #cbd5e1;
     }
@@ -793,6 +793,101 @@
     .runtime-status-row-unknown .runtime-status-state {
       color: #facc15;
       font-weight: 700;
+    }
+
+    .control-events-list {
+      display: grid;
+      gap: 10px;
+      max-height: 260px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .control-event-item {
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.38);
+      padding: 10px 12px;
+    }
+
+    .control-event-item-success {
+      border-color: rgba(52, 211, 153, 0.28);
+    }
+
+    .control-event-item-request {
+      border-color: rgba(125, 211, 252, 0.28);
+    }
+
+    .control-event-item-error {
+      border-color: rgba(248, 113, 113, 0.32);
+    }
+
+    .control-event-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .control-event-name {
+      font-size: 0.82rem;
+      font-weight: 650;
+      color: #e2e8f0;
+    }
+
+    .control-event-time {
+      font-size: 0.69rem;
+      color: #94a3b8;
+      white-space: nowrap;
+    }
+
+    .control-event-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 0.7rem;
+      color: #94a3b8;
+    }
+
+    .control-event-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(30, 41, 59, 0.5);
+    }
+
+    .control-event-chip-success {
+      color: #34d399;
+      border-color: rgba(52, 211, 153, 0.32);
+    }
+
+    .control-event-chip-request {
+      color: #7dd3fc;
+      border-color: rgba(125, 211, 252, 0.34);
+    }
+
+    .control-event-chip-error {
+      color: #f87171;
+      border-color: rgba(248, 113, 113, 0.34);
+    }
+
+    .control-event-message {
+      font-size: 0.73rem;
+      line-height: 1.4;
+      color: #cbd5e1;
+    }
+
+    .control-event-empty {
+      border: 1px dashed rgba(148, 163, 184, 0.22);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 0.74rem;
+      color: #94a3b8;
+      text-align: center;
     }
 
     .pipeline-selector {
@@ -1419,6 +1514,30 @@
     body.day-mode .runtime-status-table th {
       color: #475569;
       background: rgba(241, 245, 249, 0.98);
+    }
+
+    body.day-mode .control-event-item {
+      background: rgba(248, 250, 252, 0.92);
+      border-color: rgba(148, 163, 184, 0.34);
+    }
+
+    body.day-mode .control-event-name {
+      color: #0f172a;
+    }
+
+    body.day-mode .control-event-time,
+    body.day-mode .control-event-meta,
+    body.day-mode .control-event-empty {
+      color: #475569;
+    }
+
+    body.day-mode .control-event-message {
+      color: #334155;
+    }
+
+    body.day-mode .control-event-chip {
+      background: rgba(255, 255, 255, 0.88);
+      border-color: rgba(148, 163, 184, 0.42);
     }
 
     body.day-mode .pipeline-overlay {

@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
@@ -36,13 +36,15 @@ use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
+use otap_df_pdata::otap::transform::upsert_attributes::{
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
+};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attributes::{AttributeUpsert, upsert_attributes};
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
@@ -57,22 +59,6 @@ use crate::pipeline::expr::{
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
-
-mod attributes;
-
-/// Empty placeholder record batch used when assigning attributes in cases where there is not a
-/// pre-existing attributes record batch
-static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
-    RecordBatch::new_empty(Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
-        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-        Field::new(
-            consts::ATTRIBUTE_KEY,
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])))
-});
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -401,7 +387,7 @@ impl AssignPipelineStage {
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
             Some(attrs_batch) => attrs_batch,
-            None => EMPTY_ATTRS_RECORD_BATCH.deref(),
+            None => EMPTY_U16_ATTRS_RECORD_BATCH.deref(),
         };
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
@@ -564,13 +550,22 @@ impl AssignPipelineStage {
     /// this for scope/resource attributes because a null in these positions means there is no
     /// scope/resource associated with the record, meaning there is nothing for which to assign the
     /// attribute.
-    fn fill_root_id_column_nulls(&self, otap_batch: &mut OtapArrowRecords) -> Result<()> {
+    fn fill_root_id_column_nulls(
+        &self,
+        otap_batch: &mut OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
         let root_record_batch = match otap_batch.root_record_batch() {
             Some(rb) => rb,
             None => {
                 // nothing to do
                 return Ok(());
             }
+        };
+
+        let next_id_tracker = match exec_state.get_extension_mut::<NextIdTracker>() {
+            Some(n) => n,
+            None => &mut NextIdTracker::try_new(otap_batch)?,
         };
 
         let new_ids = match root_record_batch.column_by_name(consts::ID) {
@@ -590,20 +585,18 @@ impl AssignPipelineStage {
                     })?;
 
                 // assign new IDs
-                let mut max_id = max(id_col).unwrap_or(0);
                 let mut new_ids = id_col.values().to_vec();
                 for (i, new_id) in new_ids.iter_mut().enumerate().take(id_col.len()) {
                     if id_col.is_null(i) {
                         // unfortunate error, but nothing we can really do here
-                        if max_id == u16::MAX {
-                            return Err(Error::ExecutionError {
-                                cause: "ID space saturated when assigning attributes. \
+                        *new_id =
+                            next_id_tracker
+                                .next_id()
+                                .ok_or_else(|| Error::ExecutionError {
+                                    cause: "ID space saturated when assigning attributes. \
                                         Please try a smaller batch size"
-                                    .into(),
-                            });
-                        }
-                        max_id += 1;
-                        *new_id = max_id
+                                        .into(),
+                                })?;
                     }
                 }
 
@@ -644,12 +637,12 @@ impl PipelineStage for AssignPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
             if *attrs_id == AttributesIdentifier::Root {
-                self.fill_root_id_column_nulls(&mut otap_batch)?;
+                self.fill_root_id_column_nulls(&mut otap_batch, exec_state)?;
             }
 
             let mut eval_results = Vec::new();
@@ -999,6 +992,71 @@ impl PipelineStage for AssignPipelineStage {
     fn supports_exec_on_attributes(&self) -> bool {
         true
     }
+
+    fn init_state_for_conditional_branch(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // If this instance is assigning attributes to the root record batch, the procedure
+        // involves filling in any nulls that may be present in the ID column. Each instance of
+        // this pipeline stage may be seeing a different subset of the overall batch, but we need
+        // to ensure the IDs that are assigned are not duplicated across branches. That is why we
+        // add this extension.
+        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
+            if *attrs_id == AttributesIdentifier::Root
+                && exec_state.get_extension::<NextIdTracker>().is_none()
+            {
+                let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
+                exec_state.set_extension(next_id_tracker);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn clear_state_for_conditional_branch(
+        &mut self,
+        exec_state: &mut ExecutionState,
+    ) -> Result<()> {
+        // if we've added the NextIdTracker, we'll need to remove it. Otherwise, if the
+        // ExecutionState is reused between batches, it will not be reinitialized for the next
+        // incoming OTAP batch
+        _ = exec_state.remove_extension::<NextIdTracker>();
+        Ok(())
+    }
+}
+
+/// Extension implementation used to keep track of the next max ID when the ID column
+/// nulls are filled in when assigning attributes.
+struct NextIdTracker {
+    curr_max: Option<u16>,
+}
+
+impl NextIdTracker {
+    fn try_new(otap_batch: &OtapArrowRecords) -> Result<Self> {
+        Ok(Self {
+            curr_max: Self::curr_max_id(otap_batch),
+        })
+    }
+
+    fn curr_max_id(otap_batch: &OtapArrowRecords) -> Option<u16> {
+        let root_rb = otap_batch.root_record_batch()?;
+        let id_column = root_rb
+            .column_by_name(consts::ID)?
+            .as_any()
+            .downcast_ref::<UInt16Array>()?;
+        max(id_column)
+    }
+
+    fn next_id(&mut self) -> Option<u16> {
+        let next_id = match self.curr_max {
+            Some(max) => max.checked_add(1)?,
+            None => 0,
+        };
+        self.curr_max = Some(next_id);
+        Some(next_id)
+    }
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
@@ -1339,6 +1397,7 @@ fn try_upsert_column(
         columns,
     )?)
 }
+
 #[cfg(test)]
 mod test {
     use arrow::{
@@ -1536,13 +1595,13 @@ mod test {
             LogRecord::build()
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("hello"))])
                 .finish(),
+            // no event attribute, result should be ""..
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .event_name("replaceme")
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("world"))])
                 .finish(),
-            // no event attribute, result should be ""..
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         let result = exec_logs_pipeline::<P>(
@@ -1555,9 +1614,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].event_name, "hello");
-        assert_eq!(logs_records[1].event_name, "world");
+        assert_eq!(logs_records[1].event_name, "");
         assert_eq!(logs_records[2].event_name, "");
-        assert_eq!(logs_records[3].event_name, "");
+        assert_eq!(logs_records[3].event_name, "world");
     }
 
     #[tokio::test]
@@ -1576,12 +1635,12 @@ mod test {
                 .severity_number(2)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(1))])
                 .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .severity_number(3)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(2))])
                 .finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         // kind of a weird expression in practice, but this is just checking if the expr evaluates
@@ -1595,9 +1654,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].severity_number, 25);
-        assert_eq!(logs_records[1].severity_number, 35);
+        assert_eq!(logs_records[1].severity_number, 0);
         assert_eq!(logs_records[2].severity_number, 0);
-        assert_eq!(logs_records[3].severity_number, 0);
+        assert_eq!(logs_records[3].severity_number, 35);
     }
 
     #[tokio::test]

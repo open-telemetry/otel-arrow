@@ -10,7 +10,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterMessageChannel, Message};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -38,15 +38,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
-///
-/// Approximation using Little's Law (L = λ × W):
-///   - λ (throughput): LA API allows ~500 req/min per DCR (~8 req/s, estimated)
-///   - W (latency): p99 response time ~0.5-1s (estimated, varies by region/load)
-///   - L ≈ 8 × 0.5 = 4 slots minimum, doubled for burst headroom ≈ 8
-///
-/// Set to 16 to absorb transient latency spikes without throttling.
-/// Worst-case memory for pending requests is roughly: 16 × 1MB = 16MB.
-/// These are rough estimates — tune based on observed metrics in production.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
@@ -88,7 +79,7 @@ impl AzureMonitorExporter {
         let transformer = Transformer::new(&config);
 
         // Create Gzip batcher
-        let gzip_batcher = GzipBatcher::new();
+        let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
         let heartbeat = Heartbeat::new(&config.api)?;
@@ -251,7 +242,8 @@ impl AzureMonitorExporter {
         let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
         for log_entry in log_entries {
-            match self.gzip_batcher.push(&log_entry) {
+            let entry_len = log_entry.len();
+            match self.gzip_batcher.push(log_entry) {
                 Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(batch_id, msg_id);
@@ -267,7 +259,7 @@ impl AzureMonitorExporter {
                     otel_warn!(
                         "azure_monitor_exporter.message.log_entry_too_large",
                         msg_id = msg_id,
-                        size_bytes = log_entry.len()
+                        size_bytes = entry_len
                     );
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
@@ -470,7 +462,7 @@ impl AzureMonitorExporter {
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterMessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
@@ -478,7 +470,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name()
+            auth_method = self.config.auth.auth_method_name(),
+            gzip_compression_level = self.config.api.gzip_compression_level
         );
 
         let mut msg_id = 0;
@@ -673,13 +666,18 @@ mod tests {
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;
+    use otap_df_channel::mpsc;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
+    use otap_df_engine::local::message::LocalReceiver;
+    use otap_df_engine::message::Receiver;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     fn create_test_pipeline_ctx() -> PipelineContext {
         otap_df_otap::crypto::ensure_crypto_provider();
@@ -700,9 +698,31 @@ mod tests {
                     log_record_mapping: HashMap::new(),
                 },
                 azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
         }
+    }
+
+    fn make_msg_channel(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        mpsc::Sender<OtapPdata>,
+        ExporterMessageChannel<OtapPdata>,
+    ) {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<OtapPdata>>::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<OtapPdata>::new(capacity);
+        (
+            control_tx,
+            pdata_tx,
+            ExporterMessageChannel::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
     }
 
     #[test]
@@ -763,12 +783,7 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(
-                &effect_handler,
-                batch_id,
-                10,
-                std::time::Duration::from_secs(1),
-            )
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
             .await;
 
         // Verify stats
@@ -827,5 +842,52 @@ mod tests {
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
         assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    // Azure Monitor can temporarily stop accepting new pdata while it is at
+    // capacity. Once shutdown is latched, the exporter channel must still drain
+    // already buffered pdata before delivering the final Shutdown message.
+    #[tokio::test]
+    async fn test_shutdown_drains_buffered_pdata_while_at_capacity() {
+        let (control_tx, pdata_tx, mut msg_chan) = make_msg_channel(8);
+        let at_capacity = true;
+
+        pdata_tx
+            .send_async(OtapPdata::new(
+                Context::default(),
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+            ))
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_millis(200),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(msg, Message::PData(_)));
+
+        drop(pdata_tx);
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
     }
 }

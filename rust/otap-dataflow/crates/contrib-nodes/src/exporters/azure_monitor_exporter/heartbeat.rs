@@ -354,6 +354,7 @@ mod tests {
                 log_record_mapping: HashMap::new(),
             },
             azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         };
 
         let expected = format!(

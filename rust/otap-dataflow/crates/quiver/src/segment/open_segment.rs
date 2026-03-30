@@ -95,6 +95,15 @@ impl OpenSegment {
         self.opened_at
     }
 
+    /// Subtracts `offset` from `opened_at`, making the segment appear
+    /// to have been opened earlier (for time-based finalization tests).
+    #[cfg(test)]
+    pub(crate) fn test_backdate_opened_at(&mut self, offset: std::time::Duration) {
+        if let Some(opened_at) = &mut self.opened_at {
+            *opened_at -= offset;
+        }
+    }
+
     /// Returns the current in-memory size of accumulated Arrow buffers.
     ///
     /// This is the sum of `get_array_memory_size()` for all accumulated
