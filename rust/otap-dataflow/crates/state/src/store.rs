@@ -427,6 +427,7 @@ mod tests {
     use otap_df_config::observed_state::SendPolicy;
     use otap_df_telemetry::event::{EngineEvent, ObservedEvent};
     use otap_df_telemetry::log_tap;
+    use otap_df_telemetry::otel_info;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
     use std::borrow::Cow;
@@ -468,7 +469,7 @@ mod tests {
             tracing_subscriber::Registry::default().with(ReporterLayer { reporter }),
         );
         tracing::dispatcher::with_default(&dispatch, || {
-            tracing::info!(message = message);
+            otel_info!("state.test.log", message = message);
         });
     }
 
