@@ -259,7 +259,7 @@ enum DrainPolicy {
 struct InboxCore<PData, ControlRx, PDataRx> {
     control_rx: Option<ControlRx>,
     pdata_rx: Option<PDataRx>,
-    local_scheduler: Option<NodeLocalSchedulerHandle>,
+    local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` representing the drain deadline.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
@@ -276,7 +276,7 @@ impl<PData, ControlRx, PDataRx> InboxCore<PData, ControlRx, PDataRx> {
     fn new(
         control_rx: ControlRx,
         pdata_rx: PDataRx,
-        local_scheduler: Option<NodeLocalSchedulerHandle>,
+        local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
         node_id: usize,
         interests: Interests,
     ) -> Self {
@@ -296,7 +296,7 @@ impl<PData, ControlRx, PDataRx> InboxCore<PData, ControlRx, PDataRx> {
         self.shutting_down_deadline = None;
         self.consecutive_control = 0;
         if let Some(local_scheduler) = &self.local_scheduler {
-            local_scheduler.begin_shutdown();
+            local_scheduler.begin_shutdown(clock::now());
         }
         drop(self.control_rx.take().expect("control_rx must exist"));
         drop(self.pdata_rx.take().expect("pdata_rx must exist"));
@@ -359,7 +359,7 @@ where
         self.local_scheduler
             .as_ref()
             .and_then(|scheduler| scheduler.pop_due(now))
-            .map(|(slot, when)| self.control_message(NodeControlMsg::Wakeup { slot, when }))
+            .map(|msg| self.control_message(msg))
     }
 
     fn next_local_expiry_sleep(&self, now: Instant) -> Option<clock::Sleep> {
@@ -607,7 +607,7 @@ where
                             }));
                         }
                         if let Some(local_scheduler) = &self.local_scheduler {
-                            local_scheduler.begin_shutdown();
+                            local_scheduler.begin_shutdown(clock::now());
                         }
                         self.shutting_down_deadline = Some(deadline);
                         self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
@@ -647,7 +647,7 @@ where
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }
                             if let Some(local_scheduler) = &self.local_scheduler {
-                                local_scheduler.begin_shutdown();
+                                local_scheduler.begin_shutdown(clock::now());
                             }
                             self.shutting_down_deadline = Some(deadline);
                             self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
@@ -688,7 +688,7 @@ where
                                 return Ok(Message::Control(NodeControlMsg::Shutdown { deadline, reason }));
                             }
                             if let Some(local_scheduler) = &self.local_scheduler {
-                                local_scheduler.begin_shutdown();
+                                local_scheduler.begin_shutdown(clock::now());
                             }
                             self.shutting_down_deadline = Some(deadline);
                             self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
@@ -748,7 +748,7 @@ impl<PData> ProcessorInbox<PData> {
         Self::new_with_local_scheduler(
             control_rx,
             pdata_rx,
-            NodeLocalSchedulerHandle::new(32),
+            NodeLocalSchedulerHandle::new(32, 32),
             node_id,
             interests,
         )
@@ -759,7 +759,7 @@ impl<PData> ProcessorInbox<PData> {
     pub(crate) fn new_with_local_scheduler(
         control_rx: Receiver<NodeControlMsg<PData>>,
         pdata_rx: Receiver<PData>,
-        local_scheduler: NodeLocalSchedulerHandle,
+        local_scheduler: NodeLocalSchedulerHandle<PData>,
         node_id: usize,
         interests: Interests,
     ) -> Self {
@@ -880,16 +880,17 @@ mod tests {
     use std::time::Duration;
 
     fn local_processor_inbox(
+        delayed_resume_capacity: usize,
         wakeup_capacity: usize,
     ) -> (
         mpsc::Sender<NodeControlMsg<TestMsg>>,
         mpsc::Sender<TestMsg>,
-        NodeLocalSchedulerHandle,
+        NodeLocalSchedulerHandle<TestMsg>,
         ProcessorInbox<TestMsg>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<TestMsg>>::new(64);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<TestMsg>::new(64);
-        let scheduler = NodeLocalSchedulerHandle::new(wakeup_capacity);
+        let scheduler = NodeLocalSchedulerHandle::new(delayed_resume_capacity, wakeup_capacity);
         let inbox = ProcessorInbox::new_with_local_scheduler(
             Receiver::Local(LocalReceiver::mpsc(control_rx)),
             Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
@@ -901,8 +902,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processor_inbox_emits_due_delayed_resume_as_control_message() {
+        let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
+        let when = Instant::now();
+        scheduler
+            .requeue_later(when, Box::new(TestMsg::new("delayed")))
+            .expect("delayed resume should schedule");
+
+        let message = tokio::time::timeout(Duration::from_millis(50), inbox.recv_when(true))
+            .await
+            .expect("inbox should wake")
+            .expect("message should arrive");
+        assert!(matches!(
+            message,
+            Message::Control(NodeControlMsg::DelayedData { when: observed, data })
+                if observed == when && *data == TestMsg::new("delayed")
+        ));
+    }
+
+    #[tokio::test]
     async fn processor_inbox_emits_due_wakeup_as_control_message() {
-        let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
+        let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
         let when = Instant::now();
         scheduler
             .set_wakeup(crate::control::WakeupSlot(0), when)
@@ -922,8 +942,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processor_inbox_delayed_resume_preserves_control_fairness() {
+        let (_control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(64, 4);
+        pdata_tx
+            .send_async(TestMsg::new("pdata"))
+            .await
+            .expect("pdata should enqueue");
+        let when = Instant::now();
+        for idx in 0..40 {
+            scheduler
+                .requeue_later(when, Box::new(TestMsg::new(format!("delayed-{idx}"))))
+                .expect("delayed resume should schedule");
+        }
+
+        let mut delayed = 0usize;
+        let mut saw_pdata = false;
+        while delayed <= CONTROL_BURST_LIMIT {
+            match inbox.recv_when(true).await.expect("message should arrive") {
+                Message::PData(TestMsg(value)) => {
+                    assert_eq!(value, "pdata");
+                    saw_pdata = true;
+                    break;
+                }
+                Message::Control(NodeControlMsg::DelayedData { .. }) => {
+                    delayed += 1;
+                }
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+
+        assert!(
+            saw_pdata,
+            "pdata should not starve behind processor-local delayed resumes"
+        );
+    }
+
+    #[tokio::test]
     async fn processor_inbox_wakeup_preserves_control_fairness() {
-        let (_control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(64);
+        let (_control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 64);
         pdata_tx
             .send_async(TestMsg::new("pdata"))
             .await
@@ -958,8 +1014,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processor_inbox_rejects_delayed_resumes_after_shutdown_latch() {
+        let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
+        pdata_tx
+            .send_async(TestMsg::new("buffered"))
+            .await
+            .expect("pdata should enqueue");
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown should enqueue");
+        control_tx
+            .send_async(NodeControlMsg::Config {
+                config: serde_json::json!({"mode": "draining"}),
+            })
+            .await
+            .expect("config should enqueue");
+
+        let first = inbox
+            .recv_when(false)
+            .await
+            .expect("control should arrive after shutdown latch");
+        assert!(matches!(
+            first,
+            Message::Control(NodeControlMsg::Config { .. })
+        ));
+
+        let rejected = scheduler
+            .requeue_later(Instant::now(), Box::new(TestMsg::new("rejected")))
+            .expect_err("shutdown should reject new delayed resumes");
+        assert_eq!(*rejected, TestMsg::new("rejected"));
+    }
+
+    #[tokio::test]
     async fn processor_inbox_rejects_wakeups_after_shutdown_latch() {
-        let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
+        let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
         pdata_tx
             .send_async(TestMsg::new("buffered"))
             .await
@@ -993,8 +1085,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processor_inbox_returns_pending_delayed_resumes_on_shutdown_latch() {
+        let (control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
+        let original_when = Instant::now() + Duration::from_secs(60);
+        scheduler
+            .requeue_later(original_when, Box::new(TestMsg::new("delayed")))
+            .expect("delayed resume should schedule");
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown should enqueue");
+        control_tx
+            .send_async(NodeControlMsg::Config {
+                config: serde_json::json!({"drain": true}),
+            })
+            .await
+            .expect("config should enqueue");
+
+        let first = inbox
+            .recv_when(false)
+            .await
+            .expect("control should arrive after shutdown latch");
+        assert!(matches!(
+            first,
+            Message::Control(NodeControlMsg::Config { .. })
+        ));
+
+        let resumed = inbox
+            .recv_when(false)
+            .await
+            .expect("delayed resume should return immediately during shutdown");
+        assert!(matches!(
+            resumed,
+            Message::Control(NodeControlMsg::DelayedData { when, data })
+                if when < original_when && *data == TestMsg::new("delayed")
+        ));
+
+        let shutdown = inbox
+            .recv_when(false)
+            .await
+            .expect("shutdown should follow once the delayed resume drains");
+        assert!(matches!(
+            shutdown,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn processor_inbox_drops_pending_wakeups_on_shutdown_latch() {
-        let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
+        let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4, 4);
         pdata_tx
             .send_async(TestMsg::new("buffered"))
             .await

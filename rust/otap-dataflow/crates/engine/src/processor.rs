@@ -335,8 +335,10 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let local_scheduler =
-                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_config.control_channel.capacity,
+                );
                 let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
@@ -375,8 +377,10 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let local_scheduler =
-                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_config.control_channel.capacity,
+                );
                 let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
