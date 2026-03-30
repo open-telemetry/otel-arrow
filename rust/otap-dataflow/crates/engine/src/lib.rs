@@ -68,6 +68,7 @@ pub mod engine_metrics;
 pub mod entity_context;
 pub mod local;
 pub mod node;
+mod node_local_scheduler;
 pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
@@ -78,6 +79,7 @@ pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
+pub use node_local_scheduler::WakeupError;
 
 /// Trait for factory types that expose a name.
 ///

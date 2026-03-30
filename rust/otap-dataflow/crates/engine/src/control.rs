@@ -75,6 +75,11 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
+/// Opaque key used to identify a node-local scheduled wakeup.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WakeupSlot(pub u64);
+
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
 /// containing timestamp. Lives on the forward path (in context stack frames).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -220,6 +225,14 @@ pub enum NodeControlMsg<PData> {
     CollectTelemetry {
         /// Metrics reporter used to collect telemetry metrics.
         metrics_reporter: MetricsReporter,
+    },
+
+    /// A processor-local wakeup scheduled by the processor effect handler.
+    Wakeup {
+        /// Scheduled wakeup slot.
+        slot: WakeupSlot,
+        /// Original scheduled wakeup instant.
+        when: Instant,
     },
 
     /// Delayed data returning to the node which delayed it.
