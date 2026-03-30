@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared queue core for the experimental control-aware channel.
+//! Shared queue core for the standalone control-aware channel.
 
 use crate::types::CoreControlEvent;
 use crate::{

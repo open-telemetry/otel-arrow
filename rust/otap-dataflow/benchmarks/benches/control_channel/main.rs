@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compare the current engine control-channel path against the experimental
+//! Compare the current engine control-channel path against the new
 //! control-aware channel under heavy Ack/Nack traffic.
 
 #![allow(missing_docs)]
@@ -11,8 +11,8 @@ use otap_df_channel::mpsc;
 use otap_df_control_channel::local::{self, LocalNodeControlReceiver, LocalNodeControlSender};
 use otap_df_control_channel::shared::{self, SharedNodeControlReceiver, SharedNodeControlSender};
 use otap_df_control_channel::{
-    AckMsg as ProtoAckMsg, CompletionMsg as ProtoCompletionMsg, ControlChannelConfig, ControlCmd,
-    NackMsg as ProtoNackMsg, NodeControlEvent,
+    AckMsg as ControlAwareAckMsg, CompletionMsg as ControlAwareCompletionMsg,
+    ControlChannelConfig, ControlCmd, NackMsg as ControlAwareNackMsg, NodeControlEvent,
 };
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::local::message::{LocalReceiver as CurrentLocalReceiver, LocalSender};
@@ -67,7 +67,7 @@ struct ObservedWork {
     configs: usize,
 }
 
-fn proto_channel_config() -> ControlChannelConfig {
+fn control_aware_channel_config() -> ControlChannelConfig {
     ControlChannelConfig {
         completion_msg_capacity: CHANNEL_CAPACITY,
         completion_batch_max: COMPLETION_BATCH_MAX,
@@ -202,29 +202,29 @@ async fn consume_current_shared(
     observed
 }
 
-async fn send_proto_completion_local(tx: &LocalNodeControlSender<usize>, idx: usize) {
+async fn send_control_aware_completion_local(tx: &LocalNodeControlSender<usize>, idx: usize) {
     let result = if idx.is_multiple_of(NACK_EVERY) {
-        tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
+        tx.send(ControlCmd::Nack(ControlAwareNackMsg::new("temporary", idx)))
             .await
     } else {
-        tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx))).await
+        tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(idx))).await
     };
-    let _ = result.expect("prototype local completion send should succeed");
+    let _ = result.expect("control-aware local completion send should succeed");
 }
 
-async fn send_proto_completion_shared(tx: &SharedNodeControlSender<usize>, idx: usize) {
+async fn send_control_aware_completion_shared(tx: &SharedNodeControlSender<usize>, idx: usize) {
     let result = if idx.is_multiple_of(NACK_EVERY) {
-        tx.send(ControlCmd::Nack(ProtoNackMsg::new("temporary", idx)))
+        tx.send(ControlCmd::Nack(ControlAwareNackMsg::new("temporary", idx)))
             .await
     } else {
-        tx.send(ControlCmd::Ack(ProtoAckMsg::new(idx))).await
+        tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(idx))).await
     };
-    let _ = result.expect("prototype shared completion send should succeed");
+    let _ = result.expect("control-aware shared completion send should succeed");
 }
 
-async fn produce_proto_local(tx: LocalNodeControlSender<usize>, scenario: Scenario) {
+async fn produce_control_aware_local(tx: LocalNodeControlSender<usize>, scenario: Scenario) {
     for idx in 0..COMPLETION_COUNT {
-        send_proto_completion_local(&tx, idx).await;
+        send_control_aware_completion_local(&tx, idx).await;
 
         if scenario.has_control_noise() {
             if idx % TIMER_EVERY == 0 {
@@ -245,9 +245,9 @@ async fn produce_proto_local(tx: LocalNodeControlSender<usize>, scenario: Scenar
     }
 }
 
-async fn produce_proto_shared(tx: SharedNodeControlSender<usize>, scenario: Scenario) {
+async fn produce_control_aware_shared(tx: SharedNodeControlSender<usize>, scenario: Scenario) {
     for idx in 0..COMPLETION_COUNT {
-        send_proto_completion_shared(&tx, idx).await;
+        send_control_aware_completion_shared(&tx, idx).await;
 
         if scenario.has_control_noise() {
             let timer_result = if idx % TIMER_EVERY == 0 {
@@ -282,7 +282,9 @@ async fn produce_proto_shared(tx: SharedNodeControlSender<usize>, scenario: Scen
     }
 }
 
-async fn consume_proto_local(mut rx: LocalNodeControlReceiver<usize>) -> ObservedWork {
+async fn consume_control_aware_local(
+    mut rx: LocalNodeControlReceiver<usize>,
+) -> ObservedWork {
     let mut observed = ObservedWork::default();
 
     while let Some(event) = rx.recv().await {
@@ -292,7 +294,7 @@ async fn consume_proto_local(mut rx: LocalNodeControlReceiver<usize>) -> Observe
                 observed.completions += batch.len();
                 for completion in batch {
                     match completion {
-                        ProtoCompletionMsg::Ack(_) | ProtoCompletionMsg::Nack(_) => {}
+                        ControlAwareCompletionMsg::Ack(_) | ControlAwareCompletionMsg::Nack(_) => {}
                     }
                 }
             }
@@ -300,7 +302,7 @@ async fn consume_proto_local(mut rx: LocalNodeControlReceiver<usize>) -> Observe
             NodeControlEvent::CollectTelemetry => observed.telemetry_ticks += 1,
             NodeControlEvent::Config { .. } => observed.configs += 1,
             NodeControlEvent::Shutdown(_) => {
-                panic!("unexpected event in prototype local benchmark receiver");
+                panic!("unexpected event in control-aware local benchmark receiver");
             }
         }
     }
@@ -308,7 +310,9 @@ async fn consume_proto_local(mut rx: LocalNodeControlReceiver<usize>) -> Observe
     observed
 }
 
-async fn consume_proto_shared(mut rx: SharedNodeControlReceiver<usize>) -> ObservedWork {
+async fn consume_control_aware_shared(
+    mut rx: SharedNodeControlReceiver<usize>,
+) -> ObservedWork {
     let mut observed = ObservedWork::default();
 
     while let Some(event) = rx.recv().await {
@@ -318,7 +322,7 @@ async fn consume_proto_shared(mut rx: SharedNodeControlReceiver<usize>) -> Obser
                 observed.completions += batch.len();
                 for completion in batch {
                     match completion {
-                        ProtoCompletionMsg::Ack(_) | ProtoCompletionMsg::Nack(_) => {}
+                        ControlAwareCompletionMsg::Ack(_) | ControlAwareCompletionMsg::Nack(_) => {}
                     }
                 }
             }
@@ -326,7 +330,7 @@ async fn consume_proto_shared(mut rx: SharedNodeControlReceiver<usize>) -> Obser
             NodeControlEvent::CollectTelemetry => observed.telemetry_ticks += 1,
             NodeControlEvent::Config { .. } => observed.configs += 1,
             NodeControlEvent::Shutdown(_) => {
-                panic!("unexpected event in prototype shared benchmark receiver");
+                panic!("unexpected event in control-aware shared benchmark receiver");
             }
         }
     }
@@ -360,20 +364,28 @@ async fn run_current_shared_workload(scenario: Scenario) -> ObservedWork {
     observed
 }
 
-async fn run_proto_local_workload(scenario: Scenario) -> ObservedWork {
+async fn run_control_aware_local_workload(scenario: Scenario) -> ObservedWork {
     let (tx, rx) =
-        local::node_channel(proto_channel_config()).expect("prototype channel config valid");
+        local::node_channel(control_aware_channel_config())
+            .expect("control-aware channel config valid");
 
-    let ((), observed) = tokio::join!(produce_proto_local(tx, scenario), consume_proto_local(rx));
+    let ((), observed) = tokio::join!(
+        produce_control_aware_local(tx, scenario),
+        consume_control_aware_local(rx)
+    );
     assert_eq!(observed.completions, COMPLETION_COUNT);
     observed
 }
 
-async fn run_proto_shared_workload(scenario: Scenario) -> ObservedWork {
+async fn run_control_aware_shared_workload(scenario: Scenario) -> ObservedWork {
     let (tx, rx) =
-        shared::node_channel(proto_channel_config()).expect("prototype channel config valid");
+        shared::node_channel(control_aware_channel_config())
+            .expect("control-aware channel config valid");
 
-    let ((), observed) = tokio::join!(produce_proto_shared(tx, scenario), consume_proto_shared(rx));
+    let ((), observed) = tokio::join!(
+        produce_control_aware_shared(tx, scenario),
+        consume_control_aware_shared(rx)
+    );
     assert_eq!(observed.completions, COMPLETION_COUNT);
     observed
 }
@@ -406,12 +418,12 @@ fn bench_control_channels(c: &mut Criterion) {
         );
 
         let _ = group.bench_function(
-            BenchmarkId::new("prototype_local", scenario.bench_name()),
+            BenchmarkId::new("control_aware_local", scenario.bench_name()),
             |b| {
                 b.to_async(&rt).iter(|| async {
                     let local = LocalSet::new();
                     let observed = local
-                        .run_until(async { run_proto_local_workload(scenario).await })
+                        .run_until(async { run_control_aware_local_workload(scenario).await })
                         .await;
                     let _ = black_box(observed);
                 });
@@ -429,10 +441,10 @@ fn bench_control_channels(c: &mut Criterion) {
         );
 
         let _ = group.bench_function(
-            BenchmarkId::new("prototype_shared", scenario.bench_name()),
+            BenchmarkId::new("control_aware_shared", scenario.bench_name()),
             |b| {
                 b.to_async(&rt).iter(|| async {
-                    let observed = run_proto_shared_workload(scenario).await;
+                    let observed = run_control_aware_shared_workload(scenario).await;
                     let _ = black_box(observed);
                 });
             },

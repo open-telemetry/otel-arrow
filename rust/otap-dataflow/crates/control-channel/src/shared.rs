@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared (`Send`) control-aware channel prototype.
+//! Shared (`Send`) standalone control-aware channel.
 
 use crate::core::Inner;
 use crate::types::CoreControlEvent;

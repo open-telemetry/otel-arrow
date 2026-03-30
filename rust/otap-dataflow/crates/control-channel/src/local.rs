@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local (`!Send`) control-aware channel prototype.
+//! Local (`!Send`) standalone control-aware channel.
 
 use crate::core::Inner;
 use crate::types::CoreControlEvent;

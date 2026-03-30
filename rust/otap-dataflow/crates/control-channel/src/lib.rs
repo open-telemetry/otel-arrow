@@ -1,10 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental control-aware bounded channel primitives.
+//! Standalone control-aware bounded channel primitives.
 //!
 //! This crate is intentionally not integrated into the engine runtime yet. It
-//! exists to prototype a bounded, policy-aware control channel that can
+//! provides a bounded, policy-aware control channel that can
 //! reserve lifecycle delivery, batch completion traffic, and coalesce
 //! best-effort control work.
 

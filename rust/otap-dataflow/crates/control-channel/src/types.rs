@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Public types for the experimental control-optimized channel.
+//! Public types for the standalone control-aware channel.
 
 use std::time::Instant;
 
