@@ -12,6 +12,7 @@ use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
 use otap_df_telemetry::{otel_error, otel_info};
@@ -59,6 +60,9 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     registry: TelemetryRegistryHandle,
 
+    #[serde(skip)]
+    log_tap: Option<InternalLogTapHandle>,
+
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
 
@@ -89,6 +93,16 @@ impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration and telemetry registry.
     #[must_use]
     pub fn new(config: &ObservedStateSettings, registry: TelemetryRegistryHandle) -> Self {
+        Self::new_with_log_tap(config, registry, None)
+    }
+
+    /// Creates a new `ObservedStateStore` with an optional retained-log sink.
+    #[must_use]
+    pub fn new_with_log_tap(
+        config: &ObservedStateSettings,
+        registry: TelemetryRegistryHandle,
+        log_tap: Option<InternalLogTapHandle>,
+    ) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
         let (engine_sender, engine_receiver) = flume::unbounded::<EngineEvent>();
 
@@ -101,6 +115,7 @@ impl ObservedStateStore {
             engine_receiver,
             console: ConsoleWriter::color(),
             registry,
+            log_tap,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -112,11 +127,16 @@ impl ObservedStateStore {
     /// bounded path.
     #[must_use]
     pub fn engine_reporter(&self, log_policy: SendPolicy) -> ObservedEventReporter {
-        ObservedEventReporter::new_with_engine_sender(
+        let reporter = ObservedEventReporter::new_with_engine_sender(
             log_policy,
             self.sender.clone(),
             self.engine_sender.clone(),
-        )
+        );
+        if let Some(log_tap) = &self.log_tap {
+            reporter.with_drop_counter(log_tap.ingest_drop_counter())
+        } else {
+            reporter
+        }
     }
 
     /// Returns a reporter that sends observed events through the bounded channel
@@ -126,7 +146,12 @@ impl ObservedStateStore {
     /// [`engine_reporter`](Self::engine_reporter) instead.
     #[must_use]
     pub fn reporter(&self, policy: SendPolicy) -> ObservedEventReporter {
-        ObservedEventReporter::new(policy, self.sender.clone())
+        let reporter = ObservedEventReporter::new(policy, self.sender.clone());
+        if let Some(log_tap) = &self.log_tap {
+            reporter.with_drop_counter(log_tap.ingest_drop_counter())
+        } else {
+            reporter
+        }
     }
 
     /// Registers or updates the health policy for a specific pipeline.
@@ -160,6 +185,9 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
+                if let Some(log_tap) = &self.log_tap {
+                    log_tap.record(log.clone());
+                }
                 let context = &log.record.context;
 
                 self.console.print_log_record(log.time, &log.record, |w| {
@@ -267,6 +295,52 @@ impl ObservedStateStore {
         cs.apply_event(observed_event)
     }
 
+    fn drain_remaining(&self, engine_closed: &mut bool, log_closed: &mut bool) {
+        loop {
+            let mut made_progress = false;
+
+            if !*engine_closed {
+                loop {
+                    match self.engine_receiver.try_recv() {
+                        Ok(engine_event) => {
+                            made_progress = true;
+                            if let Err(e) = self.report_engine(engine_event) {
+                                otel_error!("state.report_failed", error = ?e);
+                            }
+                        }
+                        Err(flume::TryRecvError::Empty) => break,
+                        Err(flume::TryRecvError::Disconnected) => {
+                            *engine_closed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !*log_closed {
+                loop {
+                    match self.receiver.try_recv() {
+                        Ok(event) => {
+                            made_progress = true;
+                            if let Err(e) = self.report(event) {
+                                otel_error!("state.report_failed", error = ?e);
+                            }
+                        }
+                        Err(flume::TryRecvError::Empty) => break,
+                        Err(flume::TryRecvError::Disconnected) => {
+                            *log_closed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !made_progress {
+                break;
+            }
+        }
+    }
+
     /// Runs the collection loop, receiving observed events and updating the observed store.
     /// This function runs indefinitely until the channel is closed or the cancellation token is
     /// triggered.
@@ -286,7 +360,10 @@ impl ObservedStateStore {
             tokio::select! {
                 biased;
 
-                _ = cancel.cancelled() => break,
+                _ = cancel.cancelled() => {
+                    self.drain_remaining(&mut engine_closed, &mut log_closed);
+                    break;
+                },
 
                 result = self.engine_receiver.recv_async(), if !engine_closed => {
                     match result {
@@ -349,9 +426,16 @@ mod tests {
     use super::*;
     use otap_df_config::observed_state::SendPolicy;
     use otap_df_telemetry::event::{EngineEvent, ObservedEvent};
+    use otap_df_telemetry::log_tap;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
     use std::borrow::Cow;
+    use std::time::SystemTime;
     use std::time::Duration;
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::LookupSpan;
     use tokio_util::sync::CancellationToken;
 
     fn make_key(core_id: usize) -> otap_df_config::DeployedPipelineKey {
@@ -360,6 +444,32 @@ mod tests {
             pipeline_id: Cow::Borrowed("pipeline"),
             core_id,
         }
+    }
+
+    #[derive(Clone)]
+    struct ReporterLayer {
+        reporter: ObservedEventReporter,
+    }
+
+    impl<S> Layer<S> for ReporterLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            self.reporter.log(otap_df_telemetry::event::LogEvent {
+                time: SystemTime::now(),
+                record: LogRecord::new(event, LogContext::default()),
+            });
+        }
+    }
+
+    fn emit_log_via_async_reporter(reporter: ObservedEventReporter, message: &str) {
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(ReporterLayer { reporter }),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(message = message);
+        });
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops
@@ -578,5 +688,93 @@ mod tests {
                 .filter(|c| matches!(c.phase, PipelinePhase::Pending))
                 .count(),
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_async_path_fans_out_to_tap() {
+        let config = ObservedStateSettings {
+            reporting_channel_size: 8,
+            engine_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+            logging_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+        };
+        let log_tap = log_tap::build(&otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+            enabled: true,
+            max_entries: 8,
+            max_bytes: 1024 * 1024,
+        });
+        let store = ObservedStateStore::new_with_log_tap(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(log_tap.clone()),
+        );
+        let reporter = store.reporter(config.logging_events.clone());
+
+        let cancel = CancellationToken::new();
+        let consumer = tokio::spawn(store.clone().run(cancel.clone()));
+
+        emit_log_via_async_reporter(reporter, "tap fanout");
+
+        for _ in 0..50 {
+            let result = log_tap.query(log_tap::LogQuery {
+                after: None,
+                limit: 10,
+            });
+            if result.logs.len() == 1 {
+                assert!(result.logs[0].event.to_string().contains("tap fanout"));
+                cancel.cancel();
+                consumer.await.expect("join").expect("run succeeds");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        cancel.cancel();
+        consumer.await.expect("join").expect("run succeeds");
+        panic!("log was not retained via console_async path");
+    }
+
+    #[tokio::test]
+    async fn cancel_drains_console_async_logs_into_tap() {
+        let config = ObservedStateSettings {
+            reporting_channel_size: 8,
+            engine_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+            logging_events: SendPolicy {
+                blocking_timeout: None,
+                console_fallback: false,
+            },
+        };
+        let log_tap = log_tap::build(&otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+            enabled: true,
+            max_entries: 8,
+            max_bytes: 1024 * 1024,
+        });
+        let store = ObservedStateStore::new_with_log_tap(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(log_tap.clone()),
+        );
+        let reporter = store.reporter(config.logging_events.clone());
+
+        emit_log_via_async_reporter(reporter, "shutdown drain");
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        store.run(cancel).await.expect("run succeeds");
+
+        let result = log_tap.query(log_tap::LogQuery {
+            after: None,
+            limit: 10,
+        });
+        assert_eq!(result.logs.len(), 1);
+        assert!(result.logs[0].event.to_string().contains("shutdown drain"));
     }
 }

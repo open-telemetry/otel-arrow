@@ -32,7 +32,6 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
-use parking_lot::Mutex;
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -144,6 +143,8 @@ pub struct InternalTelemetrySettings {
     pub resource_bytes: bytes::Bytes,
     /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
+    /// Optional retained-log sink shared with admin consumers.
+    pub log_tap: Option<log_tap::InternalLogTapHandle>,
 }
 
 impl std::fmt::Debug for InternalTelemetrySettings {
@@ -204,14 +205,8 @@ pub struct InternalTelemetrySystem {
     /// Event reporter for ITS mode (Internal Telemetry System).
     its_reporter: Option<ObservedEventReporter>,
 
-    /// Optional reporter for the internal log tap.
-    log_tap_reporter: Option<log_tap::InternalLogTapReporter>,
-
     /// Optional handle for querying retained internal logs.
     log_tap_handle: Option<log_tap::InternalLogTapHandle>,
-
-    /// Runtime responsible for draining the internal log tap queue.
-    log_tap_runtime: Mutex<Option<log_tap::InternalLogTapRuntime>>,
 
     /// Internal telemetry pipeline setup.
     its_settings: Option<InternalTelemetrySettings>,
@@ -240,6 +235,7 @@ impl InternalTelemetrySystem {
         telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
+        log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -264,7 +260,12 @@ impl InternalTelemetrySystem {
         // 3. Create ITS channel if any provider uses ITS mode
         let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
-            let reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
+            let reporter = if let Some(log_tap) = &log_tap_handle {
+                ObservedEventReporter::new(SendPolicy::default(), sender)
+                    .with_drop_counter(log_tap.ingest_drop_counter())
+            } else {
+                ObservedEventReporter::new(SendPolicy::default(), sender)
+            };
             let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
             (
                 Some(reporter),
@@ -272,17 +273,11 @@ impl InternalTelemetrySystem {
                     logs_receiver,
                     resource_bytes,
                     registry: telemetry_registry.clone(),
+                    log_tap: log_tap_handle.clone(),
                 }),
             )
         } else {
             (None, None)
-        };
-
-        let (log_tap_reporter, log_tap_handle, log_tap_runtime) = if config.logs.tap.enabled {
-            let (reporter, handle, runtime) = log_tap::build(&config.logs.tap);
-            (Some(reporter), Some(handle), Some(runtime))
-        } else {
-            (None, None, None)
         };
 
         Ok(Self {
@@ -297,9 +292,7 @@ impl InternalTelemetrySystem {
             context_fn,
             console_async_reporter,
             its_reporter,
-            log_tap_reporter,
             log_tap_handle,
-            log_tap_runtime: Mutex::new(log_tap_runtime),
             its_settings,
         })
     }
@@ -323,13 +316,9 @@ impl InternalTelemetrySystem {
     #[must_use]
     fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
         let provider = match mode {
-            ProviderMode::Noop => ProviderSetup::Noop {
-                tap: self.log_tap_reporter.clone(),
-            },
+            ProviderMode::Noop => ProviderSetup::Noop,
 
-            ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect {
-                tap: self.log_tap_reporter.clone(),
-            },
+            ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect,
 
             ProviderMode::ConsoleAsync => ProviderSetup::InternalAsync {
                 reporter: self
@@ -337,12 +326,10 @@ impl InternalTelemetrySystem {
                     .as_ref()
                     .expect("has provider")
                     .clone(),
-                tap: self.log_tap_reporter.clone(),
             },
 
             ProviderMode::ITS => ProviderSetup::InternalAsync {
                 reporter: self.its_reporter.as_ref().expect("has provider").clone(),
-                tap: self.log_tap_reporter.clone(),
             },
         };
 
@@ -380,12 +367,6 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn log_tap_handle(&self) -> Option<log_tap::InternalLogTapHandle> {
         self.log_tap_handle.clone()
-    }
-
-    /// Takes ownership of the internal log tap runtime, if enabled.
-    #[must_use]
-    pub fn take_log_tap_runtime(&self) -> Option<log_tap::InternalLogTapRuntime> {
-        self.log_tap_runtime.lock().take()
     }
 
     /// Returns the configured log level.
@@ -443,6 +424,7 @@ impl Default for InternalTelemetrySystem {
             TelemetryRegistryHandle::new(),
             Some(dummy_reporter),
             LogContext::new,
+            None,
         )
         .expect("default telemetry config should be valid")
     }
@@ -486,6 +468,7 @@ mod tests {
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
                 LogContext::new,
+                None,
             )
             .expect("should create");
             assert!(
@@ -505,6 +488,7 @@ mod tests {
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
                 LogContext::new,
+                None,
             )
             .expect("should create");
             let its_settings = its.internal_telemetry_settings();
@@ -543,6 +527,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
             LogContext::new,
+            None,
         )
         .expect("should create");
 

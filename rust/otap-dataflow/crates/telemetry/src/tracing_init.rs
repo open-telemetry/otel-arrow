@@ -8,10 +8,8 @@
 //! trace events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
-use crate::log_tap::InternalLogTapReporter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otap_df_config::settings::telemetry::logs::LogLevel;
-use smallvec::SmallVec;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
@@ -84,19 +82,11 @@ impl TracingSetup {
 /// Provider configuration for setting up a tracing subscriber.
 #[derive(Clone)]
 pub enum ProviderSetup {
-    /// No external logging sink.
-    ///
-    /// Events may still be forwarded to the internal log tap when configured.
-    Noop {
-        /// Optional internal log tap.
-        tap: Option<InternalLogTapReporter>,
-    },
+    /// Logs are silently dropped.
+    Noop,
 
     /// Synchronous console logging via `StructuredLoggingLayer`.
-    ConsoleDirect {
-        /// Optional internal log tap.
-        tap: Option<InternalLogTapReporter>,
-    },
+    ConsoleDirect,
 
     /// Asynchronous console logging via an observed event reporter which
     /// is either the admin component ("console_async") or an internal telemetry
@@ -104,37 +94,27 @@ pub enum ProviderSetup {
     InternalAsync {
         /// Reporter to send log events through.
         reporter: ObservedEventReporter,
-        /// Optional internal log tap.
-        tap: Option<InternalLogTapReporter>,
     },
 }
 
 impl ProviderSetup {
     fn build_dispatch_with_filter(&self, filter: EnvFilter, context_fn: LogContextFn) -> Dispatch {
         match self {
-            ProviderSetup::Noop { tap: None } => {
-                Dispatch::new(tracing::subscriber::NoSubscriber::new())
-            }
+            ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
-            ProviderSetup::Noop { tap } => {
-                let layer =
-                    StructuredLoggingLayer::new(None, sinks(None, tap.as_ref()), context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
-            }
-
-            ProviderSetup::ConsoleDirect { tap } => {
+            ProviderSetup::ConsoleDirect => {
                 let layer = StructuredLoggingLayer::new(
                     Some(ConsoleWriter::color()),
-                    sinks(None, tap.as_ref()),
+                    None,
                     context_fn,
                 );
                 Dispatch::new(Registry::default().with(filter).with(layer))
             }
 
-            ProviderSetup::InternalAsync { reporter, tap } => {
+            ProviderSetup::InternalAsync { reporter } => {
                 let layer = StructuredLoggingLayer::new(
                     None,
-                    sinks(Some(reporter), tap.as_ref()),
+                    Some(reporter.clone()),
                     context_fn,
                 );
                 Dispatch::new(Registry::default().with(filter).with(layer))
@@ -182,39 +162,10 @@ impl ProviderSetup {
     }
 }
 
-#[derive(Clone)]
-enum AsyncLogSink {
-    Observed(ObservedEventReporter),
-    Tap(InternalLogTapReporter),
-}
-
-impl AsyncLogSink {
-    fn log(&self, event: LogEvent) {
-        match self {
-            Self::Observed(reporter) => reporter.log(event),
-            Self::Tap(reporter) => reporter.log(event),
-        }
-    }
-}
-
-fn sinks(
-    reporter: Option<&ObservedEventReporter>,
-    tap: Option<&InternalLogTapReporter>,
-) -> SmallVec<[AsyncLogSink; 2]> {
-    let mut sinks = SmallVec::new();
-    if let Some(reporter) = reporter {
-        sinks.push(AsyncLogSink::Observed(reporter.clone()));
-    }
-    if let Some(tap) = tap {
-        sinks.push(AsyncLogSink::Tap(tap.clone()));
-    }
-    sinks
-}
-
-/// A tracing layer that emits a single structured log record and fans it out.
+/// A tracing layer that emits a structured log record to either console or an async sink.
 pub struct StructuredLoggingLayer {
     writer: Option<ConsoleWriter>,
-    sinks: SmallVec<[AsyncLogSink; 2]>,
+    reporter: Option<ObservedEventReporter>,
     context_fn: LogContextFn,
 }
 
@@ -223,12 +174,12 @@ impl StructuredLoggingLayer {
     #[must_use]
     fn new(
         writer: Option<ConsoleWriter>,
-        sinks: SmallVec<[AsyncLogSink; 2]>,
+        reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
     ) -> Self {
         Self {
             writer,
-            sinks,
+            reporter,
             context_fn,
         }
     }
@@ -247,18 +198,9 @@ where
                 w.format_entity_suffix_without_registry(&record.context);
             });
         }
-        if self.sinks.is_empty() {
-            return;
+        if let Some(reporter) = &self.reporter {
+            reporter.log(LogEvent { time, record });
         }
-        let mut sinks = self.sinks.iter();
-        let last = sinks.next_back().expect("non-empty sink list");
-        for sink in sinks {
-            sink.log(LogEvent {
-                time,
-                record: record.clone(),
-            });
-        }
-        last.log(LogEvent { time, record });
     }
 }
 
@@ -266,11 +208,9 @@ where
 mod tests {
     use super::*;
     use crate::event::ObservedEvent;
-    use crate::log_tap;
     use crate::self_tracing::LogContext;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
     use otap_df_config::observed_state::SendPolicy;
-    use otap_df_config::settings::telemetry::logs::InternalLogTapConfig;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
         let (tx, rx) = flume::bounded(16);
@@ -279,32 +219,15 @@ mod tests {
     }
 
     fn noop_provider() -> ProviderSetup {
-        ProviderSetup::Noop { tap: None }
+        ProviderSetup::Noop
     }
 
     fn console_direct_provider() -> ProviderSetup {
-        ProviderSetup::ConsoleDirect { tap: None }
+        ProviderSetup::ConsoleDirect
     }
 
     fn internal_async_provider(reporter: ObservedEventReporter) -> ProviderSetup {
-        ProviderSetup::InternalAsync {
-            reporter,
-            tap: None,
-        }
-    }
-
-    fn test_tap() -> (
-        InternalLogTapReporter,
-        log_tap::InternalLogTapHandle,
-        log_tap::InternalLogTapRuntime,
-    ) {
-        let config = InternalLogTapConfig {
-            enabled: true,
-            ingest_channel_size: 16,
-            max_entries: 16,
-            max_bytes: 1024 * 1024,
-        };
-        log_tap::build(&config)
+        ProviderSetup::InternalAsync { reporter }
     }
 
     fn test_setup(p: ProviderSetup, l: LogLevel) -> TracingSetup {
@@ -602,62 +525,5 @@ mod tests {
             assert!(receiver1.try_recv().is_err());
             assert!(receiver2.try_recv().is_err());
         });
-    }
-
-    #[test]
-    fn noop_provider_can_feed_tap() {
-        let (tap, handle, runtime) = test_tap();
-        let setup = test_setup(ProviderSetup::Noop { tap: Some(tap) }, level("info"));
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        rt.block_on(async move {
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let join = tokio::spawn(runtime.run(cancel.clone()));
-            setup.with_subscriber_ignoring_env(|| {
-                otel_info!("tapped_from_noop");
-            });
-            tokio::task::yield_now().await;
-            cancel.cancel();
-            join.await.expect("join").expect("runtime success");
-        });
-
-        let result = handle.query(log_tap::LogQuery {
-            after: None,
-            limit: 10,
-        });
-        assert_eq!(result.logs.len(), 1);
-    }
-
-    #[test]
-    fn console_direct_provider_can_feed_tap() {
-        let (tap, handle, runtime) = test_tap();
-        let setup = test_setup(
-            ProviderSetup::ConsoleDirect { tap: Some(tap) },
-            level("info"),
-        );
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        rt.block_on(async move {
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let join = tokio::spawn(runtime.run(cancel.clone()));
-            setup.with_subscriber_ignoring_env(|| {
-                otel_info!("tapped_from_console");
-            });
-            tokio::task::yield_now().await;
-            cancel.cancel();
-            join.await.expect("join").expect("runtime success");
-        });
-
-        let result = handle.query(log_tap::LogQuery {
-            after: None,
-            limit: 10,
-        });
-        assert_eq!(result.logs.len(), 1);
     }
 }

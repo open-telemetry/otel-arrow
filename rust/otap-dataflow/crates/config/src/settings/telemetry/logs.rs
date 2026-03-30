@@ -42,10 +42,6 @@ pub struct InternalLogTapConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Capacity of the non-blocking ingestion channel.
-    #[serde(default = "default_tap_ingest_channel_size")]
-    pub ingest_channel_size: usize,
-
     /// Maximum number of retained log entries.
     #[serde(default = "default_tap_max_entries")]
     pub max_entries: usize,
@@ -196,10 +192,6 @@ const fn default_providers() -> LoggingProviders {
     }
 }
 
-const fn default_tap_ingest_channel_size() -> usize {
-    256
-}
-
 const fn default_tap_max_entries() -> usize {
     2048
 }
@@ -212,7 +204,6 @@ impl Default for InternalLogTapConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            ingest_channel_size: default_tap_ingest_channel_size(),
             max_entries: default_tap_max_entries(),
             max_bytes: default_tap_max_bytes(),
         }
@@ -254,11 +245,6 @@ impl LogsConfig {
                     .into(),
             });
         }
-        if self.tap.enabled && self.tap.ingest_channel_size == 0 {
-            return Err(Error::InvalidUserConfig {
-                error: "logs.tap.ingest_channel_size must be greater than zero".into(),
-            });
-        }
         if self.tap.enabled && self.tap.max_entries == 0 {
             return Err(Error::InvalidUserConfig {
                 error: "logs.tap.max_entries must be greater than zero".into(),
@@ -267,6 +253,14 @@ impl LogsConfig {
         if self.tap.enabled && self.tap.max_bytes == 0 {
             return Err(Error::InvalidUserConfig {
                 error: "logs.tap.max_bytes must be greater than zero".into(),
+            });
+        }
+        if self.tap.enabled
+            && !self.providers.uses_console_async_provider()
+            && !self.providers.uses_its_provider()
+        {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.tap.enabled requires at least one async log provider ('console_async' or 'its')".into(),
             });
         }
 
@@ -333,7 +327,6 @@ mod tests {
         assert_eq!(config.providers.internal, ProviderMode::Noop);
         assert_eq!(config.providers.admin, ProviderMode::ConsoleDirect);
         assert!(!config.tap.enabled);
-        assert_eq!(config.tap.ingest_channel_size, 256);
         assert_eq!(config.tap.max_entries, 2048);
         assert_eq!(config.tap.max_bytes, 16 * 1024 * 1024);
 
@@ -345,10 +338,6 @@ mod tests {
         assert_eq!(parsed.providers.internal, config.providers.internal);
         assert_eq!(parsed.providers.admin, config.providers.admin);
         assert_eq!(parsed.tap.enabled, config.tap.enabled);
-        assert_eq!(
-            parsed.tap.ingest_channel_size,
-            config.tap.ingest_channel_size
-        );
         assert_eq!(parsed.tap.max_entries, config.tap.max_entries);
         assert_eq!(parsed.tap.max_bytes, config.tap.max_bytes);
     }
@@ -432,16 +421,40 @@ mod tests {
         let mut config = LogsConfig::default();
         config.tap.enabled = true;
 
-        config.tap.ingest_channel_size = 0;
-        assert_invalid(&config, "logs.tap.ingest_channel_size");
-
-        config.tap.ingest_channel_size = 16;
         config.tap.max_entries = 0;
         assert_invalid(&config, "logs.tap.max_entries");
 
         config.tap.max_entries = 1;
         config.tap.max_bytes = 0;
         assert_invalid(&config, "logs.tap.max_bytes");
+    }
+
+    #[test]
+    fn test_validate_tap_requires_async_provider() {
+        use ProviderMode::*;
+
+        let mut config = LogsConfig {
+            providers: providers(Noop, ConsoleDirect, Noop, ConsoleDirect),
+            ..Default::default()
+        };
+        config.tap.enabled = true;
+        assert_invalid(&config, "logs.tap.enabled requires at least one async log provider");
+
+        for providers in [
+            providers(ConsoleAsync, Noop, Noop, ConsoleDirect),
+            providers(Noop, ITS, Noop, ConsoleDirect),
+            providers(ITS, ConsoleDirect, Noop, ConsoleDirect),
+        ] {
+            let config = LogsConfig {
+                providers,
+                tap: InternalLogTapConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            config.validate().expect("async provider should support tap");
+        }
     }
 
     #[test]

@@ -1,9 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Internal log tap with non-blocking ingestion and bounded in-memory retention.
+//! Internal log tap with bounded in-memory retention.
 
-use crate::error::Error;
 use crate::event::LogEvent;
 use otap_df_config::settings::telemetry::logs::InternalLogTapConfig;
 use parking_lot::RwLock;
@@ -11,12 +10,22 @@ use std::collections::VecDeque;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone)]
-struct QueuedLogEvent {
-    event: LogEvent,
-    estimated_bytes: usize,
+/// Shared counter for logs dropped before they reached the retained log sink.
+#[derive(Clone, Debug, Default)]
+pub struct InternalLogTapDropCounter {
+    count: Arc<AtomicU64>,
+}
+
+impl InternalLogTapDropCounter {
+    /// Record a dropped log event.
+    pub fn increment(&self) {
+        let _ = self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
 }
 
 /// A retained log event stored in the in-memory ring.
@@ -56,15 +65,13 @@ impl LogRetention {
         }
     }
 
-    fn push(&mut self, item: QueuedLogEvent) {
+    fn push(&mut self, event: LogEvent) {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
+        let estimated_bytes = estimate_event_size(&event);
         let slot = RetainedLogSlot {
-            event: RetainedLogEvent {
-                seq,
-                event: item.event,
-            },
-            estimated_bytes: item.estimated_bytes,
+            event: RetainedLogEvent { seq, event },
+            estimated_bytes,
         };
         self.retained_bytes = self.retained_bytes.saturating_add(slot.estimated_bytes);
         self.entries.push_back(slot);
@@ -112,34 +119,25 @@ pub struct LogQueryResult {
     pub logs: Vec<RetainedLogEvent>,
 }
 
-/// A non-blocking reporter used on the tracing hot path.
-#[derive(Clone, Debug)]
-pub struct InternalLogTapReporter {
-    dropped_on_ingest: Arc<AtomicU64>,
-    tx: flume::Sender<QueuedLogEvent>,
-}
-
-impl InternalLogTapReporter {
-    /// Queue a structured internal log event without blocking the caller.
-    pub fn log(&self, event: LogEvent) {
-        let item = QueuedLogEvent {
-            estimated_bytes: estimate_event_size(&event),
-            event,
-        };
-        if self.tx.try_send(item).is_err() {
-            let _ = self.dropped_on_ingest.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-/// Shared query handle for the retained internal log ring buffer.
+/// Shared query/update handle for the retained internal log ring buffer.
 #[derive(Clone, Debug)]
 pub struct InternalLogTapHandle {
     state: Arc<RwLock<LogRetention>>,
-    dropped_on_ingest: Arc<AtomicU64>,
+    dropped_on_ingest: InternalLogTapDropCounter,
 }
 
 impl InternalLogTapHandle {
+    /// Record a structured internal log event in retention.
+    pub fn record(&self, event: LogEvent) {
+        self.state.write().push(event);
+    }
+
+    /// Returns a counter that tracks logs dropped before retention.
+    #[must_use]
+    pub fn ingest_drop_counter(&self) -> InternalLogTapDropCounter {
+        self.dropped_on_ingest.clone()
+    }
+
     /// Query retained logs using cursor-based semantics.
     #[must_use]
     pub fn query(&self, query: LogQuery) -> LogQueryResult {
@@ -179,7 +177,7 @@ impl InternalLogTapHandle {
             newest_seq,
             next_seq,
             truncated_before_seq,
-            dropped_on_ingest: self.dropped_on_ingest.load(Ordering::Relaxed),
+            dropped_on_ingest: self.dropped_on_ingest.load(),
             dropped_on_retention: state.dropped_on_retention,
             retained_bytes: state.retained_bytes,
             logs,
@@ -187,91 +185,16 @@ impl InternalLogTapHandle {
     }
 }
 
-/// Runtime task draining the ingestion queue into the retained ring buffer.
-#[derive(Debug)]
-pub struct InternalLogTapRuntime {
-    rx: flume::Receiver<QueuedLogEvent>,
-    state: Arc<RwLock<LogRetention>>,
-}
-
-impl InternalLogTapRuntime {
-    fn flush_batch(&self, batch: &mut Vec<QueuedLogEvent>) {
-        if batch.is_empty() {
-            return;
-        }
-
-        let mut retention = self.state.write();
-        for item in batch.drain(..) {
-            retention.push(item);
-        }
-    }
-
-    fn drain_remaining(&self, batch: &mut Vec<QueuedLogEvent>) {
-        while let Ok(item) = self.rx.try_recv() {
-            batch.push(item);
-            if batch.len() >= 64 {
-                self.flush_batch(batch);
-            }
-        }
-        self.flush_batch(batch);
-    }
-
-    /// Drain the ingestion queue until cancellation is requested.
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
-        let mut batch = Vec::with_capacity(64);
-
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    // Best-effort final flush for events already accepted on the hot path.
-                    self.drain_remaining(&mut batch);
-                    return Ok(());
-                },
-                received = self.rx.recv_async() => {
-                    let Ok(first) = received else {
-                        return Ok(());
-                    };
-                    batch.push(first);
-                    while batch.len() < 64 {
-                        match self.rx.try_recv() {
-                            Ok(item) => batch.push(item),
-                            Err(_) => break,
-                        }
-                    }
-                    self.flush_batch(&mut batch);
-                }
-            }
-        }
-    }
-}
-
 /// Create a new internal log tap from configuration.
 #[must_use]
-pub fn build(
-    config: &InternalLogTapConfig,
-) -> (
-    InternalLogTapReporter,
-    InternalLogTapHandle,
-    InternalLogTapRuntime,
-) {
-    let (tx, rx) = flume::bounded(config.ingest_channel_size);
-    let dropped_on_ingest = Arc::new(AtomicU64::new(0));
-    let state = Arc::new(RwLock::new(LogRetention::new(
-        config.max_entries,
-        config.max_bytes,
-    )));
-
-    let reporter = InternalLogTapReporter {
-        dropped_on_ingest: dropped_on_ingest.clone(),
-        tx,
-    };
-    let handle = InternalLogTapHandle {
-        state: state.clone(),
-        dropped_on_ingest,
-    };
-    let runtime = InternalLogTapRuntime { rx, state };
-
-    (reporter, handle, runtime)
+pub fn build(config: &InternalLogTapConfig) -> InternalLogTapHandle {
+    InternalLogTapHandle {
+        state: Arc::new(RwLock::new(LogRetention::new(
+            config.max_entries,
+            config.max_bytes,
+        ))),
+        dropped_on_ingest: InternalLogTapDropCounter::default(),
+    }
 }
 
 fn estimate_event_size(event: &LogEvent) -> usize {
@@ -297,10 +220,7 @@ mod tests {
         let (tx, rx) = flume::bounded(1);
         let reporter = ObservedEventReporter::new(SendPolicy::default(), tx);
         let setup = TracingSetup::new(
-            ProviderSetup::InternalAsync {
-                reporter,
-                tap: None,
-            },
+            ProviderSetup::InternalAsync { reporter },
             level("info"),
             LogContext::new,
         );
@@ -319,27 +239,14 @@ mod tests {
     fn retention_evicts_oldest_by_entry_limit() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 2,
             max_bytes: usize::MAX,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            state.push(QueuedLogEvent {
-                event: event_with_message("1"),
-                estimated_bytes: 1,
-            });
-            state.push(QueuedLogEvent {
-                event: event_with_message("2"),
-                estimated_bytes: 1,
-            });
-            state.push(QueuedLogEvent {
-                event: event_with_message("3"),
-                estimated_bytes: 1,
-            });
-        }
+        handle.record(event_with_message("1"));
+        handle.record(event_with_message("2"));
+        handle.record(event_with_message("3"));
 
         let result = handle.query(LogQuery {
             after: None,
@@ -354,23 +261,13 @@ mod tests {
     fn retention_evicts_oldest_by_byte_limit() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 10,
-            max_bytes: 5,
+            max_bytes: estimate_event_size(&event_with_message("1234")) + 1,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            state.push(QueuedLogEvent {
-                event: event_with_message("1234"),
-                estimated_bytes: 4,
-            });
-            state.push(QueuedLogEvent {
-                event: event_with_message("56"),
-                estimated_bytes: 2,
-            });
-        }
+        handle.record(event_with_message("1234"));
+        handle.record(event_with_message("56"));
 
         let result = handle.query(LogQuery {
             after: None,
@@ -385,20 +282,13 @@ mod tests {
     fn query_returns_incremental_logs_after_cursor() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 10,
             max_bytes: usize::MAX,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            for seq in 1..=4 {
-                state.push(QueuedLogEvent {
-                    event: event_with_message(&seq.to_string()),
-                    estimated_bytes: 1,
-                });
-            }
+        for seq in 1..=4 {
+            handle.record(event_with_message(&seq.to_string()));
         }
 
         let result = handle.query(LogQuery {
@@ -415,112 +305,55 @@ mod tests {
     fn query_reports_truncation_when_cursor_falls_behind() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 2,
             max_bytes: usize::MAX,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            state.next_seq = 5;
-            state.push(QueuedLogEvent {
-                event: event_with_message("a"),
-                estimated_bytes: 1,
-            });
-            state.push(QueuedLogEvent {
-                event: event_with_message("b"),
-                estimated_bytes: 1,
-            });
-        }
+        handle.record(event_with_message("1"));
+        handle.record(event_with_message("2"));
+        handle.record(event_with_message("3"));
+
+        let result = handle.query(LogQuery {
+            after: Some(0),
+            limit: 10,
+        });
+        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
+        assert_eq!(seqs, vec![2, 3]);
+        assert_eq!(result.truncated_before_seq, Some(2));
+        assert_eq!(result.next_seq, 3);
+    }
+
+    #[test]
+    fn query_does_not_report_truncation_when_cursor_is_current() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 2,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+
+        handle.record(event_with_message("1"));
+        handle.record(event_with_message("2"));
 
         let result = handle.query(LogQuery {
             after: Some(1),
             limit: 10,
         });
-        assert_eq!(result.truncated_before_seq, Some(5));
-        assert_eq!(result.next_seq, 6);
-    }
-
-    #[test]
-    fn query_does_not_report_truncation_when_cursor_is_immediately_before_oldest() {
-        let config = InternalLogTapConfig {
-            enabled: true,
-            ingest_channel_size: 4,
-            max_entries: 2,
-            max_bytes: usize::MAX,
-        };
-        let (_reporter, handle, runtime) = build(&config);
-
-        {
-            let mut state = runtime.state.write();
-            state.next_seq = 5;
-            state.push(QueuedLogEvent {
-                event: event_with_message("a"),
-                estimated_bytes: 1,
-            });
-            state.push(QueuedLogEvent {
-                event: event_with_message("b"),
-                estimated_bytes: 1,
-            });
-        }
-
-        let result = handle.query(LogQuery {
-            after: Some(4),
-            limit: 10,
-        });
-        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
-        assert_eq!(seqs, vec![5, 6]);
         assert!(result.truncated_before_seq.is_none());
     }
 
-    #[tokio::test]
-    async fn runtime_flushes_queued_logs_on_cancellation() {
+    #[test]
+    fn drop_counter_is_reported() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 10,
             max_bytes: usize::MAX,
         };
-        let (reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        reporter.log(event_with_message("first"));
-        reporter.log(event_with_message("second"));
-
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        runtime
-            .run(cancel)
-            .await
-            .expect("runtime should shut down cleanly");
-
-        let result = handle.query(LogQuery {
-            after: None,
-            limit: 10,
-        });
-        let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
-        assert_eq!(seqs, vec![1, 2]);
-    }
-
-    #[tokio::test]
-    async fn dropped_ingest_does_not_create_sequence_gaps() {
-        let config = InternalLogTapConfig {
-            enabled: true,
-            ingest_channel_size: 1,
-            max_entries: 10,
-            max_bytes: usize::MAX,
-        };
-        let (reporter, handle, runtime) = build(&config);
-
-        reporter.log(event_with_message("accepted"));
-        reporter.log(event_with_message("dropped"));
-
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        runtime
-            .run(cancel)
-            .await
-            .expect("runtime should shut down cleanly");
+        handle.ingest_drop_counter().increment();
+        handle.record(event_with_message("accepted"));
 
         let result = handle.query(LogQuery {
             after: None,
@@ -535,20 +368,13 @@ mod tests {
     fn query_keeps_cursor_when_no_new_logs_are_available() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 10,
             max_bytes: usize::MAX,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            for seq in 1..=4 {
-                state.push(QueuedLogEvent {
-                    event: event_with_message(&seq.to_string()),
-                    estimated_bytes: 1,
-                });
-            }
+        for seq in 1..=4 {
+            handle.record(event_with_message(&seq.to_string()));
         }
 
         let result = handle.query(LogQuery {
@@ -563,20 +389,13 @@ mod tests {
     fn initial_query_uses_latest_returned_seq_as_next_cursor() {
         let config = InternalLogTapConfig {
             enabled: true,
-            ingest_channel_size: 4,
             max_entries: 10,
             max_bytes: usize::MAX,
         };
-        let (_reporter, handle, runtime) = build(&config);
+        let handle = build(&config);
 
-        {
-            let mut state = runtime.state.write();
-            for seq in 1..=4 {
-                state.push(QueuedLogEvent {
-                    event: event_with_message(&seq.to_string()),
-                    estimated_bytes: 1,
-                });
-            }
+        for seq in 1..=4 {
+            handle.record(event_with_message(&seq.to_string()));
         }
 
         let result = handle.query(LogQuery {
