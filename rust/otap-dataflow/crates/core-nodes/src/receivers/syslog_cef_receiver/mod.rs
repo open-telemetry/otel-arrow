@@ -420,7 +420,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         #[cfg(feature = "experimental-tls")]
-                                        let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                        let mut reader: Box<dyn AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
                                             // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
                                                 .unwrap_or(Duration::from_secs(10));
@@ -1418,7 +1418,7 @@ mod tests {
                 let padding_len = MAX_MESSAGE_SIZE + 500 - header.len();
                 let mut oversized = Vec::with_capacity(MAX_MESSAGE_SIZE + 500 + 1);
                 oversized.extend_from_slice(header);
-                oversized.extend(std::iter::repeat(b'X').take(padding_len));
+                oversized.extend(std::iter::repeat_n(b'X', padding_len));
                 oversized.push(b'\n');
 
                 stream
