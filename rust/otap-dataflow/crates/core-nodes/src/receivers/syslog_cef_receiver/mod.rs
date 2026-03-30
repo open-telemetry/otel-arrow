@@ -224,7 +224,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         // Start periodic telemetry collection (1s), similar to other nodes
-        let timer_cancel_handle = effect_handler
+        let telemetry_timer_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
@@ -285,9 +285,12 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
-                                    let _ = timer_cancel_handle.cancel().await;
-                                    shutdown_flag.set(true);
+                                    let _ = telemetry_timer_handle.cancel().await;
+                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
+                                    // Wait for active tasks to finish flushing.
+                                    // Use 90% of remaining time (keeping 10% buffer for cleanup),
+                                    // capped at MAX_TASK_DRAIN_WAIT.
                                     let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
                                     let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
                                     let drain_result = tokio::time::timeout(drain_wait, async {
@@ -312,7 +315,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = timer_cancel_handle.cancel().await;
+                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true);
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
@@ -662,7 +665,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // UDP has no long-lived connection tasks, so receiver-first
                                     // drain just means: stop ingesting new packets, flush the
                                     // current batch buffer once, then report ReceiverDrained.
-                                    let _ = timer_cancel_handle.cancel().await;
+                                    let _ = telemetry_timer_handle.cancel().await;
 
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
@@ -690,29 +693,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = timer_cancel_handle.cancel().await;
-
-                                    // Flush any remaining records before shutdown
-                                    if arrow_records_builder.len() > 0 {
-                                        let items = u64::from(arrow_records_builder.len());
-                                        match arrow_records_builder.build() {
-                                            Ok(arrow_records) => {
-                                                let res = effect_handler.try_send_message_with_source_node(
-                                                    OtapPdata::new_todo_context(arrow_records.into())
-                                                );
-                                                let mut m = self.metrics.borrow_mut();
-                                                match &res {
-                                                    Ok(_) => m.received_logs_forwarded.add(items),
-                                                    Err(_) => m.received_logs_forward_failed.add(items),
-                                                }
-                                            }
-                                            Err(e) => {
-                                                otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                self.metrics.borrow_mut().received_logs_forward_failed.add(items);
-                                            }
-                                        }
-                                    }
-
+                                    let _ = telemetry_timer_handle.cancel().await;
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }

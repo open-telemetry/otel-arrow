@@ -47,7 +47,7 @@ tries formats in this order:
 
 ### Cases That Return Errors (Message Rejected)
 
-<!-- markdownlint-disable MD013 -->
+<!-- markdownlint-disable MD013 MD038 MD056 MD060 -->
 
 | # | Input Example | Error | Notes |
 | --- | --- | --- | --- |
@@ -66,7 +66,6 @@ tries formats in this order:
 | 8 | `<192>1 - - - - - - msg` (PRI > 191) | `Rfc3164` | RFC 5424 PRI validation fails; RFC 3164 also treats PRI as invalid --> content-only | **Yes** | `false` |
 | 9 | `Oct 11 22:14:15 host su: msg` (no PRI, has structure) | `Rfc3164` | No priority but timestamp/hostname/tag/content parsed | **Yes** | `false` |
 | 10 | ```Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v``` (CEF+3164 no PRI) | `CefWithRfc3164` | Both 3164 & CEF parsed, but no priority | **Yes** | `false` |
-<!-- markdownlint-disable-next-line MD038 -->
 | 11 | `<34>1 - - - - - [id@123 key="value" ` (unclosed SD) | `Rfc5424` | Unclosed structured data --> entire remainder captured as SD; message=None | No | `true` |
 | 12 | `<34>1 - - - - - [ Message` (single open bracket) | `Rfc5424` | Unclosed bracket --> everything after `[` treated as SD; message=None | No | `true` |
 | 13 | `<34>Oct 11 22:14:15 host app[worker-1]: msg` (non-numeric PID) | `Rfc3164` | tag=`app[worker-1]`, app_name=`app`, proc_id=**None** (non-numeric rejected) | No | `true` |
@@ -86,10 +85,9 @@ tries formats in this order:
 | 22 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|=``` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
 | 23 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|===value``` | Succeeds, 0 extensions | Empty key skipped |
 | 24 | ```CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\``` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
-<!-- markdownlint-disable-next-line MD056 -->
 | 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | ```name = name\|10```, severity = empty |
 
-<!-- markdownlint-enable MD013 -->
+<!-- markdownlint-enable MD013 MD038 MD056 MD060 -->
 
 ---
 
