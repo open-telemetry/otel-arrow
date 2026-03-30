@@ -281,21 +281,21 @@ impl<A> AttributeHashBuffer<A> {
 #[repr(u8)]
 enum HashTag {
     /// Prefixes each attribute key.
-    Key = 0xf4,
+    Key = 0xf5,
     /// Represents an empty / null value.
-    Empty = 0xf5,
+    Empty = 0xf6,
     /// Prefixes a byte-array value.
-    Bytes = 0xf6,
+    Bytes = 0xf7,
     /// Prefixes a string value.
-    Str = 0xf7,
+    Str = 0xf8,
     /// Represents `true`.
-    BoolTrue = 0xf8,
+    BoolTrue = 0xf9,
     /// Represents `false`.
-    BoolFalse = 0xf9,
+    BoolFalse = 0xfa,
     /// Prefixes an i64 value (little-endian).
-    Int = 0xfa,
+    Int = 0xfb,
     /// Prefixes an f64 value (little-endian bits).
-    Double = 0xfb,
+    Double = 0xfc,
 }
 
 impl AttributeHash {
@@ -342,6 +342,7 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
         ValueType::String => {
             buf.push(HashTag::Str as u8);
             if let Some(s) = val.as_string() {
+                write_len(buf, s.len());
                 buf.extend_from_slice(s);
             }
         }
@@ -363,6 +364,7 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
         ValueType::Bytes => {
             buf.push(HashTag::Bytes as u8);
             if let Some(b) = val.as_bytes() {
+                write_len(buf, b.len());
                 buf.extend_from_slice(b);
             }
         }
@@ -376,11 +378,13 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
     }
 }
 
+fn write_len(vec: &mut Vec<u8>, len: usize) {
+    vec.extend_from_slice(&(len as u32).to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- AttributeHash Tests ---
 
     #[test]
     fn test_empty_attributes() {
@@ -473,8 +477,6 @@ mod tests {
         let h2 = AttributeHash::of(&mut buf, vec![bool_attr("k", false)].into_iter());
         assert_ne!(h1, h2);
     }
-
-    // --- Identity Hierarchy Tests ---
 
     #[test]
     fn test_resource_id_equality() {
@@ -612,7 +614,21 @@ mod tests {
         assert_eq!(h1, h2);
     }
 
-    // --- Test Helpers ---
+    #[test]
+    fn test_byte_array_collision() {
+        // If we don't have a length in the encoding for byte arrays and keys
+        // then it's easy to manufacture collisions like in the below case
+        let mut buf = AttributeHashBuffer::new();
+        let h1 = AttributeHash::of(
+            &mut buf,
+            vec![bytes_attr("a", &[0xF5, 0x62, 0xF6])].into_iter(),
+        );
+        let h2 = AttributeHash::of(
+            &mut buf,
+            vec![bytes_attr("a", &[]), empty_attr("b")].into_iter(),
+        );
+        assert_ne!(h1, h2);
+    }
 
     fn make_scope<'a>(resource: ResourceId, name: &'a [u8], version: &'a [u8]) -> ScopeId<'a> {
         ScopeId {
