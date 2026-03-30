@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774744121119,
+  "lastUpdate": 1774830588846,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2918,6 +2918,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 97.28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Sameer J",
+            "username": "sjmsft",
+            "email": "101909410+sjmsft@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "18fcc9e88e870a570bc5770d35e3ce80cb71a91a",
+          "message": "Fix a grammatical error in the docs (#2448)\n\n# Change Summary\n\nFix a grammatical error in the README.md file.\n\n## What issue does this PR close?\n\nThis is a minor grammatical error being fixed to understand the workflow\nof creating and commit PRs in the otel-arrow project.\n\n## How are these changes tested?\n\nThis is a docs-only change, no testing required.\n\n## Are there any user-facing changes?\n\nMinor grammatical error is being fixed.",
+          "timestamp": "2026-03-27T20:02:31Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/18fcc9e88e870a570bc5770d35e3ce80cb71a91a"
+        },
+        "date": 1774830583342,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 97.29,
             "unit": "MB"
           }
         ]
