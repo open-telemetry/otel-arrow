@@ -26,6 +26,8 @@ pub(crate) trait PipelineBuilder {
     fn child_func_id_offset(&self) -> usize {
         self.get_max_func_id().map(|i| i + 1).unwrap_or_default()
     }
+
+    fn get_function_id(&self, name: &str) -> Option<usize>;
 }
 
 pub struct RootPipelineBuilder<'a> {
@@ -63,11 +65,16 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
     fn get_max_func_id(&self) -> Option<usize> {
         self.max_func_id
     }
+
+    // TODO should this just return the entire function?
+    fn get_function_id(&self, name: &str) -> Option<usize> {
+        self.parser_state.get_function_id(name).map(|f| f.get_id())
+    }
 }
 
 /// simple [`PipelineBuilder`] implementation for collecting nested data expressions and
 /// function definitions
-pub(crate) struct InnerPipelineBuilder {
+pub(crate) struct InnerPipelineBuilder<'a> {
     /// The functions that will be appended to this inner pipeline will need to be appended
     /// to the parent pipeline builder eventually. The expressions inside the inner pipeline
     /// will reference functions by ID, but the ID must be the global ID. This value is used
@@ -76,9 +83,12 @@ pub(crate) struct InnerPipelineBuilder {
 
     data_exprs: Vec<DataExpression>,
     functions: Vec<(String, PipelineFunction)>,
+
+    // TODO could do this through methods?
+    pub parent: Option<&'a mut dyn PipelineBuilder>,
 }
 
-impl InnerPipelineBuilder {
+impl<'a> InnerPipelineBuilder<'a> {
     pub fn new(func_id_offset: usize) -> Self {
         Self::new_with_capacities(func_id_offset, None, None)
     }
@@ -92,6 +102,7 @@ impl InnerPipelineBuilder {
             func_id_offset,
             data_exprs: Vec::with_capacity(data_expr_capacity.unwrap_or_default()),
             functions: Vec::with_capacity(functions_capacity.unwrap_or_default()),
+            parent: None,
         }
     }
 
@@ -100,7 +111,7 @@ impl InnerPipelineBuilder {
     }
 }
 
-impl PipelineBuilder for InnerPipelineBuilder {
+impl<'a> PipelineBuilder for InnerPipelineBuilder<'a> {
     fn push_data_expression(&mut self, data_expression: DataExpression) {
         self.data_exprs.push(data_expression)
     }
@@ -116,6 +127,23 @@ impl PipelineBuilder for InnerPipelineBuilder {
         } else {
             None
         }
+    }
+
+    fn get_function_id(&self, name: &str) -> Option<usize> {
+        if let Some((func_id, _)) = self
+            .functions
+            .iter()
+            .enumerate()
+            .find(|(_, (func_name, _))| func_name == name)
+        {
+            return Some(func_id + self.func_id_offset);
+        }
+
+        if let Some(parent) = &self.parent {
+            return parent.get_function_id(name);
+        }
+
+        return None;
     }
 }
 

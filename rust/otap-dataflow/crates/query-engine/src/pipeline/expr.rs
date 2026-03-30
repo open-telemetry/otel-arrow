@@ -70,6 +70,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
+use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
@@ -317,8 +318,8 @@ impl ExprLogicalPlanner {
                 };
 
                 let (scalar_func, func_requires_dict_downcast) = match func_name.as_ref() {
-                    "encode" => (encode(), false),
-                    "sha256" => (datafusion::functions::crypto::sha256(), true),
+                    ENCODE_FUNC_NAME => (encode(), false),
+                    SHA256_FUNC_NAME => (datafusion::functions::crypto::sha256(), true),
                     _ => {
                         return Err(Error::InvalidPipelineError {
                             cause: format!("Unknown function '{func_name}"),
@@ -381,8 +382,6 @@ impl ExprLogicalPlanner {
                                 }
                                 source_requires_dict_downcast |= arg_expr.requires_dict_downcast;
                                 arg_exprs.push(arg_expr.logical_expr);
-                                // arg_exprs.push(arg_expr.logical_expr);
-                                // (arg_expr.source, arg_expr.requires_dict_downcast)
                             }
                             InvokeFunctionArgument::MutableValue(_) => {
                                 return Err(Error::NotYetSupportedError {

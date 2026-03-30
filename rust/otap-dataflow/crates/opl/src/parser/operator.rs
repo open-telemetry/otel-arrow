@@ -101,8 +101,10 @@ pub(crate) fn parse_remove_map_keys_operator_call(
     for rule in inner_rules {
         let rule_query_location = to_query_location(&rule);
         let scalar_expr = match rule.as_rule() {
-            Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
-            Rule::index_expression => parse_index_expression(rule),
+            Rule::attribute_selection_expression => {
+                parse_attribute_selection_expression(rule, pipeline_builder)
+            }
+            Rule::index_expression => parse_index_expression(rule, pipeline_builder),
             invalid_rule => {
                 return Err(invalid_child_rule_error(
                     rule_query_location,
@@ -152,7 +154,7 @@ pub(crate) fn parse_rename_operator_call(
     let mut keys = Vec::with_capacity(inner_rules.len());
 
     for rule in inner_rules {
-        let (dest, source) = parse_assignment_expression(rule)?;
+        let (dest, source) = parse_assignment_expression(rule, pipeline_builder)?;
         match source {
             ScalarExpression::Source(source) => keys.push(MapKeyRenameSelector::new(
                 source.into_value_accessor(),
@@ -190,7 +192,7 @@ pub(crate) fn parse_set_operator_call(
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
             Rule::assignment_expression => {
-                let (dest, source) = parse_assignment_expression(rule)?;
+                let (dest, source) = parse_assignment_expression(rule, pipeline_builder)?;
                 let transform_expr = TransformExpression::Set(SetTransformExpression::new(
                     query_location.clone(),
                     source,
@@ -214,7 +216,7 @@ pub(crate) fn parse_set_operator_call(
 
 pub(crate) fn parse_if_else_operator_call(
     operator_call_rule: Pair<'_, Rule>,
-    pipeline_builder: &mut dyn PipelineBuilder,
+    mut pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
     let mut conditional_expr = ConditionalDataExpression::new(query_location);
@@ -246,7 +248,7 @@ pub(crate) fn parse_if_else_operator_call(
                             .to_string(),
                     )
                 })?;
-                next_condition = Some(parse_expression(condition_rule)?.into());
+                next_condition = Some(parse_expression(condition_rule, pipeline_builder)?.into());
             }
 
             // parse the pipeline of data expressions for this branch
@@ -254,10 +256,12 @@ pub(crate) fn parse_if_else_operator_call(
                 let branch_loc_end = rule.as_span().end();
                 let branch_query_location = to_query_location(&rule);
 
+                next_branch.parent = Some(pipeline_builder);
                 // parse all the rules
                 for inner_rule in rule.into_inner() {
                     parse_pipeline_stage(inner_rule, &mut next_branch)?;
                 }
+                pipeline_builder = next_branch.parent.take().unwrap();
 
                 // take the data expressions for the branch and reset next_branch
                 let (curr_branch_data_exprs, curr_branch_funcs) = next_branch.into_parts();
@@ -317,11 +321,12 @@ pub(crate) fn parse_if_else_operator_call(
                     Some(inner_rules.len()),
                     None,
                 );
+                else_branch_exprs.parent = Some(pipeline_builder);
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
-
+                pipeline_builder = else_branch_exprs.parent.take().unwrap();
                 let (else_branch_data_exprs, else_branch_funcs) = else_branch_exprs.into_parts();
                 for (func_name, func_def) in else_branch_funcs {
                     _ = pipeline_builder.push_function_definition(&func_name, func_def);
@@ -351,7 +356,7 @@ pub(crate) fn parse_where_operator_call(
         match rule.as_rule() {
             Rule::expression => {
                 let rule_query_location = to_query_location(&rule);
-                let predicate = parse_expression(rule)?;
+                let predicate = parse_expression(rule, pipeline_builder)?;
                 let discard_expr = DiscardDataExpression::new(operator_call_query_location)
                     .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                         rule_query_location,
@@ -393,7 +398,8 @@ pub(crate) fn parse_apply_operator_call(
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
     let target_rule_query_location = to_query_location(&target_identifier_rule);
-    let target_expr: ScalarExpression = parse_member_expression(target_identifier_rule)?.into();
+    let target_expr: ScalarExpression =
+        parse_member_expression(target_identifier_rule, pipeline_builder)?.into();
     let target_source_expr = match target_expr {
         ScalarExpression::Source(source_expr) => source_expr,
         other => {

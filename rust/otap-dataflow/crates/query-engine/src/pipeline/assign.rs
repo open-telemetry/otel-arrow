@@ -1430,7 +1430,10 @@ mod test {
         },
     };
 
-    use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
+    use crate::{
+        parser::default_parser_options,
+        pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline},
+    };
 
     async fn test_insert_root_column_from_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
@@ -3849,6 +3852,42 @@ mod test {
         assert_eq!(
             log_0.attributes,
             vec![KeyValue::new("x", AnyValue { value: None })]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_result_of_function_call() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = encode(sha256(attributes[\"x\"]), \"hex\")";
+        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "x",
+                AnyValue::new_string(
+                    "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa"
+                )
+            )]
         );
     }
 }
