@@ -372,12 +372,8 @@ impl Transformer {
         out.push(b'"');
         let mut start = 0;
         for (i, &b) in s.iter().enumerate() {
-            let needs_escape = b == b'"'
-                || b == b'\\'
-                || b == b'\n'
-                || b == b'\r'
-                || b == b'\t'
-                || b < 0x20;
+            let needs_escape =
+                b == b'"' || b == b'\\' || b == b'\n' || b == b'\r' || b == b'\t' || b < 0x20;
             if needs_escape {
                 if start < i {
                     out.extend_from_slice(&s[start..i]);

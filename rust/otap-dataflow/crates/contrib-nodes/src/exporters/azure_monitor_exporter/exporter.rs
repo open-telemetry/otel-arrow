@@ -384,17 +384,16 @@ impl AzureMonitorExporter {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
-                
+
                 let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
                         OtapArrowRecords::Logs(_) => {
-                            let logs_view =
-                                OtapLogsView::try_from(otap_records).map_err(|e| {
-                                    let error = Error::LogsViewCreationFailed { source: e };
-                                    EngineError::InternalError {
-                                        message: error.to_string(),
-                                    }
-                                })?;
+                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
+                                let error = Error::LogsViewCreationFailed { source: e };
+                                EngineError::InternalError {
+                                    message: error.to_string(),
+                                }
+                            })?;
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
@@ -424,14 +423,8 @@ impl AzureMonitorExporter {
                 };
 
                 if let Some(log_entries) = log_entries {
-                    self.handle_logs_view(
-                        effect_handler,
-                        context,
-                        payload,
-                        log_entries,
-                        *msg_id,
-                    )
-                    .await?;
+                    self.handle_logs_view(effect_handler, context, payload, log_entries, *msg_id)
+                        .await?;
                 }
             }
 
