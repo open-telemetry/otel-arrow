@@ -18,7 +18,9 @@ use arrow::{
 };
 use otap_df_pdata::{
     Consumer,
-    otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch},
+    otap::{
+        Logs, Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,
+    },
     proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::ArrowLogsService,
