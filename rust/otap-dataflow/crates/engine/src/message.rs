@@ -915,7 +915,7 @@ mod tests {
             .expect("message should arrive");
         assert!(matches!(
             message,
-            Message::Control(NodeControlMsg::DelayedData { when: observed, data })
+            Message::Control(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == when && *data == TestMsg::new("delayed")
         ));
     }
@@ -964,7 +964,7 @@ mod tests {
                     saw_pdata = true;
                     break;
                 }
-                Message::Control(NodeControlMsg::DelayedData { .. }) => {
+                Message::Control(NodeControlMsg::ResumeData { .. }) => {
                     delayed += 1;
                 }
                 other => panic!("unexpected message {other:?}"),
@@ -1120,7 +1120,7 @@ mod tests {
             .expect("delayed resume should return immediately during shutdown");
         assert!(matches!(
             resumed,
-            Message::Control(NodeControlMsg::DelayedData { when, data })
+            Message::Control(NodeControlMsg::ResumeData { when, data })
                 if when < original_when && *data == TestMsg::new("delayed")
         ));
 

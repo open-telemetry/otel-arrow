@@ -231,10 +231,10 @@ closed normal admission.
 The current message families are:
 
 - **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
-  `CollectTelemetry`, `DelayedData`, `DrainIngress`, `Shutdown`
+  `CollectTelemetry`, `Wakeup`, `ResumeData`, `DrainIngress`, `Shutdown`
 - **Runtime control messages**: `StartTimer`, `CancelTimer`,
-  `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
-  `ReceiverDrained`, `Shutdown`
+  `StartTelemetryTimer`, `CancelTelemetryTimer`, `ReceiverDrained`,
+  `Shutdown`
 - **Pipeline completion messages**: `DeliverAck`, `DeliverNack`
 
 ## Runtime Message Dynamics
@@ -254,10 +254,10 @@ behavior:
    bounded-fair treatment.
 
 3. **Runtime-control flow**
-   Nodes send timer requests, delayed-data requests, `ReceiverDrained`, and
-   runtime `Shutdown` requests to the runtime-control channel. That channel is
-   consumed by `RuntimeCtrlMsgManager`, which handles orchestration and turns
-   due work back into node-control messages.
+   Nodes send timer requests, `ReceiverDrained`, and runtime `Shutdown`
+   requests to the runtime-control channel. That channel is consumed by
+   `RuntimeCtrlMsgManager`, which handles orchestration and turns due timer
+   work back into node-control messages.
 
 4. **Ack/Nack completion flow**
    Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on
@@ -483,9 +483,10 @@ When graceful shutdown starts, the runtime control manager:
 
 1. Enters ingress-draining mode.
 2. Cancels recurring timers.
-3. Flushes queued delayed data back to the originating nodes as
-   `NodeControlMsg::DelayedData`.
-4. Sends `NodeControlMsg::DrainIngress` to every receiver.
+3. Sends `NodeControlMsg::DrainIngress` to every receiver.
+
+Processor-local delayed resumes stay inside each node's local scheduler and are
+not part of the shared runtime shutdown path.
 
 Each receiver is then responsible for stopping admission of new external work
 while keeping receiver-local drain state alive long enough to finish local

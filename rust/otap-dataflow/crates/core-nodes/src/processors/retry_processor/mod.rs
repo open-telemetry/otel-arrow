@@ -546,7 +546,7 @@ impl RetryProcessor {
 
         self.metrics.increment_retry_attempts(signal);
 
-        // Requeue the data onto this node, we'll continue in the DelayedData branch next.
+        // Requeue the data onto this node, we'll continue in the ResumeData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => Ok(()),
             Err(refused) => {
@@ -560,7 +560,7 @@ impl RetryProcessor {
         }
     }
 
-    async fn handle_delayed(
+    async fn handle_resumed(
         &mut self,
         _when: Instant,
         data: Box<OtapPdata>,
@@ -626,11 +626,11 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
-                NodeControlMsg::DelayedData { when, data } => {
+                NodeControlMsg::ResumeData { when, data } => {
                     if let Some(calldata) = data.source_route() {
                         let rstate: RetryState = calldata.calldata.try_into()?;
                         let _ = self
-                            .handle_delayed(when, data, effect_handler, rstate.num_items)
+                            .handle_resumed(when, data, effect_handler, rstate.num_items)
                             .await?;
                     }
                     Ok(())
@@ -1089,8 +1089,8 @@ mod test {
                             .take_due_local_control(when)
                             .expect("scheduled local control");
                         assert!(
-                            matches!(control, NodeControlMsg::DelayedData { .. }),
-                            "retry should requeue retained pdata as DelayedData"
+                            matches!(control, NodeControlMsg::ResumeData { .. }),
+                            "retry should requeue retained pdata as ResumeData"
                         );
                         ctx.process(Message::Control(control)).await.unwrap();
 

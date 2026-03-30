@@ -1344,10 +1344,10 @@ impl DurableBuffer {
 
         // Skip if this bundle is scheduled for retry (waiting for backoff).
         // This enforces the exponential backoff - poll_next_bundle() returns
-        // deferred bundles immediately, but we should wait for delay_data to fire.
+        // deferred bundles immediately, but we should wait for the retry wakeup.
         if self.retry_scheduled.contains(&key) {
             // Bundle is waiting for backoff. Release the claim; it will be
-            // re-claimed when the delay_data retry ticket fires.
+            // re-claimed when the retry wakeup fires.
             drop(handle); // Implicit defer
             return ProcessBundleResult::Skipped;
         }
@@ -1901,10 +1901,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 NodeControlMsg::Wakeup { slot, .. } => {
                     self.handle_retry_wakeup(slot, effect_handler).await
                 }
-                NodeControlMsg::DelayedData { .. } => {
-                    otel_warn!("durable_buffer.delayed_data.unexpected");
-                    Ok(())
-                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
             },
         }
     }

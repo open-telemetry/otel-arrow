@@ -274,11 +274,6 @@ impl<PData> EffectHandler<PData> {
         self.core.route_nack(nack).await
     }
 
-    /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.core.delay_data(when, data).await
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.requeue_later(when, data)

@@ -1162,28 +1162,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
 
                     Ok(())
                 }
-                NodeControlMsg::DelayedData { data, when } => {
-                    let signal = data.signal_type();
-
-                    match data.signal_format() {
-                        SignalFormat::OtapRecords => {
-                            self.otap_format()
-                                .expect("some")
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?
-                        }
-                        SignalFormat::OtlpBytes => {
-                            self.otlp_format()
-                                .expect("some")
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?
-                        }
-                    };
-
-                    Ok(())
-                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
                 NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
                 NodeControlMsg::DrainIngress { .. } => Ok(()),

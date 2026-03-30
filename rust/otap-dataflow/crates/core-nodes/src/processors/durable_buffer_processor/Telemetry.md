@@ -1,5 +1,7 @@
 # Durable Buffer Processor Telemetry
 
+<!-- markdownlint-disable MD013 -->
+
 This document lists telemetry emitted directly by the `durable_buffer_processor`
 module (`crates/otap/src/durable_buffer_processor/`).
 It includes metric instruments registered via `DurableBufferMetrics` and log
@@ -149,11 +151,8 @@ All events are emitted from `crates/otap/src/durable_buffer_processor/mod.rs`.
 | `durable_buffer.retry.backpressure` | `debug` | Retry halted due to downstream backpressure; bundle re-scheduled with `poll_interval` delay. |
 | `durable_buffer.retry.claim_failed` | `debug` | Could not re-claim bundle from Quiver for retry (bundle may have been resolved or segment dropped). |
 | `durable_buffer.retry.skipped` | `warn` | Just-claimed retry bundle was unexpectedly skipped (should not occur in normal operation). |
-| `durable_buffer.retry.schedule_failed` | `warn` | Failed to schedule a retry for a transiently NACKed bundle via `delay_data()`. |
+| `durable_buffer.retry.schedule_failed` | `warn` | Failed to schedule a retry wakeup for a transiently NACKed bundle. |
 | `durable_buffer.retry.reschedule_failed` | `warn` | Failed to re-schedule a deferred retry; bundle removed from `retry_scheduled` to allow poll to pick it up. |
-| `durable_buffer.retry.missing_calldata` | `warn` | `DelayedData` retry ticket has no source-route calldata; discarded. |
-| `durable_buffer.retry.invalid_calldata` | `warn` | `DelayedData` retry ticket calldata cannot be decoded as a retry ticket; discarded. |
-| `durable_buffer.delayed_data.unexpected` | `warn` | `DelayedData` message received that is not a recognized retry ticket; discarded. |
 
 ### Shutdown
 

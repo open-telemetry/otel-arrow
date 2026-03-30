@@ -387,23 +387,6 @@ impl<PData> EffectHandlerCore<PData> {
         }
     }
 
-    /// Delay a message.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.send_runtime_ctrl_msg(RuntimeControlMsg::DelayData {
-            node_id: self.node_id().index,
-            when,
-            data,
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| -> PData {
-            match e.inner() {
-                RuntimeControlMsg::DelayData { data, .. } => *data,
-                _ => unreachable!(),
-            }
-        })
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.local_scheduler

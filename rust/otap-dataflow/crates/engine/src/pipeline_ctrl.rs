@@ -4,12 +4,10 @@
 //! Runtime-control manager for handling timer-based operations.
 //!
 //! This module provides the `RuntimeCtrlMsgManager` which is responsible for managing
-//! timers for nodes in the pipeline. It handles scheduling, cancellation, and expiration
-//! of recurring timers, using a priority queue for efficient timer management.
+//! runtime timers, shutdown orchestration, and completion dispatch coordination.
 //!
 //! Note 1: This manager is designed for single-threaded async execution.
-//! Note 2: Other runtime-control messages can be added in the future, but currently only timers
-//! are supported.
+//! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::clock;
@@ -47,39 +45,6 @@ const PENDING_SENDS_WARN_THRESHOLD: usize = 100;
 /// Maximum number of consecutive runtime-control messages handled before the
 /// manager forces one due expiry pass.
 const RUNTIME_CTRL_BURST: usize = 64;
-
-/// Represents delayed data with scheduling information.
-#[derive(Debug)]
-struct Delayed<PData> {
-    /// When to resume processing this data.
-    when: Instant,
-    /// Target node ID for the delayed data.
-    node_id: usize,
-    /// The delayed data payload.
-    data: Box<PData>,
-}
-
-/// For BinaryHeap ordering - earlier times have higher priority (min-heap behavior).
-impl<PData> Ord for Delayed<PData> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering for min-heap (earlier times first)
-        other.when.cmp(&self.when)
-    }
-}
-
-impl<PData> PartialOrd for Delayed<PData> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<PData> PartialEq for Delayed<PData> {
-    fn eq(&self, other: &Self) -> bool {
-        self.when == other.when
-    }
-}
-
-impl<PData> Eq for Delayed<PData> {}
 
 /// Timer state for a node.
 struct TimerState {
@@ -250,8 +215,6 @@ pub struct RuntimeCtrlMsgManager<PData> {
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
     telemetry_timers: TimerSet,
-    /// Delayed data in activation order.
-    delayed_data: BinaryHeap<Delayed<PData>>,
     /// Event reporter used to report major events influencing the pipeline's behavior.
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
@@ -297,7 +260,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 telemetry_policy.runtime_metrics,
                 0,
                 0,
-                0,
             ),
             pipeline_key,
             pipeline_context,
@@ -305,7 +267,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
-            delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
             control_plane_metrics_flush_interval,
@@ -405,13 +366,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             } else {
                 let next_expiry = self.tick_timers.next_expiry();
                 let next_tel_expiry = self.telemetry_timers.next_expiry();
-                let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
-                opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry)
+                opt_min(next_expiry, next_tel_expiry)
             };
 
             // Runtime-control traffic can burst during shutdown or completion
             // churn. Force a due-event pass once the burst limit is reached so
-            // timer and delayed-data wakeups still make progress.
+            // timer and telemetry wakeups still make progress.
             if consecutive_runtime_ctrl >= RUNTIME_CTRL_BURST
                 && next_earliest.is_some_and(|when| when <= now)
             {
@@ -442,25 +402,15 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             self.runtime_control_metrics
                                 .record_shutdown_received(now, pending_receivers.len());
                             // Receiver-first shutdown freezes timer-driven work
-                            // and flushes queued delayed data back to their
-                            // origin nodes before any downstream Shutdown is
-                            // sent. Receivers get DrainIngress first so they stop
-                            // admitting new work at the pipeline boundary.
+                            // before any downstream Shutdown is sent. Receivers
+                            // get DrainIngress first so they stop admitting new
+                            // work at the pipeline boundary.
                             self.tick_timers.cancel_all();
                             self.telemetry_timers.cancel_all();
                             self.runtime_control_metrics.set_timer_counts(
                                 self.tick_timers.timer_states.len(),
                                 self.telemetry_timers.timer_states.len(),
                             );
-                            let flushed = self.flush_delayed_data_now(now);
-                            self.runtime_control_metrics
-                                .set_delayed_data_queued(self.delayed_data.len());
-                            if flushed > 0 {
-                                for _ in 0..flushed {
-                                    self.runtime_control_metrics
-                                        .record_delay_data_returned_during_drain();
-                                }
-                            }
 
                             for node_id in pending_receivers.iter().copied() {
                                 self.send(
@@ -604,30 +554,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                 );
                             }
                         }
-                        RuntimeControlMsg::DelayData { node_id, when, data } => {
-                            self.runtime_control_metrics.record_delay_data_received();
-                            if is_draining_ingress {
-                                // Once drain has started, newly requested delayed
-                                // data must not stay queued behind the shutdown
-                                // boundary. Return it immediately so the owning
-                                // node can resolve or discard it inside its
-                                // shutdown path.
-                                self.send(
-                                    node_id,
-                                    NodeControlMsg::DelayedData {
-                                        when: now,
-                                        data,
-                                    },
-                                );
-                                self.runtime_control_metrics
-                                    .record_delay_data_returned_during_drain();
-                            } else {
-                                let delayed = Delayed { node_id, when, data };
-                                self.delayed_data.push(delayed);
-                                self.runtime_control_metrics
-                                    .set_delayed_data_queued(self.delayed_data.len());
-                            }
-                        }
                     }
                 }
                 _ = async {
@@ -682,21 +608,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         Ok(())
     }
 
-    fn flush_delayed_data_now(&mut self, when: Instant) -> usize {
-        let mut flushed = 0;
-        while let Some(delayed) = self.delayed_data.pop() {
-            self.send(
-                delayed.node_id,
-                NodeControlMsg::DelayedData {
-                    when,
-                    data: delayed.data,
-                },
-            );
-            flushed += 1;
-        }
-        flushed
-    }
-
     fn handle_due_events(
         &mut self,
         now: Instant,
@@ -709,7 +620,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
         let mut timer_tick_count = 0usize;
         let mut collect_telemetry_count = 0usize;
-        let mut delayed_data_count = 0usize;
 
         self.tick_timers.fire_due(now, |node_id| {
             to_send.push((*node_id, NodeControlMsg::TimerTick {}));
@@ -727,34 +637,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             collect_telemetry_count += 1;
         });
 
-        while self
-            .delayed_data
-            .peek()
-            .map(|d| d.when <= now)
-            .unwrap_or(false)
-        {
-            let delayed = self.delayed_data.pop().expect("ok");
-            to_send.push((
-                delayed.node_id,
-                NodeControlMsg::DelayedData {
-                    when: delayed.when,
-                    data: delayed.data,
-                },
-            ));
-            delayed_data_count += 1;
-        }
-
         self.runtime_control_metrics.set_timer_counts(
             self.tick_timers.timer_states.len(),
             self.telemetry_timers.timer_states.len(),
         );
         self.runtime_control_metrics
-            .set_delayed_data_queued(self.delayed_data.len());
-        self.runtime_control_metrics.record_due_events(
-            timer_tick_count,
-            collect_telemetry_count,
-            delayed_data_count,
-        );
+            .record_due_events(timer_tick_count, collect_telemetry_count);
 
         if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
             if self.telemetry.pipeline_metrics {
@@ -2089,108 +1977,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_delayed_data_heap_ordering() {
-        let now = Instant::now();
-        let mut delayed_heap = BinaryHeap::new();
-
-        let data1 = Box::new("data1".to_string());
-        let data2 = Box::new("data2".to_string());
-        let data3 = Box::new("data3".to_string());
-
-        let delayed1 = Delayed {
-            when: now + Duration::from_millis(300),
-            node_id: 1,
-            data: data1.clone(),
-        };
-        let delayed2 = Delayed {
-            when: now + Duration::from_millis(100),
-            node_id: 2,
-            data: data2.clone(),
-        };
-        let delayed3 = Delayed {
-            when: now + Duration::from_millis(200),
-            node_id: 3,
-            data: data3.clone(),
-        };
-
-        // Insert in non-chronological order to test heap behavior
-        delayed_heap.push(delayed1);
-        delayed_heap.push(delayed2);
-        delayed_heap.push(delayed3);
-
-        assert_eq!(delayed_heap.len(), 3,);
-
-        let first = delayed_heap.pop().expect("should exist");
-        assert_eq!(first.when, now + Duration::from_millis(100));
-        assert_eq!(first.node_id, 2,);
-        assert_eq!(*first.data, *data2);
-
-        let second = delayed_heap.pop().expect("should exist");
-        assert_eq!(second.when, now + Duration::from_millis(200));
-        assert_eq!(second.node_id, 3,);
-        assert_eq!(*second.data, *data3);
-
-        let third = delayed_heap.pop().expect("should exist");
-        assert_eq!(third.when, now + Duration::from_millis(300));
-        assert_eq!(third.node_id, 1,);
-        assert_eq!(*third.data, *data1);
-
-        assert!(delayed_heap.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_delay_data_integration() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let delay_duration = Duration::from_millis(100);
-                let test_data = Box::new("test_delayed_data".to_string());
-                let delay_time = Instant::now() + delay_duration;
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let delay_msg = RuntimeControlMsg::DelayData {
-                    node_id: node.index,
-                    when: delay_time,
-                    data: test_data.clone(),
-                };
-                pipeline_tx.send(delay_msg).await.unwrap();
-
-                // Wait for delayed data to be delivered
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let delayed_result = async { receiver.recv().await };
-
-                match delayed_result.await {
-                    Ok(NodeControlMsg::DelayedData { when, data }) => {
-                        assert_eq!(*data, *test_data);
-                        assert_eq!(when, delay_time);
-                    }
-                    Ok(other) => panic!("Expected DelayedData, got {other:?}"),
-                    Err(e) => panic!("Failed to receive message: {e:?}"),
-                }
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                let _ = manager_handle.await;
-            })
-            .await;
-    }
-
     // A due timer tick must still reach its node while the runtime-control lane
     // is busy with unrelated requests. This guards against control traffic
     // starving timer expiry handling inside the manager loop.
@@ -2285,61 +2071,6 @@ mod tests {
                     .expect("CollectTelemetry should make progress under runtime control burst")
                     .expect("target control channel should stay open");
                 assert!(matches!(msg, NodeControlMsg::CollectTelemetry { .. }));
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
-    // DelayedData wakeups are another due event handled by the manager.
-    // This test ensures they are still dispatched promptly even when unrelated
-    // runtime-control requests keep arriving in a burst.
-    #[tokio::test]
-    async fn test_due_delayed_data_progress_under_runtime_ctrl_burst() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (
-                    mut manager,
-                    pipeline_tx,
-                    _control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<String>(128, 10);
-
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-                manager.delayed_data.push(Delayed {
-                    node_id: target.index,
-                    when: Instant::now(),
-                    data: Box::new("burst_delayed".to_owned()),
-                });
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
-                    .await
-                    .expect("DelayedData should make progress under runtime control burst")
-                    .expect("target control channel should stay open");
-                assert!(matches!(
-                    msg,
-                    NodeControlMsg::DelayedData { ref data, .. } if **data == "burst_delayed"
-                ));
 
                 drop(pipeline_tx);
                 let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
@@ -2845,132 +2576,6 @@ mod tests {
             .await;
     }
 
-    // DelayData submitted after draining begins represents retry work that
-    // should not stay hidden behind the delayed-data heap. The manager returns
-    // it to the origin node immediately so the node can decide what to do next.
-    #[tokio::test]
-    async fn test_new_delay_data_returned_immediately_during_draining() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown during draining")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
-
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("drain_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("DelayedData should be returned immediately during draining")
-                    .expect("processor control channel should stay open");
-
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "drain_retry");
-                        assert!(
-                            when < original_when,
-                            "DelayedData should be returned immediately, not at its original wake time"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
-                }
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
-    // Draining must also flush retry work that was already queued before
-    // shutdown. Once draining starts, delayed data is returned immediately
-    // rather than waiting for its original wake time.
-    #[tokio::test]
-    async fn test_queued_delayed_data_flushed_when_draining_begins() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("queued_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("Queued delayed data should flush when draining begins")
-                    .expect("processor control channel should stay open");
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "queued_retry");
-                        assert!(
-                            when < original_when,
-                            "Queued delayed data should be flushed immediately during shutdown"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
-                }
-
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown after delayed-data flush")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
     /// A test PData type that carries a real frame stack, allowing the
     /// controller's `unwind_ack`/`unwind_nack` to pop frames and record metrics.
     #[derive(Debug, Clone)]
@@ -3239,21 +2844,17 @@ mod tests {
     const RUNTIME_PENDING_SENDS_BUFFERED: usize = 2;
     const RUNTIME_TIMERS_ACTIVE: usize = 3;
     const RUNTIME_TELEMETRY_TIMERS_ACTIVE: usize = 4;
-    const RUNTIME_DELAYED_DATA_QUEUED: usize = 5;
-    const RUNTIME_SHUTDOWN_RECEIVED: usize = 6;
-    const RUNTIME_DRAIN_INGRESS_SENT: usize = 7;
-    const RUNTIME_RECEIVER_DRAINED_RECEIVED: usize = 8;
-    const RUNTIME_DOWNSTREAM_SHUTDOWN_SENT: usize = 9;
-    const RUNTIME_SHUTDOWN_DEADLINE_FORCED: usize = 10;
-    const RUNTIME_START_TIMER_RECEIVED: usize = 11;
-    const RUNTIME_START_TELEMETRY_TIMER_RECEIVED: usize = 13;
-    const RUNTIME_DELAY_DATA_RECEIVED: usize = 15;
-    const RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN: usize = 16;
-    const RUNTIME_TIMER_TICK_SENT: usize = 17;
-    const RUNTIME_COLLECT_TELEMETRY_SENT: usize = 18;
-    const RUNTIME_DELAYED_DATA_SENT: usize = 19;
-    const RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS: usize = 20;
-    const RUNTIME_DRAIN_TOTAL_DURATION_NS: usize = 21;
+    const RUNTIME_SHUTDOWN_RECEIVED: usize = 5;
+    const RUNTIME_DRAIN_INGRESS_SENT: usize = 6;
+    const RUNTIME_RECEIVER_DRAINED_RECEIVED: usize = 7;
+    const RUNTIME_DOWNSTREAM_SHUTDOWN_SENT: usize = 8;
+    const RUNTIME_SHUTDOWN_DEADLINE_FORCED: usize = 9;
+    const RUNTIME_START_TIMER_RECEIVED: usize = 10;
+    const RUNTIME_START_TELEMETRY_TIMER_RECEIVED: usize = 12;
+    const RUNTIME_TIMER_TICK_SENT: usize = 14;
+    const RUNTIME_COLLECT_TELEMETRY_SENT: usize = 15;
+    const RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS: usize = 16;
+    const RUNTIME_DRAIN_TOTAL_DURATION_NS: usize = 17;
 
     const COMPLETION_PENDING_SENDS_BUFFERED: usize = 0;
     const COMPLETION_DELIVER_ACK_RECEIVED: usize = 1;
@@ -4100,7 +3701,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should be exported");
@@ -4156,7 +3756,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export receiver-drained transition");
@@ -4257,7 +3856,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export forced-deadline snapshot");
@@ -4384,29 +3982,15 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_millis(5),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
 
                 let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
                 let mut timer_tick = false;
                 let mut collect_telemetry = false;
-                let mut delayed_data = false;
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
-                while !(timer_tick && collect_telemetry && delayed_data)
-                    && tokio::time::Instant::now() < deadline
-                {
+                while !(timer_tick && collect_telemetry) && tokio::time::Instant::now() < deadline {
                     match timeout(Duration::from_millis(100), processor_ctrl.recv()).await {
                         Ok(Ok(NodeControlMsg::TimerTick {})) => timer_tick = true,
                         Ok(Ok(NodeControlMsg::CollectTelemetry { .. })) => collect_telemetry = true,
-                        Ok(Ok(NodeControlMsg::DelayedData { data, .. })) => {
-                            delayed_data = *data == "retry"
-                        }
                         Ok(Ok(_)) => {}
                         Ok(Err(_)) | Err(_) => break,
                     }
@@ -4416,7 +4000,6 @@ mod tests {
                     collect_telemetry,
                     "due telemetry timer should reach the processor"
                 );
-                assert!(delayed_data, "due delayed data should be resumed");
 
                 drop(pipeline_tx);
                 let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
@@ -4431,7 +4014,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export due-work counters");
@@ -4449,12 +4031,6 @@ mod tests {
                 );
                 assert_u64(
                     &due_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count delayed-data requests",
-                );
-                assert_u64(
-                    &due_metrics,
                     RUNTIME_TIMER_TICK_SENT,
                     1,
                     "timer_tick.sent should count due timer dispatches",
@@ -4464,105 +4040,6 @@ mod tests {
                     RUNTIME_COLLECT_TELEMETRY_SENT,
                     1,
                     "collect_telemetry.sent should count due telemetry dispatches",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAYED_DATA_SENT,
-                    1,
-                    "delayed_data.sent should count due delayed-data dispatches",
-                );
-            })
-            .await;
-    }
-
-    // Once shutdown is latched, newly submitted DelayData requests should be
-    // returned immediately and counted separately from ordinary delayed-data
-    // scheduling.
-    #[tokio::test]
-    async fn test_runtime_control_metrics_track_delay_data_returned_during_drain() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Normal,
-                );
-
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "drain retry".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_secs(30),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get first control message")
-                    .expect("processor control channel should stay open");
-                let second = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get delayed data during drain")
-                    .expect("processor control channel should stay open");
-                assert!(
-                    matches!(first, NodeControlMsg::Shutdown { .. })
-                        || matches!(second, NodeControlMsg::Shutdown { .. })
-                );
-                assert!(
-                    matches!(first, NodeControlMsg::DelayedData { .. })
-                        || matches!(second, NodeControlMsg::DelayedData { .. })
-                );
-
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let drain_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export drain-time delay-data counters");
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count the drain-time request",
-                );
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN,
-                    1,
-                    "delay_data.returned_during_drain should count immediate drain returns",
                 );
             })
             .await;
@@ -4618,7 +4095,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("dirty runtime-control state should flush on the configured interval");
@@ -4646,7 +4122,6 @@ mod tests {
                             RUNTIME_PENDING_SENDS_BUFFERED,
                             RUNTIME_TIMERS_ACTIVE,
                             RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                            RUNTIME_DELAYED_DATA_QUEUED,
                         ],
                     )
                     .is_none(),
@@ -4713,7 +4188,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("shutdown latch should flush without waiting for the full interval");
@@ -4845,7 +4319,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("basic runtime-control metrics should be exported");
@@ -4938,7 +4411,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("normal runtime-control metrics should be exported");

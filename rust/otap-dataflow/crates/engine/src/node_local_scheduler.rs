@@ -229,7 +229,7 @@ impl<PData> NodeLocalScheduler<PData> {
 
         if take_resume {
             let resume = self.delayed_resumes.pop().expect("resume must exist");
-            return Some(NodeControlMsg::DelayedData {
+            return Some(NodeControlMsg::ResumeData {
                 when: resume.when,
                 data: resume.data,
             });
@@ -258,7 +258,7 @@ impl<PData> NodeLocalScheduler<PData> {
         self.shutting_down = true;
 
         while let Some(resume) = self.delayed_resumes.pop() {
-            self.due_now.push_back(NodeControlMsg::DelayedData {
+            self.due_now.push_back(NodeControlMsg::ResumeData {
                 when: now,
                 data: resume.data,
             });
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(scheduler.requeue_later(when, Box::new(17)), Ok(()));
         assert!(matches!(
             scheduler.pop_due(when),
-            Some(NodeControlMsg::DelayedData { when: observed, data })
+            Some(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == when && *data == 17
         ));
         assert_eq!(scheduler.next_expiry(), None);
@@ -389,19 +389,19 @@ mod tests {
 
         assert!(matches!(
             scheduler.pop_due(sooner),
-            Some(NodeControlMsg::DelayedData { data, .. }) if *data == 0
+            Some(NodeControlMsg::ResumeData { data, .. }) if *data == 0
         ));
         assert!(matches!(
             scheduler.pop_due(same_time_a),
-            Some(NodeControlMsg::DelayedData { data, .. }) if *data == 1
+            Some(NodeControlMsg::ResumeData { data, .. }) if *data == 1
         ));
         assert!(matches!(
             scheduler.pop_due(same_time_b),
-            Some(NodeControlMsg::DelayedData { data, .. }) if *data == 2
+            Some(NodeControlMsg::ResumeData { data, .. }) if *data == 2
         ));
         assert!(matches!(
             scheduler.pop_due(later),
-            Some(NodeControlMsg::DelayedData { data, .. }) if *data == 3
+            Some(NodeControlMsg::ResumeData { data, .. }) if *data == 3
         ));
     }
 
@@ -445,12 +445,12 @@ mod tests {
 
         assert!(matches!(
             scheduler.pop_due(now),
-            Some(NodeControlMsg::DelayedData { when: observed, data })
+            Some(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == now && *data == 11
         ));
         assert!(matches!(
             scheduler.pop_due(now),
-            Some(NodeControlMsg::DelayedData { when: observed, data })
+            Some(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == now && *data == 12
         ));
         assert!(scheduler.pop_due(now).is_none());
