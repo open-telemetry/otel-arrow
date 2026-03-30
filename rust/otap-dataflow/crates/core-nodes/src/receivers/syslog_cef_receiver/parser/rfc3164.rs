@@ -39,7 +39,7 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, ParseError> {
     }
 
     // RFC 3164 Section 4.3: Check if we have a valid PRI
-    let (priority, mut remaining) = if input.starts_with(b"<") {
+    let (priority, remaining) = if input.starts_with(b"<") {
         // Try to parse the PRI
         match parse_priority(input) {
             Ok((pri, rest)) => (Some(pri), rest),
@@ -53,6 +53,15 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, ParseError> {
         (None, input)
     };
 
+    parse_rfc3164_with_priority(priority, remaining, input)
+}
+
+/// Parse an RFC 3164 message given a pre-parsed priority and the remaining bytes after `>`.
+pub(super) fn parse_rfc3164_with_priority<'a>(
+    priority: Option<Priority>,
+    mut remaining: &'a [u8],
+    input: &'a [u8],
+) -> Result<Rfc3164Message<'a>, ParseError> {
     // Parse timestamp (optional)
     let (timestamp, rest) = if remaining.len() >= 15 {
         // Try to parse timestamp (MMM dd HH:MM:SS format)
@@ -178,6 +187,7 @@ fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::receivers::syslog_cef_receiver::parser::*;
 
     #[test]

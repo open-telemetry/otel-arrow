@@ -25,9 +25,18 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         return Err(ParseError::EmptyInput);
     }
 
-    let (priority, mut remaining) =
+    let (priority, remaining) =
         crate::receivers::syslog_cef_receiver::parser::parse_priority(input)?;
 
+    parse_rfc5424_with_priority(priority, remaining, input)
+}
+
+/// Parse an RFC 5424 message given a pre-parsed priority and the remaining bytes after `>`.
+pub(super) fn parse_rfc5424_with_priority<'a>(
+    priority: crate::receivers::syslog_cef_receiver::parser::Priority,
+    mut remaining: &'a [u8],
+    input: &'a [u8],
+) -> Result<Rfc5424Message<'a>, ParseError> {
     // Check if we have anything after priority
     if remaining.is_empty() {
         return Err(ParseError::InvalidVersion);
@@ -231,6 +240,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::receivers::syslog_cef_receiver::parser::*;
 
     #[test]
