@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use core::str;
-
 /// Parser for Common Event Format (CEF) messages
 pub mod cef;
 /// Parser for the unified representation of parsed syslog messages
@@ -139,10 +137,17 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
         return Err(ParseError::InvalidPriority);
     }
 
-    let priority_str = str::from_utf8(priority_bytes).map_err(|_| ParseError::InvalidUtf8)?;
-    let priority_num: u8 = priority_str
-        .parse()
-        .map_err(|_| ParseError::InvalidPriority)?;
+    // Parse 1-3 ASCII digits directly without str::from_utf8 + str::parse overhead.
+    let mut priority_num: u8 = 0;
+    for &b in priority_bytes {
+        if !b.is_ascii_digit() {
+            return Err(ParseError::InvalidPriority);
+        }
+        priority_num = priority_num
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(b - b'0'))
+            .ok_or(ParseError::InvalidPriority)?;
+    }
 
     // RFC 3164: Maximum valid priority is 191 (facility 23, severity 7)
     if priority_num > 191 {

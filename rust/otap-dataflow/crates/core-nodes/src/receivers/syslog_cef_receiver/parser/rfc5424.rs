@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use core::str;
-
 use crate::receivers::syslog_cef_receiver::parser::ParseError;
 
 /// RFC 5424 message structure
@@ -35,7 +33,7 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         return Err(ParseError::InvalidVersion);
     }
 
-    // Parse version
+    // Parse version: 1-3 ASCII digits terminated by space, directly from bytes.
     let version_end = remaining
         .iter()
         .position(|&b| b == b' ')
@@ -45,11 +43,16 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         return Err(ParseError::InvalidVersion);
     }
 
-    let version_bytes = &remaining[..version_end];
-    let version_str = str::from_utf8(version_bytes).map_err(|_| ParseError::InvalidUtf8)?;
-    let version: u8 = version_str
-        .parse()
-        .map_err(|_| ParseError::InvalidVersion)?;
+    let mut version: u8 = 0;
+    for &b in &remaining[..version_end] {
+        if !b.is_ascii_digit() {
+            return Err(ParseError::InvalidVersion);
+        }
+        version = version
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(b - b'0'))
+            .ok_or(ParseError::InvalidVersion)?;
+    }
 
     // Safe slice: we know version_end < remaining.len()
     remaining = &remaining[version_end + 1..];
