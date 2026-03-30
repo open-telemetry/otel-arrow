@@ -763,7 +763,7 @@ impl PipelinePlanner {
             // create new assignment argument
             let assignment = Assignment {
                 dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
-                source: logical_planner.plan_scalar_expr(set_expr.get_source())?,
+                source: logical_planner.plan_scalar_expr(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
 
