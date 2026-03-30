@@ -4,13 +4,15 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
+use crate::WakeupError;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
-    RuntimeCtrlMsgSender,
+    RuntimeCtrlMsgSender, WakeupSlot,
 };
 use crate::error::Error;
 use crate::node::NodeId;
+use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -58,6 +60,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) source_tag: SourceTagging,
     /// Precomputed node interests derived from metric level.
     node_interests: Interests,
+    /// Optional processor-local wakeup scheduler.
+    local_scheduler: Option<NodeLocalSchedulerHandle>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -71,6 +75,7 @@ impl<PData> EffectHandlerCore<PData> {
             completion_emission_metrics: None,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
+            local_scheduler: None,
         }
     }
 
@@ -101,6 +106,11 @@ impl<PData> EffectHandlerCore<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     ) {
         self.completion_emission_metrics = completion_emission_metrics;
+    }
+
+    /// Sets the processor-local wakeup scheduler for this effect handler.
+    pub(crate) fn set_local_scheduler(&mut self, local_scheduler: NodeLocalSchedulerHandle) {
+        self.local_scheduler = Some(local_scheduler);
     }
 
     /// Returns outgoing messages source tagging mode.
@@ -392,6 +402,23 @@ impl<PData> EffectHandlerCore<PData> {
                 _ => unreachable!(),
             }
         })
+    }
+
+    /// Set or replace a processor-local wakeup.
+    pub fn set_wakeup(&self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
+        self.local_scheduler
+            .as_ref()
+            .expect("node-local scheduler not set for processor effect handler")
+            .set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.local_scheduler
+            .as_ref()
+            .expect("node-local scheduler not set for processor effect handler")
+            .cancel_wakeup(slot)
     }
 
     /// Notifies the runtime control manager that this receiver has completed

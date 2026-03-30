@@ -24,6 +24,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
@@ -325,6 +326,7 @@ impl<PData> ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -333,7 +335,9 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let inbox = ProcessorInbox::new(
+                let local_scheduler =
+                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
+                let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -341,6 +345,7 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
+                    local_scheduler.clone(),
                     node_id.index,
                     node_interests,
                 );
@@ -352,6 +357,7 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -360,6 +366,7 @@ impl<PData> ProcessorWrapper<PData> {
             }
             ProcessorWrapper::Shared {
                 node_id,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -368,7 +375,9 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let inbox = ProcessorInbox::new(
+                let local_scheduler =
+                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
+                let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -376,6 +385,7 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
+                    local_scheduler.clone(),
                     node_id.index,
                     node_interests,
                 );
@@ -387,6 +397,7 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
