@@ -227,7 +227,6 @@ pub(crate) fn parse_if_else_operator_call(
     let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
-    let mut next_branch = InnerPipelineBuilder::new();
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -256,17 +255,15 @@ pub(crate) fn parse_if_else_operator_call(
                 let branch_loc_end = rule.as_span().end();
                 let branch_query_location = to_query_location(&rule);
 
-                next_branch.parent = Some(pipeline_builder);
                 // parse all the rules
+                let mut next_branch = InnerPipelineBuilder::new(pipeline_builder);
                 for inner_rule in rule.into_inner() {
                     parse_pipeline_stage(inner_rule, &mut next_branch)?;
                 }
 
                 // take the data expressions for the branch and reset next_branch
-                let (curr_branch_data_exprs, parent_tmp) = next_branch.into_parts();
-                pipeline_builder = parent_tmp.unwrap();
-
-                next_branch = InnerPipelineBuilder::new();
+                let (curr_branch_data_exprs, parent) = next_branch.into_parts();
+                pipeline_builder = parent;
 
                 let query_location = QueryLocation::new(
                     branch_location_start,
@@ -314,19 +311,16 @@ pub(crate) fn parse_if_else_operator_call(
                 })?;
 
                 let inner_rules = branch_rules.into_inner();
-                let mut else_branch_exprs =
-                    InnerPipelineBuilder::new_with_capacity(Some(inner_rules.len()));
-                else_branch_exprs.parent = Some(pipeline_builder);
+                let mut else_branch_exprs = InnerPipelineBuilder::new_with_capacity(
+                    Some(inner_rules.len()),
+                    pipeline_builder,
+                );
                 for inner_rule in inner_rules {
                     // TODO check the rule type
                     parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
-                // pipeline_builder = else_branch_exprs.parent.take().unwrap();
-                let (else_branch_data_exprs, parent_tmp) = else_branch_exprs.into_parts();
-                pipeline_builder = parent_tmp.unwrap();
-                // for (func_name, func_def) in else_branch_funcs {
-                //     _ = pipeline_builder.push_function_definition(&func_name, func_def);
-                // }
+                let (else_branch_data_exprs, parent) = else_branch_exprs.into_parts();
+                pipeline_builder = parent;
                 conditional_expr = conditional_expr.with_default_branch(else_branch_data_exprs);
             }
             _ => {
@@ -410,14 +404,12 @@ pub(crate) fn parse_apply_operator_call(
     };
 
     // parse the child stages of the nested pipeline
-    let mut inner_pipeline = InnerPipelineBuilder::new_with_capacity(Some(inner_rules.len()));
+    let mut inner_pipeline =
+        InnerPipelineBuilder::new_with_capacity(Some(inner_rules.len()), pipeline_builder);
     for inner_rule in inner_rules {
         parse_pipeline_stage(inner_rule, &mut inner_pipeline)?;
     }
     let (inner_data_exprs, _) = inner_pipeline.into_parts();
-    // for (func_name, func_def) in inner_data_funcs {
-    //     _ = pipeline_builder.push_function_definition(&func_name, func_def);
-    // }
 
     // convert child stages to pipeline functions
     let mut function_exprs = Vec::with_capacity(inner_data_exprs.len());

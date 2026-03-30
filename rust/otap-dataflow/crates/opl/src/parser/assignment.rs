@@ -98,10 +98,11 @@ mod test {
         IntegerScalarExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
         StringScalarExpression,
     };
+    use data_engine_parser_abstractions::ParserState;
     use pest::Parser;
 
     use super::*;
-    use crate::parser::{pest::OplPestParser, pipeline::InnerPipelineBuilder};
+    use crate::parser::{pest::OplPestParser, pipeline::RootPipelineBuilder};
 
     #[test]
     fn test_simple_assignment() {
@@ -109,7 +110,8 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
@@ -135,7 +137,8 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
@@ -163,7 +166,8 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(

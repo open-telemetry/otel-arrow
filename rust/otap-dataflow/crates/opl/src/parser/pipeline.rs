@@ -67,23 +67,25 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
 pub(crate) struct InnerPipelineBuilder<'a> {
     data_exprs: Vec<DataExpression>,
 
-    // TODO could do this through methods?
-    pub parent: Option<&'a mut dyn PipelineBuilder>,
+    pub parent: &'a mut dyn PipelineBuilder,
 }
 
 impl<'a> InnerPipelineBuilder<'a> {
-    pub fn new() -> Self {
-        Self::new_with_capacity(None)
+    pub fn new(parent: &'a mut dyn PipelineBuilder) -> Self {
+        Self::new_with_capacity(None, parent)
     }
 
-    pub fn new_with_capacity(data_expr_capacity: Option<usize>) -> Self {
+    pub fn new_with_capacity(
+        data_expr_capacity: Option<usize>,
+        parent: &'a mut dyn PipelineBuilder,
+    ) -> Self {
         Self {
             data_exprs: Vec::with_capacity(data_expr_capacity.unwrap_or_default()),
-            parent: None,
+            parent,
         }
     }
 
-    pub fn into_parts(self) -> (Vec<DataExpression>, Option<&'a mut dyn PipelineBuilder>) {
+    pub fn into_parts(self) -> (Vec<DataExpression>, &'a mut dyn PipelineBuilder) {
         (self.data_exprs, self.parent)
     }
 }
@@ -94,18 +96,11 @@ impl<'a> PipelineBuilder for InnerPipelineBuilder<'a> {
     }
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
-        if let Some(parent) = &mut self.parent {
-            return parent.push_function_definition(name, definition);
-        }
-        todo!()
+        self.parent.push_function_definition(name, definition)
     }
 
     fn get_function_id(&self, name: &str) -> Option<usize> {
-        if let Some(parent) = &self.parent {
-            return parent.get_function_id(name);
-        }
-
-        return None;
+        self.parent.get_function_id(name)
     }
 }
 

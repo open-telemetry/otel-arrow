@@ -785,6 +785,7 @@ fn parse_function_call(
 
 #[cfg(test)]
 mod test {
+
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
         ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
@@ -805,12 +806,37 @@ mod test {
             parse_unary_expression,
         },
         pest::OplPestParser,
-        pipeline::{InnerPipelineBuilder, PipelineBuilder},
+        pipeline::PipelineBuilder,
         temporal::create_utc,
     };
 
+    struct MockPipelineBuilder {}
+
+    impl PipelineBuilder for MockPipelineBuilder {
+        fn get_function_id(&self, _name: &str) -> Option<usize> {
+            None
+        }
+
+        fn push_data_expression(
+            &mut self,
+            _data_expression: data_engine_expressions::DataExpression,
+        ) {
+            // unreachable because we only give out shared references to the function being tested
+            unreachable!("push_data_expression should not be called")
+        }
+
+        fn push_function_definition(
+            &mut self,
+            _name: &str,
+            _definition: data_engine_expressions::PipelineFunction,
+        ) -> usize {
+            // unreachable because we only give out shared references to the function being tested
+            unreachable!("push_function_definition should not be called")
+        }
+    }
+
     fn default_pipeline_builder() -> Box<dyn PipelineBuilder> {
-        Box::new(InnerPipelineBuilder::new())
+        Box::new(MockPipelineBuilder {})
     }
 
     #[test]
