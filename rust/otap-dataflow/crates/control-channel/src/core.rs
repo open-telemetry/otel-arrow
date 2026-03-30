@@ -285,8 +285,9 @@ impl<PData> Inner<PData> {
 
     fn send_config(&mut self, config: serde_json::Value) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
@@ -303,8 +304,9 @@ impl<PData> Inner<PData> {
 
     fn send_timer_tick(&mut self) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
@@ -319,8 +321,9 @@ impl<PData> Inner<PData> {
 
     fn send_telemetry_tick(&mut self) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
