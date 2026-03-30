@@ -60,6 +60,12 @@ const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 /// 2048 bytes).
 const MAX_MESSAGE_SIZE: usize = 16 * 1024;
 
+/// Initial capacity for the per-connection TCP message buffer.
+///
+/// Most syslog messages are well under 4 KiB, so this avoids early
+/// reallocations. The buffer can grow up to [`MAX_MESSAGE_SIZE`] if needed.
+const INITIAL_MSG_BUFFER_CAPACITY: usize = 4096;
+
 /// Maximum time to wait for spawned TCP tasks to drain during shutdown.
 const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
@@ -462,7 +468,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Suppress unused variable warning when TLS is disabled
                                         let _ = peer_addr;
 
-                                        let mut line_bytes = Vec::with_capacity(4096);
+                                        let mut line_bytes = Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
