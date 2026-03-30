@@ -810,7 +810,7 @@ mod test {
     };
 
     fn default_pipeline_builder() -> Box<dyn PipelineBuilder> {
-        Box::new(InnerPipelineBuilder::new(0))
+        Box::new(InnerPipelineBuilder::new())
     }
 
     #[test]
@@ -1725,7 +1725,10 @@ mod test {
         let err =
             parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
                 .unwrap_err();
-        assert!(err.to_string().contains("Unsupported function"));
+        assert!(
+            err.to_string().contains("Unknown function"),
+            "Unexpected error message: {err}"
+        );
     }
 
     #[test]

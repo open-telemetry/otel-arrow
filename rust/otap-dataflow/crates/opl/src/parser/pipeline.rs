@@ -21,12 +21,7 @@ pub(crate) trait PipelineBuilder {
     /// push a function definition, returns the function ID
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize;
 
-    fn get_max_func_id(&self) -> Option<usize>;
-
-    fn child_func_id_offset(&self) -> usize {
-        self.get_max_func_id().map(|i| i + 1).unwrap_or_default()
-    }
-
+    /// get the ID of a function by name. Returns `None` if no function with the passed name exists
     fn get_function_id(&self, name: &str) -> Option<usize>;
 }
 
@@ -62,11 +57,6 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
         func_id
     }
 
-    fn get_max_func_id(&self) -> Option<usize> {
-        self.max_func_id
-    }
-
-    // TODO should this just return the entire function?
     fn get_function_id(&self, name: &str) -> Option<usize> {
         self.parser_state.get_function_id(name).map(|f| f.get_id())
     }
@@ -75,39 +65,26 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
 /// simple [`PipelineBuilder`] implementation for collecting nested data expressions and
 /// function definitions
 pub(crate) struct InnerPipelineBuilder<'a> {
-    /// The functions that will be appended to this inner pipeline will need to be appended
-    /// to the parent pipeline builder eventually. The expressions inside the inner pipeline
-    /// will reference functions by ID, but the ID must be the global ID. This value is used
-    /// to offset the local IDs to the global function ID.
-    func_id_offset: usize,
-
     data_exprs: Vec<DataExpression>,
-    functions: Vec<(String, PipelineFunction)>,
 
     // TODO could do this through methods?
     pub parent: Option<&'a mut dyn PipelineBuilder>,
 }
 
 impl<'a> InnerPipelineBuilder<'a> {
-    pub fn new(func_id_offset: usize) -> Self {
-        Self::new_with_capacities(func_id_offset, None, None)
+    pub fn new() -> Self {
+        Self::new_with_capacity(None)
     }
 
-    pub fn new_with_capacities(
-        func_id_offset: usize,
-        data_expr_capacity: Option<usize>,
-        functions_capacity: Option<usize>,
-    ) -> Self {
+    pub fn new_with_capacity(data_expr_capacity: Option<usize>) -> Self {
         Self {
-            func_id_offset,
             data_exprs: Vec::with_capacity(data_expr_capacity.unwrap_or_default()),
-            functions: Vec::with_capacity(functions_capacity.unwrap_or_default()),
             parent: None,
         }
     }
 
-    pub fn into_parts(self) -> (Vec<DataExpression>, Vec<(String, PipelineFunction)>) {
-        (self.data_exprs, self.functions)
+    pub fn into_parts(self) -> (Vec<DataExpression>, Option<&'a mut dyn PipelineBuilder>) {
+        (self.data_exprs, self.parent)
     }
 }
 
@@ -117,28 +94,13 @@ impl<'a> PipelineBuilder for InnerPipelineBuilder<'a> {
     }
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
-        self.functions.push((name.to_string(), definition));
-        self.func_id_offset + self.functions.len() - 1
-    }
-
-    fn get_max_func_id(&self) -> Option<usize> {
-        if !self.functions.is_empty() || self.func_id_offset > 0 {
-            Some(self.functions.len() + self.func_id_offset - 1)
-        } else {
-            None
+        if let Some(parent) = &mut self.parent {
+            return parent.push_function_definition(name, definition);
         }
+        todo!()
     }
 
     fn get_function_id(&self, name: &str) -> Option<usize> {
-        if let Some((func_id, _)) = self
-            .functions
-            .iter()
-            .enumerate()
-            .find(|(_, (func_name, _))| func_name == name)
-        {
-            return Some(func_id + self.func_id_offset);
-        }
-
         if let Some(parent) = &self.parent {
             return parent.get_function_id(name);
         }

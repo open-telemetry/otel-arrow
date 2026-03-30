@@ -109,7 +109,7 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new(0);
+        let pipeline_builder = InnerPipelineBuilder::new();
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
@@ -135,7 +135,7 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new(0);
+        let pipeline_builder = InnerPipelineBuilder::new();
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
@@ -163,7 +163,7 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let pipeline_builder = InnerPipelineBuilder::new(0);
+        let pipeline_builder = InnerPipelineBuilder::new();
         let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
