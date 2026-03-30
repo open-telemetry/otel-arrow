@@ -67,6 +67,17 @@ cfg_if! {
         static GLOBAL: dhat::Alloc = dhat::Alloc;
         static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
 
+        fn dhat_start() {
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                *profiler = Some(dhat::Profiler::new_heap());
+        }
+
+        fn dhat_finish() {
+        // Dropping the Profiler is what triggers dhat-heap.json generation. [1](https://outlook.office365.com/owa/?ItemID=AAMkADYwZTk3ZGM5LTU2ZjItNDM2NC1hZmQ0LWY5NjhmZmM5M2NiNwBGAAAAAAC7q57xFfmuSb3iOsuh%			2fVOABwAlpRXD5QvATJ55erMTPKHzAAAAH3TYAABzDoBtHPxlRIZv17%2bj%2fBx2AAhyk6imAAA%3d&exvsurl=1&viewmodel=ReadMessageItem)
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                let _ = profiler.take();
+	}
+
     // Windows default: mimalloc
     } else if #[cfg(feature = "mimalloc")] {
         #[global_allocator]
@@ -323,8 +334,7 @@ fn validate_engine_components(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "dhat-heap")]
     {
-        let mut profiler = DHAT_PROFILER.lock().unwrap();
-        *profiler = Some(dhat::Profiler::new_heap());
+        dhat_start()
     }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
@@ -353,6 +363,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
+    #[cfg(feature = "dhat-heap")]
+    {
+        dhat_finish()
+    }
+
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
