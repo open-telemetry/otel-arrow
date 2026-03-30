@@ -18,15 +18,12 @@ import (
 )
 
 // TestExemplarDecoder_NullSpanIDAndTraceID verifies that the exemplar decoder
-// handles null span_id and trace_id values gracefully. These fields are
-// optional per the OTAP spec and OTLP proto, so a null value should be
-// treated as "not provided" rather than causing an error.
+// handles null span_id and trace_id. These fields are optional per the OTAP spec
+// and OTLP proto, so a null value is not an error.
 func TestExemplarDecoder_NullSpanIDAndTraceID(t *testing.T) {
 	pool := memory.NewGoAllocator()
 
-	// Build a simplified exemplar schema with plain types (no dictionary
-	// encoding) — the decoder handles both dictionary and non-dictionary
-	// arrays via the arrowutils helpers.
+	// Build a simplified exemplar schema with plain types
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint32},

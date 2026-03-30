@@ -484,7 +484,7 @@ properties for the `resource` column's `id` field.
 | span_id                  | FixedSizeBinary(8)  | -                   | Yes      | -                                                   | -        | Linked span `id`                                    |
 | trace_state              | Utf8                | -                   | No       | -                                                   | -        | Linked trace state                                  |
 | dropped_attributes_count | UInt32              | -                   | No       | -                                                   | -        | Number of dropped link attributes                   |
-| flags | UInt32              | UInt32                   | No       | -                                                   | -        | Span flags                   |
+| flags                    | UInt32              | UInt32              | No       | -                                                   | -        | Span flags                                          |
 
 ### 5.3 Metrics
 
