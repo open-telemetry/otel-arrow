@@ -32,7 +32,8 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender};
+use crate::WakeupError;
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -246,9 +247,20 @@ impl<PData> EffectHandler<PData> {
         self.core.route_nack(nack).await
     }
 
-    /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.core.delay_data(when, data).await
+    /// Requeue retained pdata onto this node later.
+    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.requeue_later(when, data)
+    }
+
+    /// Set or replace a processor-local wakeup.
+    pub fn set_wakeup(&self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
+        self.core.set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.core.cancel_wakeup(slot)
     }
 
     /// Reports metrics collected by the processor.

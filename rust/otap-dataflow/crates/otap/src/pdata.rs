@@ -99,9 +99,8 @@ impl Context {
             .unwrap_or(false)
     }
 
-    /// Return the current source calldata. This is used with the
-    /// DelayedData message, in which a node delivers a message to
-    /// itself.
+    /// Return the current source calldata. This is used when a node resumes
+    /// retained data back to itself via the local scheduler.
     ///
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
@@ -467,9 +466,8 @@ impl OtapPdata {
     /// Return the source's calldata. Note that after a subscribe_to()
     /// has been called, the current node becomes the source.
     ///
-    /// Return the current source calldata. This is used with the
-    /// DelayedData message, in which a node delivers a message to
-    /// itself.
+    /// Return the current source calldata. This is used when a node resumes
+    /// retained data back to itself via the local scheduler.
     ///
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.

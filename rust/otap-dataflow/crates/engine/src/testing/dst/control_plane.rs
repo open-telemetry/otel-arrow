@@ -76,14 +76,6 @@ async fn run_control_plane_seed(seed: u64) {
             })
             .await
             .unwrap();
-        runtime_tx
-            .send(RuntimeControlMsg::DelayData {
-                node_id: processor_id.index,
-                when: clock.now() + Duration::from_millis(12),
-                data: Box::new(DstPData::new(9000)),
-            })
-            .await
-            .unwrap();
         yield_cycles(2).await;
         for _ in 0..(70 + rng.gen_range(6)) {
             runtime_tx
@@ -165,20 +157,12 @@ async fn run_control_plane_seed(seed: u64) {
             |msgs| {
                 msgs.iter()
                     .any(|msg| matches!(msg, NodeControlMsg::TimerTick {}))
-                    && msgs.iter().any(|msg| {
-                        matches!(
-                            msg,
-                            NodeControlMsg::DelayedData { data, .. } if data.id == 9000
-                        )
-                    })
                     && msgs.iter().any(|msg| matches!(msg, NodeControlMsg::Ack(_)))
                     && msgs
                         .iter()
                         .any(|msg| matches!(msg, NodeControlMsg::Nack(_)))
             },
-            &format!(
-                "seed={seed}: processor control receiver did not observe timer/delay/ack/nack"
-            ),
+            &format!("seed={seed}: processor control receiver did not observe timer/ack/nack"),
         )
         .await;
         assert!(
@@ -186,12 +170,6 @@ async fn run_control_plane_seed(seed: u64) {
                 .iter()
                 .any(|msg| matches!(msg, NodeControlMsg::TimerTick {})),
             "seed={seed}: due timer tick was starved under runtime-control burst"
-        );
-        assert!(
-            processor_msgs.iter().any(
-                |msg| matches!(msg, NodeControlMsg::DelayedData { data, .. } if data.id == 9000)
-            ),
-            "seed={seed}: delayed data did not resume under control pressure"
         );
 
         let ack_msg = processor_msgs.iter().find_map(|msg| match msg {
@@ -307,8 +285,8 @@ async fn run_control_plane_seed(seed: u64) {
     }));
 }
 
-// Exercise seeded control-plane mixes where runtime-control traffic, delayed
-// work, completion unwinding, and receiver-first shutdown all compete. The
+// Exercise seeded control-plane mixes where runtime-control traffic,
+// completion unwinding, and receiver-first shutdown all compete. The
 // assertion surface is liveness and ordering, not a single fixed trace.
 #[test]
 fn dst_runtime_control_plane_seeded() {
