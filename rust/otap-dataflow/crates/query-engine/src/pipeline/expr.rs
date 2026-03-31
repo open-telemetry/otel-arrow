@@ -518,10 +518,10 @@ impl ExprLogicalPlanner {
                 logical_expr = cast(logical_expr, data_type)
             }
 
-            // TODO: currently if the source does not require removing dict encoding, there may be
-            // cases where the source expression would evaluate faster on dict-encoded data. If this
-            // is the case, we may wish to defer removing the dict encoding, as currently it now
-            // happens eagerly when projecting the source before evaluating the expression.
+            // TODO: currently this will eagerly remove dictionary encoding when projecting the
+            // source if dictionary encoding is not supported by the function being invoked.
+            // However there may be cases where the overall expression may evaluate faster on
+            // dict-encoded data and we may wish to defer removing the dict encoding.
             let requires_dict_downcast =
                 source_requires_dict_downcast | df_udf.requires_dict_downcast;
 

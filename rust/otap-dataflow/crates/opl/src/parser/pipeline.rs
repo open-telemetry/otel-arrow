@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 
 use data_engine_expressions::{DataExpression, PipelineFunction};
-use data_engine_parser_abstractions::{ParserError, ParserScope, ParserState, to_query_location};
+use data_engine_parser_abstractions::{
+    ParserError, ParserFunction, ParserScope, ParserState, to_query_location,
+};
 use pest::iterators::Pair;
 
 use crate::parser::operator::parse_operator_call;
@@ -21,8 +23,9 @@ pub(crate) trait PipelineBuilder {
     /// push a function definition, returns the function ID
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize;
 
-    /// get the ID of a function by name. Returns `None` if no function with the passed name exists
-    fn get_function_id(&self, name: &str) -> Option<usize>;
+    /// get the definition of a function by name. Returns `None` if no function with the passed
+    /// name exists
+    fn get_function(&self, name: &str) -> Option<&ParserFunction>;
 }
 
 pub struct RootPipelineBuilder<'a> {
@@ -57,8 +60,8 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
         func_id
     }
 
-    fn get_function_id(&self, name: &str) -> Option<usize> {
-        self.parser_state.get_function_id(name).map(|f| f.get_id())
+    fn get_function(&self, name: &str) -> Option<&ParserFunction> {
+        self.parser_state.get_function_id(name)
     }
 }
 
@@ -99,8 +102,8 @@ impl<'a> PipelineBuilder for InnerPipelineBuilder<'a> {
         self.parent.push_function_definition(name, definition)
     }
 
-    fn get_function_id(&self, name: &str) -> Option<usize> {
-        self.parent.get_function_id(name)
+    fn get_function(&self, name: &str) -> Option<&ParserFunction> {
+        self.parent.get_function(name)
     }
 }
 

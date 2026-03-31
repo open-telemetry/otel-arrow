@@ -765,19 +765,35 @@ fn parse_function_call(
         }
 
         func_name => {
-            let function_id = pipeline_builder.get_function_id(func_name).ok_or_else(|| {
+            let function_def = pipeline_builder.get_function(func_name).ok_or_else(|| {
                 ParserError::SyntaxError(
                     query_location.clone(),
                     format!("Unknown function {func_name}"),
                 )
             })?;
+
+            let expected_num_args = function_def.get_parameter_names().len();
+            if args.len() != expected_num_args {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects {expected_num_args} arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
             let arguments = args
                 .into_iter()
                 .map(|arg| InvokeFunctionArgument::Scalar(arg))
                 .collect();
-            let invoke_func_expr = ScalarExpression::InvokeFunction(
-                InvokeFunctionScalarExpression::new(query_location, None, function_id, arguments),
-            );
+            let invoke_func_expr =
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    query_location,
+                    None,
+                    function_def.get_id(),
+                    arguments,
+                ));
             Ok(invoke_func_expr.into())
         }
     }
@@ -786,15 +802,19 @@ fn parse_function_call(
 #[cfg(test)]
 mod test {
 
+    use std::collections::HashMap;
+
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
         ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
         EqualToLogicalExpression, GreaterThanLogicalExpression,
         GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
         MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
-        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
+        OrLogicalExpression, PipelineFunction, PipelineFunctionParameter,
+        PipelineFunctionParameterType, QueryLocation, ScalarExpression, SourceScalarExpression,
         StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
+    use data_engine_parser_abstractions::{ParserFunction, ParserState};
     use pest::Parser;
     use pretty_assertions::assert_eq;
 
@@ -806,14 +826,14 @@ mod test {
             parse_unary_expression,
         },
         pest::OplPestParser,
-        pipeline::PipelineBuilder,
+        pipeline::{PipelineBuilder, RootPipelineBuilder},
         temporal::create_utc,
     };
 
     struct MockPipelineBuilder {}
 
     impl PipelineBuilder for MockPipelineBuilder {
-        fn get_function_id(&self, _name: &str) -> Option<usize> {
+        fn get_function(&self, _name: &str) -> Option<&ParserFunction> {
             None
         }
 
@@ -828,7 +848,7 @@ mod test {
         fn push_function_definition(
             &mut self,
             _name: &str,
-            _definition: data_engine_expressions::PipelineFunction,
+            _definition: PipelineFunction,
         ) -> usize {
             // unreachable because we only give out shared references to the function being tested
             unreachable!("push_function_definition should not be called")
@@ -1784,6 +1804,41 @@ mod test {
         assert!(
             err.to_string()
                 .contains("Function 'matches' expects 2 arguments, got 3")
+        )
+    }
+
+    #[test]
+    fn test_parse_external_function_call_wrong_arity() {
+        let input = "myfunc(1234)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let mut parser_state = ParserState::new("");
+        parser_state.push_function(
+            "myfunc",
+            PipelineFunction::new_external(
+                "myfunc",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                ],
+                None,
+            ),
+            vec!["arg1".into(), "arg2".into()],
+            HashMap::new(),
+        );
+
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let err = parse_member_expression(rules.next().unwrap(), &pipeline_builder).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Function 'myfunc' expects 2 arguments, got 1")
         )
     }
 }
