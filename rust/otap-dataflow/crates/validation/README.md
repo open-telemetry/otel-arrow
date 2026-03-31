@@ -4,6 +4,11 @@ End-to-end harness for standing up a **system-under-validation (SUV)**
 pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
 asserting invariants.
 
+This crate is one layer in the broader OTAP-dataflow testing strategy. For
+guidance on when to use validation scenarios versus unit tests, node harnesses,
+small pipeline liveness tests, or deterministic simulation testing, see the
+[Testing Guide](../../docs/testing-guide.md).
+
 ## Framework components
 
 - `Scenario`: orchestrates end-to-end runs

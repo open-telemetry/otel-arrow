@@ -306,7 +306,52 @@
   const tokioUnparkRateEl = document.getElementById("tokio-unpark-rate");
 
   const tabPanelGeneral = document.getElementById("tab-panel-general");
+  const tabPanelControl = document.getElementById("tab-panel-control");
   const tabPanelTokio = document.getElementById("tab-panel-tokio");
+
+  const controlDrainStateEl = document.getElementById("control-drain-state");
+  const controlDrainPendingReceiversEl = document.getElementById(
+    "control-drain-pending-receivers"
+  );
+  const controlDrainInstanceCountEl = document.getElementById(
+    "control-drain-instance-count"
+  );
+  const controlDrainDeadlineForcedEl = document.getElementById(
+    "control-drain-deadline-forced"
+  );
+  const controlRuntimePendingSendsEl = document.getElementById(
+    "control-runtime-pending-sends"
+  );
+  const controlCompletionPendingSendsEl = document.getElementById(
+    "control-completion-pending-sends"
+  );
+  const controlDelayedDataQueuedEl = document.getElementById(
+    "control-delayed-data-queued"
+  );
+  const controlTimersActiveEl = document.getElementById("control-timers-active");
+  const controlDelayedDataSentRateEl = document.getElementById(
+    "control-delayed-data-sent-rate"
+  );
+  const controlTimerTickRateEl = document.getElementById("control-timer-tick-rate");
+  const controlCollectTelemetryRateEl = document.getElementById(
+    "control-collect-telemetry-rate"
+  );
+  const controlDelayReturnRateEl = document.getElementById("control-delay-return-rate");
+  const controlDeliverAckRateEl = document.getElementById("control-deliver-ack-rate");
+  const controlDeliverNackRateEl = document.getElementById("control-deliver-nack-rate");
+  const controlAckAttemptRateEl = document.getElementById("control-ack-attempt-rate");
+  const controlNackAttemptRateEl = document.getElementById("control-nack-attempt-rate");
+  const controlAckDeliveredRateEl = document.getElementById(
+    "control-ack-delivered-rate"
+  );
+  const controlNackDeliveredRateEl = document.getElementById(
+    "control-nack-delivered-rate"
+  );
+  const controlAckDroppedEl = document.getElementById("control-ack-dropped");
+  const controlNackDroppedEl = document.getElementById("control-nack-dropped");
+  const controlEventsTitleEl = document.getElementById("control-events-title");
+  const controlEventsMetaEl = document.getElementById("control-events-meta");
+  const controlEventsListEl = document.getElementById("control-events-list");
 
   // Runtime state: selection, filtering, history caches, chart instances, and layout/zoom.
   let layoutSize = { width: 0, height: 0 };
@@ -367,6 +412,7 @@
     clientDeltaPrevBySeries: new Map(),
   };
   let statusSnapshot = null;
+  let controlPlanePrev = null;
   let pipelineOptionLabelByKey = new Map();
   const CORE_ALL = "__all__";
   let windowMinutes = 5;
@@ -424,15 +470,55 @@
         { key: "page.faults.major", color: "rgba(239,68,68,0.9)" },
       ],
     },
+    controlDrain: {
+      canvasId: "pipeChartControlDrain",
+      metrics: [
+        { key: "control.drain.active", color: "rgba(14,165,233,0.9)" },
+        { key: "control.drain.pending_receivers", color: "rgba(250,204,21,0.9)" },
+      ],
+    },
+    controlBacklog: {
+      canvasId: "pipeChartControlBacklog",
+      metrics: [
+        { key: "control.runtime.pending_sends.buffered", color: "rgba(248,113,113,0.9)" },
+        { key: "control.completion.pending_sends.buffered", color: "rgba(167,139,250,0.9)" },
+        { key: "control.delayed_data.queued", color: "rgba(52,211,153,0.9)" },
+      ],
+    },
+    controlRuntimeFlow: {
+      canvasId: "pipeChartControlRuntimeFlow",
+      metrics: [
+        { key: "control.runtime.delayed_data.sent.rate", color: "rgba(34,197,94,0.9)" },
+        { key: "control.runtime.timer_tick.sent.rate", color: "rgba(56,189,248,0.9)" },
+        { key: "control.runtime.collect_telemetry.sent.rate", color: "rgba(249,115,22,0.9)" },
+      ],
+    },
+    controlCompletionIngress: {
+      canvasId: "pipeChartCompletionIngress",
+      metrics: [
+        { key: "control.completion.deliver_ack.received.rate", color: "rgba(34,197,94,0.9)" },
+        { key: "control.completion.deliver_nack.received.rate", color: "rgba(248,113,113,0.9)" },
+      ],
+    },
+    controlCompletionDelivery: {
+      canvasId: "pipeChartCompletionDelivery",
+      metrics: [
+        { key: "control.completion.ack.delivered.rate", color: "rgba(34,197,94,0.9)" },
+        { key: "control.completion.nack.delivered.rate", color: "rgba(248,113,113,0.9)" },
+      ],
+    },
   };
 
   // --- View mode and connection status helpers ---
   function setActiveTab(tab) {
     const isGeneral = tab === "general";
+    const isControl = tab === "control";
+    const isTokio = tab === "tokio";
     tabPanelGeneral.classList.toggle("hidden", !isGeneral);
-    tabPanelTokio.classList.toggle("hidden", isGeneral);
+    tabPanelControl.classList.toggle("hidden", !isControl);
+    tabPanelTokio.classList.toggle("hidden", !isTokio);
     if (viewSelect) {
-      viewSelect.value = isGeneral ? "general" : "tokio";
+      viewSelect.value = isGeneral ? "general" : isControl ? "control" : "tokio";
     }
   }
 
@@ -1080,6 +1166,85 @@
     return td;
   }
 
+  function formatRuntimeEventTime(time) {
+    if (!time) return "unknown time";
+    const parsed = new Date(time);
+    if (!Number.isFinite(parsed.getTime())) return "unknown time";
+    return parsed.toLocaleTimeString();
+  }
+
+  function renderControlPlaneEventsPanel() {
+    if (!controlEventsListEl || !controlEventsMetaEl || !controlEventsTitleEl) return;
+
+    const pipelineLabel =
+      selectedPipelineKey && pipelineOptionLabelByKey.has(selectedPipelineKey)
+        ? pipelineOptionLabelByKey.get(selectedPipelineKey)
+        : selectedPipelineKey || "Selected pipeline";
+    controlEventsTitleEl.textContent = pipelineLabel;
+
+    if (!statusSnapshot) {
+      controlEventsMetaEl.textContent = "No runtime status snapshot yet.";
+      controlEventsListEl.innerHTML =
+        '<div class="control-event-empty">No recent runtime events.</div>';
+      return;
+    }
+
+    if (!selectedPipelineKey) {
+      controlEventsMetaEl.textContent = "Select a pipeline to inspect drain and lifecycle events.";
+      controlEventsListEl.innerHTML =
+        '<div class="control-event-empty">No pipeline selected.</div>';
+      return;
+    }
+
+    const pipelineStatus = statusSnapshot.byPipelineKey?.get(selectedPipelineKey);
+    if (!pipelineStatus) {
+      controlEventsMetaEl.textContent = "No runtime status found for the selected pipeline.";
+      controlEventsListEl.innerHTML =
+        '<div class="control-event-empty">No recent runtime events.</div>';
+      return;
+    }
+
+    const events = Array.isArray(pipelineStatus.recentEvents)
+      ? pipelineStatus.recentEvents
+      : [];
+    controlEventsMetaEl.textContent = [
+      `${events.length} recent engine events`,
+      `${pipelineStatus.runningCores}/${pipelineStatus.totalCores} cores running`,
+      pipelineStatus.summary,
+    ].join(" | ");
+
+    if (!events.length) {
+      controlEventsListEl.innerHTML =
+        '<div class="control-event-empty">No recent runtime events.</div>';
+      return;
+    }
+
+    controlEventsListEl.innerHTML = events
+      .slice(0, 12)
+      .map((event) => {
+        const kind = event.typeKind || "unknown";
+        const typeLabel = escapeHtml(event.typeLabel || "Unknown");
+        const coreId = escapeHtml(event.coreId == null ? "n/a" : event.coreId);
+        const message = event.message
+          ? `<div class="control-event-message">${escapeHtml(event.message)}</div>`
+          : "";
+        return `
+          <div class="control-event-item control-event-item-${kind}">
+            <div class="control-event-header">
+              <div class="control-event-name">${typeLabel}</div>
+              <div class="control-event-time">${escapeHtml(formatRuntimeEventTime(event.time))}</div>
+            </div>
+            <div class="control-event-meta">
+              <span class="control-event-chip control-event-chip-${kind}">${escapeHtml(kind)}</span>
+              <span>core ${coreId}</span>
+            </div>
+            ${message}
+          </div>
+        `;
+      })
+      .join("");
+  }
+
   function renderRuntimeStatusOverlay() {
     if (!runtimeStatusTbody || !runtimeStatusMeta) return;
     runtimeStatusTbody.innerHTML = "";
@@ -1087,6 +1252,7 @@
     if (!statusSnapshot) {
       const tr = document.createElement("tr");
       tr.appendChild(createRuntimeStatusCell("No runtime status snapshot.", "runtime-status-state"));
+      tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell("-", "runtime-status-state"));
@@ -1115,6 +1281,7 @@
       tr.appendChild(createRuntimeStatusCell("-"));
       tr.appendChild(createRuntimeStatusCell("-"));
       tr.appendChild(createRuntimeStatusCell("-"));
+      tr.appendChild(createRuntimeStatusCell("-"));
       runtimeStatusTbody.appendChild(tr);
     }
     rows.forEach((row) => {
@@ -1125,6 +1292,7 @@
       tr.appendChild(createRuntimeStatusCell(row.readyStatus, "runtime-status-state"));
       tr.appendChild(createRuntimeStatusCell(String(row.runningCores)));
       tr.appendChild(createRuntimeStatusCell(String(row.totalCores)));
+      tr.appendChild(createRuntimeStatusCell(row.latestEventSummary || "-"));
       tr.appendChild(createRuntimeStatusCell(row.topReason));
       runtimeStatusTbody.appendChild(tr);
     });
@@ -1216,6 +1384,7 @@
     selectedNodeId = null;
     selectedEdgeData = null;
     selectedNodeData = null;
+    controlPlanePrev = null;
     nodeSeries.clear();
     channelSeries.clear();
     pipelineChartsController?.clearSeries();
@@ -1662,6 +1831,14 @@
     });
   }
 
+  function selectMetricSetsWithoutAggregation(metricSets) {
+    return filterMetricSetsBySelection(metricSets, {
+      selectedPipelineKey,
+      selectedCoreId: selectedCoreId === CORE_ALL ? null : selectedCoreId,
+      coreAllId: CORE_ALL,
+    });
+  }
+
   function getDagMetricSets(metricSets, dagScope) {
     return getDagMetricSetsBySelection(metricSets, dagScope, {
       selectedPipelineKey,
@@ -1795,6 +1972,7 @@
     try {
       const dagScope = getDagRenderScope();
       const panelMetricSets = filterMetricSets(metricSets);
+      const selectedMetricSets = selectMetricSetsWithoutAggregation(metricSets);
       const dagMetricSets = getDagMetricSets(metricSets, dagScope);
       if (updateSeries) {
         updateNodeSeries(dagMetricSets, lastSampleSeconds, lastSampleTs, dagScope);
@@ -1821,6 +1999,9 @@
       updateEngineCards(engineSummary, lastSampleTs);
       const pipelineSummary = extractPipelineSummary(panelMetricSets);
       updatePipelineCards(pipelineSummary, lastSampleSeconds, lastSampleTs);
+      const controlPlaneSummary = extractControlPlaneSummary(selectedMetricSets);
+      updateControlPlaneCards(controlPlaneSummary, lastSampleSeconds, lastSampleTs);
+      renderControlPlaneEventsPanel();
       if (showPipelineCharts) {
         updatePipelineCharts();
       }
@@ -1997,6 +2178,282 @@
     });
 
     return summary;
+  }
+
+  function extractControlPlaneSummary(metricSets) {
+    const summary = {
+      runtimeInstances: 0,
+      completionInstances: 0,
+      runtimeGauges: {
+        "drain.active": 0,
+        "drain.pending_receivers": 0,
+        "pending_sends.buffered": 0,
+        "timers.active": 0,
+        "telemetry_timers.active": 0,
+        "delayed_data.queued": 0,
+      },
+      runtimeCounters: {
+        "shutdown.deadline_forced": 0,
+        "delay_data.returned_during_drain": 0,
+        "timer_tick.sent": 0,
+        "collect_telemetry.sent": 0,
+        "delayed_data.sent": 0,
+      },
+      completionGauges: {
+        "pending_sends.buffered": 0,
+      },
+      completionCounters: {
+        "deliver_ack.received": 0,
+        "deliver_nack.received": 0,
+        "ack.attempted": 0,
+        "nack.attempted": 0,
+        "ack.delivered": 0,
+        "nack.delivered": 0,
+        "ack.dropped_no_interest": 0,
+        "nack.dropped_no_interest": 0,
+      },
+    };
+
+    metricSets.forEach((set) => {
+      const metrics = Array.isArray(set.metrics) ? set.metrics : [];
+      if (set.name === "pipeline.runtime_control") {
+        summary.runtimeInstances += 1;
+        metrics.forEach((metric) => {
+          if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
+            return;
+          }
+          if (metric.name in summary.runtimeGauges) {
+            summary.runtimeGauges[metric.name] += metric.value;
+            return;
+          }
+          if (metric.name in summary.runtimeCounters) {
+            summary.runtimeCounters[metric.name] += metric.value;
+          }
+        });
+      } else if (set.name === "pipeline.completion") {
+        summary.completionInstances += 1;
+        metrics.forEach((metric) => {
+          if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
+            return;
+          }
+          if (metric.name in summary.completionGauges) {
+            summary.completionGauges[metric.name] += metric.value;
+            return;
+          }
+          if (metric.name in summary.completionCounters) {
+            summary.completionCounters[metric.name] += metric.value;
+          }
+        });
+      }
+    });
+
+    summary.instanceCount = Math.max(
+      summary.runtimeInstances,
+      summary.completionInstances
+    );
+    return summary;
+  }
+
+  function updateControlPlaneCards(summary, sampleSeconds, ts) {
+    const setText = (el, value) => {
+      if (el) {
+        el.textContent = value;
+      }
+    };
+
+    if (
+      !summary ||
+      (summary.runtimeInstances === 0 && summary.completionInstances === 0)
+    ) {
+      setText(controlDrainStateEl, "n/a");
+      setText(controlDrainPendingReceiversEl, "n/a");
+      setText(controlDrainInstanceCountEl, "0");
+      setText(controlDrainDeadlineForcedEl, "n/a");
+      setText(controlRuntimePendingSendsEl, "n/a");
+      setText(controlCompletionPendingSendsEl, "n/a");
+      setText(controlDelayedDataQueuedEl, "n/a");
+      setText(controlTimersActiveEl, "n/a");
+      setText(controlDelayedDataSentRateEl, "n/a");
+      setText(controlTimerTickRateEl, "n/a");
+      setText(controlCollectTelemetryRateEl, "n/a");
+      setText(controlDelayReturnRateEl, "n/a");
+      setText(controlDeliverAckRateEl, "n/a");
+      setText(controlDeliverNackRateEl, "n/a");
+      setText(controlAckAttemptRateEl, "n/a");
+      setText(controlNackAttemptRateEl, "n/a");
+      setText(controlAckDeliveredRateEl, "n/a");
+      setText(controlNackDeliveredRateEl, "n/a");
+      setText(controlAckDroppedEl, "n/a");
+      setText(controlNackDroppedEl, "n/a");
+      controlPlanePrev = null;
+      return;
+    }
+
+    const runtimeGauges = summary.runtimeGauges;
+    const runtimeCounters = summary.runtimeCounters;
+    const completionGauges = summary.completionGauges;
+    const completionCounters = summary.completionCounters;
+    const drainActive = runtimeGauges["drain.active"] || 0;
+    const pendingReceivers = runtimeGauges["drain.pending_receivers"] || 0;
+    const runtimePendingSends = runtimeGauges["pending_sends.buffered"] || 0;
+    const completionPendingSends = completionGauges["pending_sends.buffered"] || 0;
+    const delayedDataQueued = runtimeGauges["delayed_data.queued"] || 0;
+    const timersActive = runtimeGauges["timers.active"] || 0;
+
+    setText(
+      controlDrainStateEl,
+      summary.instanceCount > 0
+        ? `${Math.round(drainActive)}/${summary.instanceCount}`
+        : String(Math.round(drainActive))
+    );
+    setText(controlDrainPendingReceiversEl, Math.round(pendingReceivers).toString());
+    setText(controlDrainInstanceCountEl, String(summary.instanceCount || 0));
+    setText(
+      controlDrainDeadlineForcedEl,
+      Math.round(runtimeCounters["shutdown.deadline_forced"] || 0).toString()
+    );
+    setText(controlRuntimePendingSendsEl, Math.round(runtimePendingSends).toString());
+    setText(
+      controlCompletionPendingSendsEl,
+      Math.round(completionPendingSends).toString()
+    );
+    setText(controlDelayedDataQueuedEl, Math.round(delayedDataQueued).toString());
+    setText(controlTimersActiveEl, Math.round(timersActive).toString());
+    setText(
+      controlAckDroppedEl,
+      Math.round(completionCounters["ack.dropped_no_interest"] || 0).toString()
+    );
+    setText(
+      controlNackDroppedEl,
+      Math.round(completionCounters["nack.dropped_no_interest"] || 0).toString()
+    );
+
+    const previousRuntime = controlPlanePrev?.runtimeCounters || null;
+    const previousCompletion = controlPlanePrev?.completionCounters || null;
+    const delayedDataSentRate = calcCumulativeRate(
+      runtimeCounters["delayed_data.sent"],
+      previousRuntime ? previousRuntime["delayed_data.sent"] : null,
+      sampleSeconds
+    );
+    const timerTickRate = calcCumulativeRate(
+      runtimeCounters["timer_tick.sent"],
+      previousRuntime ? previousRuntime["timer_tick.sent"] : null,
+      sampleSeconds
+    );
+    const collectTelemetryRate = calcCumulativeRate(
+      runtimeCounters["collect_telemetry.sent"],
+      previousRuntime ? previousRuntime["collect_telemetry.sent"] : null,
+      sampleSeconds
+    );
+    const delayReturnRate = calcCumulativeRate(
+      runtimeCounters["delay_data.returned_during_drain"],
+      previousRuntime ? previousRuntime["delay_data.returned_during_drain"] : null,
+      sampleSeconds
+    );
+    const deliverAckRate = calcCumulativeRate(
+      completionCounters["deliver_ack.received"],
+      previousCompletion ? previousCompletion["deliver_ack.received"] : null,
+      sampleSeconds
+    );
+    const deliverNackRate = calcCumulativeRate(
+      completionCounters["deliver_nack.received"],
+      previousCompletion ? previousCompletion["deliver_nack.received"] : null,
+      sampleSeconds
+    );
+    const ackAttemptRate = calcCumulativeRate(
+      completionCounters["ack.attempted"],
+      previousCompletion ? previousCompletion["ack.attempted"] : null,
+      sampleSeconds
+    );
+    const nackAttemptRate = calcCumulativeRate(
+      completionCounters["nack.attempted"],
+      previousCompletion ? previousCompletion["nack.attempted"] : null,
+      sampleSeconds
+    );
+    const ackDeliveredRate = calcCumulativeRate(
+      completionCounters["ack.delivered"],
+      previousCompletion ? previousCompletion["ack.delivered"] : null,
+      sampleSeconds
+    );
+    const nackDeliveredRate = calcCumulativeRate(
+      completionCounters["nack.delivered"],
+      previousCompletion ? previousCompletion["nack.delivered"] : null,
+      sampleSeconds
+    );
+
+    setText(controlDelayedDataSentRateEl, formatRate(delayedDataSentRate));
+    setText(controlTimerTickRateEl, formatRate(timerTickRate));
+    setText(controlCollectTelemetryRateEl, formatRate(collectTelemetryRate));
+    setText(controlDelayReturnRateEl, formatRate(delayReturnRate));
+    setText(controlDeliverAckRateEl, formatRate(deliverAckRate));
+    setText(controlDeliverNackRateEl, formatRate(deliverNackRate));
+    setText(controlAckAttemptRateEl, formatRate(ackAttemptRate));
+    setText(controlNackAttemptRateEl, formatRate(nackAttemptRate));
+    setText(controlAckDeliveredRateEl, formatRate(ackDeliveredRate));
+    setText(controlNackDeliveredRateEl, formatRate(nackDeliveredRate));
+
+    controlPlanePrev = {
+      runtimeCounters: { ...runtimeCounters },
+      completionCounters: { ...completionCounters },
+    };
+
+    const timestamp = ts || lastSampleTs;
+    recordPipelineMetric("control.drain.active", drainActive, timestamp);
+    recordPipelineMetric(
+      "control.drain.pending_receivers",
+      pendingReceivers,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.runtime.pending_sends.buffered",
+      runtimePendingSends,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.completion.pending_sends.buffered",
+      completionPendingSends,
+      timestamp
+    );
+    recordPipelineMetric("control.delayed_data.queued", delayedDataQueued, timestamp);
+    recordPipelineMetric(
+      "control.runtime.delayed_data.sent.rate",
+      delayedDataSentRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.runtime.timer_tick.sent.rate",
+      timerTickRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.runtime.collect_telemetry.sent.rate",
+      collectTelemetryRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.completion.deliver_ack.received.rate",
+      deliverAckRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.completion.deliver_nack.received.rate",
+      deliverNackRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.completion.ack.delivered.rate",
+      ackDeliveredRate,
+      timestamp
+    );
+    recordPipelineMetric(
+      "control.completion.nack.delivered.rate",
+      nackDeliveredRate,
+      timestamp
+    );
+
+    if (pipelineHoverTs != null) {
+      applyPipelineMetricValues(pipelineHoverTs);
+    }
   }
 
   function updateEngineCards(summary, ts) {
@@ -2715,6 +3172,54 @@
     "page.faults.major": {
       el: pipeFaultMajorRateEl,
       format: (value) => (Number.isFinite(value) ? value.toFixed(3) : "n/a"),
+    },
+    "control.drain.pending_receivers": {
+      el: controlDrainPendingReceiversEl,
+      format: (value) =>
+        Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
+    },
+    "control.runtime.pending_sends.buffered": {
+      el: controlRuntimePendingSendsEl,
+      format: (value) =>
+        Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
+    },
+    "control.completion.pending_sends.buffered": {
+      el: controlCompletionPendingSendsEl,
+      format: (value) =>
+        Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
+    },
+    "control.delayed_data.queued": {
+      el: controlDelayedDataQueuedEl,
+      format: (value) =>
+        Number.isFinite(value) ? `${Math.round(value)}` : "n/a",
+    },
+    "control.runtime.delayed_data.sent.rate": {
+      el: controlDelayedDataSentRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.runtime.timer_tick.sent.rate": {
+      el: controlTimerTickRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.runtime.collect_telemetry.sent.rate": {
+      el: controlCollectTelemetryRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.completion.deliver_ack.received.rate": {
+      el: controlDeliverAckRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.completion.deliver_nack.received.rate": {
+      el: controlDeliverNackRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.completion.ack.delivered.rate": {
+      el: controlAckDeliveredRateEl,
+      format: (value) => formatRate(value),
+    },
+    "control.completion.nack.delivered.rate": {
+      el: controlNackDeliveredRateEl,
+      format: (value) => formatRate(value),
     },
   };
 
@@ -3666,6 +4171,7 @@
       buildStatusSnapshot,
       onSnapshotReady: (snapshot) => {
         statusSnapshot = snapshot;
+        renderControlPlaneEventsPanel();
       },
       onProbeUpdate: () => {},
       onRefreshDecorations: refreshPipelineSelectorStatusDecorations,

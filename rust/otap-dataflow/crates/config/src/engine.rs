@@ -189,7 +189,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn valid_engine_yaml(version: &str) -> String {
         format!(
@@ -219,10 +222,12 @@ groups:
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "otap-df-config-engine-tests-{}-{}.{}",
+            "otap-df-config-engine-tests-{}-{}-{}.{}",
             std::process::id(),
             suffix,
+            sequence,
             ext
         ));
         fs::write(&path, contents).expect("failed to write temporary test file");
@@ -347,12 +352,13 @@ groups:
         let defaults = Policies::resolve([&config.policies]);
         assert_eq!(defaults.channel_capacity.control.node, 256);
         assert_eq!(defaults.channel_capacity.control.pipeline, 256);
+        assert_eq!(defaults.channel_capacity.control.completion, 512);
         assert_eq!(defaults.channel_capacity.pdata, 128);
         assert_eq!(defaults.health, HealthPolicy::default());
         assert!(defaults.telemetry.pipeline_metrics);
         assert!(defaults.telemetry.tokio_metrics);
         assert_eq!(
-            defaults.telemetry.channel_metrics,
+            defaults.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
@@ -370,11 +376,12 @@ policies:
       control:
         node: 200
         pipeline: 201
+        completion: 203
       pdata: 202
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: none
+    runtime_metrics: none
   resources:
     core_allocation:
       type: core_count
@@ -387,11 +394,12 @@ groups:
           control:
             node: 150
             pipeline: 151
+            completion: 153
           pdata: 152
       health:
         ready_if: [Running, Updating]
       telemetry:
-        channel_metrics: basic
+        runtime_metrics: basic
       resources:
         core_allocation:
           type: core_count
@@ -403,11 +411,12 @@ groups:
               control:
                 node: 50
                 pipeline: 51
+                completion: 53
               pdata: 52
           health:
             ready_if: [Failed]
           telemetry:
-            channel_metrics: none
+            runtime_metrics: none
           resources:
             core_allocation:
               type: core_count
@@ -479,6 +488,7 @@ groups:
             .expect("g1/p1 should be resolved");
         assert_eq!(p1_resolved.policies.channel_capacity.control.node, 50);
         assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
+        assert_eq!(p1_resolved.policies.channel_capacity.control.completion, 53);
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.resources.core_allocation,
@@ -489,7 +499,7 @@ groups:
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            p1_resolved.policies.telemetry.channel_metrics,
+            p1_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::None
         );
 
@@ -500,6 +510,10 @@ groups:
             .expect("g1/p2 should be resolved");
         assert_eq!(p2_resolved.policies.channel_capacity.control.node, 150);
         assert_eq!(p2_resolved.policies.channel_capacity.control.pipeline, 151);
+        assert_eq!(
+            p2_resolved.policies.channel_capacity.control.completion,
+            153
+        );
         assert_eq!(p2_resolved.policies.channel_capacity.pdata, 152);
         assert_eq!(
             p2_resolved.policies.health.ready_if,
@@ -509,7 +523,7 @@ groups:
             ]
         );
         assert_eq!(
-            p2_resolved.policies.telemetry.channel_metrics,
+            p2_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Basic
         );
         assert_eq!(
@@ -524,13 +538,17 @@ groups:
             .expect("g2/p3 should be resolved");
         assert_eq!(p3_resolved.policies.channel_capacity.control.node, 200);
         assert_eq!(p3_resolved.policies.channel_capacity.control.pipeline, 201);
+        assert_eq!(
+            p3_resolved.policies.channel_capacity.control.completion,
+            203
+        );
         assert_eq!(p3_resolved.policies.channel_capacity.pdata, 202);
         assert_eq!(
             p3_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Running]
         );
         assert_eq!(
-            p3_resolved.policies.telemetry.channel_metrics,
+            p3_resolved.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::None
         );
         assert_eq!(
@@ -545,11 +563,12 @@ groups:
 version: otel_dataflow/v1
 policies:
   telemetry:
-    channel_metrics: detailed
+    runtime_metrics: detailed
   channel_capacity:
       control:
         node: 500
         pipeline: 501
+        completion: 503
       pdata: 502
   health:
     ready_if: [Running, Updating]
@@ -563,6 +582,7 @@ groups:
               control:
                 node: 100
                 pipeline: 100
+                completion: 101
               pdata: 128
         nodes:
           receiver:
@@ -577,11 +597,12 @@ groups:
       explicit:
         policies:
           telemetry:
-            channel_metrics: none
+            runtime_metrics: none
           channel_capacity:
               control:
                 node: 10
                 pipeline: 11
+                completion: 13
               pdata: 12
           health:
             ready_if: [Failed]
@@ -623,7 +644,7 @@ groups:
         let partial = find("partial");
         assert_eq!(partial.policies.channel_capacity.control.node, 100);
         assert_eq!(
-            partial.policies.telemetry.channel_metrics,
+            partial.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Detailed,
             "should inherit telemetry from top level"
         );
@@ -639,7 +660,7 @@ groups:
         // Pipeline with explicit overrides.
         let explicit = find("explicit");
         assert_eq!(
-            explicit.policies.telemetry.channel_metrics,
+            explicit.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::None
         );
         assert_eq!(explicit.policies.channel_capacity.control.node, 10);
@@ -651,10 +672,14 @@ groups:
         // Pipeline with no policies inherits everything.
         let no_policies = find("no_policies");
         assert_eq!(
-            no_policies.policies.telemetry.channel_metrics,
+            no_policies.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Detailed
         );
         assert_eq!(no_policies.policies.channel_capacity.control.node, 500);
+        assert_eq!(
+            no_policies.policies.channel_capacity.control.completion,
+            503
+        );
         assert_eq!(no_policies.policies.channel_capacity.pdata, 502);
         assert_eq!(
             no_policies.policies.health.ready_if,
@@ -674,11 +699,12 @@ groups:
 version: otel_dataflow/v1
 policies:
   telemetry:
-    channel_metrics: detailed
+    runtime_metrics: detailed
   channel_capacity:
       control:
         node: 500
         pipeline: 501
+        completion: 503
       pdata: 502
   health:
     ready_if: [Running, Updating]
@@ -688,7 +714,7 @@ groups:
     policies:
       # Group sets telemetry and health but NOT channel_capacity.
       telemetry:
-        channel_metrics: normal
+        runtime_metrics: normal
         pipeline_metrics: false
       health:
         ready_if: [Failed]
@@ -701,6 +727,7 @@ groups:
               control:
                 node: 10
                 pipeline: 11
+                completion: 13
               pdata: 12
         nodes:
           receiver:
@@ -760,7 +787,7 @@ groups:
         assert_eq!(p.policies.channel_capacity.control.pipeline, 11);
         assert_eq!(p.policies.channel_capacity.pdata, 12);
         assert_eq!(
-            p.policies.telemetry.channel_metrics,
+            p.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Normal,
             "telemetry should come from group"
         );
@@ -783,7 +810,7 @@ groups:
             "health should come from pipeline"
         );
         assert_eq!(
-            p.policies.telemetry.channel_metrics,
+            p.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Normal,
             "telemetry should come from group"
         );
@@ -797,7 +824,7 @@ groups:
         // pipeline_no_policies: telemetry and health from group, channel_capacity from engine.
         let p = find("pipeline_no_policies");
         assert_eq!(
-            p.policies.telemetry.channel_metrics,
+            p.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Normal,
             "telemetry should come from group"
         );
@@ -1111,11 +1138,12 @@ policies:
       control:
         node: 200
         pipeline: 201
+        completion: 203
       pdata: 202
   health:
     ready_if: [Running]
   telemetry:
-    channel_metrics: none
+    runtime_metrics: none
 engine:
   observability:
     pipeline:
@@ -1124,11 +1152,12 @@ engine:
             control:
               node: 10
               pipeline: 11
+              completion: 13
             pdata: 12
         health:
           ready_if: [Failed]
         telemetry:
-          channel_metrics: normal
+          runtime_metrics: normal
       nodes:
         itr:
           type: "urn:otel:receiver:internal_telemetry"
@@ -1166,13 +1195,14 @@ groups:
         assert_eq!(obs.pipeline_id.as_ref(), "observability");
         assert_eq!(obs.policies.channel_capacity.control.node, 10);
         assert_eq!(obs.policies.channel_capacity.control.pipeline, 11);
+        assert_eq!(obs.policies.channel_capacity.control.completion, 13);
         assert_eq!(obs.policies.channel_capacity.pdata, 12);
         assert_eq!(
             obs.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
         assert_eq!(
-            obs.policies.telemetry.channel_metrics,
+            obs.policies.telemetry.runtime_metrics,
             crate::policy::MetricLevel::Normal
         );
         assert_eq!(
@@ -1252,6 +1282,7 @@ policies:
       control:
         node: 0
         pipeline: 0
+        completion: 0
       pdata: 0
 engine: {}
 groups:
@@ -1274,6 +1305,7 @@ groups:
         let rendered = err.to_string();
         assert!(rendered.contains("channel_capacity.control.node"));
         assert!(rendered.contains("channel_capacity.control.pipeline"));
+        assert!(rendered.contains("channel_capacity.control.completion"));
         assert!(rendered.contains("channel_capacity.pdata"));
     }
 

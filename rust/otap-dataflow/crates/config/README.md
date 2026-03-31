@@ -82,20 +82,38 @@ Policy families:
 
 - `policies.channel_capacity.control.node`
 - `policies.channel_capacity.control.pipeline`
+- `policies.channel_capacity.control.completion`
 - `policies.channel_capacity.pdata`
 - `policies.health`
 - `policies.telemetry.pipeline_metrics`
 - `policies.telemetry.tokio_metrics`
-- `policies.telemetry.channel_metrics`
+- `policies.telemetry.runtime_metrics`
 - `policies.resources.core_allocation`
 
 Defaults:
 
 - `channel_capacity.control.node = 256`
 - `channel_capacity.control.pipeline = 256`
+- `channel_capacity.control.completion = 512`
 - `channel_capacity.pdata = 128`
-- telemetry policy booleans default to `true`
+- `telemetry.pipeline_metrics = true`
+- `telemetry.tokio_metrics = true`
+- `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+
+Control channel keys:
+
+- `node`: capacity of per-node control inboxes
+- `pipeline`: capacity of the shared pipeline-runtime orchestration channel
+- `completion`: capacity of the shared Ack/Nack completion channel
+
+Telemetry policy note:
+
+- `policies.telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or
+  `detailed`
+- it gates channel endpoint transport metrics, per-node produced/consumed
+  outcome metrics, and the shared control-plane metric families exported on the
+  pipeline entity (`pipeline.runtime_control` and `pipeline.completion`)
 
 Resolution precedence:
 

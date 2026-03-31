@@ -133,10 +133,8 @@ impl StreamProducer {
         // reset buffer
         self.buffer.set_position(0);
 
-        // reset dictionary tracker ...
-        // TODO we should eventually add a method to the dictionary tracker to reset it so we can
-        // reuse the existing instance instead of creating a new one and avoid extra allocations
-        self.dictionary_tracker = DictionaryTracker::new(false);
+        // reset dictionary tracker
+        self.dictionary_tracker.clear();
 
         self.write_stream_header(ipc_write_options)?;
 

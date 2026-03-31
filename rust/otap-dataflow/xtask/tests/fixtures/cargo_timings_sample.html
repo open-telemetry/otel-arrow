@@ -1,0 +1,47 @@
+<html>
+<body>
+<script>
+const UNIT_DATA = [
+  {
+    "i": 1,
+    "name": "demo-build",
+    "version": "0.1.0",
+    "target": " build script (run)",
+    "features": ["default"],
+    "start": 0.0,
+    "duration": 1.5,
+    "sections": [
+      ["frontend", {"start": 0.0, "end": 0.9}],
+      ["codegen", {"start": 0.9, "end": 1.5}]
+    ]
+  },
+  {
+    "i": 2,
+    "name": "demo-macro",
+    "version": "0.2.0",
+    "target": " (check)",
+    "features": ["default", "proc-macro-crate", "span-locations"],
+    "start": 0.2,
+    "duration": 1.2,
+    "sections": [
+      ["frontend", {"start": 0.0, "end": 0.7}],
+      ["codegen", {"start": 0.7, "end": 1.2}]
+    ]
+  },
+  {
+    "i": 3,
+    "name": "third-party",
+    "version": "1.7.0",
+    "target": " (check)",
+    "features": ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+    "start": 0.5,
+    "duration": 0.8,
+    "sections": [
+      ["frontend", {"start": 0.0, "end": 0.75}],
+      ["codegen", {"start": 0.75, "end": 0.8}]
+    ]
+  }
+];
+</script>
+</body>
+</html>
