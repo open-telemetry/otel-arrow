@@ -1,5 +1,12 @@
 # Syslog Parsing Behavior
 
+> **Developer reference** -- This document describes the internal parsing
+> behavior of the syslog CEF receiver. It is useful for contributors
+> working on the parser as well as anyone wanting to understand which
+> message formats are accepted, how edge cases are handled, and what
+> output to expect from valid and invalid input. For user-facing
+> configuration and usage, see [README.md](README.md).
+
 ## Format Detection Order
 
 The top-level `parse()` function in
