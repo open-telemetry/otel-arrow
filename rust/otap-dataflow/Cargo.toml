@@ -234,7 +234,6 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
-azure-monitor-auth-none = ["otap-df-contrib-nodes/azure-monitor-auth-none"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]

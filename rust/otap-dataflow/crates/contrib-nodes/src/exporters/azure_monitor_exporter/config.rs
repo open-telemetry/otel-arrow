@@ -30,12 +30,6 @@ pub enum AuthMethod {
     /// Use developer tools (Azure CLI, Azure Developer CLI)
     #[serde(alias = "dev", alias = "developer", alias = "cli")]
     Development,
-
-    /// No authentication — sends a static dummy token.
-    /// Only for local testing with a mock server that ignores auth.
-    #[cfg(feature = "azure-monitor-auth-none")]
-    #[serde(alias = "none", alias = "mock")]
-    None,
 }
 
 /// Authentication configuration for Azure
@@ -68,8 +62,6 @@ impl AuthConfig {
                 }
             }
             AuthMethod::Development => "developer_tools",
-            #[cfg(feature = "azure-monitor-auth-none")]
-            AuthMethod::None => "none",
         }
     }
 }
