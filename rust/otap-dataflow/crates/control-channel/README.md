@@ -8,7 +8,7 @@ stronger and more explicit than a generic FIFO MPSC queue:
 
 - lifecycle control such as `DrainIngress` and `Shutdown` must still be
   accepted and delivered even when ordinary control traffic is backlogged
-- high-frequency completion traffic must remain efficient
+- high-frequency completion traffic must remain efficient through bounded batching
 - low-value control noise should be coalesced instead of competing with
   correctness-critical work
 - shutdown progress must remain bounded and explicit
@@ -26,13 +26,14 @@ It targets the specific needs of the OTAP engine:
 
 - thread-per-core execution
 - single-threaded async runtimes on the hot path
-- frequent `Ack` and `Nack` traffic when `wait_for_result` is enabled
+- frequent `Ack` and `Nack` traffic when `wait_for_result` is enabled,
+  with batching to amortize receive-side overhead
 - node-local lifecycle transitions such as `DrainIngress` and `Shutdown`
 - a need for bounded memory, bounded-fairness, and explicit terminal progress
 
 The design separates policy classes that behave differently:
 
-- retained and backpressured completion traffic
+- retained, backpressured, and batched completion traffic
 - best-effort coalesced control work, where duplicate signals collapse into one
   pending token
 - latest-wins configuration updates, where the newest pending value replaces
@@ -100,12 +101,9 @@ There are two channel families:
 This split is intentional. `DrainIngress` is receiver-specific lifecycle
 control, so non-receiver nodes cannot express it through the public API.
 
-The implementation is available in both:
-
-- local form for `!Send` execution
-- shared form for `Send` execution
-
-Both variants are designed to expose the same semantics.
+The crate intentionally exposes one single-owner implementation. That matches the
+thread-per-core execution model the engine is targeting and keeps the control
+state machine behind one receiver-owned queue core.
 
 ### Traffic classes
 
@@ -161,6 +159,7 @@ For non-lifecycle traffic, the sender exposes two modes:
 - `send(...).await`
   - waits for bounded capacity when needed
   - returns only when the command is accepted or the channel closes
+  - wakes blocked completion senders in FIFO order as completion capacity is released
 
 This supports both explicit backpressure and opportunistic best-effort usage,
 depending on the caller.
@@ -176,6 +175,9 @@ Properties:
 - batching reduces receive-side overhead under heavy completion load
 - protocols that support completion signals such as `Ack` and `Nack` can take
   advantage of this batching to reduce control-plane churn
+- completion messages can optionally carry explicit metadata through
+  `AckMsg<PData, Meta>` / `NackMsg<PData, Meta>`; standalone usage defaults to
+  `Meta = ()`, while future engine integration can preserve unwind state there
 - `completion_batch_max` bounds the size of a single emitted batch
 - completion traffic remains eligible after `DrainIngress`
 - completion traffic remains eligible after `Shutdown` until terminal progress
@@ -227,6 +229,9 @@ Properties:
 - if both are present, `DrainIngress` is delivered first
 - once drain begins, ordinary non-completion control work such as `Config`,
   `TimerTick`, and `CollectTelemetry` is no longer accepted
+- the `DrainIngress` deadline is carried to the receiver event loop so the
+  receiver can bound its own ingress-drain phase; it does not make the
+  control-channel queue itself deadline-driven
 - once shutdown begins, ordinary non-completion control work such as `Config`,
   `TimerTick`, and `CollectTelemetry` is no longer accepted
 - pending ordinary non-completion control state is cleared when drain or
@@ -234,6 +239,11 @@ Properties:
 - completion traffic may continue draining after shutdown is accepted
 
 ### Deadline-bounded terminal progress
+
+Only `Shutdown` carries an active queue-level deadline. `DrainIngress` may also
+carry a deadline field, but that field is for receiver-local ingress-drain
+behavior after delivery rather than for forced progress inside the control
+channel itself.
 
 `Shutdown` carries a deadline and the receiver wait path is deadline-aware.
 
@@ -249,15 +259,16 @@ Properties:
 This is the key liveness property needed to avoid shutdown being postponed
 indefinitely by continued completion traffic.
 
-### Matching local and shared semantics
+### Single-owner execution model
 
-The crate provides both local and shared implementations, but the design goal is
-semantic parity:
+The channel is implemented as a single-owner state machine:
 
-- same role split
-- same lifecycle behavior
-- same batching and fairness rules
-- same terminal shutdown behavior
+- the queue core is mutated only by the channel owner
+- sender clones share that owner through local single-threaded handles
+- blocked completion senders wait in a keyed FIFO waiter queue so
+  capacity release can wake only the senders that can now make progress
+- receiver waiting remains deadline-aware so forced shutdown does not
+  depend on a later producer wakeup
 
 ## Observability
 

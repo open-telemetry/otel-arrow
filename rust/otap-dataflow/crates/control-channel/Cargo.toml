@@ -1,6 +1,6 @@
 [package]
 name = "otap-df-control-channel"
-description = "Experimental control-optimized bounded channel prototype for OTAP dataflow"
+description = "Standalone control-aware bounded channel for OTAP dataflow"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

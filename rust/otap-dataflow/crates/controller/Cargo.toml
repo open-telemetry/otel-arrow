@@ -16,11 +16,11 @@ workspace = true
 testing = []
 
 [dependencies]
-otap-df-config = { path = "../config" }
-otap-df-state = { path = "../state" }
-otap-df-engine = { path = "../engine" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-admin = { path = "../admin" }
+otap-df-config = { workspace = true }
+otap-df-state = { workspace = true }
+otap-df-engine = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-admin = { workspace = true }
 
 thiserror = { workspace = true }
 miette = { workspace = true }
