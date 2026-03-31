@@ -103,7 +103,7 @@ pub struct ControllerContext {
     numa_node_id: usize,
 }
 
-/// Parameters required to create a pipeline context 
+/// Parameters required to create a pipeline context.
 #[derive(Clone, Debug)]
 pub struct PipelineContextParams {
     /// Pipeline group ID for the current pipeline execution context.

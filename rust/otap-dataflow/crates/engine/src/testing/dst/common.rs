@@ -125,11 +125,7 @@ pub(super) fn build_manager<PData>(
         num_cores: 1,
         thread_id: 0,
     };
-    let pipeline_context = PipelineContext::new(
-        controller_context,
-        pipeline_context_params,
-    );
-
+    let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
     let pipeline_entity_key = pipeline_context.register_pipeline_entity();
     let pipeline_entity_guard =
         set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);

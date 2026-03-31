@@ -1247,10 +1247,7 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_context_params,
-        );
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -1304,11 +1301,7 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_context_params,
-        );
-
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -1809,10 +1802,8 @@ mod tests {
                     num_cores: 1,
                     thread_id: 0,
                 };
-                let pipeline_context = PipelineContext::new(
-                    controller_context,
-                    pipeline_context_params,
-                );
+                let pipeline_contex =
+                    PipelineContext::new(controller_context, pipeline_context_params);
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
                 let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
                     pipeline_context.metrics_registry(),
@@ -3065,11 +3056,7 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_context_params,
-        );
-
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -3357,10 +3344,7 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_context_params,
-        );
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -3479,10 +3463,7 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_context_params,
-        );
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
